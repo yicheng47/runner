@@ -148,7 +148,7 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
     core.sessions.note_forwarder_transition(
         "codex-status",
         SessionActivityState::Busy,
-        "forwarder",
+        crate::session::state::StatusSource::Forwarder,
     );
     let path = core.app_data_dir.join("codex-delivery.ndjson");
     let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
@@ -175,15 +175,21 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
             };
             core.sessions.finish_delivery("codex-status", token);
             let state = core.sessions.session_state("codex-status").unwrap();
-            state.lock().unwrap().local_input_pending = true;
+            state.lock().unwrap().model.apply(
+                SessionEvent::TestPending(true),
+                crate::session::clock::state_now(),
+            );
             core.sessions
                 .publish_observation("codex-status", value, &events);
             assert_eq!(
                 core.sessions.reserve_delivery("codex-status").unwrap(),
                 router::DeliveryReservation::LocalInputPending
             );
-            assert!(state.lock().unwrap().local_input_pending);
-            state.lock().unwrap().local_input_pending = false;
+            assert!(state.lock().unwrap().model.local_input_pending());
+            state.lock().unwrap().model.apply(
+                SessionEvent::TestPending(false),
+                crate::session::clock::state_now(),
+            );
         })
         .unwrap();
     assert_eq!(count, 3);
@@ -395,7 +401,8 @@ fn codex_pre_hook_startup_ignores_continuing_idle_redraw() {
             .unwrap()
             .lock()
             .unwrap()
-            .hook_status_armed;
+            .model
+            .hook_status_armed();
         let args = std::fs::read_to_string(app_data.path().join("args")).unwrap();
         manager.kill(&spawned.id).unwrap();
         assert_eq!(hook_bytes, 0, "{launch}");
@@ -710,7 +717,8 @@ fn codex_pre_hook_native_commands_and_failed_bridges_use_output_fallback() {
             .unwrap()
             .lock()
             .unwrap()
-            .hook_status_armed;
+            .model
+            .hook_status_armed();
         manager.kill(id).unwrap();
         assert_eq!(observation.outcome, None);
         assert!(!armed);

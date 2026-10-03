@@ -1,0 +1,17 @@
+runtime=copilot name=crew-idle rules=[9] bugs=[753] known_wrong=[]
+session_status_rows:
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+  idle@hook [running/ready/hook outcome="completed"]
+  busy@wake [<absent>]
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+2400
+2500
+2600 quiescent=false result={"gate":"ready"}
+2700 result={"gate":"in_flight"}
+2800 activity="busy"
+2900 quiescent=true delivery=["DeliveryFinished"]

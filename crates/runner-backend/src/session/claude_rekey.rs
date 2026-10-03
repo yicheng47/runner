@@ -17,7 +17,8 @@ use crate::db::DbPool;
 use crate::error::{Error, Result};
 use crate::repo;
 
-use super::manager::{SessionEvents, SessionUpdatedEvent};
+use super::manager::{SessionEvents, SessionManager, SessionUpdatedEvent};
+use super::state::{KeyOrigin, PersistKey};
 
 const DROP_DIR_NAME: &str = "session-keys";
 
@@ -44,6 +45,7 @@ impl ClaudeSessionKeyWatcher {
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
+        manager: std::sync::Weak<SessionManager>,
     ) -> Result<Self> {
         let drop_dir = app_data_dir.join(DROP_DIR_NAME);
         fs::create_dir_all(&drop_dir)?;
@@ -82,7 +84,9 @@ impl ClaudeSessionKeyWatcher {
                     Ok(()) | Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
-                if let Err(error) = scan_drop_dir(&drop_dir_for_thread, &pool, events.as_ref()) {
+                if let Err(error) =
+                    scan_drop_dir(&drop_dir_for_thread, &pool, events.as_ref(), &manager)
+                {
                     log::warn!(
                         "scan Claude session-key reports {}: {error}",
                         drop_dir_for_thread.display()
@@ -144,19 +148,31 @@ fn clear_leftovers(drop_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn scan_drop_dir(drop_dir: &Path, pool: &DbPool, events: &dyn SessionEvents) -> Result<()> {
+fn scan_drop_dir(
+    drop_dir: &Path,
+    pool: &DbPool,
+    events: &dyn SessionEvents,
+    manager: &std::sync::Weak<SessionManager>,
+) -> Result<()> {
     for entry in fs::read_dir(drop_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension() == Some(OsStr::new("json")) {
-            process_drop_file(&path, pool, events);
+            if let Some(manager) = manager.upgrade() {
+                process_drop_file(&path, pool, events, &manager);
+            }
         }
     }
     Ok(())
 }
 
-fn process_drop_file(path: &Path, pool: &DbPool, events: &dyn SessionEvents) {
-    if let Err(error) = try_process_drop_file(path, pool, events) {
+fn process_drop_file(
+    path: &Path,
+    pool: &DbPool,
+    events: &dyn SessionEvents,
+    manager: &SessionManager,
+) {
+    if let Err(error) = try_process_drop_file(path, pool, events, manager) {
         log::warn!(
             "process Claude session-key report {}: {error}",
             path.display()
@@ -174,7 +190,12 @@ fn process_drop_file(path: &Path, pool: &DbPool, events: &dyn SessionEvents) {
     }
 }
 
-fn try_process_drop_file(path: &Path, pool: &DbPool, events: &dyn SessionEvents) -> Result<()> {
+fn try_process_drop_file(
+    path: &Path,
+    pool: &DbPool,
+    events: &dyn SessionEvents,
+    manager: &SessionManager,
+) -> Result<()> {
     let Some(runner_session_id) = path
         .file_stem()
         .and_then(OsStr::to_str)
@@ -205,11 +226,15 @@ fn try_process_drop_file(path: &Path, pool: &DbPool, events: &dyn SessionEvents)
     let Some(started_at) = row.started_at else {
         return Ok(());
     };
-    if repo::session::rekey_agent_session_key(
-        &conn,
+    drop(conn);
+    if manager.persist_reported_key(
         runner_session_id,
-        &report.session_id,
-        &started_at.to_rfc3339(),
+        PersistKey {
+            key: Some(report.session_id),
+            generation: started_at.to_rfc3339(),
+            origin: KeyOrigin::Rekeyed,
+        },
+        pool,
     )? {
         events.updated(&SessionUpdatedEvent {
             session_id: runner_session_id.to_string(),
@@ -269,7 +294,7 @@ mod tests {
         )
         .unwrap();
 
-        process_drop_file(&path, &pool, &events);
+        process_drop_file(&path, &pool, &events, &SessionManager::key_test_manager());
 
         let conn = pool.get().unwrap();
         let row = repo::session::get_row(&conn, "runner-session")
@@ -291,7 +316,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, serde_json::json!({ "session_id": key }).to_string()).unwrap();
 
-        process_drop_file(&path, &pool, &events);
+        process_drop_file(&path, &pool, &events, &SessionManager::key_test_manager());
 
         assert!(events.updated.lock().unwrap().is_empty());
         assert!(!path.exists());
@@ -320,9 +345,24 @@ mod tests {
         )
         .unwrap();
 
-        process_drop_file(&malformed, &pool, &events);
-        process_drop_file(&invalid_uuid, &pool, &events);
-        process_drop_file(&unknown, &pool, &events);
+        process_drop_file(
+            &malformed,
+            &pool,
+            &events,
+            &SessionManager::key_test_manager(),
+        );
+        process_drop_file(
+            &invalid_uuid,
+            &pool,
+            &events,
+            &SessionManager::key_test_manager(),
+        );
+        process_drop_file(
+            &unknown,
+            &pool,
+            &events,
+            &SessionManager::key_test_manager(),
+        );
 
         let conn = pool.get().unwrap();
         let row = repo::session::get_row(&conn, "runner-session")
@@ -344,10 +384,12 @@ mod tests {
         let old_key = uuid::Uuid::new_v4().to_string();
         let new_key = uuid::Uuid::new_v4().to_string();
         insert_running(&pool, "runner-session", &old_key);
+        let manager = SessionManager::key_test_manager();
         let watcher = ClaudeSessionKeyWatcher::start(
             root.path(),
             Arc::clone(&pool),
             Arc::clone(&events) as Arc<dyn SessionEvents>,
+            Arc::downgrade(&manager),
         )
         .unwrap();
         let path = drop_path(root.path(), "runner-session");

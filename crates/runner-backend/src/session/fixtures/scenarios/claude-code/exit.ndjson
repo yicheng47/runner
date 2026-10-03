@@ -1,0 +1,12 @@
+{"runtime":"claude-code","name":"exit","rules":[10],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Late hook reports remain unread after watcher teardown; explicit observations model snapshots already in flight when the process exited."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":500,"event":"exit","code":1,"crashed":true}
+{"ms":600,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":625,"event":"observation","observation":{"activity":"working","source":"hook","outcome":null,"interactions":[],"detail":"using_tools"}}
+{"ms":650,"event":"observation","observation":{"activity":"ready","source":"hook","outcome":"completed","interactions":[],"detail":null}}
+{"ms":675,"event":"completion"}
+{"ms":700,"event":"reserve"}
+{"ms":800,"event":"viewed"}

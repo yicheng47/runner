@@ -1,0 +1,19 @@
+runtime=codex name=tool-turn rules=[2,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/working/hook detail="using_tools"
+  busy@hook [running/working/hook detail="using_tools"]
+600
+2800
+2900 status=running/working/hook
+  busy@hook [running/working/hook]
+3000 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+3100 status=running/ready/hook outcome="completed" unread_since=1767225603100 completion_armed=false result={"completion_consumed":true,"viewed":false}

@@ -705,6 +705,7 @@ impl SessionManager {
     /// gets one, a resume included: agy may still start a new conversation.
     #[allow(clippy::too_many_arguments)]
     fn start_antigravity_capture(
+        self: &Arc<Self>,
         runtime_key: &str,
         session_id: &str,
         mission_id: Option<String>,
@@ -722,6 +723,7 @@ impl SessionManager {
         }
         crate::runtimes::antigravity::agy_capture::spawn_capture(
             crate::runtimes::antigravity::agy_capture::CaptureRequest {
+                manager: Arc::downgrade(self),
                 session_id: session_id.to_owned(),
                 mission_id,
                 log_path: crate::runtimes::antigravity::agy_capture::log_path(
@@ -878,44 +880,56 @@ impl SessionManager {
         // runtime hands them back.
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
-        let insert_result = (|| -> Result<()> {
-            let conn = pool.get()?;
-            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
-            row.mission_id = Some(mission.id.clone());
-            row.project_id = mission.project_id.clone();
-            row.role_id = Some(role.id.clone());
-            row.slot_id = Some(slot.id.clone());
-            row.cwd = resolved_cwd.clone();
-            row.started_at = Some(started_at_dt);
-            row.agent_session_key = plan.assigned_key.clone();
-            row.last_cols = initial_size.map(|(cols, _)| cols);
-            row.last_rows = initial_size.map(|(_, rows)| rows);
-            if pinned {
-                // Record the effective runtime so respawn/resume
-                // keeps this session's engine even if the slot's
-                // override — or the role template's runtime — is
-                // edited later. No-override rows stay NULL.
-                row.agent_runtime = Some(role.runtime.clone());
-                row.agent_command = Some(role.command.clone());
-            }
-            if agent_options_overridden {
-                row.agent_model = role.model.clone();
-                row.agent_effort = role.effort.clone();
-            }
-            row.agent_speed = (crate::runtimes::for_key(&role.runtime)
-                .capabilities()
-                .codex_speed)
-                .then_some(slot.codex_speed_override)
-                .flatten();
-            crate::repo::session::insert(&conn, &row)?;
-            Ok(())
-        })();
+        let insert_result = self.report_key(
+            &session_id,
+            PersistKey {
+                key: plan.assigned_key.clone(),
+                generation: started_at.clone(),
+                origin: KeyOrigin::Assigned,
+            },
+            |effect| {
+                let conn = pool.get()?;
+                let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+                row.mission_id = Some(mission.id.clone());
+                row.project_id = mission.project_id.clone();
+                row.role_id = Some(role.id.clone());
+                row.slot_id = Some(slot.id.clone());
+                row.cwd = resolved_cwd.clone();
+                row.started_at = Some(started_at_dt);
+                row.agent_session_key = effect.key.clone();
+                row.last_cols = initial_size.map(|(cols, _)| cols);
+                row.last_rows = initial_size.map(|(_, rows)| rows);
+                if pinned {
+                    // Record the effective runtime so respawn/resume
+                    // keeps this session's engine even if the slot's
+                    // override — or the role template's runtime — is
+                    // edited later. No-override rows stay NULL.
+                    row.agent_runtime = Some(role.runtime.clone());
+                    row.agent_command = Some(role.command.clone());
+                }
+                if agent_options_overridden {
+                    row.agent_model = role.model.clone();
+                    row.agent_effort = role.effort.clone();
+                }
+                row.agent_speed = (crate::runtimes::for_key(&role.runtime)
+                    .capabilities()
+                    .codex_speed)
+                    .then_some(slot.codex_speed_override)
+                    .flatten();
+                crate::repo::session::insert(&conn, &row)?;
+                Ok(true)
+            },
+        );
         if let Err(error) = insert_result {
             crate::session::system_prompt::remove(app_data_dir, &session_id);
             return Err(error);
         }
 
         Ok(PendingMissionSpawn {
+            pre_attachment: PreAttachmentState {
+                manager: Arc::downgrade(self),
+                session_id: session_id.clone(),
+            },
             session_id,
             spec,
             mission: mission.clone(),
@@ -963,6 +977,7 @@ impl SessionManager {
     ) -> Result<CompleteSpawnOutcome> {
         let PendingMissionSpawn {
             session_id,
+            pre_attachment: _pre_attachment,
             mut spec,
             mission,
             role,
@@ -1107,6 +1122,7 @@ impl SessionManager {
             }
             .and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    manager: Arc::downgrade(self),
                     mission_id: Some(mission.id.clone()),
                     sessions_root,
                     spawn_cwd: cwd,
@@ -1130,7 +1146,7 @@ impl SessionManager {
                 event_log,
             });
         let stop = output.stop_flag();
-        Self::start_antigravity_capture(
+        self.start_antigravity_capture(
             &role.runtime,
             &session_id,
             Some(mission.id.clone()),
@@ -1165,7 +1181,7 @@ impl SessionManager {
         self.publish_mission_activity(
             &session_id,
             SessionActivityState::Busy,
-            "spawn",
+            StatusSource::Spawn,
             events.as_ref(),
         );
 
@@ -1529,6 +1545,10 @@ impl SessionManager {
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
 
         let session_id = ulid::Ulid::new().to_string();
+        let _pre_attachment = PreAttachmentState {
+            manager: Arc::downgrade(self),
+            session_id: session_id.clone(),
+        };
         let (system_prompt, first_turn) = crate::runtimes::for_key(&role.runtime)
             .prompt_channels()
             .split(router::prompt::SessionPromptKind::Direct, first_turn);
@@ -1568,32 +1588,40 @@ impl SessionManager {
         // runtime override was explicitly requested — then the row
         // records the effective runtime so resume respawns the same
         // engine even if the role template is edited later.
-        let insert_result = (|| -> Result<()> {
-            let conn = pool.get()?;
-            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
-            row.project_id = project_id.map(str::to_string);
-            row.role_id = persisted_role_id.map(str::to_string);
-            row.cwd = resolved_cwd.clone();
-            row.started_at = Some(started_at_dt);
-            row.agent_session_key = plan.assigned_key.clone();
-            row.last_cols = initial_size.map(|(cols, _)| cols);
-            row.last_rows = initial_size.map(|(_, rows)| rows);
-            if persisted_role_id.is_none() || pinned {
-                row.agent_runtime = Some(role.runtime.clone());
-                row.agent_command = Some(role.command.clone());
-            }
-            if persisted_role_id.is_none() || agent_options_overridden {
-                row.agent_model = role.model.clone();
-                row.agent_effort = role.effort.clone();
-            }
-            row.agent_speed = if persisted_role_id.is_none() {
-                role.codex_speed
-            } else {
-                speed_override
-            };
-            crate::repo::session::insert(&conn, &row)?;
-            Ok(())
-        })();
+        let insert_result = self.report_key(
+            &session_id,
+            PersistKey {
+                key: plan.assigned_key.clone(),
+                generation: started_at.clone(),
+                origin: KeyOrigin::Assigned,
+            },
+            |effect| {
+                let conn = pool.get()?;
+                let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+                row.project_id = project_id.map(str::to_string);
+                row.role_id = persisted_role_id.map(str::to_string);
+                row.cwd = resolved_cwd.clone();
+                row.started_at = Some(started_at_dt);
+                row.agent_session_key = effect.key.clone();
+                row.last_cols = initial_size.map(|(cols, _)| cols);
+                row.last_rows = initial_size.map(|(_, rows)| rows);
+                if persisted_role_id.is_none() || pinned {
+                    row.agent_runtime = Some(role.runtime.clone());
+                    row.agent_command = Some(role.command.clone());
+                }
+                if persisted_role_id.is_none() || agent_options_overridden {
+                    row.agent_model = role.model.clone();
+                    row.agent_effort = role.effort.clone();
+                }
+                row.agent_speed = if persisted_role_id.is_none() {
+                    role.codex_speed
+                } else {
+                    speed_override
+                };
+                crate::repo::session::insert(&conn, &row)?;
+                Ok(true)
+            },
+        );
         if let Err(error) = insert_result {
             crate::session::system_prompt::remove(app_data_dir, &session_id);
             return Err(error);
@@ -1670,6 +1698,7 @@ impl SessionManager {
             }
             .and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    manager: Arc::downgrade(self),
                     mission_id: None,
                     sessions_root,
                     spawn_cwd: cwd,
@@ -1685,7 +1714,7 @@ impl SessionManager {
             None
         };
 
-        Self::start_antigravity_capture(
+        self.start_antigravity_capture(
             &role.runtime,
             &session_id,
             None,
@@ -1719,7 +1748,7 @@ impl SessionManager {
         self.publish_direct_activity(
             &session_id,
             SessionActivityState::Busy,
-            "spawn",
+            StatusSource::Spawn,
             events.as_ref(),
         );
 
@@ -1935,6 +1964,10 @@ impl SessionManager {
         }
         let initial_size = Some(cols.zip(rows).unwrap_or(DEFAULT_PTY_SIZE));
         let session_id = ulid::Ulid::new().to_string();
+        let _pre_attachment = PreAttachmentState {
+            manager: Arc::downgrade(self),
+            session_id: session_id.clone(),
+        };
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();
         let mut spec = self.base_spawn_spec(
@@ -1948,30 +1981,40 @@ impl SessionManager {
             direct_env,
         );
 
-        {
-            let conn = pool.get()?;
-            let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
-            row.project_id.clone_from(&source.project_id);
-            row.role_id.clone_from(&source.role_id);
-            row.cwd = resolved_cwd.clone();
-            row.started_at = Some(started_at_dt);
-            row.agent_session_key = match &plan {
-                router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
-                router::runtime::ForkPlan::Headless { .. } => None,
-            };
-            row.title = title.and_then(|title| {
-                let title = title.trim();
-                (!title.is_empty()).then(|| title.to_string())
-            });
-            row.agent_runtime.clone_from(&source.agent_runtime);
-            row.agent_command.clone_from(&source.agent_command);
-            row.agent_model.clone_from(&source.agent_model);
-            row.agent_effort.clone_from(&source.agent_effort);
-            row.agent_speed = source.agent_speed;
-            row.last_cols = initial_size.map(|(cols, _)| cols);
-            row.last_rows = initial_size.map(|(_, rows)| rows);
-            crate::repo::session::insert(&conn, &row)?;
-        }
+        let assigned_key = match &plan {
+            router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
+            router::runtime::ForkPlan::Headless { .. } => None,
+        };
+        self.report_key(
+            &session_id,
+            PersistKey {
+                key: assigned_key,
+                generation: started_at.clone(),
+                origin: KeyOrigin::Assigned,
+            },
+            |effect| {
+                let conn = pool.get()?;
+                let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
+                row.project_id.clone_from(&source.project_id);
+                row.role_id.clone_from(&source.role_id);
+                row.cwd = resolved_cwd.clone();
+                row.started_at = Some(started_at_dt);
+                row.agent_session_key = effect.key.clone();
+                row.title = title.and_then(|title| {
+                    let title = title.trim();
+                    (!title.is_empty()).then(|| title.to_string())
+                });
+                row.agent_runtime.clone_from(&source.agent_runtime);
+                row.agent_command.clone_from(&source.agent_command);
+                row.agent_model.clone_from(&source.agent_model);
+                row.agent_effort.clone_from(&source.agent_effort);
+                row.agent_speed = source.agent_speed;
+                row.last_cols = initial_size.map(|(cols, _)| cols);
+                row.last_rows = initial_size.map(|(_, rows)| rows);
+                crate::repo::session::insert(&conn, &row)?;
+                Ok(true)
+            },
+        )?;
         events.updated(&SessionUpdatedEvent {
             session_id: session_id.clone(),
             mission_id: None,
@@ -2104,7 +2147,7 @@ impl SessionManager {
                 self.publish_direct_activity(
                     &session_id,
                     SessionActivityState::Busy,
-                    "fork",
+                    StatusSource::Fork,
                     events.as_ref(),
                 );
                 let forwarder = self.start_forwarder_thread(
@@ -2172,22 +2215,25 @@ impl SessionManager {
                 };
                 let materialize_elapsed = materialize_started_at.elapsed();
 
-                let persist_result = (|| -> Result<bool> {
-                    let conn = pool.get()?;
-                    let captured = crate::repo::session::capture_agent_session_key(
-                        &conn,
-                        &session_id,
-                        &fork_key,
-                        &started_at,
-                    )?;
-                    let stopped = crate::repo::session::set_exit_status(
-                        &conn,
-                        &session_id,
-                        crate::model::SessionStatus::Stopped,
-                        Utc::now(),
-                    )?;
-                    Ok(captured && stopped > 0)
-                })();
+                let persist_result = self.report_key(
+                    &session_id,
+                    PersistKey {
+                        key: Some(fork_key.clone()),
+                        generation: started_at.clone(),
+                        origin: KeyOrigin::Captured,
+                    },
+                    |effect| {
+                        let conn = pool.get()?;
+                        let captured = Self::write_key_effect(&conn, &session_id, effect)?;
+                        let stopped = crate::repo::session::set_exit_status(
+                            &conn,
+                            &session_id,
+                            crate::model::SessionStatus::Stopped,
+                            Utc::now(),
+                        )?;
+                        Ok(captured && stopped > 0)
+                    },
+                );
                 match persist_result {
                     Ok(true) => {}
                     Ok(false) => {
@@ -2715,19 +2761,27 @@ impl SessionManager {
         let started_at = started_at_dt.to_rfc3339();
 
         // UPDATE in place: same id, same conversation thread.
-        let resume_result = (|| -> Result<()> {
-            let conn = pool.get()?;
-            crate::repo::session::resume_in_place(
-                &conn,
-                session_id,
-                started_at_dt,
-                plan.assigned_key.as_deref(),
-                !plan.resuming,
-                initial_size.0,
-                initial_size.1,
-            )?;
-            Ok(())
-        })();
+        let resume_result = self.report_key(
+            session_id,
+            PersistKey {
+                key: plan.assigned_key.clone(),
+                generation: started_at.clone(),
+                origin: KeyOrigin::Assigned,
+            },
+            |effect| {
+                let conn = pool.get()?;
+                crate::repo::session::resume_in_place(
+                    &conn,
+                    session_id,
+                    started_at_dt,
+                    effect.key.as_deref(),
+                    !plan.resuming,
+                    initial_size.0,
+                    initial_size.1,
+                )?;
+                Ok(true)
+            },
+        );
         if let Err(error) = resume_result {
             crate::session::system_prompt::remove(app_data_dir, session_id);
             return Err(error);
@@ -2797,6 +2851,7 @@ impl SessionManager {
             }
             .and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
+                    manager: Arc::downgrade(self),
                     mission_id: snap.mission_id.clone(),
                     sessions_root,
                     spawn_cwd: cwd,
@@ -2822,7 +2877,7 @@ impl SessionManager {
                 }
             })
         });
-        Self::start_antigravity_capture(
+        self.start_antigravity_capture(
             &role.runtime,
             session_id,
             snap.mission_id.clone(),
@@ -2874,7 +2929,7 @@ impl SessionManager {
             self.publish_direct_activity(
                 session_id,
                 SessionActivityState::Busy,
-                "resume",
+                StatusSource::Resume,
                 events.as_ref(),
             );
         }

@@ -1474,13 +1474,19 @@ mod tests {
         state.windows.set_viewed_session("main", Some("a"));
         let events = state.session_events();
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.arm_completion("a");
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1499,13 +1505,19 @@ mod tests {
             .set_subjects("main", vec![Subject::DirectChat("a".to_string())]);
         let events = state.session_events();
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.arm_completion("a");
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1521,12 +1533,18 @@ mod tests {
         let mut rx = state.events.subscribe();
         let events = state.session_events();
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1542,16 +1560,25 @@ mod tests {
         let tab = create_tab(&state, &["a", "b"]);
         let events = state.session_events();
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
-        state
-            .sessions
-            .publish_direct_activity("b", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        state.sessions.publish_direct_activity(
+            "b",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.arm_completion("a");
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1561,9 +1588,12 @@ mod tests {
         assert!(state.sessions.agent_status("b").unread_since.is_none());
         assert!(row.last_viewed_at.is_none());
 
-        state
-            .sessions
-            .publish_direct_activity("b", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "b",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1580,14 +1610,16 @@ mod tests {
         let tab = create_tab(&state, &["a"]);
         let mut rx = state.events.subscribe();
         let events = state.session_events();
-        state
-            .sessions
-            .note_forwarder_transition("a", SessionActivityState::Idle, "test");
+        state.sessions.note_forwarder_transition(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+        );
         state.sessions.arm_completion("a");
         events.status(&SessionActivityEvent {
             session_id: "a".into(),
             state: SessionActivityState::Idle,
-            source: "input-escape".into(),
+            source: crate::session::state::StatusSource::InputEscape,
             status: crate::session::status::AgentStatus {
                 observation: crate::session::status::AgentObservation {
                     outcome: Some(crate::session::status::TurnOutcome::Interrupted),
@@ -1604,7 +1636,7 @@ mod tests {
         events.status(&SessionActivityEvent {
             session_id: "a".into(),
             state: SessionActivityState::Idle,
-            source: "hook".into(),
+            source: crate::session::state::StatusSource::Hook,
             status: crate::session::status::AgentStatus {
                 observation: crate::session::status::AgentObservation {
                     activity: crate::session::status::Activity::Ready,
@@ -1629,25 +1661,37 @@ mod tests {
         let mut rx = state.events.subscribe();
         let events = state.session_events();
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.arm_completion("a");
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         let first = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
             .unwrap()
             .last_completed_at
             .expect("armed settle should record completion");
 
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
 
         let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
@@ -1677,13 +1721,13 @@ mod tests {
         state.sessions.publish_direct_activity(
             "shell",
             SessionActivityState::Busy,
-            "test",
+            crate::session::state::StatusSource::Test,
             &events,
         );
         state.sessions.publish_direct_activity(
             "shell",
             SessionActivityState::Idle,
-            "test",
+            crate::session::state::StatusSource::Test,
             &events,
         );
 
@@ -1713,19 +1757,22 @@ mod tests {
         let events = state.session_events();
         state.sessions.arm_completion("chat");
 
-        state
-            .sessions
-            .publish_direct_activity("chat", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "chat",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.publish_direct_activity(
             "shell",
             SessionActivityState::Busy,
-            "test",
+            crate::session::state::StatusSource::Test,
             &events,
         );
         state.sessions.publish_direct_activity(
             "shell",
             SessionActivityState::Idle,
-            "test",
+            crate::session::state::StatusSource::Test,
             &events,
         );
         let before = repo::node::get(&state.db.get().unwrap(), &tab.id)
@@ -1736,12 +1783,15 @@ mod tests {
         state.sessions.publish_direct_activity(
             "shell",
             SessionActivityState::Busy,
-            "test",
+            crate::session::state::StatusSource::Test,
             &events,
         );
-        state
-            .sessions
-            .publish_direct_activity("chat", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "chat",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         let after = repo::node::get(&state.db.get().unwrap(), &tab.id)
             .unwrap()
             .unwrap();
@@ -1840,13 +1890,19 @@ mod tests {
         crate::ops::window::report_subjects(&state, "main", subjects.clone(), Some("b")).unwrap();
         crate::ops::window::mark_focused(&state, "main").unwrap();
         let events = state.session_events();
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Busy, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         state.sessions.arm_completion("a");
-        state
-            .sessions
-            .publish_direct_activity("a", SessionActivityState::Idle, "test", &events);
+        state.sessions.publish_direct_activity(
+            "a",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
         let conn = state.db.get().unwrap();
         conn.execute(
             "UPDATE sessions SET status = 'crashed', stopped_at = ?1 WHERE id = 'a'",

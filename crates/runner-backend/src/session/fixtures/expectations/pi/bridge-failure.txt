@@ -1,0 +1,18 @@
+runtime=pi name=bridge-failure rules=[3] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+2600
+2700 status=running/idle/baseline activity="idle" completion_armed=false
+  idle@baseline [running/idle/baseline]
+2800 status=running/working/baseline activity="busy"
+  busy@forwarder [running/working/baseline]
+5000 status=running/idle/baseline activity="idle"
+  idle@forwarder [running/idle/baseline]
+5100 result={"completion_consumed":false,"viewed":false}

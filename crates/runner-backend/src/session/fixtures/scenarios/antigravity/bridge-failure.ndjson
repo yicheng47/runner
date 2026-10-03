@@ -1,0 +1,10 @@
+{"runtime":"antigravity","name":"bridge-failure","rules":[3],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"input","bytes":"sample"}
+{"ms":2400,"event":"input","bytes":"\r"}
+{"ms":2500,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":4700,"event":"tick"}
+{"ms":4800,"event":"bridge_failed"}
+{"ms":4900,"event":"output","bytes":"baseline reply"}
+{"ms":7100,"event":"tick"}
+{"ms":7200,"event":"completion"}

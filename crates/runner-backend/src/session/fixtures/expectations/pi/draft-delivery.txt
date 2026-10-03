@@ -1,0 +1,23 @@
+runtime=pi name=draft-delivery rules=[5] bugs=[766,753] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200
+300 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+2500
+2600
+2700 quiescent=false delivery=["InputQueueDrained"]
+2800 result={"gate":"recently_typing","remaining_ms":1900}
+2900
+5100
+5200 result={"gate":"drafting","composer_visible":true}
+5300
+5400 result={"gate":"recently_typing","remaining_ms":1900}
+7600 quiescent=true
+7700 quiescent=false result={"gate":"ready"}
+7800 quiescent=true delivery=["DeliveryFinished"]
+7900 delivery=["InputCleared"]
+8000 quiescent=false result={"gate":"ready"}
+8100 quiescent=true delivery=["DeliveryFinished"]

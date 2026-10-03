@@ -1,0 +1,13 @@
+runtime=codex name=api-error rules=[7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500
+600 status=running/working/hook unread_since=1767225600600 completion_armed=false result={"completion_consumed":true,"viewed":false}
+700 status=running/working/hook

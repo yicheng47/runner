@@ -1,0 +1,17 @@
+runtime=antigravity name=clear-resume rules=[] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" result={"key_written":true} delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+200
+2400 status=running/idle/baseline activity="idle"
+  idle@forwarder [running/idle/baseline]
+2500 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+2600 quiescent=false delivery=["InputQueueDrained"]
+2700 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/ready/hook outcome="completed"]
+2800 key="22222222-2222-4222-8222-222222222222" result={"key_written":true}
+2900
+3000 result={"key_written":false}
+3100 result={"key_written":false}
+3200 result={"history_exists":true,"missing_reuses_key":false,"missing_resume_on_launch":false}

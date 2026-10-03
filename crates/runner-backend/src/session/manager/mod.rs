@@ -1,5 +1,5 @@
 use crate::session::status::{
-    Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome, WorkDetail,
+    Activity, AgentObservation, AgentStatus, ObservationSource, TurnOutcome,
 };
 // Per-role session manager.
 //
@@ -47,12 +47,19 @@ mod lifecycle;
 mod output;
 mod spawn;
 
+#[cfg(test)]
+use super::state::ObservedInput;
+pub use super::state::{InputObservation, InputState, StatusSource};
+use super::state::{KeyOrigin, PersistKey, SessionEvent, SessionModel};
+#[cfg(test)]
+use super::status::Lifecycle;
 pub(crate) use output::{classify_local_input, LocalInputClass};
+#[cfg(test)]
+const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
 
 #[cfg(test)]
 mod tests;
 
-const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
 // Router delivery normally holds the gate for its 80 ms submit delay. Five
 // seconds also clears the 500 ms input-flush grace comfortably under load.
 const DIRECT_INPUT_GATE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,30 +67,6 @@ const RUNNER_STATUS_APPEND_MAX_ATTEMPTS: usize = 8;
 const RUNNER_STATUS_APPEND_RETRY_DELAY: Duration = Duration::from_millis(5);
 
 pub(crate) const DEFAULT_PTY_SIZE: (u16, u16) = (80, 24);
-
-/// Input state observed from the native terminal grid. Agent-reported
-/// waiting state remains separate until the hook-based status work lands.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InputState {
-    Idle,
-    Drafting,
-    Submitted,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct InputObservation {
-    pub state: InputState,
-    pub since: Instant,
-    pub composing: bool,
-    pub composer_visible: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ObservedInput {
-    state: InputState,
-    since: Instant,
-    composer_visible: bool,
-}
 
 /// Trailing debounce for width-changing full-repaint TUI resizes.
 const RESIZE_SETTLE_MS: u64 = 175;
@@ -162,7 +145,7 @@ impl ForwarderEmitCtx {
     fn session_status_draft(
         &self,
         state: SessionActivityState,
-        source: &'static str,
+        source: StatusSource,
         status: &AgentStatus,
     ) -> EventDraft {
         let state_str = match state {
@@ -188,7 +171,7 @@ impl ForwarderEmitCtx {
     fn try_append_session_status(
         &self,
         state: SessionActivityState,
-        source: &'static str,
+        source: StatusSource,
         status: &AgentStatus,
     ) -> AppendOutcome {
         match self.try_append_with_retry(self.session_status_draft(state, source, status)) {
@@ -214,7 +197,7 @@ impl ForwarderEmitCtx {
     fn append_session_status(
         &self,
         state: SessionActivityState,
-        source: &'static str,
+        source: StatusSource,
         status: &AgentStatus,
     ) -> runner_core::Result<()> {
         self.event_log
@@ -298,7 +281,7 @@ pub use crate::session::runtime::SessionActivityState;
 pub struct SessionActivityEvent {
     pub session_id: String,
     pub state: SessionActivityState,
-    pub source: String,
+    pub source: StatusSource,
     pub status: AgentStatus,
 }
 
@@ -524,6 +507,7 @@ const WINDOWS_FIRST_TURN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 struct CodexCaptureContext {
+    manager: Weak<SessionManager>,
     mission_id: Option<String>,
     sessions_root: PathBuf,
     spawn_cwd: String,
@@ -575,22 +559,12 @@ struct PendingResize {
 
 #[derive(Default)]
 struct SessionState {
+    // Retain pre-attachment keys without exposing a runtime state that did not exist before.
+    key_only: bool,
     handle: Option<SessionHandle>,
-    activity: Option<SessionActivityState>,
-    status: AgentStatus,
-    baseline_activity: Option<SessionActivityState>,
-    activity_revision: u64,
-    suppress_local_input_busy: bool,
-    hook_status_armed: bool,
-    provisional_idle: bool,
-    local_input_pending: bool,
-    observed_input: Option<ObservedInput>,
-    last_local_input_at: Option<Instant>,
+    model: SessionModel,
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
-    completion_armed: bool,
-    /// Outer `Some` tracks a failure compaction; the inner value preserves acknowledgement.
-    compaction_failed_since: Option<Option<i64>>,
     output_seq: u64,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
@@ -605,19 +579,8 @@ struct SessionState {
 impl SessionState {
     fn is_empty(&self) -> bool {
         self.handle.is_none()
-            && self.activity.is_none()
-            && self.status.error_since.is_none()
-            && self.status.failed_since.is_none()
-            && self.status.unread_since.is_none()
-            && !self.suppress_local_input_busy
-            && !self.hook_status_armed
-            && !self.provisional_idle
-            && !self.local_input_pending
-            && self.observed_input.is_none()
-            && self.last_local_input_at.is_none()
+            && self.model.is_empty()
             && self.mission_status_sink.is_none()
-            && !self.completion_armed
-            && self.compaction_failed_since.is_none()
             && self.output_seq == 0
             && self.last_requested_size.is_none()
             && !self.last_requested_size_dirty
@@ -632,7 +595,7 @@ pub struct SessionManager {
     /// each session's hot mutable state lives behind its own mutex so
     /// PTY output for one busy session does not block lifecycle work on
     /// other sessions. Never lock a SessionState while holding this map;
-    /// prune is the sole nested path and locks the state before the map.
+    /// pruning and revealing pre-attachment state lock the state before the map.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
     delivery_listeners: Mutex<HashMap<String, Vec<Weak<dyn router::SessionDeliveryListener>>>>,
     /// User's current login-shell env snapshot. Discovery swaps this
@@ -693,6 +656,19 @@ impl Drop for ResumeClaim {
     }
 }
 
+struct PreAttachmentState {
+    manager: Weak<SessionManager>,
+    session_id: String,
+}
+
+impl Drop for PreAttachmentState {
+    fn drop(&mut self) {
+        if let Some(manager) = self.manager.upgrade() {
+            manager.prune_key_only_session_state(&self.session_id);
+        }
+    }
+}
+
 /// Result of a `complete_mission_session_spawn` call. The
 /// background mission-spawn task uses the variant to decide whether
 /// to mark the session row stopped (cancelled mid-queue) or leave
@@ -726,6 +702,7 @@ pub enum CompleteSpawnOutcome {
 /// across thread boundaries into a `spawn_blocking` task.
 pub struct PendingMissionSpawn {
     pub session_id: String,
+    pre_attachment: PreAttachmentState,
     spec: SpawnSpec,
     mission: Mission,
     role: Role,
@@ -795,7 +772,7 @@ impl SessionManager {
     }
 
     pub fn start_runtime_watchers(
-        &self,
+        self: &Arc<Self>,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
@@ -817,8 +794,12 @@ impl SessionManager {
                 crate::runtimes::antigravity::agy_capture::clear_orphans(app_data_dir, &pool);
             }
         }
-        let watcher =
-            super::claude_rekey::ClaudeSessionKeyWatcher::start(app_data_dir, pool, events)?;
+        let watcher = super::claude_rekey::ClaudeSessionKeyWatcher::start(
+            app_data_dir,
+            pool,
+            events,
+            Arc::downgrade(self),
+        )?;
         *self.claude_session_key_watcher.lock().unwrap() = Some(watcher);
         Ok(())
     }
@@ -829,16 +810,124 @@ impl SessionManager {
     }
 
     fn session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
+        let session = self.raw_session_state(session_id)?;
+        let key_only = session.lock().unwrap().key_only;
+        (!key_only).then_some(session)
+    }
+
+    fn raw_session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
 
     fn session_state_or_insert(&self, session_id: &str) -> Arc<Mutex<SessionState>> {
-        self.sessions
+        loop {
+            let session = self
+                .sessions
+                .lock()
+                .unwrap()
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(SessionState::default())))
+                .clone();
+            let mut state = session.lock().unwrap();
+            if state.key_only {
+                let sessions = self.sessions.lock().unwrap();
+                if !sessions
+                    .get(session_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &session))
+                {
+                    continue;
+                }
+                state.key_only = false;
+            }
+            drop(state);
+            return session;
+        }
+    }
+
+    pub(crate) fn report_key(
+        &self,
+        session_id: &str,
+        report: PersistKey,
+        persist: impl FnOnce(&PersistKey) -> Result<bool>,
+    ) -> Result<bool> {
+        let session = self
+            .sessions
             .lock()
             .unwrap()
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(SessionState::default())))
-            .clone()
+            .entry(session_id.to_owned())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(SessionState {
+                    key_only: true,
+                    ..Default::default()
+                }))
+            })
+            .clone();
+        let effect = session
+            .lock()
+            .unwrap()
+            .model
+            .apply(
+                SessionEvent::ConversationChanged(report),
+                super::clock::state_now(),
+            )
+            .persist_key
+            .unwrap();
+        let written = persist(&effect);
+        if matches!(written, Ok(true)) {
+            session.lock().unwrap().model.apply(
+                SessionEvent::KeyPersisted(effect),
+                super::clock::state_now(),
+            );
+        } else {
+            self.prune_key_only_session_state(session_id);
+        }
+        written
+    }
+
+    pub(crate) fn write_key_effect(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        effect: &PersistKey,
+    ) -> Result<bool> {
+        match effect.origin {
+            KeyOrigin::Assigned => Ok(conn.execute(
+                "UPDATE sessions SET agent_session_key = ?1 WHERE id = ?2",
+                params![effect.key, session_id],
+            )? > 0),
+            KeyOrigin::Captured => Ok(crate::repo::session::capture_agent_session_key(
+                conn,
+                session_id,
+                effect.key.as_deref().expect("capture reports a key"),
+                &effect.generation,
+            )?),
+            KeyOrigin::Rekeyed => Ok(crate::repo::session::rekey_agent_session_key(
+                conn,
+                session_id,
+                effect.key.as_deref().expect("rekey reports a key"),
+                &effect.generation,
+            )?),
+        }
+    }
+
+    pub(crate) fn persist_reported_key(
+        &self,
+        session_id: &str,
+        report: PersistKey,
+        pool: &DbPool,
+    ) -> Result<bool> {
+        self.report_key(session_id, report, |effect| {
+            let conn = pool.get()?;
+            Self::write_key_effect(&conn, session_id, effect)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn key_test_manager() -> Arc<Self> {
+        Self::new(
+            Arc::new(RwLock::new(crate::shell_path::LoginShellEnv::default())),
+            Arc::new(RwLock::new(crate::shell_path::DiscoveryState::pending())),
+            Arc::new(super::pty_runtime::PtyRuntime::new()),
+        )
     }
 
     fn latest_requested_size(&self, session_id: &str) -> Option<(u16, u16)> {
@@ -893,22 +982,11 @@ impl SessionManager {
         let gate = session.lock().unwrap().delivery_gate.clone();
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
-        let observed_quiescent = match session.observed_input {
-            Some(observed) if observed.state == InputState::Drafting => false,
-            Some(observed) if observed.state == InputState::Submitted => {
-                observed.since.elapsed() >= RECENT_LOCAL_INPUT_WINDOW
-            }
-            Some(_) => true,
-            None => !session.local_input_pending,
-        };
         session.handle.is_some()
-            && !session.status.observation.needs_you()
+            && !session.model.status().observation.needs_you()
             && !delivery.in_flight
             && delivery.next_ticket == delivery.next_served
-            && observed_quiescent
-            && session
-                .last_local_input_at
-                .is_none_or(|last| last.elapsed() >= RECENT_LOCAL_INPUT_WINDOW)
+            && session.model.draft_quiescent(crate::session::clock::now())
     }
 
     /// Ids of every session whose process is attached right now.
@@ -942,7 +1020,7 @@ impl SessionManager {
         if session.handle.is_none() {
             return Ok(router::DeliveryReservation::Unavailable);
         }
-        if session.status.observation.needs_you() {
+        if session.model.status().observation.needs_you() {
             return Ok(router::DeliveryReservation::HumanInteraction);
         }
         if delivery.in_flight {
@@ -951,33 +1029,8 @@ impl SessionManager {
         if delivery.next_ticket != delivery.next_served {
             return Ok(router::DeliveryReservation::InFlight);
         }
-        match session.observed_input {
-            Some(observed) if observed.state == InputState::Drafting => {
-                return Ok(router::DeliveryReservation::Drafting {
-                    composer_visible: observed.composer_visible,
-                });
-            }
-            Some(observed) if observed.state == InputState::Submitted => {
-                let elapsed = observed.since.elapsed();
-                if elapsed < RECENT_LOCAL_INPUT_WINDOW {
-                    return Ok(router::DeliveryReservation::RecentlyTyping(
-                        RECENT_LOCAL_INPUT_WINDOW - elapsed,
-                    ));
-                }
-            }
-            Some(_) => {}
-            None if session.local_input_pending => {
-                return Ok(router::DeliveryReservation::LocalInputPending);
-            }
-            None => {}
-        }
-        if let Some(last) = session.last_local_input_at {
-            let elapsed = last.elapsed();
-            if elapsed < RECENT_LOCAL_INPUT_WINDOW {
-                return Ok(router::DeliveryReservation::RecentlyTyping(
-                    RECENT_LOCAL_INPUT_WINDOW - elapsed,
-                ));
-            }
+        if let Some(hold) = session.model.draft_hold(crate::session::clock::now()) {
+            return Ok(hold);
         }
         delivery.in_flight = true;
         Ok(router::DeliveryReservation::Ready(delivery.generation))
@@ -992,18 +1045,16 @@ impl SessionManager {
             if session.handle.is_none() {
                 return;
             }
-            let input_cleared = session.observed_input.is_some_and(|previous| {
-                previous.state != InputState::Idle && observation.state == InputState::Idle
-            });
-            if input_cleared {
-                session.last_local_input_at = None;
-            }
-            session.observed_input = Some(ObservedInput {
-                state: observation.state,
-                since: observation.since,
-                composer_visible: observation.composer_visible,
-            });
-            input_cleared
+            session
+                .model
+                .apply(
+                    SessionEvent::Composer {
+                        observation,
+                        live: true,
+                    },
+                    super::clock::state_now(),
+                )
+                .input_cleared
         };
         if input_cleared {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
@@ -1031,11 +1082,19 @@ impl SessionManager {
     }
 
     fn prune_empty_session_state(&self, session_id: &str) {
-        let Some(state) = self.session_state(session_id) else {
+        self.prune_session_state(session_id, false);
+    }
+
+    fn prune_key_only_session_state(&self, session_id: &str) {
+        self.prune_session_state(session_id, true);
+    }
+
+    fn prune_session_state(&self, session_id: &str, key_only: bool) {
+        let Some(state) = self.raw_session_state(session_id) else {
             return;
         };
         let state_guard = state.lock().unwrap();
-        if !state_guard.is_empty() {
+        if !state_guard.is_empty() || (key_only && !state_guard.key_only) {
             return;
         }
         let mut sessions = self.sessions.lock().unwrap();
@@ -1056,6 +1115,37 @@ impl SessionManager {
         pool: &DbPool,
         events: &dyn SessionEvents,
     ) {
+        self.install_handle_with_size_persistence(
+            session_id,
+            handle,
+            mission_status_sink,
+            initial_size,
+            |cols, rows| match pool.get() {
+                Ok(conn) => match crate::repo::session::update_last_size(&conn, session_id, cols, rows) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        log::warn!("resize persistence after handle install failed: session={session_id} {cols}x{rows}: {error}");
+                        false
+                    }
+                },
+                Err(error) => {
+                    log::warn!("resize persistence after handle install pool checkout failed: session={session_id} {cols}x{rows}: {error}");
+                    false
+                }
+            },
+            events,
+        );
+    }
+
+    fn install_handle_with_size_persistence(
+        &self,
+        session_id: &str,
+        handle: SessionHandle,
+        mission_status_sink: Option<ForwarderEmitCtx>,
+        initial_size: Option<(u16, u16)>,
+        persist_size: impl FnOnce(u16, u16) -> bool,
+        events: &dyn SessionEvents,
+    ) {
         let initial_size = initial_size.expect("spawn size must be resolved before handle install");
         let mission_id = handle.mission_id.clone();
         let mut terminal_size = initial_size;
@@ -1070,21 +1160,12 @@ impl SessionManager {
             delivery.next_served = 0;
             delivery.cancelled_tickets.clear();
             gate.ready.notify_all();
-            state.local_input_pending = false;
-            state.observed_input = None;
-            state.last_local_input_at = None;
             state.handle = Some(handle);
-            state.status = AgentStatus {
-                unread_since: state.status.unread_since,
-                ..Default::default()
-            };
-            state.compaction_failed_since = None;
-            state.baseline_activity = None;
-            state.hook_status_armed = false;
-            state.provisional_idle = false;
+            state
+                .model
+                .apply(SessionEvent::Attached, super::clock::state_now());
             state.mission_status_sink = mission_status_sink;
             state.killed = false;
-            state.activity_revision = state.activity_revision.wrapping_add(1);
 
             let requested_size = state.last_requested_size;
             if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
@@ -1112,20 +1193,8 @@ impl SessionManager {
                 if let Some((cols, rows)) = state.last_requested_size {
                     // This spawn/resume thread owns the state lock so a
                     // newer resize cannot be overwritten by this dirty size.
-                    match pool.get() {
-                        Ok(conn) => match crate::repo::session::update_last_size(
-                            &conn, session_id, cols, rows,
-                        ) {
-                            Ok(_) => state.last_requested_size_dirty = false,
-                            Err(error) => log::warn!(
-                                "resize persistence after handle install failed: \
-                                 session={session_id} {cols}x{rows}: {error}"
-                            ),
-                        },
-                        Err(error) => log::warn!(
-                            "resize persistence after handle install pool checkout failed: \
-                             session={session_id} {cols}x{rows}: {error}"
-                        ),
+                    if persist_size(cols, rows) {
+                        state.last_requested_size_dirty = false;
                     }
                 }
             }
@@ -1152,85 +1221,23 @@ impl SessionManager {
         &self,
         session_id: &str,
         state: SessionActivityState,
-        source: &str,
+        source: StatusSource,
     ) -> bool {
         let session = self.session_state_or_insert(session_id);
         let mut session = session.lock().unwrap();
-        if source == "forwarder" {
-            session.baseline_activity = Some(state);
-        }
-        let old_status = session.status.clone();
-        if source == "hook" {
-            if session.handle.is_none() || session.killed {
-                return false;
-            }
-            session.hook_status_armed = true;
-        }
-        if matches!(source, "input-interrupt" | "input-escape") {
-            if !session.hook_status_armed
-                || session.handle.is_none()
-                || session.killed
-                || (session.activity != Some(SessionActivityState::Busy)
-                    && !(source == "input-interrupt" && session.provisional_idle))
-            {
-                return false;
-            }
-            session.completion_armed = false;
-        }
-        if session.hook_status_armed && source == "forwarder" {
-            return false;
-        }
-        if source == "forwarder"
-            && state == SessionActivityState::Busy
-            && session.suppress_local_input_busy
-        {
-            return false;
-        }
-        let resolved_provisional_idle =
-            session.provisional_idle && source == "hook" && state == SessionActivityState::Idle;
-        session.provisional_idle = source == "input-escape";
-        if state == SessionActivityState::Idle {
-            session.suppress_local_input_busy = false;
-        }
-        session.status.lifecycle = Lifecycle::Running;
-        if matches!(source, "input-interrupt" | "input-escape") {
-            session.status.observation.activity = Activity::Unavailable;
-            session.status.observation.outcome = Some(TurnOutcome::Interrupted);
-            session.status.observation.detail = None;
-        } else if !session.hook_status_armed || source == "hook" {
-            session.status.observation.source = if source == "hook" {
-                ObservationSource::Hook
-            } else {
-                ObservationSource::Baseline
-            };
-            session.status.observation.activity = match (state, session.hook_status_armed) {
-                (SessionActivityState::Busy, _) => Activity::Working,
-                (SessionActivityState::Idle, true) => Activity::Ready,
-                (SessionActivityState::Idle, false) => Activity::Idle,
-            };
-            session.status.observation.outcome =
-                if source == "hook" && state == SessionActivityState::Idle {
-                    Some(TurnOutcome::Completed)
-                } else {
-                    None
-                };
-            session.status.observation.detail = None;
-        }
-        if session.status.observation.outcome != Some(TurnOutcome::Failed) {
-            session.status.failed_since = None;
-        }
-        if session.status.observation.detail != Some(WorkDetail::CompactingContext) {
-            session.compaction_failed_since = None;
-        }
-        if session.activity == Some(state)
-            && !resolved_provisional_idle
-            && session.status == old_status
-        {
-            return false;
-        }
-        session.activity = Some(state);
-        session.activity_revision = session.activity_revision.wrapping_add(1);
-        true
+        let live = session.handle.is_some() && !session.killed;
+        session
+            .model
+            .apply(
+                SessionEvent::Transition {
+                    state,
+                    source,
+                    live,
+                },
+                super::clock::state_now(),
+            )
+            .publication
+            .is_some()
     }
 
     pub(crate) fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
@@ -1242,7 +1249,7 @@ impl SessionManager {
             let sink = session.mission_status_sink.clone().ok_or_else(|| {
                 Error::msg(format!("session has no mission status sink: {session_id}"))
             })?;
-            (sink, session.activity_revision)
+            (sink, session.model.revision())
         };
         match sink.try_append_with_retry(draft) {
             Ok(()) => {}
@@ -1250,12 +1257,12 @@ impl SessionManager {
             Err(TryAppendError::Failed(error)) => return Err(error.into()),
         }
         let mut session = session.lock().unwrap();
-        // Teardown clears the sink and advances the revision before this
-        // state can be pruned, so an orphaned Arc cannot publish stale Busy.
-        if session.activity_revision == activity_revision {
-            session.activity = Some(SessionActivityState::Busy);
-            session.activity_revision = session.activity_revision.wrapping_add(1);
-        }
+        session.model.apply(
+            SessionEvent::Delivered {
+                revision: activity_revision,
+            },
+            super::clock::state_now(),
+        );
         Ok(())
     }
 
@@ -1263,7 +1270,7 @@ impl SessionManager {
         &self,
         session_id: &str,
         state: SessionActivityState,
-        source: &str,
+        source: StatusSource,
         events: &dyn SessionEvents,
     ) {
         if !self.note_forwarder_transition(session_id, state, source) {
@@ -1272,7 +1279,7 @@ impl SessionManager {
         events.status(&SessionActivityEvent {
             session_id: session_id.to_string(),
             state,
-            source: source.to_string(),
+            source,
             status: self.agent_status(session_id),
         });
     }
@@ -1281,7 +1288,7 @@ impl SessionManager {
         &self,
         session_id: &str,
         state: SessionActivityState,
-        source: &'static str,
+        source: StatusSource,
         events: &dyn SessionEvents,
     ) {
         if !self.note_forwarder_transition(session_id, state, source) {
@@ -1290,12 +1297,15 @@ impl SessionManager {
         let (status, sink) = {
             let session = self.session_state(session_id).unwrap();
             let session = session.lock().unwrap();
-            (session.status.clone(), session.mission_status_sink.clone())
+            (
+                session.model.status().clone(),
+                session.mission_status_sink.clone(),
+            )
         };
         events.status(&SessionActivityEvent {
             session_id: session_id.to_string(),
             state,
-            source: source.to_string(),
+            source,
             status: status.clone(),
         });
         if let Some(sink) = sink {
@@ -1309,7 +1319,8 @@ impl SessionManager {
         self.session_state_or_insert(session_id)
             .lock()
             .unwrap()
-            .completion_armed = true;
+            .model
+            .apply(SessionEvent::ArmCompletion, super::clock::state_now());
     }
 
     pub(crate) fn take_completion_armed(&self, session_ids: &[String]) -> bool {
@@ -1317,17 +1328,17 @@ impl SessionManager {
             let sessions = self.sessions.lock().unwrap();
             session_ids
                 .iter()
-                .filter_map(|session_id| sessions.get(session_id).cloned())
+                .filter_map(|id| sessions.get(id).cloned())
                 .collect()
         };
         let mut armed = false;
         for session in sessions {
-            let mut session = session.lock().unwrap();
-            if session.provisional_idle {
-                continue;
-            }
-            armed |= session.completion_armed;
-            session.completion_armed = false;
+            armed |= session
+                .lock()
+                .unwrap()
+                .model
+                .apply(SessionEvent::TakeCompletion, super::clock::state_now())
+                .completion_consumed;
         }
         armed
     }
@@ -1335,45 +1346,40 @@ impl SessionManager {
     pub fn mark_status_viewed(&self, session_ids: &[String]) {
         for id in session_ids {
             if let Some(session) = self.session_state(id) {
-                let mut session = session.lock().unwrap();
-                session.status.error_since = None;
-                session.status.failed_since = None;
-                if session.compaction_failed_since.is_some() {
-                    session.compaction_failed_since = Some(None);
-                }
-                session.status.unread_since = None;
+                session
+                    .lock()
+                    .unwrap()
+                    .model
+                    .apply(SessionEvent::Viewed, super::clock::state_now());
             }
         }
     }
 
     pub(crate) fn record_unread(&self, session_id: &str, viewed: bool) {
         if let Some(session) = self.session_state(session_id) {
-            let mut session = session.lock().unwrap();
-            if !viewed {
-                session.status.unread_since = Some(chrono::Utc::now().timestamp_millis());
-            }
+            session
+                .lock()
+                .unwrap()
+                .model
+                .apply(SessionEvent::Unread { viewed }, super::clock::state_now());
         }
     }
 
     fn record_exit_status(&self, session_id: &str, exit_code: Option<i32>, crashed: bool) {
         if let Some(session) = self.session_state(session_id) {
-            let mut session = session.lock().unwrap();
-            session.status.lifecycle = if crashed {
-                Lifecycle::Error
-            } else {
-                Lifecycle::Stopped
-            };
-            session.status.exit_code = exit_code;
-            session.status.error_since = crashed.then(|| chrono::Utc::now().timestamp_millis());
-            session.status.failed_since = None;
-            session.compaction_failed_since = None;
-            session.status.observation.interactions.clear();
+            session.lock().unwrap().model.apply(
+                SessionEvent::Exited {
+                    code: exit_code,
+                    crashed,
+                },
+                super::clock::state_now(),
+            );
         }
     }
 
     pub fn agent_status(&self, session_id: &str) -> AgentStatus {
         self.session_state(session_id)
-            .map(|session| session.lock().unwrap().status.clone())
+            .map(|session| session.lock().unwrap().model.status().clone())
             .unwrap_or_default()
     }
 
@@ -1387,96 +1393,44 @@ impl SessionManager {
             .collect();
         sessions
             .into_iter()
-            .map(|(id, session)| (id, session.lock().unwrap().status.clone()))
+            .filter_map(|(id, session)| {
+                let session = session.lock().unwrap();
+                (!session.key_only).then(|| (id, session.model.status().clone()))
+            })
             .collect()
     }
 
     fn publish_observation(
         &self,
         session_id: &str,
-        mut observation: AgentObservation,
+        observation: AgentObservation,
         events: &dyn SessionEvents,
     ) {
-        if observation.source != ObservationSource::Hook {
-            observation.detail = None;
-        }
-        let source = match observation.source {
-            ObservationSource::Hook => "hook",
-            ObservationSource::Baseline => "baseline",
-            ObservationSource::Unavailable => "unavailable",
-        };
         let Some(session) = self.session_state(session_id) else {
             return;
         };
-        let (status, sink, released, state) = {
+        let (status, sink, released, state, source) = {
             let mut session = session.lock().unwrap();
-            if session.handle.is_none() || session.killed {
+            let live = session.handle.is_some() && !session.killed;
+            let effects = session.model.apply(
+                SessionEvent::Observation { observation, live },
+                super::clock::state_now(),
+            );
+            let Some((state, source)) = effects.publication else {
                 return;
-            }
-            if session.status.lifecycle == Lifecycle::Running
-                && session.status.observation == observation
-            {
-                return;
-            }
-            let released = session.status.observation.needs_you() && !observation.needs_you();
-            if matches!(
-                observation.outcome,
-                Some(TurnOutcome::Interrupted | TurnOutcome::Failed)
-            ) {
-                session.completion_armed = false;
-            }
-            if observation.activity == Activity::Working
-                && observation.outcome.is_none()
-                && observation.detail != Some(WorkDetail::CompactingContext)
-            {
-                session.completion_armed = true;
-            }
-            session.hook_status_armed = observation.source == ObservationSource::Hook;
-            session.status.lifecycle = Lifecycle::Running;
-            let old_failed = session.status.observation.outcome == Some(TurnOutcome::Failed);
-            let new_failed = observation.outcome == Some(TurnOutcome::Failed);
-            let compacting = observation.detail == Some(WorkDetail::CompactingContext);
-            if old_failed && compacting && session.compaction_failed_since.is_none() {
-                session.compaction_failed_since = Some(session.status.failed_since);
-            }
-            session.status.failed_since = if new_failed
-                && session.status.observation.detail == Some(WorkDetail::CompactingContext)
-            {
-                session
-                    .compaction_failed_since
-                    .take()
-                    .unwrap_or_else(|| Some(chrono::Utc::now().timestamp_millis()))
-            } else {
-                match (old_failed, new_failed) {
-                    (false, true) => Some(chrono::Utc::now().timestamp_millis()),
-                    (true, true) => session.status.failed_since,
-                    (_, false) => None,
-                }
             };
-            if !compacting && !new_failed {
-                session.compaction_failed_since = None;
-            }
-            session.status.observation = observation;
-            let state = if session.status.observation.activity == Activity::Working
-                || session.status.observation.needs_you()
-            {
-                SessionActivityState::Busy
-            } else {
-                SessionActivityState::Idle
-            };
-            session.activity = Some(state);
-            session.activity_revision = session.activity_revision.wrapping_add(1);
             (
-                session.status.clone(),
+                session.model.status().clone(),
                 session.mission_status_sink.clone(),
-                released,
+                effects.input_cleared,
                 state,
+                source,
             )
         };
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
             state,
-            source: source.into(),
+            source,
             status,
         });
         let status = self.agent_status(session_id);
@@ -1495,28 +1449,14 @@ impl SessionManager {
         let Some(session) = self.session_state(session_id) else {
             return;
         };
-        let activity = {
-            let mut session = session.lock().unwrap();
-            session.completion_armed = false;
-            session.baseline_activity
-        };
-        self.publish_observation(
-            session_id,
-            AgentObservation {
-                activity: match activity {
-                    Some(SessionActivityState::Busy) => Activity::Working,
-                    Some(SessionActivityState::Idle) => Activity::Idle,
-                    None => Activity::Unavailable,
-                },
-                source: if activity.is_some() {
-                    ObservationSource::Baseline
-                } else {
-                    ObservationSource::Unavailable
-                },
-                ..Default::default()
-            },
-            events,
-        );
+        let observation = session
+            .lock()
+            .unwrap()
+            .model
+            .apply(SessionEvent::BridgeFailed, super::clock::state_now())
+            .fallback
+            .unwrap();
+        self.publish_observation(session_id, observation, events);
     }
 
     pub fn activity_snapshot(&self) -> BTreeMap<String, SessionActivityState> {
@@ -1533,7 +1473,8 @@ impl SessionManager {
                 session
                     .lock()
                     .unwrap()
-                    .activity
+                    .model
+                    .activity()
                     .map(|activity| (id, activity))
             })
             .collect()
@@ -1566,6 +1507,7 @@ impl SessionManager {
         }
         crate::session::codex_capture::spawn_capture(
             crate::session::codex_capture::CaptureRequest {
+                manager: ctx.manager.clone(),
                 session_id: session_id.to_string(),
                 mission_id: ctx.mission_id.clone(),
                 sessions_root: ctx.sessions_root.clone(),

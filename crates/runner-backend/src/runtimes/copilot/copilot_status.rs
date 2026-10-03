@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, Write};
@@ -9,8 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::Result;
-use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
 use crate::session::hook_feed::{HookFeed, TranscriptTail};
+use crate::session::state::CTRL_C_INTERRUPT;
 use crate::session::status::{
     Activity, AgentObservation, HumanInteraction, ObservationSource, TurnOutcome, WaitReason,
     WorkDetail,
@@ -552,7 +553,7 @@ impl CopilotObservation {
             id: format!("copilot-{}", self.next_interaction),
             reason,
             owners,
-            since: chrono::Utc::now().timestamp_millis(),
+            since: crate::session::clock::timestamp_millis(),
         });
         true
     }
@@ -632,13 +633,13 @@ impl CopilotStatusWatcher {
 
     pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
     ) -> Result<()> {
         let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
         self.feed.drain(interrupted != 0, |report| {
             if let Ok(report) = serde_json::from_value(report) {
                 if let Some(value) = self.observation.observe(report) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
         })?;
@@ -648,9 +649,9 @@ impl CopilotStatusWatcher {
                 || self.observation.value.needs_you())
         {
             let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                "input-interrupt"
+                StatusSource::InputInterrupt
             } else {
-                "input-escape"
+                StatusSource::InputEscape
             };
             self.observation.value.activity = if self.observation.value.needs_you() {
                 Activity::Unavailable
@@ -667,7 +668,7 @@ impl CopilotStatusWatcher {
         Ok(())
     }
 
-    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, &'static str)) {
+    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, StatusSource)) {
         if !self.observation.value.needs_you() && self.observation.tools.is_empty() {
             return;
         }
@@ -696,7 +697,7 @@ impl CopilotStatusWatcher {
             }
             if let Ok(record) = serde_json::from_slice(&tail.pending) {
                 if let Some(value) = self.observation.observe_transcript(&record) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
             tail.pending.clear();
@@ -710,7 +711,7 @@ impl crate::session::hook_feed::HookWatcher for CopilotStatusWatcher {
     }
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
         _session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
         self.drain_observations(transition)
@@ -1315,10 +1316,9 @@ mod tests {
         watcher.feed.dirty.store(true, Ordering::Release);
         watcher.drain_observations(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
-        watcher.interrupt.store(
-            crate::runtimes::claude_code::claude_status::ESCAPE_INTERRUPT,
-            Ordering::Release,
-        );
+        watcher
+            .interrupt
+            .store(crate::session::state::ESCAPE_INTERRUPT, Ordering::Release);
         watcher.drain_observations(|_, _| {}).unwrap();
         assert_eq!(watcher.observation.value.activity, Activity::Unavailable);
         assert!(watcher.observation.value.needs_you());

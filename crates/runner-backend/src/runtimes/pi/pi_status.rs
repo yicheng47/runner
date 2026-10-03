@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
@@ -298,7 +299,7 @@ impl PiObservation {
                     id: format!("pi-{}", self.next_interaction),
                     reason,
                     owners: vec![report.title.unwrap_or_else(|| "pi-ui".into())],
-                    since: chrono::Utc::now().timestamp_millis(),
+                    since: crate::session::clock::timestamp_millis(),
                 });
             }
             "ui_prompt_end" | "session_shutdown" => {
@@ -345,12 +346,12 @@ impl PiStatusWatcher {
 
     pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
     ) -> Result<()> {
         self.feed.drain(false, |report| {
             if let Ok(report) = serde_json::from_value(report) {
                 if let Some(value) = self.observation.observe(report) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
         })
@@ -360,7 +361,7 @@ impl PiStatusWatcher {
 impl crate::session::hook_feed::HookWatcher for PiStatusWatcher {
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
         _session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
         self.drain_observations(transition)

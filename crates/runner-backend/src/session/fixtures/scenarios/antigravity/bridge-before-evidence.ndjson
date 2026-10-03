@@ -1,0 +1,5 @@
+{"runtime":"antigravity","name":"bridge-before-evidence","rules":[3],"bugs":[],"known_wrong":[]}
+{"ms":100,"event":"bridge_failed"}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"reserve"}
+{"ms":2300,"event":"finish"}

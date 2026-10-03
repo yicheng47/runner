@@ -1,0 +1,23 @@
+runtime=codex name=approval-approved rules=[] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/working/hook detail="using_tools"
+  busy@hook [running/working/hook detail="using_tools"]
+600
+700 quiescent=false result={"gate":"ready"}
+700 quiescent=true delivery=["DeliveryFinished"]
+800 delivery=["InputCleared"]
+900 status=running/working/hook
+  busy@hook [running/working/hook]
+1000 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+1100 quiescent=false result={"gate":"ready"}
+1100 quiescent=true delivery=["DeliveryFinished"]
+1200

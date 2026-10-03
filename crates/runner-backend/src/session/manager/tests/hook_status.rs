@@ -7,31 +7,47 @@ fn ordered_interrupt_is_idle_only_for_a_busy_hook_session() {
         install_test_session_handle(&manager, session_id);
         manager.arm_completion(session_id);
     }
-    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "baseline",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
     assert!(!manager.note_forwarder_transition(
         "baseline",
         SessionActivityState::Idle,
-        "input-interrupt"
+        crate::session::state::StatusSource::InputInterrupt
     ));
     assert!(manager.take_completion_armed(&["baseline".into()]));
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Hook
+    ));
     assert!(manager.note_forwarder_transition(
         "hooks",
         SessionActivityState::Idle,
-        "input-interrupt"
+        crate::session::state::StatusSource::InputInterrupt
     ));
     assert!(!manager.take_completion_armed(&["hooks".into()]));
     assert!(!manager.note_forwarder_transition(
         "hooks",
         SessionActivityState::Idle,
-        "input-interrupt"
+        crate::session::state::StatusSource::InputInterrupt
     ));
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
     assert_eq!(
         manager.activity_snapshot()["hooks"],
         SessionActivityState::Idle
     );
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Hook
+    ));
 }
 
 #[test]
@@ -45,19 +61,29 @@ fn escape_preserves_input_but_only_continued_work_can_complete() {
         assert!(manager.note_forwarder_transition(
             "other",
             SessionActivityState::Idle,
-            "forwarder"
+            crate::session::state::StatusSource::Forwarder
         ));
-        assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+        assert!(manager.note_forwarder_transition(
+            "hooks",
+            SessionActivityState::Busy,
+            crate::session::state::StatusSource::Hook
+        ));
         let since = Instant::now();
         {
             let session = manager.session_state("hooks").unwrap();
             let mut session = session.lock().unwrap();
-            session.local_input_pending = true;
-            session.observed_input = Some(ObservedInput {
-                state: InputState::Drafting,
-                since,
-                composer_visible: true,
-            });
+            session.model.apply(
+                SessionEvent::TestPending(true),
+                crate::session::clock::state_now(),
+            );
+            session.model.apply(
+                SessionEvent::TestObserved(ObservedInput {
+                    state: InputState::Drafting,
+                    since,
+                    composer_visible: true,
+                }),
+                crate::session::clock::state_now(),
+            );
         }
         manager
             .inject_direct_stdin("hooks", b"\x1b", capture().as_ref())
@@ -65,7 +91,7 @@ fn escape_preserves_input_but_only_continued_work_can_complete() {
         assert!(manager.note_forwarder_transition(
             "hooks",
             SessionActivityState::Idle,
-            "input-escape"
+            crate::session::state::StatusSource::InputEscape
         ));
         assert_eq!(
             manager.activity_snapshot()["hooks"],
@@ -76,16 +102,27 @@ fn escape_preserves_input_but_only_continued_work_can_complete() {
         {
             let session = manager.session_state("hooks").unwrap();
             let session = session.lock().unwrap();
-            assert!(session.local_input_pending);
-            assert_eq!(session.observed_input.unwrap().state, InputState::Drafting);
-            assert_eq!(session.observed_input.unwrap().since, since);
-            assert!(!session.completion_armed);
+            assert!(session.model.local_input_pending());
+            assert_eq!(
+                session.model.observed_input().unwrap().state,
+                InputState::Drafting
+            );
+            assert_eq!(session.model.observed_input().unwrap().since, since);
+            assert!(!session.model.completion_armed());
         }
         if continues {
-            assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
+            assert!(manager.note_forwarder_transition(
+                "hooks",
+                SessionActivityState::Busy,
+                crate::session::state::StatusSource::Hook
+            ));
             manager.arm_completion("hooks");
         }
-        assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+        assert!(manager.note_forwarder_transition(
+            "hooks",
+            SessionActivityState::Idle,
+            crate::session::state::StatusSource::Hook
+        ));
         assert_eq!(manager.take_completion_armed(&["hooks".into()]), continues);
         assert!(!manager.take_completion_armed(&["other".into()]));
         assert!(!manager.take_completion_armed(&["hooks".into(), "other".into()]));
@@ -97,22 +134,29 @@ fn ctrl_c_after_provisional_escape_cancels_completion() {
     let manager = mgr_with_fake(None, fake_runtime());
     install_test_session_handle(&manager, "hooks");
     manager.arm_completion("hooks");
-    manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook");
-    manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "input-escape");
+    manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Hook,
+    );
+    manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::InputEscape,
+    );
     assert!(!manager.note_forwarder_transition(
         "hooks",
         SessionActivityState::Idle,
-        "input-interrupt"
+        crate::session::state::StatusSource::InputInterrupt
     ));
     assert!(!manager.take_completion_armed(&["hooks".into()]));
-    assert!(
-        !manager
-            .session_state("hooks")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .provisional_idle
-    );
+    assert!(!manager
+        .session_state("hooks")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .model
+        .provisional_idle());
 }
 
 #[test]
@@ -124,7 +168,7 @@ fn failed_interrupt_write_preserves_busy_and_completion_state() {
     assert!(manager.note_forwarder_transition(
         "failed-interrupt",
         SessionActivityState::Busy,
-        "hook"
+        crate::session::state::StatusSource::Hook
     ));
     manager.arm_completion("failed-interrupt");
     assert!(manager
@@ -144,43 +188,111 @@ fn hook_status_owns_activity_until_teardown_without_changing_submit_or_wake() {
         manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     install_test_session_handle(&manager, "hooks");
     install_test_session_handle(&manager, "baseline");
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
     // Source changes must reach attached views even when activity is unchanged.
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Hook
+    ));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder
+    ));
     assert_eq!(
         manager.activity_snapshot()["hooks"],
         SessionActivityState::Busy
     );
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "input-submit"));
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "wake"));
-    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Idle, "forwarder"));
-    assert!(manager.note_forwarder_transition("baseline", SessionActivityState::Busy, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Hook
+    ));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::InputSubmit
+    ));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Hook
+    ));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        StatusSource::Wake
+    ));
+    assert!(manager.note_forwarder_transition(
+        "baseline",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder
+    ));
+    assert!(manager.note_forwarder_transition(
+        "baseline",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
 
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "input-escape"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::InputEscape
+    ));
     let runtime_session = manager.live_runtime_session("hooks").unwrap();
     manager
         .forget_runtime_handle("hooks", &runtime_session)
         .unwrap();
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "hook"));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Hook
+    ));
     assert!(!manager.activity_snapshot().contains_key("hooks"));
-    assert!(!manager
-        .session_state("hooks")
-        .is_some_and(|session| session.lock().unwrap().provisional_idle));
+    assert!(
+        !manager.session_state("hooks").is_some_and(|session| session
+            .lock()
+            .unwrap()
+            .model
+            .provisional_idle())
+    );
     install_test_session_handle(&manager, "hooks");
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "forwarder"));
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Forwarder
+    ));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder
+    ));
 }
 
 #[test]
 fn healthy_hook_owned_work_ignores_title_fallback_transitions() {
     let manager = mgr_with_fake(None, fake_runtime());
     install_test_session_handle(&manager, "hooks");
-    assert!(manager.note_forwarder_transition("hooks", SessionActivityState::Busy, "hook"));
-    assert!(!manager.note_forwarder_transition("hooks", SessionActivityState::Idle, "forwarder"));
+    assert!(manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Busy,
+        crate::session::state::StatusSource::Hook
+    ));
+    assert!(!manager.note_forwarder_transition(
+        "hooks",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder
+    ));
     assert_eq!(
         manager.agent_status("hooks").observation.activity,
         Activity::Working
@@ -267,7 +379,16 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                 } else {
                     "hook"
                 };
-                fake.push_status_from(0, state, event_source);
+                fake.push_status_from(
+                    0,
+                    state,
+                    match event_source {
+                        "hook" => StatusSource::Hook,
+                        "input-interrupt" => StatusSource::InputInterrupt,
+                        "input-escape" => StatusSource::InputEscape,
+                        _ => unreachable!(),
+                    },
+                );
             }
             fake.push_status(0, SessionActivityState::Busy);
             fake.push_status(0, SessionActivityState::Idle);
@@ -323,7 +444,7 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                             "idle"
                         })
                         .to_owned(),
-                        event.source.clone(),
+                        event.source.to_string(),
                     )
                 })
                 .collect();
@@ -334,7 +455,7 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|event| (event.state, event.source.clone()))
+                .map(|event| (event.state, event.source.to_string()))
                 .collect();
             let mut expected = vec![
                 (SessionActivityState::Busy, "spawn".to_owned()),
@@ -385,7 +506,7 @@ fn mission_spawn_seeds_status_and_allows_hook_takeover() {
         .unwrap();
 
     let seeded = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
-    assert_eq!(seeded.source, "spawn");
+    assert_eq!(seeded.source.as_str(), "spawn");
     assert_eq!(seeded.status.observation.activity, Activity::Working);
     assert_eq!(
         seeded.status.observation.source,
@@ -411,9 +532,9 @@ fn mission_spawn_seeds_status_and_allows_hook_takeover() {
     assert_eq!(statuses[0].payload["source"], "spawn");
 
     cap.status.lock().unwrap().clear();
-    fake.push_status_from(0, SessionActivityState::Busy, "hook");
+    fake.push_status_from(0, SessionActivityState::Busy, StatusSource::Hook);
     let hook = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
-    assert_eq!(hook.source, "hook");
+    assert_eq!(hook.source.as_str(), "hook");
 
     mgr.kill(&spawned.id).unwrap();
 }

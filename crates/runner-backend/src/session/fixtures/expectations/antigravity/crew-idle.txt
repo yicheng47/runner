@@ -1,0 +1,17 @@
+runtime=antigravity name=crew-idle rules=[9] bugs=[753] known_wrong=[]
+session_status_rows:
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+  idle@hook [running/ready/hook outcome="completed"]
+  busy@wake [<absent>]
+2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+4500
+4600
+4700 quiescent=false result={"gate":"ready"}
+4800 result={"gate":"in_flight"}
+4900 activity="busy"
+5000 quiescent=true delivery=["DeliveryFinished"]

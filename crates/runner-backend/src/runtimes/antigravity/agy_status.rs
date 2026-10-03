@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 // Hook status for Antigravity CLI on macOS (spec 644 decision 5).
 //
 // Every spawn loads `--add-dir <app data>/antigravity-hooks`, a Runner-owned
@@ -21,8 +22,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::error::Result;
-use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
 use crate::session::hook_feed::HookFeed;
+use crate::session::state::CTRL_C_INTERRUPT;
 use crate::session::status::{Activity, AgentObservation, ObservationSource, TurnOutcome};
 
 pub(crate) const PATH_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_PATH";
@@ -177,13 +178,13 @@ impl AgyStatusWatcher {
 
     pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
     ) -> Result<()> {
         let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
         self.feed.drain(interrupted != 0, |report| {
             if let Ok(report) = serde_json::from_value(report) {
                 if let Some(value) = self.observation.observe(report) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
         })?;
@@ -195,9 +196,9 @@ impl AgyStatusWatcher {
             self.observation.value.activity = Activity::Ready;
             self.observation.value.outcome = Some(TurnOutcome::Interrupted);
             let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                "input-interrupt"
+                StatusSource::InputInterrupt
             } else {
-                "input-escape"
+                StatusSource::InputEscape
             };
             transition(self.observation.value.clone(), source);
         }
@@ -211,7 +212,7 @@ impl crate::session::hook_feed::HookWatcher for AgyStatusWatcher {
     }
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
         _session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
         self.drain_observations(transition)
@@ -313,7 +314,7 @@ mod tests {
 
     #[test]
     fn interrupted_invocation_without_stop_returns_to_ready() {
-        use crate::runtimes::claude_code::claude_status::ESCAPE_INTERRUPT;
+        use crate::session::state::ESCAPE_INTERRUPT;
 
         let root = tempfile::tempdir().unwrap();
         install_hooks(root.path()).unwrap();
@@ -323,7 +324,7 @@ mod tests {
         let mut transitions = Vec::new();
         fn drain(
             watcher: &mut AgyStatusWatcher,
-            transitions: &mut Vec<(Activity, Option<TurnOutcome>, &'static str)>,
+            transitions: &mut Vec<(Activity, Option<TurnOutcome>, StatusSource)>,
         ) {
             watcher
                 .drain_observations(|value, source| {
@@ -345,11 +346,11 @@ mod tests {
         assert_eq!(
             transitions,
             [
-                (Activity::Working, None, "hook"),
+                (Activity::Working, None, StatusSource::Hook),
                 (
                     Activity::Ready,
                     Some(TurnOutcome::Interrupted),
-                    "input-escape"
+                    StatusSource::InputEscape
                 ),
             ]
         );
@@ -377,13 +378,16 @@ mod tests {
             .interrupt_signal()
             .store(CTRL_C_INTERRUPT, Ordering::Release);
         drain(&mut watcher, &mut transitions);
-        assert_eq!(transitions[2], (Activity::Working, None, "hook"));
+        assert_eq!(
+            transitions[2],
+            (Activity::Working, None, StatusSource::Hook)
+        );
         assert_eq!(
             transitions[3],
             (
                 Activity::Ready,
                 Some(TurnOutcome::Interrupted),
-                "input-interrupt"
+                StatusSource::InputInterrupt
             )
         );
 
@@ -419,10 +423,17 @@ mod tests {
             .interrupt_signal()
             .store(ESCAPE_INTERRUPT, Ordering::Release);
         drain(&mut watcher, &mut transitions);
-        assert_eq!(transitions[4], (Activity::Working, None, "hook"));
+        assert_eq!(
+            transitions[4],
+            (Activity::Working, None, StatusSource::Hook)
+        );
         assert_eq!(
             transitions[5],
-            (Activity::Ready, Some(TurnOutcome::Completed), "hook")
+            (
+                Activity::Ready,
+                Some(TurnOutcome::Completed),
+                StatusSource::Hook
+            )
         );
         assert_eq!(transitions.len(), 6);
     }

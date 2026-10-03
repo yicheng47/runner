@@ -1,0 +1,25 @@
+{"runtime":"claude-code","name":"crash-reattach","rules":[8,10],"bugs":[670],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"output","bytes":"\u001b[?2004hready"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"input","bytes":"sample"}
+{"ms":2600,"event":"input","bytes":"\r"}
+{"ms":2700,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2800,"event":"output","bytes":"sample reply"}
+{"ms":5000,"event":"tick"}
+{"ms":5100,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}
+{"ms":5200,"event":"completion"}
+{"ms":5300,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":5400,"event":"input","bytes":"retained draft"}
+{"ms":5500,"event":"composer","state":"drafting"}
+{"ms":5600,"event":"hook","report":{"hook_event_name":"StopFailure","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":5700,"event":"reserve"}
+{"ms":5800,"event":"exit","code":1,"crashed":true}
+{"ms":5900,"event":"respawn"}
+{"ms":6000,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","source":"resume","transcript_path":"<TRANSCRIPT>","generation":"spawn-1"}}
+{"ms":6100,"event":"key","key":"old-spawn-key","mode":"rekey","stale":true}
+{"ms":6200,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","source":"resume","transcript_path":"<TRANSCRIPT>"}}
+{"ms":6300,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":6400,"event":"reserve"}
+{"ms":6500,"event":"finish"}
+{"ms":6600,"event":"viewed"}

@@ -1,0 +1,6 @@
+{"runtime":"copilot","name":"resume-missing","rules":[],"bugs":[670],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"key","key":"11111111-1111-4111-8111-111111111111","mode":"assigned"}
+{"ms":200,"event":"probe","key":"11111111-1111-4111-8111-111111111111"}
+{"ms":300,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}

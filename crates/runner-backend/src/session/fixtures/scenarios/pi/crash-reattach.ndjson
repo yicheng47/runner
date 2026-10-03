@@ -1,0 +1,27 @@
+{"runtime":"pi","name":"crash-reattach","rules":[8,10],"bugs":[670],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"ms":200,"event":"output","bytes":"\u001b[?2004hready"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"input","bytes":"sample"}
+{"ms":2600,"event":"input","bytes":"\r"}
+{"ms":2700,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2800,"event":"output","bytes":"sample reply"}
+{"ms":5000,"event":"tick"}
+{"ms":5100,"event":"hook","report":{"hook_event_name":"message_end","session_id":"11111111-1111-4111-8111-111111111111","stopReason":"stop"}}
+{"ms":5200,"event":"hook","report":{"hook_event_name":"agent_settled","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":5300,"event":"completion"}
+{"ms":5400,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":5500,"event":"input","bytes":"retained draft"}
+{"ms":5600,"event":"composer","state":"drafting"}
+{"ms":5700,"event":"hook","report":{"hook_event_name":"message_end","session_id":"11111111-1111-4111-8111-111111111111","stopReason":"error"}}
+{"ms":5800,"event":"hook","report":{"hook_event_name":"agent_settled","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":5900,"event":"reserve"}
+{"ms":6000,"event":"exit","code":1,"crashed":true}
+{"ms":6100,"event":"respawn"}
+{"ms":6200,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"resume","generation":"spawn-1"}}
+{"ms":6300,"event":"key","key":"old-spawn-key","mode":"rekey","stale":true}
+{"ms":6400,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"resume"}}
+{"ms":6500,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":6600,"event":"reserve"}
+{"ms":6700,"event":"finish"}
+{"ms":6800,"event":"viewed"}

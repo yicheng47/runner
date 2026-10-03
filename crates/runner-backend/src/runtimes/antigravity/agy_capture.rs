@@ -89,6 +89,7 @@ pub(crate) fn active_conversation(line: &str) -> Option<&str> {
 }
 
 pub(crate) struct CaptureRequest {
+    pub(crate) manager: std::sync::Weak<crate::session::manager::SessionManager>,
     pub(crate) session_id: String,
     pub(crate) mission_id: Option<String>,
     pub(crate) log_path: PathBuf,
@@ -126,16 +127,20 @@ fn run(request: CaptureRequest) {
 }
 
 fn persist(request: &CaptureRequest, key: &str) {
-    let Ok(conn) = request.pool.get() else { return };
-    // Guarded by the row's start time and running status, so a thread from a
-    // previous incarnation of this row cannot write into a later one.
-    let updated = crate::repo::session::rekey_agent_session_key(
-        &conn,
-        &request.session_id,
-        key,
-        &request.expected_row_started_at,
-    )
-    .unwrap_or(false);
+    let Some(manager) = request.manager.upgrade() else {
+        return;
+    };
+    let updated = manager
+        .persist_reported_key(
+            &request.session_id,
+            crate::session::state::PersistKey {
+                key: Some(key.into()),
+                generation: request.expected_row_started_at.clone(),
+                origin: crate::session::state::KeyOrigin::Rekeyed,
+            },
+            &request.pool,
+        )
+        .unwrap_or(false);
     if updated {
         log::info!(
             "Antigravity conversation captured: session={} key={key}",

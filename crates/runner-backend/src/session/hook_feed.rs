@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -21,7 +22,7 @@ pub trait HookWatcher: Send {
     }
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(super::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(super::status::AgentObservation, StatusSource),
         session_start: &mut dyn FnMut(String),
     ) -> Result<()>;
 }
@@ -293,15 +294,18 @@ impl HookFeed {
             pending: Vec::new(),
             generation,
             dirty,
-            last_read: Instant::now(),
+            last_read: super::clock::now(),
             _watcher: watcher,
             _files: files,
         })
     }
 
     pub(crate) fn drain(&mut self, force: bool, mut observe: impl FnMut(Value)) -> Result<()> {
+        #[cfg(test)]
+        let force = force || super::clock::replaying();
         if !self.dirty.swap(false, Ordering::AcqRel)
-            && self.last_read.elapsed() < Duration::from_secs(1)
+            && super::clock::now().saturating_duration_since(self.last_read)
+                < Duration::from_secs(1)
             && !force
         {
             return Ok(());
@@ -309,7 +313,7 @@ impl HookFeed {
         if !self.path.exists() || !self.reporter_path.exists() {
             return Err(Error::msg("agent status bridge unavailable"));
         }
-        self.last_read = Instant::now();
+        self.last_read = super::clock::now();
         while self.reader.read_until(b'\n', &mut self.pending)? != 0 {
             if self.pending.last() != Some(&b'\n') {
                 break;

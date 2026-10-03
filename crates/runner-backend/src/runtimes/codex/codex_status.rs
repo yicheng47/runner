@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 use std::collections::BTreeSet;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -308,14 +309,14 @@ impl CodexStatusWatcher {
     #[cfg(test)]
     pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
     ) -> Result<()> {
         self.drain_with_session_starts(&mut transition, |_| {})
     }
 
     pub(crate) fn drain_with_session_starts(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
         mut session_start: impl FnMut(String),
     ) -> Result<()> {
         self.feed.drain(false, |report| {
@@ -328,7 +329,7 @@ impl CodexStatusWatcher {
                     }
                 }
                 if let Some(value) = self.observation.observe(report) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
         })?;
@@ -359,7 +360,7 @@ impl CodexStatusWatcher {
             tail.pending.clear();
         }
         if before != self.observation.value {
-            transition(self.observation.value.clone(), "hook");
+            transition(self.observation.value.clone(), StatusSource::Hook);
         }
         Ok(())
     }
@@ -368,7 +369,7 @@ impl CodexStatusWatcher {
 impl crate::session::hook_feed::HookWatcher for CodexStatusWatcher {
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
         session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
         self.drain_with_session_starts(transition, session_start)

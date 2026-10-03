@@ -101,6 +101,7 @@ pub(crate) fn fork_rollout_is_ready(sessions_root: &Path, key: &str, source_key:
 /// `agent_session_key`. Returns immediately; no-op if the runtime's
 /// sessions root doesn't exist.
 pub struct CaptureRequest {
+    pub manager: std::sync::Weak<super::manager::SessionManager>,
     pub session_id: String,
     pub mission_id: Option<String>,
     pub sessions_root: PathBuf,
@@ -188,6 +189,7 @@ fn run(request: CaptureRequest) {
                         continue;
                     }
                     if persist_capture(
+                        &request.manager,
                         &request.pool,
                         &request.session_id,
                         &request.expected_row_started_at,
@@ -219,23 +221,26 @@ fn run(request: CaptureRequest) {
 }
 
 fn persist_capture(
+    manager: &std::sync::Weak<super::manager::SessionManager>,
     pool: &DbPool,
     session_id: &str,
     expected_row_started_at: &str,
     agent_session_key: &str,
 ) -> bool {
-    let Ok(conn) = pool.get() else { return false };
-    // Guard with `agent_session_key IS NULL` so we don't clobber a key
-    // that a concurrent path (resume that already had a key) wrote
-    // first. Guard with `started_at` so a stale watcher from a prior
-    // incarnation of this row cannot write into a later stop/resume.
-    crate::repo::session::capture_agent_session_key(
-        &conn,
-        session_id,
-        agent_session_key,
-        expected_row_started_at,
-    )
-    .unwrap_or(false)
+    let Some(manager) = manager.upgrade() else {
+        return false;
+    };
+    manager
+        .persist_reported_key(
+            session_id,
+            super::state::PersistKey {
+                key: Some(agent_session_key.into()),
+                generation: expected_row_started_at.into(),
+                origin: super::state::KeyOrigin::Captured,
+            },
+            pool,
+        )
+        .unwrap_or(false)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,6 +352,24 @@ fn scan_paths(
     let matches = matching_candidates(paths, spawn_cwd, started_at, done);
     let claimed = claimed_rollouts().lock().unwrap();
     select_unique_unclaimed(matches, |path| claimed.contains(path))
+}
+
+#[cfg(test)]
+pub(crate) fn replay_scan(
+    sessions_root: &Path,
+    cwd: &str,
+    started_at: DateTime<Utc>,
+) -> Option<String> {
+    let date = started_at.with_timezone(&Local);
+    match scan_paths(
+        rollout_paths_for_dates(sessions_root, &[date]),
+        cwd,
+        started_at,
+        None,
+    ) {
+        CaptureScan::Unique(candidate) => Some(candidate.id),
+        CaptureScan::Ambiguous | CaptureScan::None => None,
+    }
 }
 
 fn scan_paths_with_marker(
@@ -1026,6 +1049,7 @@ mod tests {
 
     #[test]
     fn persist_capture_requires_matching_row_started_at() {
+        let manager = crate::session::manager::SessionManager::key_test_manager();
         let pool = db::open_in_memory().unwrap();
         let conn = pool.get().unwrap();
         let role_id = ulid::Ulid::new().to_string();
@@ -1038,7 +1062,13 @@ mod tests {
         insert_capture_session(&conn, &session_id, &role_id, started_a, None);
         drop(conn);
 
-        assert!(persist_capture(&pool, &session_id, started_a, key_a));
+        assert!(persist_capture(
+            &Arc::downgrade(&manager),
+            &pool,
+            &session_id,
+            started_a,
+            key_a
+        ));
         let stored: Option<String> = {
             let conn = pool.get().unwrap();
             conn.query_row(
@@ -1063,7 +1093,13 @@ mod tests {
         }
 
         assert!(
-            !persist_capture(&pool, &session_id, started_a, key_b),
+            !persist_capture(
+                &Arc::downgrade(&manager),
+                &pool,
+                &session_id,
+                started_a,
+                key_b
+            ),
             "stale watcher from started_at A must not write into row incarnation B",
         );
         let stored: Option<String> = {

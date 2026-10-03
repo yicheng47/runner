@@ -1,5 +1,123 @@
 use super::*;
 
+#[test]
+fn discarded_pending_mission_spawns_remove_only_pre_attachment_bookkeeping() {
+    for measured in [false, true] {
+        let pool = pool_with_schema();
+        let (mission, role, slot) = single_slot_mission(&pool);
+        let data = tempfile::tempdir().unwrap();
+        let manager = manager_with_runtime(Default::default(), inert_runtime());
+        let pending = manager
+            .register_mission_session(
+                &mission,
+                &role,
+                &slot,
+                data.path(),
+                data.path().join("events.ndjson"),
+                Arc::clone(&pool),
+                None,
+                None,
+                None,
+                "test",
+            )
+            .unwrap();
+        let session_id = pending.session_id.clone();
+        assert!(manager.raw_session_state(&session_id).is_some());
+        if measured {
+            manager
+                .session_state_or_insert(&session_id)
+                .lock()
+                .unwrap()
+                .last_requested_size = Some((120, 40));
+        }
+        drop(vec![pending]);
+        assert_eq!(
+            manager.sessions.lock().unwrap().contains_key(&session_id),
+            measured
+        );
+        if measured {
+            assert_eq!(manager.latest_requested_size(&session_id), Some((120, 40)));
+        }
+    }
+}
+
+#[test]
+fn cancelled_and_failed_mission_spawns_remove_only_pre_attachment_bookkeeping() {
+    for (cancelled, measured) in [(true, false), (false, false), (true, true)] {
+        let pool = pool_with_schema();
+        let (mission, role, slot) = single_slot_mission(&pool);
+        let data = tempfile::tempdir().unwrap();
+        let manager = manager_with_runtime(Default::default(), inert_runtime());
+        let pending = manager
+            .register_mission_session(
+                &mission,
+                &role,
+                &slot,
+                data.path(),
+                data.path().join("events.ndjson"),
+                Arc::clone(&pool),
+                None,
+                None,
+                None,
+                "test",
+            )
+            .unwrap();
+        let session_id = pending.session_id.clone();
+        assert!(manager.raw_session_state(&session_id).is_some());
+        if measured {
+            manager
+                .session_state_or_insert(&session_id)
+                .lock()
+                .unwrap()
+                .last_requested_size = Some((120, 40));
+        }
+        let outcome = manager.complete_mission_session_spawn(
+            pending,
+            capture(),
+            Arc::new(AtomicBool::new(cancelled)),
+        );
+        if cancelled {
+            assert_eq!(outcome.unwrap(), CompleteSpawnOutcome::Cancelled);
+        } else {
+            assert!(outcome.is_err());
+        }
+        assert_eq!(
+            manager.sessions.lock().unwrap().contains_key(&session_id),
+            measured
+        );
+        if measured {
+            assert_eq!(manager.latest_requested_size(&session_id), Some((120, 40)));
+        }
+    }
+}
+
+#[test]
+fn failed_direct_spawn_removes_pre_attachment_bookkeeping() {
+    let pool = pool_with_schema();
+    let data = tempfile::tempdir().unwrap();
+    let manager = manager_with_runtime(Default::default(), inert_runtime());
+    let role = runtime_direct_role("claude-code", Some("fixture-spawn-error"), None, None).unwrap();
+    assert!(manager
+        .spawn_runtime_direct(
+            &role,
+            None,
+            fixture_tmp_dir().to_str(),
+            None,
+            None,
+            data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .is_err());
+    assert!(manager.sessions.lock().unwrap().is_empty());
+    let rows: usize = pool
+        .get()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
 // `compose_path` moved to `session::launch::compose_path` as
 // part of the Step 9 cutover; equivalent coverage lives in
 // `session::launch::tests::compose_path_*`.

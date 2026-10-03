@@ -72,18 +72,11 @@ impl SessionManager {
                     delivery.next_served = 0;
                     delivery.cancelled_tickets.clear();
                     gate.ready.notify_all();
-                    state.status.lifecycle = Lifecycle::Stopped;
-                    state.status.observation.interactions.clear();
-                    state.activity = None;
-                    state.activity_revision = state.activity_revision.wrapping_add(1);
-                    state.suppress_local_input_busy = false;
-                    state.hook_status_armed = false;
-                    state.provisional_idle = false;
-                    state.local_input_pending = false;
-                    state.observed_input = None;
-                    state.last_local_input_at = None;
+                    state.model.apply(
+                        SessionEvent::Detached { stopped: true },
+                        crate::session::clock::state_now(),
+                    );
                     state.mission_status_sink = None;
-                    state.completion_armed = false;
                     state.last_requested_size = None;
                     state.last_requested_size_dirty = false;
                     state.pending_resize = None;
@@ -297,17 +290,11 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
-                state.status.observation.interactions.clear();
-                state.activity = None;
-                state.activity_revision = state.activity_revision.wrapping_add(1);
-                state.suppress_local_input_busy = false;
-                state.hook_status_armed = false;
-                state.provisional_idle = false;
-                state.local_input_pending = false;
-                state.observed_input = None;
-                state.last_local_input_at = None;
+                state.model.apply(
+                    SessionEvent::Detached { stopped: false },
+                    crate::session::clock::state_now(),
+                );
                 state.mission_status_sink = None;
-                state.completion_armed = false;
                 drop(state);
                 drop(delivery);
                 self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);

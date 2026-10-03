@@ -1,0 +1,12 @@
+{"runtime":"antigravity","name":"first-turn-viewed","rules":[1,2,5,8],"bugs":[623],"known_wrong":[],"pending_turn":false}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"output","bytes":"\u001b[?2004hready"}
+{"ms":4500,"event":"tick"}
+{"ms":4600,"event":"input","bytes":"sample"}
+{"ms":4700,"event":"input","bytes":"\r"}
+{"ms":4800,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":4900,"event":"output","bytes":"sample reply"}
+{"ms":7100,"event":"tick"}
+{"ms":7200,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","fullyIdle":true,"error":""}}
+{"ms":7300,"event":"completion","viewed":true}
+{"ms":7400,"event":"viewed"}

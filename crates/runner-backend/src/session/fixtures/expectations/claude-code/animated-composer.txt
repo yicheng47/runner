@@ -1,0 +1,10 @@
+runtime=claude-code name=animated-composer rules=[5] bugs=[583] known_wrong=[]
+session_status_rows=published
+2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300 quiescent=false delivery=["InputQueueDrained"]
+2400
+2500
+4700
+4800 result={"gate":"local_input_pending"}

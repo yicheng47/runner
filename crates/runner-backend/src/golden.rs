@@ -152,7 +152,6 @@ thread_local! {
     static CONFIG_ENV: std::cell::RefCell<Option<std::collections::BTreeMap<&'static str, std::ffi::OsString>>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(unix)]
 pub(crate) fn with_config_env<T>(
     env: std::collections::BTreeMap<&'static str, std::ffi::OsString>,
     run: impl FnOnce() -> T,

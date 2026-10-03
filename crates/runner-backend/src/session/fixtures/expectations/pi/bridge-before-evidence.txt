@@ -1,0 +1,9 @@
+runtime=pi name=bridge-before-evidence rules=[3] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/unavailable/unavailable activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@unavailable [running/unavailable/unavailable]
+2200 status=running/idle/baseline
+  idle@forwarder [running/idle/baseline]
+2300 quiescent=false result={"gate":"ready"}
+2300 quiescent=true delivery=["DeliveryFinished"]

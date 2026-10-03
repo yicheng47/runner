@@ -1,0 +1,20 @@
+runtime=pi name=approval-approved rules=[6] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/working/hook interactions=[{"id":"pi-1","reason":"approval","owners":["Sample approval"],"since":1767225600500}] quiescent=false
+  busy@hook [running/working/hook interactions=[{"id":"pi-1","reason":"approval","owners":["Sample approval"],"since":1767225600500}]]
+600 result={"gate":"human_interaction"}
+700 status=running/working/hook quiescent=true delivery=["InputCleared"]
+  busy@hook [running/working/hook]
+800
+900 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+1000 quiescent=false result={"gate":"ready"}
+1100 quiescent=true delivery=["DeliveryFinished"]

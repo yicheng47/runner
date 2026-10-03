@@ -1,3 +1,7 @@
+use crate::session::state::StatusSource;
+use crate::session::state::CTRL_C_INTERRUPT;
+#[cfg(test)]
+use crate::session::state::ESCAPE_INTERRUPT;
 #[cfg(test)]
 use std::fs::{self, File, OpenOptions};
 use std::io::BufRead;
@@ -24,8 +28,6 @@ use std::collections::BTreeMap;
 pub(crate) const PATH_ENV: &str = "RUNNER_CLAUDE_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_CLAUDE_STATUS_GENERATION";
 pub(crate) const HOOK_TIMEOUT_SECS: u64 = 2;
-pub(crate) const CTRL_C_INTERRUPT: u8 = 1;
-pub(crate) const ESCAPE_INTERRUPT: u8 = 2;
 
 // Runner-owned per-invocation helper follows cmux's hook bridge shape
 // (manaflow-ai/cmux, GPL-3.0-or-later); the status records are Runner's.
@@ -447,7 +449,7 @@ impl ClaudeObservation {
             id: format!("claude-{}", self.next_interaction),
             reason,
             owners,
-            since: chrono::Utc::now().timestamp_millis(),
+            since: crate::session::clock::timestamp_millis(),
         });
     }
 }
@@ -492,13 +494,13 @@ impl ClaudeStatusWatcher {
 
     pub(crate) fn drain_observations(
         &mut self,
-        mut transition: impl FnMut(AgentObservation, &'static str),
+        mut transition: impl FnMut(AgentObservation, StatusSource),
     ) -> Result<()> {
         let interrupted = self.interrupt.swap(0, Ordering::AcqRel);
         self.feed.drain(interrupted != 0, |report| {
             if let Ok(report) = serde_json::from_value(report) {
                 if let Some(value) = self.observation.observe(report) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
         })?;
@@ -509,9 +511,9 @@ impl ClaudeStatusWatcher {
                 || self.observation.value.needs_you())
         {
             let source = if interrupted & CTRL_C_INTERRUPT != 0 {
-                "input-interrupt"
+                StatusSource::InputInterrupt
             } else {
-                "input-escape"
+                StatusSource::InputEscape
             };
             self.observation.value.activity = if self.observation.value.needs_you() {
                 Activity::Unavailable
@@ -528,7 +530,7 @@ impl ClaudeStatusWatcher {
         Ok(())
     }
 
-    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, &'static str)) {
+    fn drain_transcript(&mut self, transition: &mut impl FnMut(AgentObservation, StatusSource)) {
         if !self.observation.value.needs_you()
             && !self.observation.cancelled_tool_result
             && self.observation.tools.is_empty()
@@ -554,7 +556,7 @@ impl ClaudeStatusWatcher {
             }
             if let Ok(entry) = serde_json::from_slice(&tail.pending) {
                 if let Some(value) = self.observation.observe_transcript(&entry) {
-                    transition(value, "hook");
+                    transition(value, StatusSource::Hook);
                 }
             }
             tail.pending.clear();
@@ -563,7 +565,7 @@ impl ClaudeStatusWatcher {
     #[cfg(test)]
     fn drain(
         &mut self,
-        mut transition: impl FnMut(SessionActivityState, &'static str),
+        mut transition: impl FnMut(SessionActivityState, StatusSource),
     ) -> Result<()> {
         self.drain_observations(|value, source| {
             transition(
@@ -584,7 +586,7 @@ impl crate::session::hook_feed::HookWatcher for ClaudeStatusWatcher {
     }
     fn drain_observations(
         &mut self,
-        transition: &mut dyn FnMut(crate::session::status::AgentObservation, &'static str),
+        transition: &mut dyn FnMut(crate::session::status::AgentObservation, StatusSource),
         _session_start: &mut dyn FnMut(String),
     ) -> Result<()> {
         self.drain_observations(transition)
@@ -1792,9 +1794,12 @@ mod tests {
     #[test]
     fn interrupt_drains_buffered_tool_records_before_idle_and_allows_new_work() {
         for (kind, source) in [
-            (CTRL_C_INTERRUPT, "input-interrupt"),
-            (ESCAPE_INTERRUPT, "input-escape"),
-            (CTRL_C_INTERRUPT | ESCAPE_INTERRUPT, "input-interrupt"),
+            (CTRL_C_INTERRUPT, StatusSource::InputInterrupt),
+            (ESCAPE_INTERRUPT, StatusSource::InputEscape),
+            (
+                CTRL_C_INTERRUPT | ESCAPE_INTERRUPT,
+                StatusSource::InputInterrupt,
+            ),
         ] {
             let root = tempfile::tempdir().unwrap();
             let path = status_path(root.path(), "interrupt");
@@ -1811,7 +1816,7 @@ mod tests {
             assert_eq!(
                 transitions,
                 [
-                    (SessionActivityState::Busy, "hook"),
+                    (SessionActivityState::Busy, StatusSource::Hook),
                     (SessionActivityState::Idle, source)
                 ]
             );
@@ -1822,7 +1827,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 transitions.last(),
-                Some(&(SessionActivityState::Busy, "hook"))
+                Some(&(SessionActivityState::Busy, StatusSource::Hook))
             );
             assert_eq!(transitions.len(), 3);
         }

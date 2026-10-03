@@ -40,7 +40,11 @@ fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
     );
     manager.mark_status_viewed(&["status".into()]);
     assert!(manager.status_snapshot()["status"].observation.needs_you());
-    assert!(!manager.note_forwarder_transition("status", SessionActivityState::Idle, "forwarder"));
+    assert!(!manager.note_forwarder_transition(
+        "status",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder
+    ));
     assert_eq!(
         manager.status_snapshot()["status"].observation.source,
         ObservationSource::Hook
@@ -50,7 +54,11 @@ fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
         .unwrap()
         .lock()
         .unwrap()
-        .local_input_pending = true;
+        .model
+        .apply(
+            SessionEvent::TestPending(true),
+            crate::session::clock::state_now(),
+        );
     observation.interactions.clear();
     observation.activity = Activity::Ready;
     observation.outcome = Some(TurnOutcome::Interrupted);
@@ -69,7 +77,11 @@ fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
         .unwrap()
         .lock()
         .unwrap()
-        .local_input_pending = false;
+        .model
+        .apply(
+            SessionEvent::TestPending(false),
+            crate::session::clock::state_now(),
+        );
     assert!(matches!(
         manager.reserve_delivery("status").unwrap(),
         router::DeliveryReservation::Ready(_)
@@ -207,7 +219,10 @@ fn failure_attention_is_transient_and_interruption_never_records_unread() {
         let state = core.sessions.session_state("status-detail").unwrap();
         let mut state = state.lock().unwrap();
         state.handle = None;
-        state.status.lifecycle = Lifecycle::Stopped;
+        state.model.apply(
+            SessionEvent::TestLifecycle(Lifecycle::Stopped),
+            crate::session::clock::state_now(),
+        );
     }
     observation.activity = Activity::Ready;
     observation.outcome = Some(TurnOutcome::Failed);
@@ -245,8 +260,11 @@ fn bridge_loss_and_unavailable_observations_never_manufacture_a_completion() {
     assert!(core.sessions.agent_status("status").unread_since.is_none());
     core.sessions
         .publish_observation("status", working, &events);
-    core.sessions
-        .note_forwarder_transition("status", SessionActivityState::Idle, "forwarder");
+    core.sessions.note_forwarder_transition(
+        "status",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder,
+    );
     core.sessions.status_bridge_failed("status", &events);
     assert!(core.sessions.agent_status("status").unread_since.is_none());
     assert!(!core.sessions.take_completion_armed(&["status".into()]));

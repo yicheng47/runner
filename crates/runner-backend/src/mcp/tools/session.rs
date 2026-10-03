@@ -848,7 +848,7 @@ mod tests {
         assert!(handler.state.sessions.note_forwarder_transition(
             "direct",
             crate::session::manager::SessionActivityState::Busy,
-            "forwarder"
+            crate::session::state::StatusSource::Forwarder
         ));
         let working = result_json(
             handler
@@ -867,7 +867,7 @@ mod tests {
         assert!(handler.state.sessions.note_forwarder_transition(
             "direct",
             crate::session::manager::SessionActivityState::Idle,
-            "forwarder"
+            crate::session::state::StatusSource::Forwarder
         ));
         let idle = result_json(
             handler

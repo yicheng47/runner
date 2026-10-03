@@ -1,0 +1,20 @@
+runtime=antigravity name=first-turn-viewed rules=[1,2,5,8] bugs=[623] known_wrong=[]
+session_status_rows=published
+2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300 status=running/working/baseline activity="busy"
+  busy@forwarder [running/working/baseline]
+4500 status=running/idle/baseline activity="idle"
+  idle@forwarder [running/idle/baseline]
+4600 quiescent=false delivery=["InputQueueDrained"]
+4700 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/working/baseline]
+4800 status=running/working/hook
+  busy@hook [running/working/hook]
+4900
+7100
+7200 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+7300 completion_armed=false result={"completion_consumed":true,"viewed":true}
+7400

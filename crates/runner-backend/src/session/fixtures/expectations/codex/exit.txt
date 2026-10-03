@@ -1,0 +1,17 @@
+runtime=codex name=exit rules=[10] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=error/working/hook exit_code=1 error_since=1767225600500 activity=null completion_armed=false quiescent=false delivery=["Exited"]
+600
+625
+650
+675 result={"completion_consumed":false,"viewed":false}
+700 result={"gate":"unavailable"}
+800 status=error/working/hook exit_code=1

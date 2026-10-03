@@ -1,0 +1,8 @@
+{"runtime":"codex","name":"rollback-restart","rules":[2],"bugs":[736],"known_wrong":[]}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"22222222-2222-4222-8222-222222222222"}}
+{"ms":200,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"22222222-2222-4222-8222-222222222222","turn_id":"retired-turn"}}
+{"ms":300,"event":"hook","report":{"hook_event_name":"SessionEnd","session_id":"22222222-2222-4222-8222-222222222222"}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"22222222-2222-4222-8222-222222222222"}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"Stop","session_id":"22222222-2222-4222-8222-222222222222","turn_id":"retired-turn"}}
+{"ms":600,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"22222222-2222-4222-8222-222222222222","turn_id":"fresh-turn"}}
+{"ms":700,"event":"hook","report":{"hook_event_name":"Stop","session_id":"22222222-2222-4222-8222-222222222222","turn_id":"fresh-turn"}}

@@ -1,0 +1,14 @@
+runtime=claude-code name=api-error rules=[7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/ready/hook outcome="failed" failed_since=1767225600500 activity="idle" completion_armed=false
+  idle@hook [running/ready/hook outcome="failed" failed_since=1767225600500]
+600 result={"completion_consumed":false,"viewed":false}
+700 status=running/ready/hook outcome="failed"

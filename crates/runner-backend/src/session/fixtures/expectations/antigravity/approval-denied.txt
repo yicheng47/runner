@@ -1,0 +1,13 @@
+runtime=antigravity name=approval-denied rules=[] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  busy@hook [running/working/hook]
+200
+300
+400 quiescent=false result={"gate":"ready"}
+500 quiescent=true delivery=["DeliveryFinished"]
+600 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=false delivery=["InputQueueDrained"]
+  idle@hook [running/ready/hook outcome="interrupted"]
+700
+800 result={"completion_consumed":false,"viewed":false}

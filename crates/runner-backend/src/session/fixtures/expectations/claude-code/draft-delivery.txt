@@ -1,0 +1,22 @@
+runtime=claude-code name=draft-delivery rules=[5] bugs=[766,753] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+2400
+2500
+2600 quiescent=false delivery=["InputQueueDrained"]
+2700 result={"gate":"recently_typing","remaining_ms":1900}
+2800
+5000
+5100 result={"gate":"drafting","composer_visible":true}
+5200
+5300 result={"gate":"recently_typing","remaining_ms":1900}
+7500 quiescent=true
+7600 quiescent=false result={"gate":"ready"}
+7700 quiescent=true delivery=["DeliveryFinished"]
+7800 delivery=["InputCleared"]
+7900 quiescent=false result={"gate":"ready"}
+8000 quiescent=true delivery=["DeliveryFinished"]

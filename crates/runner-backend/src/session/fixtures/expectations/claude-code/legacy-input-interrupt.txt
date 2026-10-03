@@ -1,0 +1,11 @@
+runtime=claude-code name=legacy-input-interrupt rules=[4] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  busy@hook [running/working/hook]
+200 status=running/unavailable/hook outcome="interrupted" activity="idle" completion_armed=false
+  idle@input-interrupt [running/unavailable/hook outcome="interrupted"]
+300 result={"completion_consumed":false,"viewed":false}
+400 status=running/ready/hook outcome="completed"
+  idle@hook [running/ready/hook outcome="completed"]
+500 result={"completion_consumed":false,"viewed":false}

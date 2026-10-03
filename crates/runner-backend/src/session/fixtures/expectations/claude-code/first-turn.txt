@@ -1,0 +1,18 @@
+runtime=claude-code name=first-turn rules=[1,2,5,8] bugs=[623] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200
+2400
+2500 quiescent=false delivery=["InputQueueDrained"]
+2600 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+2700 status=running/working/hook
+  busy@hook [running/working/hook]
+2800
+5000
+5100 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+5200 status=running/ready/hook outcome="completed" unread_since=1767225605200 completion_armed=false result={"completion_consumed":true,"viewed":false}
+5300 status=running/ready/hook outcome="completed"

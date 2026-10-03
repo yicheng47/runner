@@ -1,0 +1,36 @@
+runtime=claude-code name=crash-reattach rules=[8,10] bugs=[670] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200
+2400
+2500 quiescent=false delivery=["InputQueueDrained"]
+2600 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+2700 status=running/working/hook
+  busy@hook [running/working/hook]
+2800
+5000
+5100 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+5200 status=running/ready/hook outcome="completed" unread_since=1767225605200 completion_armed=false result={"completion_consumed":true,"viewed":false}
+5300 status=running/working/hook unread_since=1767225605200 activity="busy" completion_armed=true
+  busy@hook [running/working/hook unread_since=1767225605200]
+5400 quiescent=false delivery=["InputQueueDrained"]
+5500
+5600 status=running/ready/hook outcome="failed" failed_since=1767225605600 unread_since=1767225605200 activity="idle" completion_armed=false
+  idle@hook [running/ready/hook outcome="failed" failed_since=1767225605600 unread_since=1767225605200]
+5700 result={"gate":"drafting","composer_visible":true}
+5800 status=error/ready/hook outcome="failed" exit_code=1 error_since=1767225605800 unread_since=1767225605200 activity=null delivery=["Exited"]
+5900 status=running/working/baseline unread_since=1767225605200 activity="busy" quiescent=true delivery=["Respawned"]
+  busy@spawn [running/working/baseline unread_since=1767225605200]
+6000
+6100 result={"key_written":false}
+6200 status=running/idle/hook unread_since=1767225605200 activity="idle"
+  idle@hook [running/idle/hook unread_since=1767225605200]
+6300 status=running/working/hook unread_since=1767225605200 activity="busy" completion_armed=true
+  busy@hook [running/working/hook unread_since=1767225605200]
+6400 quiescent=false result={"gate":"ready"}
+6500 quiescent=true delivery=["DeliveryFinished"]
+6600 status=running/working/hook

@@ -1,0 +1,11 @@
+runtime=copilot name=resume-missing rules=[] bugs=[670] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" result={"key_written":true} delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+200 result={"history_exists":false,"missing_reuses_key":true,"missing_resume_on_launch":false}
+300 status=running/idle/hook activity="idle"
+  idle@hook [running/idle/hook]
+400 status=running/working/hook activity="busy" completion_armed=true
+  busy@hook [running/working/hook]
+500 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]

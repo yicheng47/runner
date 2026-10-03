@@ -1,0 +1,12 @@
+{"runtime":"pi","name":"approval-approved","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"ui_prompt_start","session_id":"11111111-1111-4111-8111-111111111111","kind":"confirm","title":"Sample approval"}}
+{"ms":600,"event":"reserve"}
+{"ms":700,"event":"hook","report":{"hook_event_name":"ui_prompt_end","session_id":"11111111-1111-4111-8111-111111111111","kind":"confirm"}}
+{"ms":800,"event":"hook","report":{"hook_event_name":"message_end","session_id":"11111111-1111-4111-8111-111111111111","stopReason":"stop"}}
+{"ms":900,"event":"hook","report":{"hook_event_name":"agent_settled","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":1000,"event":"reserve"}
+{"ms":1100,"event":"finish"}

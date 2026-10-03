@@ -1,0 +1,6 @@
+{"runtime":"claude-code","name":"legacy-input-escape","rules":[4],"bugs":[],"known_wrong":[],"evidence":"Explicit legacy note_forwarder_transition seam, not emitted by the current PTY local-input path."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":200,"event":"legacy_transition","state":"idle","source":"input-escape"}
+{"ms":300,"event":"completion"}
+{"ms":400,"event":"legacy_transition","state":"idle","source":"hook"}
+{"ms":500,"event":"completion"}

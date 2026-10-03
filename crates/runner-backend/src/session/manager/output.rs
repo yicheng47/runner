@@ -1,16 +1,10 @@
 use super::*;
-use crate::runtimes::claude_code::claude_status::CTRL_C_INTERRUPT;
 use crate::session::pty_runtime::interrupt_key;
+pub(crate) use crate::session::state::LocalInputClass;
+use crate::session::state::CTRL_C_INTERRUPT;
 
 // Match alacritty's read budget while bounding a single terminal-lock hold.
 const MAX_OUTPUT_BURST: usize = 1024 * 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LocalInputClass {
-    SetPending,
-    ClearPending,
-    ActivityOnly,
-}
 
 pub(crate) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     if bytes.is_empty() {
@@ -35,31 +29,22 @@ pub(crate) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn update_local_input_state(
     state: &mut SessionState,
     input_class: Option<LocalInputClass>,
     now: Instant,
 ) -> bool {
-    match input_class {
-        Some(LocalInputClass::SetPending) => {
-            state.local_input_pending = true;
-            state.last_local_input_at = Some(now);
-            false
-        }
-        Some(LocalInputClass::ClearPending) => {
-            state.local_input_pending = false;
-            state.last_local_input_at = state
-                .observed_input
-                .is_some_and(|observed| observed.state == InputState::Idle)
-                .then_some(now);
-            true
-        }
-        Some(LocalInputClass::ActivityOnly) => {
-            state.last_local_input_at = Some(now);
-            false
-        }
-        None => false,
-    }
+    state
+        .model
+        .apply(
+            SessionEvent::DraftInput(input_class),
+            crate::session::state::Now {
+                monotonic: now,
+                wall_millis: 0,
+            },
+        )
+        .input_cleared
 }
 
 impl SessionManager {
@@ -165,22 +150,32 @@ impl SessionManager {
                     }
                     Ok(RuntimeOutput::CodexSessionStart(key)) => {
                         let result = (|| -> Result<()> {
-                            let conn = pool.get()?;
-                            let Some(row) = crate::repo::session::get_row(&conn, &session_id)?
-                            else {
-                                return Ok(());
-                            };
-                            if row.agent_session_key.as_deref() != Some(&key)
-                                && crate::repo::session::rekey_agent_session_key(
-                                    &conn,
-                                    &session_id,
-                                    &key,
-                                    &row_started_at,
-                                )?
-                            {
+                            let mut mission = None;
+                            let updated = manager_t.report_key(
+                                &session_id,
+                                PersistKey {
+                                    key: Some(key),
+                                    generation: row_started_at.clone(),
+                                    origin: KeyOrigin::Rekeyed,
+                                },
+                                |effect| {
+                                    let conn = pool.get()?;
+                                    let Some(row) =
+                                        crate::repo::session::get_row(&conn, &session_id)?
+                                    else {
+                                        return Ok(false);
+                                    };
+                                    mission = row.mission_id;
+                                    if row.agent_session_key == effect.key {
+                                        return Ok(false);
+                                    }
+                                    Self::write_key_effect(&conn, &session_id, effect)
+                                },
+                            )?;
+                            if updated {
                                 events.updated(&SessionUpdatedEvent {
                                     session_id: session_id.clone(),
-                                    mission_id: row.mission_id,
+                                    mission_id: mission,
                                 });
                             }
                             Ok(())
@@ -200,7 +195,7 @@ impl SessionManager {
                             events.status(&SessionActivityEvent {
                                 session_id: session_id.clone(),
                                 state,
-                                source: source.into(),
+                                source,
                                 status: manager_t.agent_status(&session_id),
                             });
                             let outcome = ctx.try_append_session_status(
@@ -270,30 +265,41 @@ impl SessionManager {
             } else {
                 crate::model::SessionStatus::Crashed
             };
-            match pool.get() {
-                Ok(conn) => {
-                    let result = if resume_failed {
-                        crate::repo::session::set_crashed_clearing_key(
-                            &conn,
-                            &session_id,
-                            Utc::now(),
-                        )
-                    } else {
-                        crate::repo::session::set_exit_status(
-                            &conn,
-                            &session_id,
-                            final_status,
-                            Utc::now(),
-                        )
-                    };
-                    if let Err(error) = result {
-                        log::warn!("session exit reconciliation failed for {session_id}: {error}");
-                    }
-                }
-                Err(error) => {
-                    log::warn!(
-                        "session exit reconciliation pool checkout failed for {session_id}: {error}"
-                    );
+            let mut checkout_failed = false;
+            let mut reconcile = |clear_key: bool| -> Result<bool> {
+                let conn = pool.get().inspect_err(|_| {
+                    checkout_failed = true;
+                })?;
+                let changed = if clear_key {
+                    crate::repo::session::set_crashed_clearing_key(&conn, &session_id, Utc::now())?
+                } else {
+                    crate::repo::session::set_exit_status(
+                        &conn,
+                        &session_id,
+                        final_status,
+                        Utc::now(),
+                    )?
+                };
+                Ok(changed > 0)
+            };
+            let result = if resume_failed {
+                manager_t.report_key(
+                    &session_id,
+                    PersistKey {
+                        key: None,
+                        generation: row_started_at.clone(),
+                        origin: KeyOrigin::Assigned,
+                    },
+                    |_| reconcile(true),
+                )
+            } else {
+                reconcile(false)
+            };
+            if let Err(error) = result {
+                if checkout_failed {
+                    log::warn!("session exit reconciliation pool checkout failed for {session_id}: {error}");
+                } else {
+                    log::warn!("session exit reconciliation failed for {session_id}: {error}");
                 }
             }
             if resume_failed {
@@ -420,7 +426,7 @@ impl SessionManager {
         let session = session.lock().unwrap();
         if !delivery.in_flight
             || delivery.generation != token
-            || session.status.observation.needs_you()
+            || session.model.status().observation.needs_you()
         {
             return Ok(false);
         }
@@ -513,54 +519,34 @@ impl SessionManager {
                 .as_ref()
                 .map(|handle| handle.runtime_session.clone())
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
-            let previous_activity = session.activity;
-            let previous_status = session.status.clone();
-            let previous_suppression = session.suppress_local_input_busy;
-            let previous_input_pending = session.local_input_pending;
-            let previous_input_at = session.last_local_input_at;
+            let previous = session.model.input_checkpoint();
             let mission_status_sink = session.mission_status_sink.clone();
             let mission_scoped = session
                 .handle
                 .as_ref()
                 .is_some_and(|handle| handle.mission_id.is_some());
-            let transition = if previous_activity.is_some() && submitted {
-                session.suppress_local_input_busy = false;
-                if previous_activity == Some(SessionActivityState::Idle) {
-                    session.activity = Some(SessionActivityState::Busy);
-                    if !session.hook_status_armed {
-                        session.status.observation.activity = Activity::Working;
-                        session.status.observation.source = ObservationSource::Baseline;
-                        session.status.observation.outcome = None;
-                    }
-                    Some(SessionActivityEvent {
-                        session_id: session_id.to_string(),
-                        state: SessionActivityState::Busy,
-                        source: "input-submit".to_string(),
-                        status: session.status.clone(),
-                    })
-                } else {
-                    None
-                }
-            } else {
-                if previous_activity == Some(SessionActivityState::Idle) {
-                    session.suppress_local_input_busy = true;
-                }
-                None
-            };
-            let input_cleared = update_local_input_state(&mut session, input_class, Instant::now());
+            let effects = session.model.apply(
+                SessionEvent::Input {
+                    class: input_class,
+                    submitted,
+                },
+                crate::session::clock::state_now(),
+            );
+            let transition = effects
+                .publication
+                .map(|(state, source)| SessionActivityEvent {
+                    session_id: session_id.to_string(),
+                    state,
+                    source,
+                    status: session.model.status().clone(),
+                });
+            let input_cleared = effects.input_cleared;
             if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
-                session.activity = previous_activity;
-                session.status = previous_status;
-                session.suppress_local_input_busy = previous_suppression;
-                session.local_input_pending = previous_input_pending;
-                session.last_local_input_at = previous_input_at;
+                session.model.apply(
+                    SessionEvent::InputWriteFailed(previous),
+                    crate::session::clock::state_now(),
+                );
                 return Err(error);
-            }
-            if transition.is_some() {
-                session.activity_revision = session.activity_revision.wrapping_add(1);
-            }
-            if submitted {
-                session.completion_armed = true;
             }
             Ok((
                 transition,
@@ -593,7 +579,7 @@ impl SessionManager {
                 events.status(transition);
                 if let Err(error) = sink.append_session_status(
                     SessionActivityState::Busy,
-                    "input-submit",
+                    StatusSource::InputSubmit,
                     &self.agent_status(session_id),
                 ) {
                     log::error!(
@@ -662,7 +648,10 @@ impl SessionManager {
                 .send_key(&rt_session, "Enter")
                 .map_err(Into::into);
             if result.is_ok() {
-                session.completion_armed = true;
+                session.model.apply(
+                    SessionEvent::ArmCompletion,
+                    crate::session::clock::state_now(),
+                );
             }
             result
         } else {
@@ -855,7 +844,7 @@ impl SessionManager {
     }
 
     pub fn forget_session_state(&self, session_id: &str) {
-        if let Some(state) = self.session_state(session_id) {
+        if let Some(state) = self.raw_session_state(session_id) {
             let mut state = state.lock().unwrap();
             state.output_seq = 0;
             state.last_requested_size = None;

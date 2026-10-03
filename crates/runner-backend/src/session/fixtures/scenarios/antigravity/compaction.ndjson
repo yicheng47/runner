@@ -1,0 +1,6 @@
+{"runtime":"antigravity","name":"compaction","rules":[2,8],"bugs":[],"known_wrong":[],"evidence":"The current Antigravity hook catalog has no approval, question or compaction event; PTY output and local inputs pin the unchanged semantic limitation."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":200,"event":"output","bytes":"Compacting sample context"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"hook","report":{"hook_event_name":"Stop","fullyIdle":true,"error":""}}
+{"ms":2600,"event":"completion"}

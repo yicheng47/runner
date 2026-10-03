@@ -1,0 +1,8 @@
+{"runtime":"copilot","name":"api-error","rules":[7,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Codex and Copilot do not publish failures from ErrorOccurred in the current adapter."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"ErrorOccurred","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":600,"event":"completion"}
+{"ms":700,"event":"viewed"}

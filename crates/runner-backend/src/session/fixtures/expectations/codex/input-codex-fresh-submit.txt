@@ -1,0 +1,18 @@
+runtime=codex name=input-codex-fresh-submit rules=[5] bugs=[766] known_wrong=[]
+session_status_rows=published
+0 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+0 quiescent=false result={"gate":"ready"}
+0 quiescent=true delivery=["DeliveryFinished"]
+186 quiescent=false
+186 result={"gate":"drafting","composer_visible":true}
+186
+224
+224 result={"gate":"recently_typing","remaining_ms":2000}
+224
+224
+224 result={"gate":"drafting","composer_visible":true}
+224
+225 quiescent=true delivery=["InputCleared"]
+225 quiescent=false result={"gate":"ready"}
+225 quiescent=true delivery=["DeliveryFinished"]

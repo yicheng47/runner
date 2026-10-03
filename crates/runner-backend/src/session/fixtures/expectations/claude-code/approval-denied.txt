@@ -1,0 +1,21 @@
+runtime=claude-code name=approval-denied rules=[6,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/working/hook detail="using_tools"
+  busy@hook [running/working/hook detail="using_tools"]
+600 status=running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"approval","owners":["tool-1"],"since":1767225600600}] quiescent=false
+  busy@hook [running/working/hook detail="using_tools" interactions=[{"id":"claude-1","reason":"approval","owners":["tool-1"],"since":1767225600600}]]
+700
+800 result={"gate":"human_interaction"}
+900 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=true delivery=["InputCleared"]
+  idle@hook [running/ready/hook outcome="interrupted"]
+1000 quiescent=false result={"gate":"ready"}
+1100 quiescent=true delivery=["DeliveryFinished"]
+1200 result={"completion_consumed":false,"viewed":false}

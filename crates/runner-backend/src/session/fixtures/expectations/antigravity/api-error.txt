@@ -1,0 +1,14 @@
+runtime=antigravity name=api-error rules=[7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300 quiescent=false delivery=["InputQueueDrained"]
+2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/working/baseline]
+2500 status=running/working/hook
+  busy@hook [running/working/hook]
+2600 status=running/ready/hook outcome="failed" failed_since=1767225602600 activity="idle" completion_armed=false
+  idle@hook [running/ready/hook outcome="failed" failed_since=1767225602600]
+2700 result={"completion_consumed":false,"viewed":false}
+2800 status=running/ready/hook outcome="failed"

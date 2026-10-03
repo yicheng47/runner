@@ -127,30 +127,36 @@ fn local_input_byte_classes_remain_the_unobserved_fallback() {
 
     let now = Instant::now();
     let mut state = SessionState::default();
-    assert!(state.observed_input.is_none());
+    assert!(state.model.observed_input().is_none());
     update_local_input_state(&mut state, classify_local_input(b"draft"), now);
-    assert!(state.local_input_pending);
-    assert_eq!(state.last_local_input_at, Some(now));
+    assert!(state.model.local_input_pending());
+    assert_eq!(state.model.last_local_input_at(), Some(now));
 
     update_local_input_state(&mut state, classify_local_input(b"\r"), now);
-    assert!(!state.local_input_pending);
-    assert!(state.last_local_input_at.is_none());
+    assert!(!state.model.local_input_pending());
+    assert!(state.model.last_local_input_at().is_none());
 
     update_local_input_state(&mut state, classify_local_input(b"\x1b[D"), now);
-    assert!(!state.local_input_pending);
-    assert_eq!(state.last_local_input_at, Some(now));
+    assert!(!state.model.local_input_pending());
+    assert_eq!(state.model.last_local_input_at(), Some(now));
 
-    state.local_input_pending = true;
+    state.model.apply(
+        SessionEvent::TestPending(true),
+        crate::session::clock::state_now(),
+    );
     for escape in [b"\x1b".as_slice(), b"\x1b[27u"] {
         update_local_input_state(&mut state, classify_local_input(escape), now);
-        assert!(state.local_input_pending);
-        assert_eq!(state.last_local_input_at, Some(now));
+        assert!(state.model.local_input_pending());
+        assert_eq!(state.model.last_local_input_at(), Some(now));
     }
     for interrupt in [b"\x03".as_slice(), b"\x1b[99;5u"] {
-        state.local_input_pending = true;
+        state.model.apply(
+            SessionEvent::TestPending(true),
+            crate::session::clock::state_now(),
+        );
         update_local_input_state(&mut state, classify_local_input(interrupt), now);
-        assert!(!state.local_input_pending);
-        assert!(state.last_local_input_at.is_none());
+        assert!(!state.model.local_input_pending());
+        assert!(state.model.last_local_input_at().is_none());
     }
 }
 
@@ -159,17 +165,18 @@ fn enter_while_observed_idle_is_activity_only() {
     use super::output::{classify_local_input, update_local_input_state};
 
     let now = Instant::now();
-    let mut state = SessionState {
-        observed_input: Some(ObservedInput {
+    let mut state = SessionState::default();
+    state.model.apply(
+        SessionEvent::TestObserved(ObservedInput {
             state: InputState::Idle,
             since: now,
             composer_visible: true,
         }),
-        ..SessionState::default()
-    };
+        crate::session::clock::state_now(),
+    );
     update_local_input_state(&mut state, classify_local_input(b"\r"), now);
-    assert!(!state.local_input_pending);
-    assert_eq!(state.last_local_input_at, Some(now));
+    assert!(!state.model.local_input_pending());
+    assert_eq!(state.model.last_local_input_at(), Some(now));
 }
 
 #[test]
@@ -181,8 +188,14 @@ fn observed_input_tier_precedes_the_byte_latch_and_hidden_drafts_park() {
     {
         let state = manager.session_state(session_id).unwrap();
         let mut state = state.lock().unwrap();
-        state.local_input_pending = true;
-        state.last_local_input_at = None;
+        state.model.apply(
+            SessionEvent::TestPending(true),
+            crate::session::clock::state_now(),
+        );
+        state.model.apply(
+            SessionEvent::TestInputAt(None),
+            crate::session::clock::state_now(),
+        );
     }
     assert_eq!(
         manager.reserve_delivery(session_id).unwrap(),
@@ -249,7 +262,11 @@ fn observed_input_tier_precedes_the_byte_latch_and_hidden_drafts_park() {
         .unwrap()
         .lock()
         .unwrap()
-        .last_local_input_at = Some(Instant::now());
+        .model
+        .apply(
+            SessionEvent::TestInputAt(Some(Instant::now())),
+            crate::session::clock::state_now(),
+        );
     assert!(matches!(
         manager.reserve_delivery(session_id).unwrap(),
         router::DeliveryReservation::RecentlyTyping(_)
@@ -286,7 +303,11 @@ fn observed_drafting_to_idle_emits_input_cleared() {
         .unwrap()
         .lock()
         .unwrap()
-        .last_local_input_at = Some(Instant::now());
+        .model
+        .apply(
+            SessionEvent::TestInputAt(Some(Instant::now())),
+            crate::session::clock::state_now(),
+        );
     manager.report_input_state(session_id, observation(InputState::Idle));
     assert_eq!(
         capture.0.lock().unwrap().as_slice(),
@@ -297,7 +318,8 @@ fn observed_drafting_to_idle_emits_input_cleared() {
         .unwrap()
         .lock()
         .unwrap()
-        .last_local_input_at
+        .model
+        .last_local_input_at()
         .is_none());
 
     capture.0.lock().unwrap().clear();

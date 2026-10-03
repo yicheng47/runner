@@ -1,0 +1,12 @@
+{"runtime":"pi","name":"tool-turn","rules":[2,8],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":500,"event":"hook","report":{"hook_event_name":"tool_execution_start","session_id":"11111111-1111-4111-8111-111111111111","toolCallId":"tool-1","toolName":"bash"}}
+{"ms":600,"event":"output","bytes":"tool output","quiet":true}
+{"ms":2800,"event":"tick"}
+{"ms":2900,"event":"hook","report":{"hook_event_name":"tool_execution_end","session_id":"11111111-1111-4111-8111-111111111111","toolCallId":"tool-1","toolName":"bash"}}
+{"ms":3000,"event":"hook","report":{"hook_event_name":"message_end","session_id":"11111111-1111-4111-8111-111111111111","stopReason":"stop"}}
+{"ms":3100,"event":"hook","report":{"hook_event_name":"agent_settled","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":3200,"event":"completion"}

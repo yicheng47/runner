@@ -1,0 +1,2 @@
+{"runtime":"codex","name":"custom-home","rules":[],"bugs":[781],"known_wrong":[781],"pending_turn":false}
+{"ms":100,"event":"capture_home"}

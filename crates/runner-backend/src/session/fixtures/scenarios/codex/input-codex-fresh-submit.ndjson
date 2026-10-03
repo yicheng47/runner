@@ -1,0 +1,16 @@
+{"runtime":"codex","name":"input-codex-fresh-submit","rules":[5],"bugs":[766],"known_wrong":[],"composer_fixture":"input-codex-fresh-submit","evidence":"Composer observations pinned to runner-terminal recorded replay expectations; runner-terminal tests verify their producer."}
+{"ms":0,"event":"composer","state":"idle","visible":true}
+{"ms":0,"event":"reserve"}
+{"ms":0,"event":"finish"}
+{"ms":186,"event":"composer","state":"drafting","visible":true}
+{"ms":186,"event":"reserve"}
+{"ms":186,"event":"finish"}
+{"ms":224,"event":"composer","state":"submitted","visible":true}
+{"ms":224,"event":"reserve"}
+{"ms":224,"event":"finish"}
+{"ms":224,"event":"composer","state":"drafting","visible":true}
+{"ms":224,"event":"reserve"}
+{"ms":224,"event":"finish"}
+{"ms":225,"event":"composer","state":"idle","visible":true}
+{"ms":225,"event":"reserve"}
+{"ms":225,"event":"finish"}

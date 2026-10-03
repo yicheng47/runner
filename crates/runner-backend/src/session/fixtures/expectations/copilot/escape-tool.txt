@@ -1,0 +1,17 @@
+runtime=copilot name=escape-tool rules=[] bugs=[783] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@hook [running/idle/hook]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+400 status=running/working/hook
+  busy@hook [running/working/hook]
+500 status=running/working/hook detail="using_tools"
+  busy@hook [running/working/hook detail="using_tools"]
+600 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=false delivery=["InputQueueDrained"]
+  idle@hook [running/ready/hook outcome="interrupted"]
+700
+800
+900 result={"completion_consumed":false,"viewed":false}

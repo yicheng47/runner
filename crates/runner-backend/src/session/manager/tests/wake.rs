@@ -145,7 +145,8 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
             .unwrap()
             .lock()
             .unwrap()
-            .suppress_local_input_busy,
+            .model
+            .suppress_local_input_busy(),
         "unsubmitted nudge body must open the suppressed-busy window",
     );
 
@@ -246,7 +247,7 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     let start = Instant::now();
     let outcome = ctx.try_append_session_status(
         SessionActivityState::Idle,
-        "forwarder",
+        crate::session::state::StatusSource::Forwarder,
         &AgentStatus::default(),
     );
     let elapsed = start.elapsed();
@@ -281,7 +282,7 @@ fn forwarder_status_emit_stays_bounded_under_event_log_contention() {
     blocker.unlock().unwrap();
     let outcome = ctx.try_append_session_status(
         SessionActivityState::Busy,
-        "forwarder",
+        crate::session::state::StatusSource::Forwarder,
         &AgentStatus::default(),
     );
     assert!(matches!(outcome, AppendOutcome::Ok));
@@ -311,7 +312,7 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
     assert!(matches!(
         event_log.try_append(ctx.session_status_draft(
             SessionActivityState::Idle,
-            "forwarder",
+            StatusSource::Forwarder,
             &AgentStatus::default()
         )),
         Err(TryAppendError::Contended),
@@ -323,7 +324,7 @@ fn forwarder_status_emit_retries_brief_event_log_contention() {
         started_tx.send(()).unwrap();
         retry_ctx.try_append_session_status(
             SessionActivityState::Idle,
-            "forwarder",
+            crate::session::state::StatusSource::Forwarder,
             &AgentStatus::default(),
         )
     });
@@ -464,7 +465,11 @@ fn synthetic_wake_does_not_overwrite_a_newer_forwarder_transition() {
     let dir = tempfile::tempdir().unwrap();
     let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
     let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
-    mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    mgr.note_forwarder_transition(
+        "session",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder,
+    );
     let (release, blocker) = hold_event_log_lock(&event_log);
 
     let session = mgr.session_state("session").unwrap();
@@ -488,12 +493,12 @@ fn synthetic_wake_does_not_overwrite_a_newer_forwarder_transition() {
         let busy_changed = transition_mgr.note_forwarder_transition(
             "session",
             SessionActivityState::Busy,
-            "forwarder",
+            crate::session::state::StatusSource::Forwarder,
         );
         let idle_changed = transition_mgr.note_forwarder_transition(
             "session",
             SessionActivityState::Idle,
-            "forwarder",
+            crate::session::state::StatusSource::Forwarder,
         );
         transition_done_tx
             .send((busy_changed, idle_changed))
@@ -526,7 +531,11 @@ fn failed_synthetic_wake_append_preserves_activity_and_error_mapping() {
     let dir = tempfile::tempdir().unwrap();
     let event_log = Arc::new(EventLog::open(dir.path()).unwrap());
     let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
-    mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    mgr.note_forwarder_transition(
+        "session",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder,
+    );
     let (release, blocker) = hold_event_log_lock(&event_log);
 
     let error = mgr
@@ -544,7 +553,11 @@ fn failed_synthetic_wake_append_preserves_activity_and_error_mapping() {
     let missing_dir = tempfile::tempdir().unwrap();
     let missing_log = Arc::new(EventLog::open(missing_dir.path()).unwrap());
     let missing_mgr = manager_with_contended_wake_sink(missing_log);
-    missing_mgr.note_forwarder_transition("session", SessionActivityState::Idle, "forwarder");
+    missing_mgr.note_forwarder_transition(
+        "session",
+        SessionActivityState::Idle,
+        crate::session::state::StatusSource::Forwarder,
+    );
     missing_dir.close().unwrap();
 
     let error = missing_mgr

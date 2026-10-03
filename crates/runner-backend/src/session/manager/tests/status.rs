@@ -31,7 +31,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
         .unwrap();
 
     let seeded = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
-    assert_eq!(seeded.source, "spawn");
+    assert_eq!(seeded.source.as_str(), "spawn");
     assert_eq!(
         mgr.activity_snapshot().get(&spawned.id),
         Some(&SessionActivityState::Busy)
@@ -46,7 +46,7 @@ fn direct_chat_status_transition_emits_session_status_busy() {
 
     assert_eq!(ev.session_id, spawned.id);
     assert_eq!(ev.state, SessionActivityState::Busy);
-    assert_eq!(ev.source, "forwarder");
+    assert_eq!(ev.source.as_str(), "forwarder");
 
     mgr.kill(&spawned.id).unwrap();
     assert!(!mgr.activity_snapshot().contains_key(&spawned.id));
@@ -95,7 +95,7 @@ fn direct_chat_status_transition_emits_session_status_idle() {
 
     assert_eq!(ev.session_id, spawned.id);
     assert_eq!(ev.state, SessionActivityState::Idle);
-    assert_eq!(ev.source, "forwarder");
+    assert_eq!(ev.source.as_str(), "forwarder");
 
     mgr.kill(&spawned.id).unwrap();
 }
@@ -209,7 +209,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
     mgr.inject_direct_stdin(&spawned.id, b"\r", cap.as_ref())
         .unwrap();
     let submitted = wait_for_session_status_event(&cap, &spawned.id, SessionActivityState::Busy);
-    assert_eq!(submitted.source, "input-submit");
+    assert_eq!(submitted.source.as_str(), "input-submit");
     assert_eq!(
         mgr.activity_snapshot().get(&spawned.id),
         Some(&SessionActivityState::Busy)
@@ -462,7 +462,8 @@ fn mission_typing_stays_idle_until_submit() {
             .unwrap()
             .lock()
             .unwrap()
-            .suppress_local_input_busy,
+            .model
+            .suppress_local_input_busy(),
         "the idle transition must clear local-input suppression",
     );
 

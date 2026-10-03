@@ -1,0 +1,24 @@
+runtime=codex name=title-authority rules=[1,2,3] bugs=[687] known_wrong=[]
+session_status_rows=published
+100 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300
+2400 quiescent=false delivery=["InputQueueDrained"]
+2500 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/working/baseline]
+2600
+2700
+2800 status=running/idle/baseline activity="idle"
+  idle@forwarder [running/idle/baseline]
+2900 status=running/working/hook activity="busy"
+  busy@hook [running/working/hook]
+3000
+5200
+5300 status=running/idle/baseline activity="idle" completion_armed=false
+  idle@baseline [running/idle/baseline]
+5400 status=running/working/baseline activity="busy"
+  busy@forwarder [running/working/baseline]
+5500
+5600 status=running/idle/baseline activity="idle"
+  idle@forwarder [running/idle/baseline]

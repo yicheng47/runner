@@ -21,7 +21,7 @@ impl SessionEvents for ForwarderCapture {
         self.0
             .lock()
             .unwrap()
-            .push(ForwardedEvent::Status(ev.state, ev.source.clone()));
+            .push(ForwardedEvent::Status(ev.state, ev.source.to_string()));
     }
 
     fn exit(&self, _: &ExitEvent) {}
@@ -297,7 +297,7 @@ fn forwarder_preserves_status_transition_between_stream_chunks() {
         RuntimeOutput::Stream(b"before".to_vec()),
         RuntimeOutput::StatusTransition {
             state: SessionActivityState::Idle,
-            source: "forwarder",
+            source: crate::session::state::StatusSource::Forwarder,
         },
         RuntimeOutput::Stream(b"after".to_vec()),
     ]);
@@ -328,4 +328,94 @@ fn forwarder_caps_bursts_without_losing_the_next_chunk() {
             ]
         );
     }
+}
+
+#[test]
+fn pre_attachment_key_effects_do_not_add_status_snapshot_rows() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    let report = || PersistKey {
+        key: Some("assigned-key".into()),
+        generation: "spawn-start".into(),
+        origin: KeyOrigin::Assigned,
+    };
+    assert!(manager
+        .report_key("pending", report(), |_| Ok(true))
+        .unwrap());
+    assert!(manager.status_snapshot().is_empty());
+    assert!(manager.session_state("pending").is_none());
+    assert!(manager
+        .inject_direct_stdin("pending", b"draft", capture().as_ref())
+        .is_err());
+    manager.note_forwarder_transition("pending", SessionActivityState::Busy, StatusSource::Spawn);
+    assert_eq!(
+        manager.status_snapshot()["pending"].lifecycle,
+        Lifecycle::Running
+    );
+    manager.session_state_or_insert("measured-before-spawn");
+    manager
+        .report_key("measured-before-spawn", report(), |_| Ok(true))
+        .unwrap();
+    assert!(manager
+        .status_snapshot()
+        .contains_key("measured-before-spawn"));
+}
+
+#[test]
+fn rejected_key_reports_and_explicit_forget_remove_pre_attachment_entries() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    let report = || PersistKey {
+        key: Some("assigned-key".into()),
+        generation: "spawn-start".into(),
+        origin: KeyOrigin::Assigned,
+    };
+    assert!(!manager
+        .report_key("rejected", report(), |_| Ok(false))
+        .unwrap());
+    assert!(manager
+        .report_key("failed", report(), |_| Err(Error::msg("write failed")))
+        .is_err());
+    assert!(manager.sessions.lock().unwrap().is_empty());
+
+    manager
+        .report_key("forgotten", report(), |_| Ok(true))
+        .unwrap();
+    assert!(manager.raw_session_state("forgotten").is_some());
+    manager.forget_session_state("forgotten");
+    assert!(manager.sessions.lock().unwrap().is_empty());
+}
+
+#[test]
+fn rejected_key_cleanup_preserves_attachment_and_measurement_during_persistence() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    let report = || PersistKey {
+        key: Some("assigned-key".into()),
+        generation: "spawn-start".into(),
+        origin: KeyOrigin::Assigned,
+    };
+    manager
+        .report_key("attached", report(), |_| {
+            install_test_session_handle(&manager, "attached");
+            Ok(false)
+        })
+        .unwrap();
+    assert!(manager
+        .session_state("attached")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .is_some());
+
+    assert!(manager
+        .report_key("measured", report(), |_| {
+            manager
+                .session_state_or_insert("measured")
+                .lock()
+                .unwrap()
+                .last_requested_size = Some((120, 40));
+            Err(Error::msg("write failed"))
+        })
+        .is_err());
+    assert_eq!(manager.latest_requested_size("measured"), Some((120, 40)));
+    assert_eq!(manager.sessions.lock().unwrap().len(), 2);
 }

@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 // Internal runtime abstraction for the session layer. The trait is the
 // seam between the manager and whoever owns the terminal process. The
 // current implementation is the in-process portable-pty runtime; a
@@ -143,11 +144,10 @@ pub enum RuntimeOutput {
     CodexSessionStart(String),
     StatusBridgeFailed,
     /// Forwarder-inferred busy/idle transition. `source` is
-    /// `"forwarder"` for these synthetic events. Static-str because
-    /// producer values are known at compile time.
+    /// `StatusSource::Forwarder` for these synthetic events.
     StatusTransition {
         state: SessionActivityState,
-        source: &'static str,
+        source: StatusSource,
     },
 }
 
@@ -307,7 +307,7 @@ mod tests {
         tx.send(RuntimeOutput::Stream(b"hello".to_vec())).unwrap();
         tx.send(RuntimeOutput::StatusTransition {
             state: SessionActivityState::Idle,
-            source: "forwarder",
+            source: StatusSource::Forwarder,
         })
         .unwrap();
         drop(tx);
@@ -318,7 +318,7 @@ mod tests {
             output.try_recv().unwrap(),
             RuntimeOutput::StatusTransition {
                 state: SessionActivityState::Idle,
-                source: "forwarder",
+                source: StatusSource::Forwarder,
             }
         ));
         assert_eq!(

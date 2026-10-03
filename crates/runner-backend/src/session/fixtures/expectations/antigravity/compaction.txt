@@ -1,0 +1,10 @@
+runtime=antigravity name=compaction rules=[2,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  busy@hook [running/working/hook]
+200
+2400
+2500 status=running/ready/hook outcome="completed" activity="idle"
+  idle@hook [running/ready/hook outcome="completed"]
+2600 status=running/ready/hook outcome="completed" unread_since=1767225602600 completion_armed=false result={"completion_consumed":true,"viewed":false}

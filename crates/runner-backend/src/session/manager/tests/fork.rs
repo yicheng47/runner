@@ -374,6 +374,7 @@ fn fork_materialization_missing_thread_event_removes_row_and_tab() {
     assert_eq!(updates.len(), 2);
     let fork_id = &updates[0].session_id;
     assert_eq!(updates[1].session_id, *fork_id);
+    assert!(!mgr.sessions.lock().unwrap().contains_key(fork_id));
     assert!(crate::repo::session::get_row(&pool.get().unwrap(), fork_id)
         .unwrap()
         .is_none());

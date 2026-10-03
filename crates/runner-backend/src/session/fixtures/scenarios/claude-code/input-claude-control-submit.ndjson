@@ -1,0 +1,16 @@
+{"runtime":"claude-code","name":"input-claude-control-submit","rules":[5],"bugs":[766],"known_wrong":[],"composer_fixture":"input-claude-control-submit","evidence":"Composer observations pinned to runner-terminal recorded replay expectations; runner-terminal tests verify their producer."}
+{"ms":0,"event":"composer","state":"idle","visible":true}
+{"ms":0,"event":"reserve"}
+{"ms":0,"event":"finish"}
+{"ms":5,"event":"composer","state":"drafting","visible":true}
+{"ms":5,"event":"reserve"}
+{"ms":5,"event":"finish"}
+{"ms":210,"event":"composer","state":"submitted","visible":true}
+{"ms":210,"event":"reserve"}
+{"ms":210,"event":"finish"}
+{"ms":212,"event":"composer","state":"drafting","visible":true}
+{"ms":212,"event":"reserve"}
+{"ms":212,"event":"finish"}
+{"ms":227,"event":"composer","state":"idle","visible":true}
+{"ms":227,"event":"reserve"}
+{"ms":227,"event":"finish"}

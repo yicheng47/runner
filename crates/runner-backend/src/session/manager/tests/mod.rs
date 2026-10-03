@@ -12,6 +12,7 @@ mod launch_gate;
 mod mission_lifecycle;
 mod permissions;
 mod pi;
+mod replay;
 mod resume;
 mod runtime_direct;
 mod runtime_override;
@@ -187,10 +188,10 @@ impl FakeRuntime {
     }
 
     fn push_status(&self, i: usize, state: SessionActivityState) {
-        self.push_status_from(i, state, "forwarder");
+        self.push_status_from(i, state, StatusSource::Forwarder);
     }
 
-    fn push_status_from(&self, i: usize, state: SessionActivityState, source: &'static str) {
+    fn push_status_from(&self, i: usize, state: SessionActivityState, source: StatusSource) {
         let spawns = self.spawns.lock().unwrap();
         if let Some(tx) = spawns.get(i).and_then(|s| s.tx.as_ref()) {
             let _ = tx.send(RuntimeOutput::StatusTransition { state, source });

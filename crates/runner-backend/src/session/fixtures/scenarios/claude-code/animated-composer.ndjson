@@ -1,0 +1,7 @@
+{"runtime":"claude-code","name":"animated-composer","rules":[5],"bugs":[583],"known_wrong":[],"pending_turn":false}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"input","bytes":"draft"}
+{"ms":2400,"event":"output","bytes":"\rcomposer frame 1"}
+{"ms":2500,"event":"output","bytes":"\rcomposer frame 2"}
+{"ms":4700,"event":"tick"}
+{"ms":4800,"event":"reserve"}

@@ -1,0 +1,8 @@
+{"runtime":"codex","name":"key-guards","rules":[10],"bugs":[],"known_wrong":[]}
+{"ms":100,"event":"key","mode":"capture","key":"33333333-3333-4333-8333-333333333333"}
+{"ms":200,"event":"key","mode":"capture","key":"44444444-4444-4444-8444-444444444444"}
+{"ms":300,"event":"key","mode":"rekey","key":"55555555-5555-4555-8555-555555555555"}
+{"ms":400,"event":"key","mode":"rekey","key":"old-generation","stale":true}
+{"ms":500,"event":"exit","code":1,"crashed":true}
+{"ms":600,"event":"key","mode":"rekey","key":"after-exit"}
+{"ms":700,"event":"key","mode":"capture","key":"after-exit"}

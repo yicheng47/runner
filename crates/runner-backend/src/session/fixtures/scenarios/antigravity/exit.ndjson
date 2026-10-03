@@ -1,0 +1,12 @@
+{"runtime":"antigravity","name":"exit","rules":[10],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Late hook reports remain unread after watcher teardown; explicit observations model snapshots already in flight when the process exited."}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"input","bytes":"sample"}
+{"ms":2400,"event":"input","bytes":"\r"}
+{"ms":2500,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2600,"event":"exit","code":1,"crashed":true}
+{"ms":2700,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2725,"event":"observation","observation":{"activity":"working","source":"hook","outcome":null,"interactions":[],"detail":"using_tools"}}
+{"ms":2750,"event":"observation","observation":{"activity":"ready","source":"hook","outcome":"completed","interactions":[],"detail":null}}
+{"ms":2775,"event":"completion"}
+{"ms":2800,"event":"reserve"}
+{"ms":2900,"event":"viewed"}

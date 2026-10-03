@@ -68,6 +68,8 @@ Only expose verified model/effort combinations. Some CLIs silently select a defa
 
 Persist the agent's conversation key separately from Runner's session ID. Either assign a key the CLI accepts or capture it from a source tied to that process. Never guess from the newest global conversation or “last session in this cwd”; simultaneous slots can share a directory.
 
+In #791 PR 1, assigned keys and every capture/rekey report pass through `SessionModel::apply` and produce a persistence effect. The model records the key, origin and row start generation after persistence succeeds. The effect executor retains both existing repository paths: rekey requires the same start time and a running row; capture requires the same start time and a NULL key. Parsing, capture locations and resume probes keep their current behavior.
+
 Track identity changes during a running process when native commands such as `/new`, `/clear`, `/fork`, or `/resume` replace the active conversation. Ignore stale reports from an earlier spawn. Handle lazy conversation creation, when a blank chat has no key until its first message.
 
 Resume must open the recorded conversation without duplicating the cold-start prompt. Probe the runtime's conversation store with its actual cwd/home rules. If history is missing, follow Runner's established fresh-start or unavailable behavior for that entry point; never claim that a fresh conversation restored history. Update the key if the CLI itself falls back to a new conversation.
@@ -75,6 +77,8 @@ Resume must open the recorded conversation without duplicating the cold-start pr
 **Accept:** stop and resume, quit and relaunch Runner, switch conversations in the TUI and resume again, and remove only a disposable test conversation to exercise missing history. Check two concurrent sessions in one cwd and a late report from a previous process. A runtime with no reliable continuation mechanism does not meet this first-class runtime contract; fork is a separate P2 capability.
 
 ### P0.8 Honest status and capability boundaries
+
+The manager reduces lifecycle, baseline transitions, watcher snapshots, local input, composer observations, bridge loss, completion/attention and router wake through the pure `session/state/` model. Time is supplied by the caller. The PTY detector still filters byte/title/startup evidence, and watchers still return snapshots until #791 phase 2. Reducer effects use the existing publication and notification order, including rereading attention after the completion callback and checking the reserved revision after a router append. No lock or thread is added.
 
 Wire process lifecycle and the existing terminal-activity baseline even if no semantic status adapter is available. Estimated activity is an acceptable minimum. Do not infer a successful response, approval request, or human question from output silence. Unsupported controls such as Fork must stay disabled or unavailable through both UI and backend.
 

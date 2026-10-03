@@ -9,6 +9,7 @@
 // for the rationale.
 
 pub(crate) mod claude_rekey;
+pub(crate) mod clock;
 pub mod codex_capture;
 pub(crate) mod hook_feed;
 pub mod launch;
@@ -16,6 +17,7 @@ pub mod manager;
 pub(crate) mod process;
 pub mod pty_runtime;
 pub mod runtime;
+pub mod state;
 pub mod status;
 pub(crate) mod system_prompt;
 pub mod title;

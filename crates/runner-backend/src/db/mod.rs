@@ -42,6 +42,14 @@ pub fn open_in_memory() -> Result<DbPool> {
     build_pool(manager, 1, false)
 }
 
+#[cfg(test)]
+pub(crate) fn test_connection() -> Result<Connection> {
+    let mut conn = Connection::open_in_memory()?;
+    init_connection(&mut conn)?;
+    run_migrations(&mut conn)?;
+    Ok(conn)
+}
+
 fn build_pool(manager: SqliteConnectionManager, max_size: u32, seed: bool) -> Result<DbPool> {
     let pool = Pool::builder().max_size(max_size).build(manager)?;
     let mut conn = pool.get()?;

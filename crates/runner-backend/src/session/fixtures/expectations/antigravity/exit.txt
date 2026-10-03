@@ -1,0 +1,17 @@
+runtime=antigravity name=exit rules=[10] bugs=[] known_wrong=[]
+session_status_rows=published
+2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+  idle@forwarder [running/idle/baseline]
+2300 quiescent=false delivery=["InputQueueDrained"]
+2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["InputCleared"]
+  busy@input-submit [running/working/baseline]
+2500 status=running/working/hook
+  busy@hook [running/working/hook]
+2600 status=error/working/hook exit_code=1 error_since=1767225602600 activity=null completion_armed=false quiescent=false delivery=["Exited"]
+2700
+2725
+2750
+2775 result={"completion_consumed":false,"viewed":false}
+2800 result={"gate":"unavailable"}
+2900 status=error/working/hook exit_code=1

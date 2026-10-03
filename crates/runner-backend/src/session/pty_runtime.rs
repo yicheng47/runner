@@ -1,3 +1,4 @@
+use crate::session::state::StatusSource;
 // In-process `SessionRuntime` implementation over `portable-pty`.
 //
 // One PtyRuntime instance owns a HashMap of session_id → SessionHandle.
@@ -33,7 +34,7 @@ use super::runtime::{
     OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
     SessionRuntime, SessionStatus, SpawnSpec,
 };
-use crate::runtimes::claude_code::claude_status::{CTRL_C_INTERRUPT, ESCAPE_INTERRUPT};
+use crate::session::state::{CTRL_C_INTERRUPT, ESCAPE_INTERRUPT};
 
 const RUNTIME_LABEL: &str = "native-pty";
 // Typical ConPTY redraws can fit in one read; the forwarder coalesces larger bursts.
@@ -686,7 +687,7 @@ fn record_exit_status(handle: &SessionHandle, status: ExitStatus) {
 
 // --- Reader thread ------------------------------------------------------
 
-struct IdleDetector {
+pub(crate) struct IdleDetector {
     last_byte: Instant,
     current: SessionActivityState,
     threshold: Duration,
@@ -896,7 +897,15 @@ fn codex_rename_suffix(title: &str) -> Option<&str> {
 
 impl IdleDetector {
     fn new(threshold: Duration, codex_pending_turn: Option<bool>) -> Self {
-        let mut detector = Self::new_at(threshold, Instant::now());
+        Self::with_startup_at(threshold, codex_pending_turn, Instant::now())
+    }
+
+    pub(crate) fn with_startup_at(
+        threshold: Duration,
+        codex_pending_turn: Option<bool>,
+        now: Instant,
+    ) -> Self {
+        let mut detector = Self::new_at(threshold, now);
         detector.codex_title = codex_pending_turn.map(|_| CodexTitleHint::default());
         detector.codex_startup = codex_pending_turn.map(|pending_turn| CodexStartup {
             pending_turn,
@@ -910,7 +919,7 @@ impl IdleDetector {
         detector
     }
 
-    fn new_at(threshold: Duration, now: Instant) -> Self {
+    pub(crate) fn new_at(threshold: Duration, now: Instant) -> Self {
         Self {
             last_byte: now,
             current: SessionActivityState::Busy,
@@ -926,7 +935,7 @@ impl IdleDetector {
         self.on_output_at(bytes, in_resize_grace, Instant::now())
     }
 
-    fn on_output_at(
+    pub(crate) fn on_output_at(
         &mut self,
         bytes: &[u8],
         in_resize_grace: bool,
@@ -964,6 +973,10 @@ impl IdleDetector {
     }
 
     fn on_input(&mut self, bytes: &[u8]) {
+        self.on_input_at(bytes, Instant::now());
+    }
+
+    pub(crate) fn on_input_at(&mut self, bytes: &[u8], now: Instant) {
         if bytes == b"\r" {
             let title_was_idle = self
                 .codex_title
@@ -974,7 +987,7 @@ impl IdleDetector {
             }
             if title_was_idle {
                 self.current = SessionActivityState::Busy;
-                self.last_byte = Instant::now();
+                self.last_byte = now;
                 self.input_transition = true;
             }
         }
@@ -984,14 +997,14 @@ impl IdleDetector {
                 if startup.input_pending && !startup.pending_turn {
                     startup.submitted_input = true;
                     self.current = SessionActivityState::Busy;
-                    self.last_byte = Instant::now();
+                    self.last_byte = now;
                 }
                 startup.input_pending = false;
                 self.input_transition = true;
                 if (startup.pending_turn || startup.submitted_input) && !startup.hooks_available {
                     self.codex_startup = None;
                     self.current = SessionActivityState::Busy;
-                    self.last_byte = Instant::now();
+                    self.last_byte = now;
                 }
             } else {
                 use super::manager::{classify_local_input, LocalInputClass};
@@ -1009,7 +1022,7 @@ impl IdleDetector {
         }
     }
 
-    fn hooks_unavailable(&mut self) {
+    pub(crate) fn hooks_unavailable(&mut self) {
         self.hook_owned = false;
         if let Some(title) = self.codex_title.as_mut() {
             title.reset();
@@ -1022,7 +1035,7 @@ impl IdleDetector {
         }
     }
 
-    fn accept_hook(&mut self, observation: &super::status::AgentObservation) -> bool {
+    pub(crate) fn accept_hook(&mut self, observation: &super::status::AgentObservation) -> bool {
         // SessionStart can arrive during the first turn. It cannot cancel an
         // argv/paste prompt already queued for execution.
         if self
@@ -1071,7 +1084,7 @@ impl IdleDetector {
         self.tick_at(Instant::now())
     }
 
-    fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
+    pub(crate) fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
         if let Some(startup) = self
             .codex_startup
             .as_ref()
@@ -1155,7 +1168,7 @@ fn idle_monitor_thread(
             if tx
                 .send(RuntimeOutput::StatusTransition {
                     state,
-                    source: "forwarder",
+                    source: StatusSource::Forwarder,
                 })
                 .is_err()
             {
@@ -1226,7 +1239,7 @@ fn reader_thread(
                     if tx
                         .send(RuntimeOutput::StatusTransition {
                             state,
-                            source: "forwarder",
+                            source: StatusSource::Forwarder,
                         })
                         .is_err()
                     {
@@ -2283,7 +2296,7 @@ mod tests {
                         state: next,
                         source,
                     }) => {
-                        assert_eq!(source, "forwarder");
+                        assert_eq!(source.as_str(), "forwarder");
                         state = Some(next);
                         if next == SessionActivityState::Idle {
                             break;
@@ -2961,7 +2974,7 @@ mod tests {
         while Instant::now() < deadline {
             match stream.recv_timeout(Duration::from_millis(100)) {
                 Ok(RuntimeOutput::StatusTransition { state, source }) => {
-                    assert_eq!(source, "forwarder");
+                    assert_eq!(source.as_str(), "forwarder");
                     statuses.push(state);
                     if statuses
                         .windows(2)
@@ -3485,7 +3498,7 @@ mod tests {
         while Instant::now() < deadline {
             match stream.recv_timeout(Duration::from_millis(100)) {
                 Ok(RuntimeOutput::StatusTransition { state, source }) => {
-                    assert_eq!(source, "forwarder");
+                    assert_eq!(source.as_str(), "forwarder");
                     statuses.push(state);
                     if statuses
                         .windows(2)

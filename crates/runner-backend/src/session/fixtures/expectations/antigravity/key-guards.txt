@@ -1,0 +1,10 @@
+runtime=antigravity name=key-guards rules=[10] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="33333333-3333-4333-8333-333333333333" result={"key_written":true} delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+200 result={"key_written":false}
+300 key="55555555-5555-4555-8555-555555555555" result={"key_written":true}
+400 result={"key_written":false}
+500 status=error/working/baseline exit_code=1 error_since=1767225600500 activity=null quiescent=false delivery=["Exited"]
+600 result={"key_written":false}
+700 result={"key_written":false}

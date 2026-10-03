@@ -1,0 +1,10 @@
+{"runtime":"copilot","name":"bridge-failure","rules":[3],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2600,"event":"tick"}
+{"ms":2700,"event":"bridge_failed"}
+{"ms":2800,"event":"output","bytes":"baseline reply"}
+{"ms":5000,"event":"tick"}
+{"ms":5100,"event":"completion"}

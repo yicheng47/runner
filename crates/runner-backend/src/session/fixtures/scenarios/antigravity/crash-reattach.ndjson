@@ -1,0 +1,25 @@
+{"runtime":"antigravity","name":"crash-reattach","rules":[8,10],"bugs":[670],"known_wrong":[],"pending_turn":false}
+{"ms":2200,"event":"tick"}
+{"ms":2300,"event":"output","bytes":"\u001b[?2004hready"}
+{"ms":4500,"event":"tick"}
+{"ms":4600,"event":"input","bytes":"sample"}
+{"ms":4700,"event":"input","bytes":"\r"}
+{"ms":4800,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":4900,"event":"output","bytes":"sample reply"}
+{"ms":7100,"event":"tick"}
+{"ms":7200,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","fullyIdle":true,"error":""}}
+{"ms":7300,"event":"completion"}
+{"ms":7400,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":7500,"event":"input","bytes":"retained draft"}
+{"ms":7600,"event":"composer","state":"drafting"}
+{"ms":7700,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","fullyIdle":true,"error":"sample failure"}}
+{"ms":7800,"event":"reserve"}
+{"ms":7900,"event":"exit","code":1,"crashed":true}
+{"ms":8000,"event":"respawn"}
+{"ms":8100,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111","generation":"spawn-1"}}
+{"ms":8200,"event":"key","key":"old-spawn-key","mode":"rekey","stale":true}
+{"ms":8300,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":8400,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":8500,"event":"reserve"}
+{"ms":8600,"event":"finish"}
+{"ms":8700,"event":"viewed"}
