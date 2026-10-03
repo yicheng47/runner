@@ -57,7 +57,7 @@ fn normalized_status_snapshot_wait_gate_resolution_and_bridge_failure() {
     manager.publish_observation("status", observation, events.as_ref());
     assert_eq!(
         manager.reserve_delivery("status").unwrap(),
-        router::DeliveryReservation::PendingInput
+        router::DeliveryReservation::LocalInputPending
     );
     assert!(delivered
         .0

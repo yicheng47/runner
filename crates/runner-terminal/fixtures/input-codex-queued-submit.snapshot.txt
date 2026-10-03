@@ -1,0 +1,34 @@
+cols=106 rows=33 cursor=29,2
+|› Reply exactly QA766_FILLED. No tools.
+|• QA766_FILLED
+|
+|  Worked for 1s • 11:04 AM
+|
+|
+|› [inbox] new message from @human — run `runner msg read` to view.
+|
+|
+|• Ran runner msg read
+|  └   id:
+|                                       @human -> @qa766-slot: QA766_FILLED_NUDGE: Reply exactly ACK QA766…
+|      id:
+|    + 2 lines (ctrl+t to expand)
+|
+|• ACK QA766_FILLED_NUDGE
+|
+|  Worked for 3s • 11:05 AM
+|
+|
+|› Run sleep 20 in the foreground, then reply exactly QA766_WORK_DONE. Do not use other tools.
+|
+|
+|◦ Working (10s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+|
+|• Messages to be submitted after next tool call (press esc to interrupt and send immediately)
+|  ↳ Reply exactly QA766_QUEUED. No tools.
+|
+|
+|› Ask Codex to do anything
+|
+|
+|  ? for shortcuts                                                                ⚠ 1 warning · f2 to view

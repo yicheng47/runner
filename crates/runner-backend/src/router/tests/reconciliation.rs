@@ -9,7 +9,7 @@ fn reconciliation_tick_does_not_churn_blocked_notifications() {
     set_unread(&router, "impl", 1);
     injector.set_pending("S-IMPL");
     router
-        .inject_inbox_nudge("impl", b"[inbox] waiting")
+        .inject_inbox_nudge("impl", b"[inbox] waiting", None)
         .unwrap();
     router.set_status("impl".into(), super::SessionActivityState::Idle);
 
@@ -137,7 +137,7 @@ fn reconciliation_tick_does_not_duplicate_a_parked_nudge() {
     );
     injector.set_pending("S-IMPL");
     router
-        .inject_inbox_nudge("impl", b"[inbox] original nudge")
+        .inject_inbox_nudge("impl", b"[inbox] original nudge", None)
         .unwrap();
     router.update_inbox(&crate::event_bus::InboxUpdate {
         mission_id: "mission-1".into(),

@@ -132,7 +132,8 @@ impl StdinInjector for SessionManager {
 pub enum DeliveryReservation {
     Unavailable,
     Ready(u64),
-    PendingInput,
+    Drafting { composer_visible: bool },
+    LocalInputPending,
     HumanInteraction,
     RecentlyTyping(Duration),
     InFlight,
@@ -211,6 +212,7 @@ struct QueuedDelivery {
     kind: DeliveryKind,
     body: Vec<u8>,
     count: usize,
+    message_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -221,6 +223,7 @@ struct SessionOutbox {
     pending_input_blocked: bool,
     retry_scheduled: bool,
     retry_generation: u64,
+    hold_reason: Option<DeliveryReservation>,
 }
 
 impl SessionOutbox {
@@ -235,6 +238,7 @@ impl SessionOutbox {
                 .find(|queued| queued.kind == DeliveryKind::InboxNudge)
             {
                 existing.count += delivery.count;
+                existing.message_id = existing.message_id.take().max(delivery.message_id);
                 existing.body = format!(
                     "[inbox] {} new messages — run `runner msg read` to view.",
                     existing.count
@@ -244,6 +248,31 @@ impl SessionOutbox {
             }
         }
         self.deliveries.push_back(delivery);
+    }
+
+    fn hold(&mut self, session_id: &str, reason: DeliveryReservation) {
+        if self.hold_reason == Some(reason)
+            || matches!(
+                (self.hold_reason, reason),
+                (
+                    Some(DeliveryReservation::RecentlyTyping(_)),
+                    DeliveryReservation::RecentlyTyping(_)
+                )
+            )
+        {
+            return;
+        }
+        self.hold_reason = Some(reason);
+        log::info!(
+            "router delivery held session={session_id} handle=@{} reason={reason:?}",
+            self.handle
+        );
+    }
+
+    fn release(&mut self, session_id: &str, trigger: &str) {
+        if let Some(reason) = self.hold_reason.take() {
+            log::info!("router delivery released session={session_id} handle=@{} reason={reason:?} trigger={trigger}", self.handle);
+        }
     }
 }
 
@@ -274,6 +303,8 @@ struct RouterState {
     pending_sessions: HashSet<String>,
     live_sessions: HashSet<String>,
     unread_by_handle: HashMap<String, usize>,
+    watermark_by_handle: HashMap<String, String>,
+    latest_inbox_id: HashMap<String, String>,
     last_reconciliation_nudge: HashMap<String, Instant>,
 }
 
@@ -581,15 +612,20 @@ impl Router {
             .map(|_| ())
     }
 
-    pub(crate) fn inject_inbox_nudge(&self, handle: &str, body: &[u8]) -> Result<()> {
-        self.inject_delivery(handle, body, DeliveryKind::InboxNudge)
+    pub(crate) fn inject_inbox_nudge(
+        &self,
+        handle: &str,
+        body: &[u8],
+        message_id: Option<&str>,
+    ) -> Result<()> {
+        self.inject_delivery_at(handle, body, DeliveryKind::InboxNudge, message_id, None)
             .map(|_| ())
     }
 
     /// Reserve a clean input box through the delayed Enter, or park the
     /// payload until the session manager reports that local input cleared.
     fn inject_delivery(&self, handle: &str, body: &[u8], kind: DeliveryKind) -> Result<bool> {
-        self.inject_delivery_at(handle, body, kind, None)
+        self.inject_delivery_at(handle, body, kind, None, None)
     }
 
     fn inject_delivery_at(
@@ -597,12 +633,14 @@ impl Router {
         handle: &str,
         body: &[u8],
         kind: DeliveryKind,
+        message_id: Option<&str>,
         reconciliation: Option<(Instant, Duration)>,
     ) -> Result<bool> {
         let delivery = QueuedDelivery {
             kind,
             body: body.to_vec(),
             count: 1,
+            message_id: message_id.map(str::to_owned),
         };
         // A delayed bare Enter has no payload left to deliver after the
         // user's draft clears, so parking it would create a stray submit.
@@ -634,8 +672,15 @@ impl Router {
                     return Ok(false);
                 }
             }
+            let mut delivery = delivery;
+            if reconciliation.is_some() {
+                delivery.message_id = state.latest_inbox_id.get(handle).cloned();
+            }
             if let Some(outbox) = state.outbox_by_session.get_mut(&session_id) {
                 if outbox.submit_in_flight || !outbox.deliveries.is_empty() {
+                    if outbox.submit_in_flight {
+                        outbox.hold(&session_id, DeliveryReservation::InFlight);
+                    }
                     outbox.enqueue(delivery);
                     self.blocked_transition(&mut state, &session_id);
                     return Ok(true);
@@ -654,6 +699,7 @@ impl Router {
                 outbox.handle = handle.to_string();
                 outbox.pending_input_blocked = false;
                 outbox.enqueue(delivery);
+                outbox.hold(&session_id, DeliveryReservation::Unavailable);
                 self.blocked_transition(&mut state, &session_id);
                 drop(state);
                 if first_deferred && !pending_spawn {
@@ -677,6 +723,7 @@ impl Router {
                     outbox.handle = handle.to_string();
                     outbox.pending_input_blocked = false;
                     outbox.enqueue(delivery);
+                    outbox.hold(&session_id, DeliveryReservation::Unavailable);
                     self.blocked_transition(&mut state, &session_id);
                     if first_deferred {
                         deferred_notice = Some(handle.to_string());
@@ -711,12 +758,15 @@ impl Router {
                         outbox.handle = handle.to_string();
                         outbox.pending_input_blocked = false;
                         outbox.enqueue(delivery);
+                        outbox.hold(&session_id, DeliveryReservation::RecentlyTyping(delay));
                         retry = Some((session_id.clone(), delay));
                         self.blocked_transition(&mut state, &session_id);
                     }
                     (session_id, None)
                 }
-                DeliveryReservation::PendingInput | DeliveryReservation::HumanInteraction => {
+                reason @ (DeliveryReservation::Drafting { .. }
+                | DeliveryReservation::LocalInputPending
+                | DeliveryReservation::HumanInteraction) => {
                     if reconciliation.is_some() {
                         return Ok(false);
                     }
@@ -728,6 +778,7 @@ impl Router {
                         outbox.handle = handle.to_string();
                         outbox.pending_input_blocked = true;
                         outbox.enqueue(delivery);
+                        outbox.hold(&session_id, reason);
                         self.blocked_transition(&mut state, &session_id);
                     }
                     (session_id, None)
@@ -744,6 +795,7 @@ impl Router {
                         outbox.handle = handle.to_string();
                         outbox.pending_input_blocked = false;
                         outbox.enqueue(delivery);
+                        outbox.hold(&session_id, DeliveryReservation::InFlight);
                         self.blocked_transition(&mut state, &session_id);
                     }
                     (session_id, None)
@@ -789,6 +841,7 @@ impl Router {
                     handle,
                     RECONCILIATION_NUDGE.as_bytes(),
                     DeliveryKind::InboxNudge,
+                    None,
                     Some((now, backoff)),
                 ) {
                     Ok(nudged) => nudged,
@@ -913,6 +966,9 @@ impl Router {
 
     fn clear_blocked_transitions(&self) {
         let mut state = self.state.lock().unwrap();
+        for (session_id, outbox) in &mut state.outbox_by_session {
+            outbox.release(session_id, "RouterUnmounted");
+        }
         let reported = std::mem::take(&mut state.blocked_unread_by_session);
         for (session_id, _) in reported {
             let Some(handle) = state
@@ -950,6 +1006,28 @@ impl Router {
     }
 
     fn update_inbox(&self, update: &InboxUpdate) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(id) = &update.last_id {
+                state
+                    .latest_inbox_id
+                    .insert(update.role_handle.clone(), id.clone());
+            }
+            if let Some(watermark) = &update.watermark {
+                state
+                    .watermark_by_handle
+                    .insert(update.role_handle.clone(), watermark.clone());
+            }
+        }
+        self.set_unread(&update.role_handle, update.unread_count);
+    }
+
+    fn update_watermark(&self, update: &WatermarkUpdate) {
+        self.state
+            .lock()
+            .unwrap()
+            .watermark_by_handle
+            .insert(update.role_handle.clone(), update.watermark.clone());
         self.set_unread(&update.role_handle, update.unread_count);
     }
 
@@ -960,6 +1038,20 @@ impl Router {
         delivery: QueuedDelivery,
         token: u64,
     ) -> Result<()> {
+        let stale = delivery.kind == DeliveryKind::InboxNudge
+            && delivery.message_id.as_ref().is_some_and(|id| {
+                self.state
+                    .lock()
+                    .unwrap()
+                    .watermark_by_handle
+                    .get(handle)
+                    .is_some_and(|watermark| id <= watermark)
+            });
+        if stale {
+            log::info!("router stale inbox nudge skipped session={session_id} handle=@{handle} message_id={} trigger=InboxRead", delivery.message_id.as_deref().unwrap());
+            self.injector.finish_delivery(session_id, token);
+            return Ok(());
+        }
         if !delivery.body.is_empty() {
             match self
                 .injector
@@ -1002,16 +1094,34 @@ impl Router {
         self.blocked_transition(&mut state, session_id);
     }
 
-    fn flush_outbox(&self, session_id: &str) {
+    fn flush_outbox(&self, session_id: &str, trigger: &str) {
         let handle = {
-            let state = self.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             let Some(outbox) = state.outbox_by_session.get(session_id) else {
                 return;
             };
             if outbox.submit_in_flight || outbox.deliveries.is_empty() {
                 return;
             }
-            outbox.handle.clone()
+            let handle = outbox.handle.clone();
+            let watermark = state.watermark_by_handle.get(&handle).cloned();
+            let outbox = state.outbox_by_session.get_mut(session_id).unwrap();
+            outbox.deliveries.retain(|delivery| {
+                let stale = delivery.kind == DeliveryKind::InboxNudge
+                    && delivery.message_id.as_ref().zip(watermark.as_ref()).is_some_and(|(id, watermark)| id <= watermark);
+                if stale {
+                    log::info!("router stale inbox nudge skipped session={session_id} handle=@{handle} message_id={} trigger={trigger}", delivery.message_id.as_deref().unwrap());
+                }
+                !stale
+            });
+            if outbox.deliveries.is_empty() {
+                outbox.release(session_id, trigger);
+                outbox.pending_input_blocked = false;
+                state.outbox_by_session.remove(session_id);
+                self.blocked_transition(&mut state, session_id);
+                return;
+            }
+            handle
         };
 
         let reservation = match self.injector.reserve_delivery(session_id) {
@@ -1019,10 +1129,14 @@ impl Router {
             Err(error) => {
                 let dropped = {
                     let mut state = self.state.lock().unwrap();
-                    let dropped = state
-                        .outbox_by_session
-                        .remove(session_id)
-                        .map_or(0, |outbox| outbox.deliveries.len());
+                    let dropped =
+                        state
+                            .outbox_by_session
+                            .remove(session_id)
+                            .map_or(0, |mut outbox| {
+                                outbox.release(session_id, "ReservationFailed");
+                                outbox.deliveries.len()
+                            });
                     self.blocked_transition(&mut state, session_id);
                     dropped
                 };
@@ -1038,6 +1152,7 @@ impl Router {
                 state.live_sessions.remove(session_id);
                 if let Some(outbox) = state.outbox_by_session.get_mut(session_id) {
                     outbox.pending_input_blocked = false;
+                    outbox.hold(session_id, DeliveryReservation::Unavailable);
                 }
                 self.blocked_transition(&mut state, session_id);
             }
@@ -1045,15 +1160,18 @@ impl Router {
                 let delivery = {
                     let mut state = self.state.lock().unwrap();
                     let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
+                        drop(state);
                         self.injector.finish_delivery(session_id, token);
                         return;
                     };
                     let Some(delivery) = outbox.deliveries.pop_front() else {
+                        drop(state);
                         self.injector.finish_delivery(session_id, token);
                         return;
                     };
                     outbox.submit_in_flight = true;
                     outbox.pending_input_blocked = false;
+                    outbox.release(session_id, trigger);
                     self.blocked_transition(&mut state, session_id);
                     delivery
                 };
@@ -1070,16 +1188,20 @@ impl Router {
                         return;
                     };
                     outbox.pending_input_blocked = false;
+                    outbox.hold(session_id, DeliveryReservation::RecentlyTyping(delay));
                     self.blocked_transition(&mut state, session_id);
                 }
                 self.schedule_outbox_retry(session_id.to_string(), delay);
             }
-            DeliveryReservation::PendingInput | DeliveryReservation::HumanInteraction => {
+            reason @ (DeliveryReservation::Drafting { .. }
+            | DeliveryReservation::LocalInputPending
+            | DeliveryReservation::HumanInteraction) => {
                 let mut state = self.state.lock().unwrap();
                 let Some(outbox) = state.outbox_by_session.get_mut(session_id) else {
                     return;
                 };
                 outbox.pending_input_blocked = true;
+                outbox.hold(session_id, reason);
                 self.blocked_transition(&mut state, session_id);
             }
             DeliveryReservation::InFlight => {
@@ -1088,6 +1210,7 @@ impl Router {
                     return;
                 };
                 outbox.pending_input_blocked = false;
+                outbox.hold(session_id, DeliveryReservation::InFlight);
                 self.blocked_transition(&mut state, session_id);
             }
         }
@@ -1120,7 +1243,7 @@ impl Router {
                     }
                     outbox.retry_scheduled = false;
                 }
-                router.flush_outbox(&session_id);
+                router.flush_outbox(&session_id, "RecentlyTypingElapsed");
             }
         });
     }
@@ -1153,7 +1276,7 @@ impl Router {
                 if current != Some(generation) {
                     return;
                 }
-                router.flush_outbox(&session_id);
+                router.flush_outbox(&session_id, "InputCleared");
             }
         });
     }
@@ -1183,7 +1306,7 @@ impl Router {
                 }
                 outbox.submit_in_flight = false;
             }
-            router.flush_outbox(&session_id);
+            router.flush_outbox(&session_id, "DeliveryFinished");
             let mut state = router.state.lock().unwrap();
             if state
                 .outbox_by_session
@@ -1341,7 +1464,9 @@ impl SessionDeliveryListener for Router {
             SessionDeliveryEvent::InputCleared => {
                 self.schedule_outbox_flush(session_id.to_string(), INPUT_CLEAR_FLUSH_GRACE);
             }
-            SessionDeliveryEvent::InputQueueDrained => self.flush_outbox(session_id),
+            SessionDeliveryEvent::InputQueueDrained => {
+                self.flush_outbox(session_id, "InputQueueDrained")
+            }
             SessionDeliveryEvent::DeliveryFinished => {
                 self.schedule_delivery_cooldown(session_id.to_string());
             }
@@ -1355,17 +1480,21 @@ impl SessionDeliveryListener for Router {
                     outbox.retry_generation = outbox.retry_generation.wrapping_add(1);
                 }
                 drop(state);
-                self.flush_outbox(session_id);
+                self.flush_outbox(session_id, "Respawned");
             }
             SessionDeliveryEvent::Exited => {
                 let dropped = {
                     let mut state = self.state.lock().unwrap();
                     state.pending_sessions.remove(session_id);
                     state.live_sessions.remove(session_id);
-                    let dropped = state
-                        .outbox_by_session
-                        .remove(session_id)
-                        .map_or(0, |outbox| outbox.deliveries.len());
+                    let dropped =
+                        state
+                            .outbox_by_session
+                            .remove(session_id)
+                            .map_or(0, |mut outbox| {
+                                outbox.release(session_id, "Exited");
+                                outbox.deliveries.len()
+                            });
                     self.blocked_transition(&mut state, session_id);
                     dropped
                 };
@@ -1523,7 +1652,7 @@ impl BusEmitter for RouterSubscriber {
         self.0.update_inbox(ev);
     }
     fn watermark_advanced(&self, ev: &WatermarkUpdate) {
-        self.0.set_unread(&ev.role_handle, ev.unread_count);
+        self.0.update_watermark(ev);
     }
 }
 

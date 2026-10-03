@@ -174,7 +174,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
             return;
         }
         let text = format!("[inbox] new message from @{sender} — run `runner msg read` to view.");
-        if let Err(e) = router.inject_inbox_nudge(target, &submit_body(&text)) {
+        if let Err(e) = router.inject_inbox_nudge(target, &submit_body(&text), Some(&event.id)) {
             router.warn(format!("message_nudge injection to @{target} failed: {e}"));
         }
         return;
@@ -190,7 +190,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         .filter(|h| h != sender)
         .collect();
     for handle in handles {
-        if let Err(e) = router.inject_inbox_nudge(&handle, &submit_body(&text)) {
+        if let Err(e) = router.inject_inbox_nudge(&handle, &submit_body(&text), Some(&event.id)) {
             router.warn(format!("message_nudge broadcast to @{handle} failed: {e}"));
         }
     }

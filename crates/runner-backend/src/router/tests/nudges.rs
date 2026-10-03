@@ -1,5 +1,157 @@
 use super::*;
 
+fn read_through(router: &Arc<Router>, handle: &str, watermark: &str, unread_count: usize) {
+    use crate::event_bus::{BusEmitter, WatermarkUpdate};
+    super::super::RouterSubscriber(Arc::clone(router)).watermark_advanced(&WatermarkUpdate {
+        mission_id: "mission-1".into(),
+        role_handle: handle.into(),
+        watermark: watermark.into(),
+        unread_count,
+    });
+}
+
+#[test]
+fn concurrent_stale_prune_releases_reservation_without_deadlocking_later_delivery() {
+    use std::sync::mpsc;
+
+    let (router, injector, log, _dir) = fixture(
+        vec![slot_with_role("lead", true), slot_with_role("impl", false)],
+        &[("lead", "S-LEAD"), ("impl", "S-RACE-766")],
+    );
+    injector.set_pending("S-RACE-766");
+    let event = log
+        .append(message("lead", Some("impl"), "held before read"))
+        .unwrap();
+    router.handle_event(&event);
+    {
+        let mut input = injector.input.lock().unwrap();
+        let input = input.get_mut("S-RACE-766").unwrap();
+        input.pending = false;
+        input.last_input_at = None;
+    }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    *injector.reservation_pause.lock().unwrap() = Some((entered_tx, resume_rx));
+    let (done_tx, done_rx) = mpsc::channel();
+    let concurrent = Arc::clone(&router);
+    let flush = std::thread::spawn(move || {
+        concurrent.session_delivery_event("S-RACE-766", SessionDeliveryEvent::InputQueueDrained);
+        done_tx.send(()).unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    read_through(&router, "impl", &event.id, 0);
+    router.session_delivery_event("S-RACE-766", SessionDeliveryEvent::InputQueueDrained);
+    assert!(!router
+        .state
+        .lock()
+        .unwrap()
+        .outbox_by_session
+        .contains_key("S-RACE-766"));
+    resume_tx.send(()).unwrap();
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("finish_delivery must return after its synchronous router callback");
+    flush.join().unwrap();
+    assert!(injector.pushes_for("S-RACE-766").is_empty());
+    assert!(!injector.input.lock().unwrap()["S-RACE-766"].in_flight);
+
+    router
+        .inject_and_submit("impl", b"after concurrent prune")
+        .unwrap();
+    wait_until(Duration::from_secs(2), || {
+        injector.pushes_for("S-RACE-766") == ["after concurrent prune", "\r"]
+    });
+    assert_eq!(
+        injector.submitted_bodies_for("S-RACE-766"),
+        ["after concurrent prune"]
+    );
+}
+
+#[test]
+fn read_held_nudge_is_skipped_without_enter_or_busy_and_relays_still_flush() {
+    let (router, injector, log, _dir) = fixture(
+        vec![slot_with_role("lead", true), slot_with_role("impl", false)],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_observed_input("S-IMPL", InputState::Drafting, true);
+    let event = log
+        .append(message("lead", Some("impl"), "read before clearing"))
+        .unwrap();
+    router.handle_event(&event);
+    read_through(&router, "impl", &event.id, 0);
+    injector.set_observed_input("S-IMPL", InputState::Idle, true);
+    router.flush_outbox("S-IMPL", "InputCleared");
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert!(injector.activity_for("S-IMPL").is_none());
+    assert!(!router
+        .state
+        .lock()
+        .unwrap()
+        .outbox_by_session
+        .contains_key("S-IMPL"));
+
+    injector.set_pending("S-IMPL");
+    let event = log
+        .append(message("lead", Some("impl"), "also read"))
+        .unwrap();
+    router.handle_event(&event);
+    router.inject_and_submit("impl", b"required relay").unwrap();
+    read_through(&router, "impl", &event.id, 0);
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_secs(2), || {
+        injector.pushes_for("S-IMPL") == ["required relay", "\r"]
+    });
+    assert_eq!(injector.submitted_bodies_for("S-IMPL"), ["required relay"]);
+}
+
+#[test]
+fn partially_read_coalesced_nudge_preserves_the_newest_unread_message() {
+    let (router, injector, log, _dir) = fixture(
+        vec![slot_with_role("lead", true), slot_with_role("impl", false)],
+        &[("lead", "S-LEAD"), ("impl", "S-IMPL")],
+    );
+    injector.set_pending("S-IMPL");
+    let first = log.append(message("lead", Some("impl"), "first")).unwrap();
+    let second = log.append(message("lead", Some("impl"), "second")).unwrap();
+    router.handle_event(&first);
+    router.handle_event(&second);
+    read_through(&router, "impl", &first.id, 1);
+    injector.clear_pending("S-IMPL");
+    wait_until(Duration::from_secs(2), || {
+        injector.pushes_for("S-IMPL").len() == 2
+    });
+    assert!(injector.submitted_bodies_for("S-IMPL")[0].contains("2 new messages"));
+    assert_eq!(injector.submitted_bodies_for("S-IMPL").len(), 1);
+}
+
+#[test]
+fn broadcast_watermarks_skip_only_the_recipient_who_read() {
+    let (router, injector, log, _dir) = fixture(
+        vec![
+            slot_with_role("lead", true),
+            slot_with_role("impl", false),
+            slot_with_role("reviewer", false),
+        ],
+        &[
+            ("lead", "S-LEAD"),
+            ("impl", "S-IMPL"),
+            ("reviewer", "S-REV"),
+        ],
+    );
+    injector.set_pending("S-IMPL");
+    injector.set_pending("S-REV");
+    let event = log.append(message("lead", None, "broadcast")).unwrap();
+    router.handle_event(&event);
+    read_through(&router, "impl", &event.id, 0);
+    injector.clear_pending("S-IMPL");
+    injector.clear_pending("S-REV");
+    wait_until(Duration::from_secs(2), || {
+        injector.pushes_for("S-REV").len() == 2
+    });
+    assert!(injector.pushes_for("S-IMPL").is_empty());
+    assert_eq!(injector.submitted_bodies_for("S-REV").len(), 1);
+}
+
 #[test]
 fn directed_message_nudges_target_only() {
     // Pull-based inbox routing strands the worker without a stdin

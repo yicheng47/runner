@@ -1,0 +1,34 @@
+cols=106 rows=33 cursor=27,2
+|
+|
+|
+|
+|
+|
+|
+|
+|                                                          …
+|
+|                                         —
+|
+|              …
+|
+|
+|
+|
+|⏺
+|
+|✻                ·
+|
+|❯ Reply exactly QA766_CLAUDE. No tools.
+|
+|✽ Contemplating… (running UserPromptSubmit hooks… 0/3 · 0s)
+|  ⎿  Tip: Use /theme to change the color theme
+|                                                                             copied 7 chars to clipboard
+|
+|❯
+|
+|
+|
+|
+|

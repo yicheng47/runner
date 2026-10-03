@@ -26,6 +26,38 @@ mkdir "$smoke_root/codex" "$smoke_root/claude-code" "$smoke_root/antigravity" "$
 
 On Windows, resolve the development CLI and scratch paths on that machine, use native PowerShell commands with exit-code checks, and follow [Local Windows development](../arch/windows.md#local-windows-development). Do not reuse a Mac path. Windows CI does not replace a native Windows smoke run.
 
+### macOS native control of the debug executable
+
+Computer use may reject the bare `target/debug/Runner` executable as an invalid app. The #777 run and #766 baseline used a temporary `.app` wrapper with a distinct bundle ID to make the exact development build selectable. Build with `make run` first, then stop only the development process started by this test before launching the wrapper. If a development app was already running before the test, obtain authorization before stopping it.
+
+Create the wrapper under the run's canonical scratch root. Copy both the app executable and CLI sidecar from this worktree, and verify the app copy is byte-identical:
+
+```sh
+smoke_bundle="$smoke_root/Runner Smoke Dev.app"
+mkdir -p "$smoke_bundle/Contents/MacOS"
+cp target/debug/Runner "$smoke_bundle/Contents/MacOS/Runner"
+cp target/debug/runner-agent-cli "$smoke_bundle/Contents/MacOS/runner-agent-cli"
+cat > "$smoke_bundle/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Runner</string>
+<key>CFBundleIdentifier</key><string>com.wycstudios.runner.smoke-dev</string>
+<key>CFBundleName</key><string>Runner Smoke Dev</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+cmp target/debug/Runner "$smoke_bundle/Contents/MacOS/Runner"
+cmp target/debug/runner-agent-cli "$smoke_bundle/Contents/MacOS/runner-agent-cli"
+shasum -a 256 target/debug/Runner "$smoke_bundle/Contents/MacOS/Runner"
+"$smoke_bundle/Contents/MacOS/Runner"
+```
+
+The source CLI is `runner-agent-cli`; Runner installs it as `runner` in development app data. On a case-insensitive macOS filesystem, `target/debug/runner` resolves to the `Runner` app executable and must not be used as the CLI sidecar source.
+
+Preserve any recording environment variables on the wrapper launch, such as `RUNNER_RECORD_INPUT_FIXTURE`. When launching from a crew session, unset `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE` and `RUNNER_EVENT_LOG` for the wrapper and external development CLI commands so they do not inherit the implementation mission's identity. Bind computer use to the full `.app` path or its distinct bundle ID, verify its window, and confirm the absolute development CLI still reports `com.wycstudios.runner-dev/mcp.sock`. In the #766 baseline, selecting by bundle ID and clicking the composer before each keyboard action resolved missing terminal input; verify the typed text or recorder input events before proceeding. Debug app-data selection depends on the build, so the distinct bundle ID does not create another data namespace. Record the wrapper path, hash comparison and endpoint in the test evidence. Quit only this wrapper during cleanup and retain it with the evidence unless removal is authorized.
+
 ## Direct-chat matrix
 
 Complete these checks once per required runtime. Use a unique marker such as `SMOKE-<run>-<runtime>-ORIGINAL`, and a different `...-NEW` marker after clearing. Stop repeating passed checks unless the candidate changes or a specific failure needs a targeted retry.
@@ -95,5 +127,7 @@ Stop all processes created by this run, then archive its direct chats and missio
 ```
 
 Verify chats are stopped/archived, missions have zero live sessions and a non-empty archive timestamp, and test rows disappear from Recents. Stop any feed followers. Preserve conversation history and evidence for review. List temporary roles/crews and scratch artifacts retained; do not delete them, branch/worktree data or agent conversation files without the applicable authorization. Leave pre-existing sessions untouched.
+
+Deleting a crew also removes its mission and session metadata, including archived missions. Retain the test crew when preserving those records; archiving its missions is sufficient cleanup. If crew deletion is explicitly authorized, capture final stopped/archived status before deleting it and disclose the resulting loss of Runner metadata in the run record.
 
 Write a dated record in `docs/tests/` with candidate SHA, environment, authorization, exact method, a runtime/platform matrix, observed failures, cleanup and evidence locations. Keep credentials, account identifiers and unrelated conversation content out of committed evidence. Link automated CI separately. Classify each check as Passed, Failed, Blocked or Skipped with a concrete reason; an overall full pass requires every required check to pass. Record regression attribution only when established. For a behavior-preserving refactor, list discovered bugs separately and do not change frozen expectations or fix unrelated behavior to make the smoke green.

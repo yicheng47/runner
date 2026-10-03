@@ -56,6 +56,7 @@ fn escape_preserves_input_but_only_continued_work_can_complete() {
             session.observed_input = Some(ObservedInput {
                 state: InputState::Drafting,
                 since,
+                composer_visible: true,
             });
         }
         manager

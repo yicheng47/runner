@@ -82,6 +82,7 @@ pub struct InputObservation {
 struct ObservedInput {
     state: InputState,
     since: Instant,
+    composer_visible: bool,
 }
 
 /// Trailing debounce for width-changing full-repaint TUI resizes.
@@ -952,7 +953,9 @@ impl SessionManager {
         }
         match session.observed_input {
             Some(observed) if observed.state == InputState::Drafting => {
-                return Ok(router::DeliveryReservation::PendingInput);
+                return Ok(router::DeliveryReservation::Drafting {
+                    composer_visible: observed.composer_visible,
+                });
             }
             Some(observed) if observed.state == InputState::Submitted => {
                 let elapsed = observed.since.elapsed();
@@ -964,7 +967,7 @@ impl SessionManager {
             }
             Some(_) => {}
             None if session.local_input_pending => {
-                return Ok(router::DeliveryReservation::PendingInput);
+                return Ok(router::DeliveryReservation::LocalInputPending);
             }
             None => {}
         }
@@ -998,6 +1001,7 @@ impl SessionManager {
             session.observed_input = Some(ObservedInput {
                 state: observation.state,
                 since: observation.since,
+                composer_visible: observation.composer_visible,
             });
             input_cleared
         };

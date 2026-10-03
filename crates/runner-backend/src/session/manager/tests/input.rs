@@ -163,6 +163,7 @@ fn enter_while_observed_idle_is_activity_only() {
         observed_input: Some(ObservedInput {
             state: InputState::Idle,
             since: now,
+            composer_visible: true,
         }),
         ..SessionState::default()
     };
@@ -185,7 +186,7 @@ fn observed_input_tier_precedes_the_byte_latch_and_hidden_drafts_park() {
     }
     assert_eq!(
         manager.reserve_delivery(session_id).unwrap(),
-        router::DeliveryReservation::PendingInput,
+        router::DeliveryReservation::LocalInputPending,
         "None must retain the byte latch exactly as the fallback tier"
     );
 
@@ -216,7 +217,9 @@ fn observed_input_tier_precedes_the_byte_latch_and_hidden_drafts_park() {
     );
     assert_eq!(
         manager.reserve_delivery(session_id).unwrap(),
-        router::DeliveryReservation::PendingInput
+        router::DeliveryReservation::Drafting {
+            composer_visible: false
+        }
     );
     manager.report_input_state(
         session_id,

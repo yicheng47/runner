@@ -180,7 +180,7 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
                 .publish_observation("codex-status", value, &events);
             assert_eq!(
                 core.sessions.reserve_delivery("codex-status").unwrap(),
-                router::DeliveryReservation::PendingInput
+                router::DeliveryReservation::LocalInputPending
             );
             assert!(state.lock().unwrap().local_input_pending);
             state.lock().unwrap().local_input_pending = false;
@@ -458,7 +458,7 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
                 );
                 assert_eq!(
                     manager.reserve_delivery(id).unwrap(),
-                    router::DeliveryReservation::PendingInput
+                    router::DeliveryReservation::LocalInputPending
                 );
                 manager
                     .inject_direct_stdin(id, b"\r", events.as_ref())

@@ -39,6 +39,7 @@ struct RecordingInjector {
     dead: Mutex<Vec<String>>,
     input: Mutex<HashMap<String, RecordingInputState>>,
     listeners: Mutex<HashMap<String, Vec<Weak<dyn SessionDeliveryListener>>>>,
+    reservation_pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 #[derive(Default)]
@@ -60,6 +61,7 @@ impl RecordingInjector {
             dead: Mutex::new(Vec::new()),
             input: Mutex::new(HashMap::new()),
             listeners: Mutex::new(HashMap::new()),
+            reservation_pause: Mutex::new(None),
         }
     }
 
@@ -256,6 +258,11 @@ impl StdinInjector for RecordingInjector {
     }
 
     fn reserve_delivery(&self, session_id: &str) -> Result<DeliveryReservation> {
+        let pause = self.reservation_pause.lock().unwrap().take();
+        if let Some((entered, resume)) = pause {
+            entered.send(()).unwrap();
+            resume.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
         if self
             .dead
             .lock()
@@ -271,8 +278,8 @@ impl StdinInjector for RecordingInjector {
             return Ok(DeliveryReservation::InFlight);
         }
         match input.observed {
-            Some((InputState::Drafting, _, _)) => {
-                return Ok(DeliveryReservation::PendingInput);
+            Some((InputState::Drafting, _, composer_visible)) => {
+                return Ok(DeliveryReservation::Drafting { composer_visible });
             }
             Some((InputState::Submitted, since, _)) => {
                 let elapsed = since.elapsed();
@@ -283,7 +290,7 @@ impl StdinInjector for RecordingInjector {
                 }
             }
             Some((InputState::Idle, _, _)) => {}
-            None if input.pending => return Ok(DeliveryReservation::PendingInput),
+            None if input.pending => return Ok(DeliveryReservation::LocalInputPending),
             None => {}
         }
         if let Some(last) = input.last_input_at {
