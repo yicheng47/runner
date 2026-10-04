@@ -248,17 +248,24 @@ impl StatusHooks for Hooks {
         _role_args: &[String],
         _plan: &ResumePlan,
         app_data_dir: &Path,
-        session_id: &str,
+        spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String> {
         if !(self.supported(cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
-        status_env(
+        let mut env = status_env(
             agy_status::PATH_ENV,
             agy_status::GENERATION_ENV,
             app_data_dir,
-            session_id,
-        )
+            &spec.session_id,
+        );
+        if let Some(cwd) = spec.cwd.as_deref() {
+            env.insert(
+                agy_status::WORKSPACE_CONTEXT_ENV.into(),
+                agy_status::workspace_context(cwd),
+            );
+        }
+        env
     }
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
         if !self.supported(cfg!(windows)) {

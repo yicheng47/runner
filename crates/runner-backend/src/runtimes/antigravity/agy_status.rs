@@ -12,7 +12,9 @@ use crate::session::state::StatusSource;
 //
 // agy reads a JSON reply from every hook's stdout, and a `PreToolUse` reply is
 // a permission decision (`{}` denied every tool in the probe), so Runner
-// registers no `PreToolUse` and answers `{}` to every event it does register.
+// registers no `PreToolUse`. `PreInvocation` supplies the session cwd as
+// ephemeral context because the model can otherwise choose the hooks workspace
+// for task tools (#787); every other event answers `{}`.
 // agy has no event for a permission prompt or a question on screen, so
 // hooks report Working, Idle and Response failed only.
 
@@ -32,6 +34,7 @@ use crate::session::status::TurnOutcome;
 use crate::session::status::{Activity, AgentObservation, ObservationSource};
 pub(crate) const PATH_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_PATH";
 pub(crate) const GENERATION_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_GENERATION";
+pub(crate) const WORKSPACE_CONTEXT_ENV: &str = "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT";
 pub(crate) const EVENTS: &[&str] = &["PreInvocation", "PostToolUse", "PostInvocation", "Stop"];
 
 const HOOKS_DIR: &str = "antigravity-hooks";
@@ -47,9 +50,26 @@ if [ -n "$1" ] && payload=$(mktemp "$1.XXXXXXXX" 2>/dev/null); then
 else
   cat >/dev/null 2>&1
 fi
-printf '{}\n'
+if [ "$2" = PreInvocation ] && [ -n "$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT" ]; then
+  printf '%s\n' "$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"
+else
+  printf '{}\n'
+fi
 exit 0
 "#;
+
+pub(crate) fn workspace_context(cwd: &Path) -> String {
+    let cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    serde_json::json!({
+        "injectSteps": [{
+            "ephemeralMessage": format!(
+                "The session working directory is {}. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.",
+                cwd.display()
+            )
+        }]
+    })
+    .to_string()
+}
 
 pub(crate) fn hooks_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(HOOKS_DIR)
@@ -357,6 +377,72 @@ mod tests {
             fs::read_to_string(reporter_path(root.path())).unwrap(),
             REPORTER_SCRIPT
         );
+    }
+
+    #[test]
+    fn workspace_context_preserves_path_characters_and_explicit_directory_choices() {
+        let cwd = Path::new("/missing/工作 'quoted' \"double\" $value `command`\nfolder");
+        let reply: Value = serde_json::from_str(&workspace_context(cwd)).unwrap();
+        let message = reply["injectSteps"][0]["ephemeralMessage"]
+            .as_str()
+            .unwrap();
+        assert!(message.contains(cwd.to_str().unwrap()));
+        assert!(message.contains("unless the user explicitly chooses another directory"));
+        assert!(reply.get("decision").is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn reporter_injects_context_only_before_invocation_and_keeps_reporting_status() {
+        use std::process::{Command, Stdio};
+
+        let root = tempfile::tempdir().unwrap();
+        install_hooks(root.path()).unwrap();
+        let feed = root.path().join("feed");
+        let context = workspace_context(Path::new("/work/工作 'quoted' \"double\"\nfolder"));
+        for (event, context_env) in EVENTS
+            .iter()
+            .map(|event| (*event, Some(context.as_str())))
+            .chain([("PreInvocation", None)])
+        {
+            fs::write(&feed, "").unwrap();
+            let mut command = Command::new("sh");
+            command
+                .arg(reporter_path(root.path()))
+                .arg(&feed)
+                .arg(event)
+                .env(GENERATION_ENV, "generation")
+                .env_remove(WORKSPACE_CONTEXT_ENV)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+            if let Some(context) = context_env {
+                command.env(WORKSPACE_CONTEXT_ENV, context);
+            }
+            let mut child = command.spawn().unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"conversationId":"test","fullyIdle":true}"#)
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+            if event == "PreInvocation" && context_env.is_some() {
+                assert_eq!(reply, serde_json::from_str::<Value>(&context).unwrap());
+            } else {
+                assert_eq!(reply, json!({}));
+            }
+            let pointer: Value =
+                serde_json::from_str(fs::read_to_string(&feed).unwrap().trim()).unwrap();
+            assert_eq!(pointer["generation"], "generation");
+            assert_eq!(pointer["hook_event_name"], event);
+            let payload = feed.with_file_name(pointer["payload_file"].as_str().unwrap());
+            assert_eq!(
+                fs::read_to_string(payload).unwrap(),
+                r#"{"conversationId":"test","fullyIdle":true}"#
+            );
+        }
     }
 
     #[test]

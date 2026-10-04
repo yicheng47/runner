@@ -374,7 +374,7 @@ impl StatusHooks for Hooks {
         role_args: &[String],
         _plan: &ResumePlan,
         app_data_dir: &Path,
-        session_id: &str,
+        spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String> {
         if !(self.supported(cfg!(windows)) && inject_claude_settings(role_args)) {
             return std::collections::BTreeMap::new();
@@ -383,7 +383,7 @@ impl StatusHooks for Hooks {
             claude_status::PATH_ENV,
             claude_status::GENERATION_ENV,
             app_data_dir,
-            session_id,
+            &spec.session_id,
         )
     }
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {

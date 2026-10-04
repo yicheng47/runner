@@ -638,8 +638,8 @@ impl SessionManager {
             _ => {}
         }
         if let Some(hooks) = adapter.status_hooks() {
-            spec.env
-                .extend(hooks.env(&role.args, plan, app_data_dir, &spec.session_id));
+            let env = hooks.env(&role.args, plan, app_data_dir, spec);
+            spec.env.extend(env);
         }
         let mut composed: Vec<String> = Vec::new();
         if plan.prepend {

@@ -875,6 +875,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -898,6 +899,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -921,6 +923,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -944,6 +947,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -967,6 +971,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -991,6 +996,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -1015,6 +1021,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -1039,6 +1046,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -1063,6 +1071,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
         "TERM": "xterm-256color"
       },
@@ -1088,6 +1097,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
@@ -1116,6 +1126,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
@@ -1144,6 +1155,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
@@ -1172,6 +1184,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
@@ -1200,6 +1213,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
@@ -1228,6 +1242,7 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
         "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",

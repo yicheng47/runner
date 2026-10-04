@@ -110,6 +110,10 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     if cfg!(not(windows)) {
         expected.extend(["--add-dir", hooks.to_str().unwrap()]);
         assert_eq!(
+            fresh.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
+            crate::runtimes::antigravity::agy_status::workspace_context(&project)
+        );
+        assert_eq!(
             fresh.env[crate::runtimes::antigravity::agy_status::PATH_ENV],
             crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
                 app_data.path(),
@@ -165,7 +169,14 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
         )
     })
     .unwrap();
-    let resumed = fake.last_spawn_spec().unwrap().args;
+    let resumed_spec = fake.last_spawn_spec().unwrap();
+    if cfg!(not(windows)) {
+        assert_eq!(
+            resumed_spec.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
+            crate::runtimes::antigravity::agy_status::workspace_context(&project)
+        );
+    }
+    let resumed = resumed_spec.args;
     assert!(has_arg_pair(&resumed, "--conversation", &key));
     assert!(has_arg_pair(&resumed, "--log-file", log.to_str().unwrap()));
     assert!(!resumed.iter().any(|arg| arg == "-i"));
@@ -212,6 +223,82 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     append_log(app_data.path(), &spawned.id, &created_line(&recreated));
     wait_for_key(&pool, &spawned.id, &recreated);
     mgr.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn antigravity_cwd_context_covers_chats_leads_workers_and_resumes_without_changing_workspaces() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = data.path().join("project space 工作");
+    let user_dir = data.path().join("user workspace");
+    let bus = data.path().join("mission-bus");
+    for dir in [&cwd, &user_dir, &bus] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    crate::runtimes::antigravity::agy_status::install_hooks(data.path()).unwrap();
+    let mut role = role("agy", &["--role-flag", "--add-dir"]);
+    role.runtime = "antigravity".into();
+    role.args.push(user_dir.to_string_lossy().into_owned());
+    let key = "019fa1b9-a133-7841-b4dd-730d376ab1d1";
+    for (shape, mission, prior, first_turn) in [
+        ("chat", false, None, None),
+        ("lead", true, None, Some("MISSION_GOAL")),
+        ("worker", true, None, Some("WORKER_CONTEXT")),
+        ("chat-resume", false, Some(key), None),
+        ("mission-resume", true, Some(key), None),
+    ] {
+        let mut spec = SpawnSpec {
+            session_id: shape.into(),
+            cwd: Some(cwd.clone()),
+            command: role.command.clone(),
+            args: role.args.clone(),
+            mission,
+            ..Default::default()
+        };
+        let plan = crate::runtimes::for_key(&role.runtime).resume_plan(prior);
+        SessionManager::apply_runtime_args(
+            &mut spec,
+            &role,
+            &plan,
+            data.path(),
+            None,
+            first_turn,
+            mission.then_some(bus.as_path()),
+        );
+        assert_eq!(spec.cwd.as_deref(), Some(cwd.as_path()));
+        assert_eq!(&spec.args[..role.args.len()], &role.args, "{shape}");
+        assert_eq!(
+            has_arg_pair(&spec.args, "--add-dir", bus.to_str().unwrap()),
+            mission,
+            "{shape}"
+        );
+        assert_eq!(
+            has_arg_pair(&spec.args, "--conversation", key),
+            prior.is_some(),
+            "{shape}"
+        );
+        assert_eq!(
+            spec.args.iter().any(|arg| arg == "-i"),
+            first_turn.is_some()
+        );
+        if cfg!(windows) {
+            assert!(!spec
+                .env
+                .contains_key(crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV));
+        } else {
+            assert!(has_arg_pair(
+                &spec.args,
+                "--add-dir",
+                crate::runtimes::antigravity::agy_status::hooks_dir(data.path())
+                    .to_str()
+                    .unwrap()
+            ));
+            assert_eq!(
+                spec.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
+                crate::runtimes::antigravity::agy_status::workspace_context(&cwd),
+                "{shape}"
+            );
+        }
+    }
 }
 
 #[test]

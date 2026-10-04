@@ -189,7 +189,7 @@ pub trait StatusHooks: Send + Sync {
         role_args: &[String],
         plan: &ResumePlan,
         app_data_dir: &Path,
-        session_id: &str,
+        spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String>;
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>>;
 }

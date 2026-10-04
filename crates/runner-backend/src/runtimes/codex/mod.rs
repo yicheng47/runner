@@ -362,7 +362,7 @@ impl StatusHooks for Hooks {
         role_args: &[String],
         _plan: &ResumePlan,
         app_data_dir: &Path,
-        session_id: &str,
+        spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String> {
         if !(inject_codex_hooks(role_args, cfg!(windows))) {
             return std::collections::BTreeMap::new();
@@ -371,7 +371,7 @@ impl StatusHooks for Hooks {
             codex_status::PATH_ENV,
             codex_status::GENERATION_ENV,
             app_data_dir,
-            session_id,
+            &spec.session_id,
         )
     }
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
