@@ -41,7 +41,7 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<MATERIALIZER>/codex-home/sessions"
       },
       "rollout": null
     }

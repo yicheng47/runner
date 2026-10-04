@@ -121,7 +121,7 @@ impl Normalizer {
             .then_some(runtime)
         });
         // The fixture shares its agent home and app-data root; capture paths represent the home.
-        let capture = match adapter.key_capture() {
+        let capture = match adapter.key_capture_for_spawn(&spec) {
             crate::runtimes::KeyCapture::RolloutScan {
                 sessions_root: Some(path),
             } => {
@@ -228,6 +228,12 @@ fn spawn_goldens() {
             let root = data.path();
             let pool = pool_with_schema();
             let mut configured = configured_role(key, root);
+            if key == "codex" {
+                configured.env.insert(
+                    "CODEX_HOME".into(),
+                    root.join("custom-codex").to_string_lossy().into_owned(),
+                );
+            }
             if shape == "blank" {
                 configured.system_prompt = None;
                 configured.model = None;
@@ -306,6 +312,15 @@ fn spawn_goldens() {
             let data = tempfile::tempdir().unwrap();
             let pool = pool_with_schema();
             let mut configured = configured_role(key, data.path());
+            if key == "codex" {
+                configured.env.insert(
+                    "CODEX_HOME".into(),
+                    data.path()
+                        .join("custom-codex")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
             configured.args = crate::runtimes::for_key(key)
                 .permissions()
                 .apply(&configured.args, mode);
@@ -343,7 +358,13 @@ fn spawn_goldens() {
                 let data = tempfile::tempdir().unwrap();
                 let root = data.path();
                 let pool = pool_with_schema();
-                let configured = configured_role(key, root);
+                let mut configured = configured_role(key, root);
+                if key == "codex" {
+                    configured.env.insert(
+                        "CODEX_HOME".into(),
+                        root.join("custom-codex").to_string_lossy().into_owned(),
+                    );
+                }
                 let mut mission = mission();
                 mission.cwd = configured.working_dir.clone();
                 mission.crew_id = "c".into();
@@ -463,6 +484,11 @@ fn fork_goldens() {
             let mut effects = normalizer.effects(&fake, &mgr, key, root);
             if let Some((dir, _, _, _)) = &materializer {
                 effects["env"]["CODEX_HOME"] = json!(effects["env"]["CODEX_HOME"]
+                    .as_str()
+                    .unwrap()
+                    .replace(&dir.path().to_string_lossy().to_string(), "<MATERIALIZER>"));
+                effects["key_capture"]["sessions_root"] = json!(effects["key_capture"]
+                    ["sessions_root"]
                     .as_str()
                     .unwrap()
                     .replace(&dir.path().to_string_lossy().to_string(), "<MATERIALIZER>"));

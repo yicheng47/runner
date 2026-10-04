@@ -1056,6 +1056,11 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
+        let capture_root =
+            match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            };
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -1116,11 +1121,7 @@ impl SessionManager {
         }
 
         let codex_capture = if plan.assigned_key.is_none() {
-            match crate::runtimes::for_key(&role.runtime).key_capture() {
-                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
-                _ => None,
-            }
-            .and_then(|sessions_root| {
+            capture_root.and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                     manager: Arc::downgrade(self),
                     mission_id: Some(mission.id.clone()),
@@ -1653,6 +1654,11 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
+        let capture_root =
+            match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            };
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -1692,11 +1698,7 @@ impl SessionManager {
         }
 
         let codex_capture = if plan.assigned_key.is_none() {
-            match crate::runtimes::for_key(&role.runtime).key_capture() {
-                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
-                _ => None,
-            }
-            .and_then(|sessions_root| {
+            capture_root.and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                     manager: Arc::downgrade(self),
                     mission_id: None,
@@ -2799,6 +2801,11 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
+        let capture_root =
+            match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
+                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
+                _ => None,
+            };
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -2845,11 +2852,7 @@ impl SessionManager {
         }
 
         let codex_capture = if plan.assigned_key.is_none() {
-            match crate::runtimes::for_key(&role.runtime).key_capture() {
-                crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
-                _ => None,
-            }
-            .and_then(|sessions_root| {
+            capture_root.and_then(|sessions_root| {
                 resolved_cwd.clone().map(|cwd| CodexCaptureContext {
                     manager: Arc::downgrade(self),
                     mission_id: snap.mission_id.clone(),

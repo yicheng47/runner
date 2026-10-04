@@ -1,4 +1,4 @@
-runtime=codex name=custom-home rules=[] bugs=[781] known_wrong=[781]
+runtime=codex name=custom-home rules=[] bugs=[781] known_wrong=[]
 session_status_rows=published
-100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key=null result={"capture_uses_configured_home":false,"captured_key":null} delivery=["Respawned"]
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="33333333-3333-4333-8333-333333333333" result={"capture_uses_configured_home":true,"captured_key":"33333333-3333-4333-8333-333333333333"} delivery=["Respawned"]
   busy@spawn [running/working/baseline]

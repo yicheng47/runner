@@ -37,7 +37,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 | #670, #736 | `relaunch`, `resume-missing`, Codex `rollback-restart`, `clear-resume` |
 | #753, #766 | `crew-idle`, `draft-delivery`, recorded `input-*` traces |
 | #783 | `escape-reply`, `escape-tool`, `ctrl-c` |
-| #781 (known wrong) | Codex `custom-home`: the real capture-root selector ignores CODEX_HOME, and scanning that root leaves the key NULL |
+| #781 | Codex `custom-home`: capture scans the configured CODEX_HOME and persists the rollout key |
 | #784 | pi `escape-reply`, `ctrl-c`: the live error-shaped abort message settles Interrupted; other API errors remain Failed |
 | #785 | Claude `alias-resume`: history stored under the physical cwd is found through the alias spelling |
 | #786 | Copilot `clear-resume`: root SessionStart replaces the persisted key for the new conversation |
@@ -46,7 +46,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 
 `crash-reattach` retains unread attention across a crash while reattachment clears error/draft state, rejects old-generation reports and resumes publishing mission rows.
 
-`key-guards` additionally pins capture-on-NULL, replacement by rekey, stale-start rejection and stopped-row rejection. Codex SessionStart keys run through the rekey guard. Coverage tests require all ten rule rows and every Motivation bug, including the remaining known-wrong markers.
+`key-guards` additionally pins capture-on-NULL, replacement by rekey, stale-start rejection and stopped-row rejection. Codex SessionStart keys run through the rekey guard. Coverage tests require all ten rule rows and every Motivation bug, with no known-wrong markers remaining after PR 3.
 
 ## Running
 

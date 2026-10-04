@@ -9,8 +9,36 @@ use super::helpers::*;
 use super::*;
 #[cfg(test)]
 use crate::golden::config_home as capture_home;
+#[cfg(test)]
+use crate::golden::config_var_os as capture_var_os;
 #[cfg(not(test))]
 use runner_core::app_paths::home_dir as capture_home;
+#[cfg(not(test))]
+use std::env::var_os as capture_var_os;
+
+fn capture_sessions_root(
+    env: &std::collections::BTreeMap<String, String>,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
+    let home = env
+        .get("CODEX_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            capture_var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| capture_home().map(|home| home.join(".codex")))?;
+    let home = if home.is_absolute() {
+        home
+    } else {
+        cwd.map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())?
+            .join(home)
+    };
+    Some(home.join("sessions"))
+}
 
 pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
     if !Codex
@@ -183,7 +211,12 @@ impl RuntimeAdapter for Codex {
     }
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::RolloutScan {
-            sessions_root: capture_home().map(|home| home.join(".codex").join("sessions")),
+            sessions_root: capture_sessions_root(&Default::default(), None),
+        }
+    }
+    fn key_capture_for_spawn(&self, spec: &SpawnSpec) -> KeyCapture {
+        KeyCapture::RolloutScan {
+            sessions_root: capture_sessions_root(&spec.env, spec.cwd.as_deref()),
         }
     }
     fn seed_trust(

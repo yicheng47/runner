@@ -708,7 +708,7 @@ fn session_scenario_goldens() {
         }
     }
     assert_eq!(rules, (1..=10).collect());
-    assert_eq!(known_wrong, BTreeSet::from([781]));
+    assert!(known_wrong.is_empty());
     assert_eq!(
         bugs,
         BTreeSet::from([459, 583, 623, 659, 670, 687, 738, 753, 766, 783, 781, 784, 785, 786, 736])

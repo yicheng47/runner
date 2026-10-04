@@ -319,6 +319,9 @@ pub trait RuntimeAdapter: Send + Sync {
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::None
     }
+    fn key_capture_for_spawn(&self, _spec: &SpawnSpec) -> KeyCapture {
+        self.key_capture()
+    }
     fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
         None
     }

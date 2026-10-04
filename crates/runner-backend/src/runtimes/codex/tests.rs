@@ -2,6 +2,77 @@ use super::*;
 use crate::runtimes::test_support::*;
 
 #[test]
+fn rollout_capture_resolves_spawn_home_then_runner_home_then_default() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project");
+    let runner_home = root.path().join("runner-codex");
+    let role_home = root.path().join("role-codex");
+    let mut spec = SpawnSpec {
+        cwd: Some(cwd.clone()),
+        ..Default::default()
+    };
+    with_conversation_home(root.path(), || {
+        crate::golden::with_config_env(
+            std::collections::BTreeMap::from([("CODEX_HOME", runner_home.as_os_str().to_owned())]),
+            || {
+                let resolved = |spec: &SpawnSpec| {
+                    let KeyCapture::RolloutScan { sessions_root } =
+                        Codex.key_capture_for_spawn(spec)
+                    else {
+                        panic!("expected rollout scan")
+                    };
+                    sessions_root
+                };
+                assert_eq!(resolved(&spec), Some(runner_home.join("sessions")));
+                spec.env.insert(
+                    "CODEX_HOME".into(),
+                    role_home.to_string_lossy().into_owned(),
+                );
+                assert_eq!(resolved(&spec), Some(role_home.join("sessions")));
+                spec.env.insert("CODEX_HOME".into(), "relative-home".into());
+                assert_eq!(resolved(&spec), Some(cwd.join("relative-home/sessions")));
+                spec.env.insert("CODEX_HOME".into(), "   ".into());
+                assert_eq!(resolved(&spec), Some(runner_home.join("sessions")));
+            },
+        );
+        spec.env.clear();
+        crate::golden::with_config_env(Default::default(), || {
+            let KeyCapture::RolloutScan { sessions_root } = Codex.key_capture_for_spawn(&spec)
+            else {
+                panic!("expected rollout scan")
+            };
+            assert_eq!(sessions_root, Some(root.path().join(".codex/sessions")));
+        });
+        crate::golden::with_config_env(
+            std::collections::BTreeMap::from([(
+                "CODEX_HOME",
+                std::ffi::OsString::from("runner-relative"),
+            )]),
+            || {
+                let KeyCapture::RolloutScan { sessions_root } = Codex.key_capture_for_spawn(&spec)
+                else {
+                    panic!("expected rollout scan")
+                };
+                assert_eq!(sessions_root, Some(cwd.join("runner-relative/sessions")));
+                spec.cwd = None;
+                let KeyCapture::RolloutScan { sessions_root } = Codex.key_capture_for_spawn(&spec)
+                else {
+                    panic!("expected rollout scan")
+                };
+                assert_eq!(
+                    sessions_root,
+                    Some(
+                        std::env::current_dir()
+                            .unwrap()
+                            .join("runner-relative/sessions")
+                    )
+                );
+            },
+        );
+    });
+}
+
+#[test]
 fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
     for args in [
         vec!["--disable", "hooks"],

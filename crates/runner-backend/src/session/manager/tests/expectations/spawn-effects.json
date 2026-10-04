@@ -4,7 +4,7 @@
     "shape": "fresh",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -18,10 +18,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -31,7 +31,7 @@
     "shape": "blank",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -45,10 +45,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": null
       }
     }
@@ -58,7 +58,7 @@
     "shape": "resume",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -72,7 +72,7 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": null
     }
@@ -82,7 +82,7 @@
     "shape": "missing",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -96,7 +96,7 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": null
     }
@@ -106,7 +106,7 @@
     "shape": "hooks-off",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -118,10 +118,10 @@
       "interrupt": null,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -131,7 +131,7 @@
     "shape": "speed",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -145,10 +145,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -159,7 +159,7 @@
     "mode": "default",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -173,10 +173,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -187,7 +187,7 @@
     "mode": "accept_edits",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -201,10 +201,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -215,7 +215,7 @@
     "mode": "auto",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -229,10 +229,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -243,7 +243,7 @@
     "mode": "bypass",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
@@ -257,10 +257,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID1> -->"
       }
     }
@@ -271,7 +271,7 @@
     "mode": "bypass",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -289,10 +289,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
@@ -303,7 +303,7 @@
     "mode": "bypass",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -321,10 +321,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
@@ -335,7 +335,7 @@
     "mode": "auto",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -353,10 +353,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
@@ -367,7 +367,7 @@
     "mode": "auto",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -385,10 +385,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
@@ -399,7 +399,7 @@
     "mode": "role-default",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -417,10 +417,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
@@ -431,7 +431,7 @@
     "mode": "role-default",
     "spawn": {
       "env": {
-        "CODEX_HOME": "<TMP>/.codex",
+        "CODEX_HOME": "<TMP>/custom-codex",
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
@@ -449,10 +449,10 @@
       "interrupt": false,
       "key_capture": {
         "mechanism": "rollout-scan",
-        "sessions_root": "<HOME>/.codex/sessions"
+        "sessions_root": "<HOME>/custom-codex/sessions"
       },
       "rollout": {
-        "sessions_root": "<HOME>/.codex/sessions",
+        "sessions_root": "<HOME>/custom-codex/sessions",
         "prompt_marker": "<!-- runner-codex-session-key-capture:<ID2> -->"
       }
     }
