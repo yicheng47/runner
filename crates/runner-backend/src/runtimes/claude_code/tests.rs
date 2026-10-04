@@ -93,6 +93,83 @@ fn claude_transcript_lookup_preserves_resume_identity() {
 }
 
 #[test]
+fn claude_alias_transcripts_resume_from_canonical_or_literal_project_paths() {
+    let home = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    let root = {
+        let canonical = home.path().canonicalize().unwrap();
+        let canonical = canonical.to_str().unwrap();
+        Path::new(canonical.strip_prefix(r"\\?\").unwrap()).to_path_buf()
+    };
+    #[cfg(unix)]
+    let root = home.path().to_path_buf();
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    #[cfg(unix)]
+    let alias = {
+        let alias = root.join("project-alias");
+        std::os::unix::fs::symlink(&project, &alias).unwrap();
+        alias
+    };
+    #[cfg(windows)]
+    let alias = {
+        std::fs::create_dir_all(root.join("alias")).unwrap();
+        root.join("alias/../project")
+    };
+    #[cfg(unix)]
+    let canonical = project.canonicalize().unwrap();
+    #[cfg(windows)]
+    let canonical = project;
+    let prior = uuid::Uuid::new_v4().to_string();
+    with_conversation_home(home.path(), || {
+        for cwd in [&canonical, &alias] {
+            let transcript = home
+                .path()
+                .join(".claude/projects")
+                .join(claude_code_project_dir(&cwd.to_string_lossy()))
+                .join(format!("{prior}.jsonl"));
+            std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+            std::fs::write(&transcript, "{}\n").unwrap();
+            for probe in [&alias, cwd] {
+                let found = claude_code_conversation_exists(Some(&probe.to_string_lossy()), &prior);
+                assert!(
+                    found,
+                    "stored cwd={cwd:?}; probe={probe:?}; canonical={:?}; transcript={transcript:?}",
+                    probe.canonicalize()
+                );
+                let plan = resume_plan(Runtime::ClaudeCode.key(), found.then_some(prior.as_str()));
+                assert!(plan.resuming);
+                assert_eq!(plan.args, ["--resume", prior.as_str()]);
+            }
+            std::fs::remove_file(transcript).unwrap();
+        }
+        assert!(!claude_code_conversation_exists(
+            Some(&alias.to_string_lossy()),
+            &prior
+        ));
+        let plan = resume_plan(Runtime::ClaudeCode.key(), None);
+        assert!(!plan.resuming);
+        assert_ne!(plan.assigned_key.as_deref(), Some(prior.as_str()));
+    });
+}
+
+#[cfg(windows)]
+#[test]
+fn claude_canonical_windows_paths_use_ordinary_disk_and_unc_spellings() {
+    for (verbatim, ordinary) in [
+        (r"\\?\C:\Work\project", r"C:\Work\project"),
+        (r"\\?\UNC\server\share\project", r"\\server\share\project"),
+        (r"C:\Work\project", r"C:\Work\project"),
+        (r"\\server\share\project", r"\\server\share\project"),
+    ] {
+        assert_eq!(
+            ordinary_windows_path(Path::new(verbatim)),
+            Path::new(ordinary)
+        );
+    }
+}
+
+#[test]
 fn claude_code_returns_no_argv_for_system_prompt() {
     // claude-code's --append-system-prompt is SDK-only; the
     // interactive TUI ignores it. The argv path returns empty,

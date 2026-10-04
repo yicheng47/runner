@@ -257,11 +257,34 @@ pub(super) fn conversation_file_exists_at(
     uuid: &str,
     encode_project_dir: fn(&str) -> String,
 ) -> bool {
-    home.join(agent_dir)
-        .join("projects")
-        .join(encode_project_dir(cwd))
-        .join(format!("{uuid}.jsonl"))
-        .exists()
+    let projects = home.join(agent_dir).join("projects");
+    let exists = |cwd: &str| {
+        projects
+            .join(encode_project_dir(cwd))
+            .join(format!("{uuid}.jsonl"))
+            .exists()
+    };
+    exists(cwd)
+        || std::fs::canonicalize(cwd).ok().is_some_and(|canonical| {
+            #[cfg(windows)]
+            let canonical = ordinary_windows_path(&canonical);
+            exists(&canonical.to_string_lossy())
+        })
+}
+
+#[cfg(windows)]
+pub(crate) fn ordinary_windows_path(path: &Path) -> PathBuf {
+    use std::path::{Component, Prefix};
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path.to_path_buf();
+    };
+    let root = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) => PathBuf::from(r"\\").join(server).join(share),
+        _ => return path.to_path_buf(),
+    };
+    root.join(components.as_path())
 }
 
 pub(crate) fn resolve_config_write_path(config_path: &Path) -> crate::error::Result<PathBuf> {

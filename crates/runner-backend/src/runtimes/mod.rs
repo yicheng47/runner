@@ -19,6 +19,8 @@ use crate::router::runtime::{
 };
 use crate::session::hook_feed::HookWatcher;
 use crate::session::runtime::SpawnSpec;
+#[cfg(all(test, windows))]
+pub(crate) use helpers::ordinary_windows_path;
 pub use helpers::Permissions;
 #[cfg(test)]
 pub(crate) use helpers::{test_home, with_conversation_home};

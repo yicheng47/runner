@@ -180,11 +180,10 @@ fn probe_cwd(home: &Path, alias: bool) -> String {
         #[cfg(windows)]
         return home.join("alias/../project").to_string_lossy().into_owned();
     }
-    home.join("project")
-        .canonicalize()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
+    let canonical = home.join("project").canonicalize().unwrap();
+    #[cfg(windows)]
+    let canonical = crate::runtimes::ordinary_windows_path(&canonical);
+    canonical.to_string_lossy().into_owned()
 }
 
 fn history_path(runtime: &str, home: &Path, key: &str, alias: bool) -> PathBuf {
@@ -709,7 +708,7 @@ fn session_scenario_goldens() {
         }
     }
     assert_eq!(rules, (1..=10).collect());
-    assert_eq!(known_wrong, BTreeSet::from([781, 785, 786]));
+    assert_eq!(known_wrong, BTreeSet::from([781, 786]));
     assert_eq!(
         bugs,
         BTreeSet::from([459, 583, 623, 659, 670, 687, 738, 753, 766, 783, 781, 784, 785, 786, 736])
