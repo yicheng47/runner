@@ -227,6 +227,156 @@ fn rule_6_last_interaction_close_releases_delivery() {
     assert!(!model.status().observation.needs_you());
 }
 
+fn editor_draft(model: &mut SessionModel, drafting: bool, at: Now) -> Effects {
+    model.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::EditorDraft { drafting },
+            live: true,
+        },
+        at,
+    )
+}
+
+#[test]
+fn native_draft_overrides_screen_and_clear_releases_once_without_status_change() {
+    let mut model = SessionModel::default();
+    let at = now();
+    observe(&mut model, hook(Activity::Ready), at);
+    let status = model.status().clone();
+    assert!(!editor_draft(&mut model, false, at).input_cleared);
+    model.apply(
+        SessionEvent::Input {
+            class: Some(LocalInputClass::SetPending),
+            submitted: false,
+        },
+        at,
+    );
+    assert!(editor_draft(&mut model, true, at).publication.is_none());
+    let later = Now {
+        monotonic: at.monotonic + Duration::from_secs(3),
+        ..at
+    };
+    model.apply(
+        SessionEvent::Composer {
+            observation: InputObservation {
+                state: InputState::Idle,
+                since: later.monotonic,
+                composing: false,
+                composer_visible: true,
+            },
+            live: true,
+        },
+        later,
+    );
+    assert!(!model.draft_quiescent(later.monotonic));
+    assert_eq!(
+        model.draft_hold(later.monotonic),
+        Some(crate::router::DeliveryReservation::Drafting {
+            composer_visible: true
+        })
+    );
+    let cleared = editor_draft(&mut model, false, later);
+    assert!(cleared.input_cleared);
+    assert!(cleared.publication.is_none());
+    assert!(model.draft_quiescent(later.monotonic));
+    assert!(!editor_draft(&mut model, false, later).input_cleared);
+    assert_eq!(model.status(), &status);
+}
+
+#[test]
+fn native_submit_clears_only_the_draft_hold_and_preserves_the_working_turn() {
+    let mut model = SessionModel::default();
+    let at = now();
+    observe(&mut model, hook(Activity::Idle), at);
+    editor_draft(&mut model, true, at);
+    model.apply(
+        SessionEvent::Input {
+            class: Some(LocalInputClass::ClearPending),
+            submitted: true,
+        },
+        at,
+    );
+    observe(&mut model, hook(Activity::Working), at);
+    let status = model.status().clone();
+    let revision = model.revision();
+    let cleared = editor_draft(&mut model, false, at);
+    assert!(cleared.input_cleared);
+    assert!(cleared.publication.is_none());
+    assert!(model.draft_quiescent(at.monotonic));
+    assert_eq!(model.status(), &status);
+    assert_eq!(model.activity(), Some(SessionActivityState::Busy));
+    assert_eq!(model.revision(), revision);
+    assert!(model.completion_armed());
+    observe(&mut model, hook(Activity::Ready), at);
+    assert_eq!(model.activity(), Some(SessionActivityState::Idle));
+}
+
+#[test]
+fn delayed_native_clear_preserves_recent_input_for_a_replacement_draft() {
+    let mut model = SessionModel::default();
+    let start = now();
+    let at = |ms| Now {
+        monotonic: start.monotonic + Duration::from_millis(ms),
+        ..start
+    };
+    observe(&mut model, hook(Activity::Idle), start);
+    editor_draft(&mut model, true, at(10));
+    for ms in [3000, 3050] {
+        model.apply(
+            SessionEvent::Input {
+                class: Some(LocalInputClass::SetPending),
+                submitted: false,
+            },
+            at(ms),
+        );
+    }
+    assert!(editor_draft(&mut model, false, at(3060)).input_cleared);
+    assert!(!model.draft_quiescent(at(3061).monotonic));
+    assert_eq!(
+        model.draft_hold(at(3061).monotonic),
+        Some(crate::router::DeliveryReservation::RecentlyTyping(
+            Duration::from_millis(1989)
+        ))
+    );
+    editor_draft(&mut model, true, at(3070));
+    assert_eq!(
+        model.draft_hold(at(6000).monotonic),
+        Some(crate::router::DeliveryReservation::Drafting {
+            composer_visible: true
+        })
+    );
+}
+
+#[test]
+fn native_draft_resets_on_bridge_loss_detach_and_attach_and_ignores_late_events() {
+    for reset in [
+        SessionEvent::BridgeFailed { live: true },
+        SessionEvent::Detached { stopped: true },
+        SessionEvent::Attached,
+        SessionEvent::Exited {
+            code: Some(0),
+            crashed: false,
+        },
+    ] {
+        let mut model = SessionModel::default();
+        let at = now();
+        observe(&mut model, hook(Activity::Idle), at);
+        editor_draft(&mut model, true, at);
+        assert!(model.native_input.is_some());
+        model.apply(reset, at);
+        assert!(model.native_input.is_none());
+        assert!(model.draft_quiescent(at.monotonic));
+        model.apply(
+            SessionEvent::Agent {
+                event: agent::AgentEvent::EditorDraft { drafting: true },
+                live: false,
+            },
+            at,
+        );
+        assert!(model.native_input.is_none());
+    }
+}
+
 #[test]
 fn rule_7_failure_timestamp_survives_compaction_and_acknowledgement() {
     for viewed in [false, true] {

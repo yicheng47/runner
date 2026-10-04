@@ -50,6 +50,7 @@ export default async function (pi) {
   const rekeyPath = process.env.RUNNER_PI_REKEY_PATH || "";
   let lastReportedSessionId = sessionKey;
   let rekeySequence = 0;
+  let stopEditorTracking = () => {};
 
   function append(event, fields = {}) {
     try {
@@ -73,13 +74,41 @@ export default async function (pi) {
     } catch {}
   }
 
+  function trackEditor(ctx) {
+    if (typeof ctx.ui?.getEditorText !== "function"
+        || typeof ctx.ui?.onTerminalInput !== "function") return;
+    let lastDraft;
+    let deferred;
+    function sample() {
+      const drafting = ctx.ui.getEditorText().length !== 0;
+      if (drafting === lastDraft) return;
+      lastDraft = drafting;
+      append({ type: "editor_draft" }, { drafting });
+    }
+    const unsubscribe = ctx.ui.onTerminalInput(() => {
+      // Raw input arrives before pi updates its editor.
+      clearTimeout(deferred);
+      deferred = setTimeout(sample, 0);
+    });
+    const interval = setInterval(sample, 100);
+    stopEditorTracking = () => {
+      clearInterval(interval);
+      clearTimeout(deferred);
+      unsubscribe();
+      stopEditorTracking = () => {};
+    };
+    sample();
+  }
+
   pi.on("session_start", (event, ctx) => {
+    stopEditorTracking();
     if (ctx.mode !== "tui") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId();
       append(event, { reason: event.reason, session_id: sessionId });
       rekey(sessionId);
     } catch {}
+    trackEditor(ctx);
   });
 
   pi.on("agent_start", (event, ctx) => {
@@ -139,6 +168,7 @@ export default async function (pi) {
   });
 
   pi.on("session_shutdown", (event, ctx) => {
+    stopEditorTracking();
     if (ctx.mode !== "tui") return;
     append(event, { reason: event.reason });
   });
@@ -183,6 +213,7 @@ struct StatusReport {
     error_message: Option<String>,
     kind: Option<String>,
     title: Option<String>,
+    drafting: Option<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -193,6 +224,9 @@ struct PiParser {
 impl PiParser {
     fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
         let event = match report.hook_event_name.as_str() {
+            "editor_draft" => AgentEvent::EditorDraft {
+                drafting: report.drafting?,
+            },
             "session_start" => {
                 if report.reason.as_deref() == Some("reload") {
                     return None;
@@ -300,6 +334,12 @@ impl PiStatusWatcher {
         self.feed.drain(cancel != 0, |report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
                 if let Some(events) = self.parser.hook(report) {
+                    if let [AgentEvent::EditorDraft { drafting }] = events.as_slice() {
+                        emit(AgentEvent::EditorDraft {
+                            drafting: *drafting,
+                        });
+                        return;
+                    }
                     emit(AgentEvent::Batch {
                         runtime: Runtime::Pi,
                         events,
@@ -443,6 +483,41 @@ mod tests {
 
     fn report(event: &str) -> Value {
         json!({"hook_event_name": event})
+    }
+
+    #[test]
+    fn editor_draft_requires_a_boolean_and_does_not_change_turn_status() {
+        let mut parser = PiParser::default();
+        for drafting in [true, false] {
+            let events = parser
+                .hook(
+                    serde_json::from_value(json!({
+                        "hook_event_name":"editor_draft", "drafting":drafting,
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(
+                matches!(events.as_slice(), [AgentEvent::EditorDraft { drafting: value }] if *value == drafting)
+            );
+            let mut state = PiObservation::default();
+            let before = state.value.clone();
+            assert!(observe(
+                &mut state,
+                json!({
+                    "hook_event_name":"editor_draft", "drafting":drafting,
+                })
+            )
+            .is_none());
+            assert_eq!(state.value, before);
+        }
+        assert!(parser
+            .hook(serde_json::from_value(report("editor_draft")).unwrap())
+            .is_none());
+        assert!(serde_json::from_value::<StatusReport>(json!({
+            "hook_event_name":"editor_draft", "drafting":"true",
+        }))
+        .is_err());
     }
 
     fn observe(state: &mut PiObservation, value: Value) -> Option<AgentObservation> {
@@ -735,6 +810,117 @@ mod tests {
         assert!(watcher.drain_status(|_, _| {}).is_err());
         drop(watcher);
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn embedded_editor_tracking_samples_transitions_and_stops_on_restart_and_shutdown() {
+        if Command::new("node").arg("--version").output().is_err() {
+            eprintln!("skipping pi extension test: node is not on PATH");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("runner-status.mjs"), EXTENSION_SOURCE).unwrap();
+        let feed = root.path().join("status.ndjson");
+        fs::write(&feed, "").unwrap();
+        let driver = root.path().join("driver.mjs");
+        fs::write(&driver, r#"import fs from "node:fs";
+import assert from "node:assert/strict";
+import extension from "./runner-status.mjs";
+const intervals = new Map();
+const deferred = new Map();
+let nextTimer = 0;
+globalThis.setInterval = (callback, ms) => {
+  assert.equal(ms, 100);
+  intervals.set(++nextTimer, callback);
+  return nextTimer;
+};
+globalThis.clearInterval = id => intervals.delete(id);
+globalThis.setTimeout = (callback, ms) => {
+  assert.equal(ms, 0);
+  deferred.set(++nextTimer, callback);
+  return nextTimer;
+};
+globalThis.clearTimeout = id => deferred.delete(id);
+const handlers = new Map();
+await extension({ on(name, handler) { handlers.set(name, handler); } });
+let text = "";
+let listener;
+let unsubscribed = 0;
+const ui = {
+  getEditorText() { return text; },
+  onTerminalInput(callback) {
+    listener = callback;
+    return () => { listener = undefined; unsubscribed += 1; };
+  },
+};
+const ctx = { mode: "tui", ui, sessionManager: { getSessionId: () => "probe-session" } };
+const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
+const drafts = () => fs.readFileSync(process.env.RUNNER_PI_STATUS_PATH, "utf8")
+  .trim().split("\n").map(JSON.parse).filter(report => report.hook_event_name === "editor_draft");
+const flush = () => {
+  const callbacks = [...deferred.values()];
+  deferred.clear();
+  callbacks.forEach(callback => callback());
+};
+const poll = () => [...intervals.values()].forEach(callback => callback());
+await fire("session_start", { reason: "startup" });
+assert.deepEqual(drafts().map(report => report.drafting), [false]);
+listener("x");
+assert.equal(drafts().length, 1);
+text = "x";
+flush();
+assert.deepEqual(drafts().map(report => report.drafting), [false, true]);
+listener("more"); text += "more"; flush(); poll();
+assert.equal(drafts().length, 2);
+listener("backspace"); text = ""; flush(); poll();
+assert.deepEqual(drafts().map(report => report.drafting), [false, true, false]);
+text = "pasted\ntext"; poll();
+text = ""; poll();
+assert.deepEqual(drafts().map(report => report.drafting), [false, true, false, true, false]);
+listener("pending");
+await fire("session_start", { reason: "reload" });
+assert.equal(unsubscribed, 1);
+assert.equal(intervals.size, 1);
+assert.equal(deferred.size, 0);
+assert.equal(drafts().length, 6);
+text = "submitted prompt"; poll();
+listener("return"); text = ""; flush();
+assert.deepEqual(drafts().slice(-2).map(report => report.drafting), [true, false]);
+listener("pending shutdown");
+await fire("session_shutdown", { reason: "quit" });
+assert.equal(unsubscribed, 2);
+assert.equal(intervals.size, 0);
+assert.equal(deferred.size, 0);
+assert.equal(listener, undefined);
+const count = drafts().length;
+text = "after shutdown"; poll(); flush();
+assert.equal(drafts().length, count);
+await fire("session_start", { reason: "new" });
+ctx.mode = "print";
+await fire("session_start", { reason: "restart" });
+assert.equal(unsubscribed, 3);
+assert.equal(intervals.size, 0);
+assert.equal(deferred.size, 0);
+ctx.mode = "tui";
+for (const missing of [{}, { getEditorText: ui.getEditorText }, { onTerminalInput: ui.onTerminalInput }]) {
+  ctx.ui = missing;
+  await fire("session_start", { reason: "startup" });
+  assert.equal(intervals.size, 0);
+  assert.equal(deferred.size, 0);
+}
+assert.equal(drafts().length, count + 1);
+assert.ok(drafts().every(report => Object.keys(report).sort().join() === "drafting,generation,hook_event_name"));
+"#).unwrap();
+        let output = Command::new("node")
+            .arg(&driver)
+            .env(PATH_ENV, &feed)
+            .env(GENERATION_ENV, "current")
+            .env_remove(SESSION_KEY_ENV)
+            .env_remove(REKEY_PATH_ENV)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
     }
 
     #[test]

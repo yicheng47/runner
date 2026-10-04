@@ -15,6 +15,9 @@ pub struct AdapterFeedback {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    EditorDraft {
+        drafting: bool,
+    },
     Ready,
     TurnStarted,
     Working {
@@ -235,6 +238,7 @@ impl AgentModel {
             }
         }
         match event {
+            AgentEvent::EditorDraft { .. } => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
                 self.value.activity = Activity::Idle;

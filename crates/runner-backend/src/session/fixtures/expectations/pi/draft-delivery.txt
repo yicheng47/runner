@@ -1,23 +1,42 @@
-runtime=pi name=draft-delivery rules=[5] bugs=[766,753] known_wrong=[]
+runtime=pi name=draft-delivery rules=[5] bugs=[766,753,799] known_wrong=[]
 session_status_rows=published
 100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
   idle@hook [running/idle/hook]
-200
-300 status=running/ready/hook outcome="completed"
+110
+120
+200 quiescent=false delivery=["InputQueueDrained"]
+210
+220
+230 result={"gate":"drafting","composer_visible":true}
+2300 result={"gate":"drafting","composer_visible":true}
+2400 delivery=["InputQueueDrained"]
+2410 delivery=["InputCleared"]
+2420 result={"gate":"recently_typing","remaining_ms":1980}
+4400 quiescent=true
+4410 quiescent=false result={"gate":"ready"}
+4420 quiescent=true delivery=["DeliveryFinished"]
+4500 quiescent=false delivery=["InputQueueDrained"]
+4510
+4520
+6600 result={"gate":"drafting","composer_visible":true}
+6700 delivery=["InputQueueDrained"]
+6710 delivery=["InputCleared"]
+6720 result={"gate":"recently_typing","remaining_ms":1980}
+8700 quiescent=true
+8710 quiescent=false result={"gate":"ready"}
+8720 quiescent=true delivery=["DeliveryFinished"]
+8740
+8800 quiescent=false delivery=["InputQueueDrained"]
+8810
+8900 activity="busy" completion_armed=true delivery=["InputCleared"]
+  busy@input-submit [running/idle/hook]
+8910 delivery=["InputCleared"]
+8920 status=running/working/hook
+  busy@hook [running/working/hook]
+11100 quiescent=true
+11200
+11300 status=running/ready/hook outcome="completed" activity="idle"
   idle@hook [running/ready/hook outcome="completed"]
-2500
-2600
-2700 quiescent=false delivery=["InputQueueDrained"]
-2800 result={"gate":"recently_typing","remaining_ms":1900}
-2900
-5100
-5200 result={"gate":"drafting","composer_visible":true}
-5300
-5400 result={"gate":"recently_typing","remaining_ms":1900}
-7600 quiescent=true
-7700 quiescent=false result={"gate":"ready"}
-7800 quiescent=true delivery=["DeliveryFinished"]
-7900 delivery=["InputCleared"]
-8000 quiescent=false result={"gate":"ready"}
-8100 quiescent=true delivery=["DeliveryFinished"]
+11400 quiescent=false result={"gate":"ready"}
+11410 quiescent=true delivery=["DeliveryFinished"]

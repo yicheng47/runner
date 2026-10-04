@@ -41,6 +41,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 | #784 | pi `escape-reply`, `ctrl-c`: the live error-shaped abort message settles Interrupted; other API errors remain Failed |
 | #785 | Claude `alias-resume`: history stored under the physical cwd is found through the alias spelling |
 | #786 | Copilot `clear-resume`: root SessionStart replaces the persisted key for the new conversation |
+| #799 | pi `draft-delivery`: native editor reports hold full and single-character drafts despite screen Idle, Backspace releases once, and Return clears the draft without settling the turn |
 
 `exit` tears down the watcher, then separately delivers already-in-flight Working and Ready snapshots through the manager observation seam. Both leave lifecycle, attention and activity unchanged, publish no status or mission row, and cannot rearm or consume completion.
 

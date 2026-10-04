@@ -1523,9 +1523,9 @@ impl SessionManager {
                     log::warn!("publish hook observation: {error:?}");
                 }
             }
-            if effects.input_cleared {
-                self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
-            }
+        }
+        if effects.input_cleared {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::InputCleared);
         }
         effects.agent_feedback
     }

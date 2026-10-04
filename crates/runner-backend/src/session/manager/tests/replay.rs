@@ -711,7 +711,9 @@ fn session_scenario_goldens() {
     assert!(known_wrong.is_empty());
     assert_eq!(
         bugs,
-        BTreeSet::from([459, 583, 623, 659, 670, 687, 738, 753, 766, 783, 781, 784, 785, 786, 736])
+        BTreeSet::from([
+            459, 583, 623, 659, 670, 687, 738, 753, 766, 783, 781, 784, 785, 786, 736, 799,
+        ])
     );
     if checkpoint.is_some() {
         assert_eq!(compared, 124);

@@ -209,6 +209,7 @@ pub(crate) struct SessionModel {
     provisional_idle: bool,
     local_input_pending: bool,
     observed_input: Option<ObservedInput>,
+    native_input: Option<ObservedInput>,
     last_local_input_at: Option<Instant>,
     completion_armed: bool,
     compaction_failed_since: Option<Option<i64>>,
@@ -265,6 +266,7 @@ impl SessionModel {
             && !self.provisional_idle
             && !self.local_input_pending
             && self.observed_input.is_none()
+            && self.native_input.is_none()
             && self.last_local_input_at.is_none()
             && !self.completion_armed
             && self.compaction_failed_since.is_none()
@@ -283,7 +285,7 @@ impl SessionModel {
     }
 
     pub fn draft_quiescent(&self, now: Instant) -> bool {
-        let observed_quiescent = match self.observed_input {
+        let observed_quiescent = match self.native_input.or(self.observed_input) {
             Some(observed) if observed.state == InputState::Drafting => false,
             Some(observed) if observed.state == InputState::Submitted => {
                 now.saturating_duration_since(observed.since) >= RECENT_LOCAL_INPUT_WINDOW
@@ -299,7 +301,7 @@ impl SessionModel {
 
     pub fn draft_hold(&self, now: Instant) -> Option<crate::router::DeliveryReservation> {
         use crate::router::DeliveryReservation;
-        match self.observed_input {
+        match self.native_input.or(self.observed_input) {
             Some(observed) if observed.state == InputState::Drafting => {
                 return Some(DeliveryReservation::Drafting {
                     composer_visible: observed.composer_visible,
@@ -344,6 +346,7 @@ impl SessionModel {
             SessionEvent::Attached => {
                 self.local_input_pending = false;
                 self.observed_input = None;
+                self.native_input = None;
                 self.last_local_input_at = None;
                 self.status = AgentStatus {
                     unread_since: self.status.unread_since,
@@ -368,6 +371,7 @@ impl SessionModel {
                 self.provisional_idle = false;
                 self.local_input_pending = false;
                 self.observed_input = None;
+                self.native_input = None;
                 self.last_local_input_at = None;
                 self.completion_armed = false;
             }
@@ -389,6 +393,22 @@ impl SessionModel {
                 if !live {
                     return effects;
                 }
+                if let agent::AgentEvent::EditorDraft { drafting } = event {
+                    effects.input_cleared = !drafting
+                        && self
+                            .native_input
+                            .is_some_and(|previous| previous.state == InputState::Drafting);
+                    self.native_input = Some(ObservedInput {
+                        state: if drafting {
+                            InputState::Drafting
+                        } else {
+                            InputState::Idle
+                        },
+                        since: now.monotonic,
+                        composer_visible: true,
+                    });
+                    return effects;
+                }
                 let (observation, feedback) =
                     self.agent.reduce_with_feedback(event, now.wall_millis);
                 if let Some(observation) = observation {
@@ -397,6 +417,7 @@ impl SessionModel {
                 effects.agent_feedback = feedback;
             }
             SessionEvent::BridgeFailed { live } => {
+                self.native_input = None;
                 self.completion_armed = false;
                 let fallback = AgentObservation {
                     activity: match self.baseline_activity {
@@ -452,9 +473,10 @@ impl SessionModel {
                 if !live {
                     return effects;
                 }
-                effects.input_cleared = self.observed_input.is_some_and(|previous| {
-                    previous.state != InputState::Idle && observation.state == InputState::Idle
-                });
+                effects.input_cleared = self.native_input.is_none()
+                    && self.observed_input.is_some_and(|previous| {
+                        previous.state != InputState::Idle && observation.state == InputState::Idle
+                    });
                 if effects.input_cleared {
                     self.last_local_input_at = None;
                 }
@@ -491,6 +513,7 @@ impl SessionModel {
                 }
             }
             SessionEvent::Exited { code, crashed } => {
+                self.native_input = None;
                 self.status.lifecycle = if crashed {
                     Lifecycle::Error
                 } else {
