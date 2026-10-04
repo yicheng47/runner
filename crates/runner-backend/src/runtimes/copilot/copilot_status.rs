@@ -517,10 +517,23 @@ impl CopilotStatusWatcher {
         &mut self,
         cancel: u8,
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
-        _session_start: impl FnMut(String),
+        mut session_start: impl FnMut(String),
     ) -> Result<()> {
         self.feed.drain(cancel != 0, |report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if report.hook_event_name == "SessionStart" && report.agent_id.is_none() {
+                    if let Some(id) = report.session_id.as_deref() {
+                        if uuid::Uuid::parse_str(id).is_ok()
+                            && self
+                                .parser
+                                .session_id
+                                .as_deref()
+                                .is_some_and(|current| current != id)
+                        {
+                            session_start(id.to_owned());
+                        }
+                    }
+                }
                 if let Some(events) = self.parser.hook(report) {
                     emit(AgentEvent::Batch {
                         runtime: Runtime::Copilot,
@@ -760,6 +773,85 @@ mod tests {
         value["tool_name"] = json!(name);
         value["tool_input"] = input;
         value
+    }
+
+    #[test]
+    fn changed_root_session_start_rekeys_after_prompt_but_not_duplicate_child_or_stale_reports() {
+        let root = tempfile::tempdir().unwrap();
+        install_plugin(root.path()).unwrap();
+        let path = crate::session::hook_feed::status_path(root.path(), "copilot-rekey");
+        let mut watcher =
+            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
+        let first = "11111111-1111-4111-8111-111111111111";
+        let next = "22222222-2222-4222-8222-222222222222";
+        let child = "33333333-3333-4333-8333-333333333333";
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        for value in [
+            json!({"generation":"current","hook_event_name":"UserPromptSubmit","session_id":first}),
+            json!({"generation":"current","hook_event_name":"SessionStart","session_id":first}),
+            json!({"generation":"current","hook_event_name":"SessionStart","session_id":child,"agentId":"child"}),
+            json!({"generation":"old","hook_event_name":"SessionStart","session_id":child}),
+            json!({"generation":"current","hook_event_name":"UserPromptSubmit","session_id":next}),
+            json!({"generation":"current","hook_event_name":"SessionStart","session_id":next}),
+            json!({"generation":"current","hook_event_name":"SessionStart","session_id":next}),
+        ] {
+            writeln!(file, "{value}").unwrap();
+        }
+        watcher.feed.dirty.store(true, Ordering::Release);
+        let conn = crate::db::test_connection().unwrap();
+        let mut row = crate::repo::session::SessionRowDb::new_running("copilot-rekey".into());
+        row.agent_session_key = Some(first.into());
+        row.started_at = Some(chrono::Utc::now());
+        let started = row.started_at.unwrap().to_rfc3339();
+        crate::repo::session::insert(&conn, &row).unwrap();
+        let mut keys = Vec::new();
+        watcher
+            .drain_with_session_starts(
+                |_, _| {},
+                |key| {
+                    assert!(crate::repo::session::rekey_agent_session_key(
+                        &conn, &row.id, &key, &started
+                    )
+                    .unwrap());
+                    keys.push(key);
+                },
+            )
+            .unwrap();
+        assert_eq!(keys, [next]);
+        let saved = crate::repo::session::get_row(&conn, &row.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.agent_session_key.as_deref(), Some(next));
+        let plan = crate::runtimes::adapter(Runtime::Copilot)
+            .resume_plan(saved.agent_session_key.as_deref());
+        assert!(plan.resuming);
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--session-id", next]));
+        assert!(
+            !crate::repo::session::rekey_agent_session_key(&conn, &row.id, child, "old-spawn")
+                .unwrap()
+        );
+        crate::repo::session::set_exit_status(
+            &conn,
+            &row.id,
+            crate::model::SessionStatus::Stopped,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        assert!(
+            !crate::repo::session::rekey_agent_session_key(&conn, &row.id, child, &started)
+                .unwrap()
+        );
+        assert_eq!(
+            crate::repo::session::get_row(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .agent_session_key
+                .as_deref(),
+            Some(next)
+        );
     }
 
     #[test]

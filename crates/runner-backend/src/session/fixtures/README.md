@@ -40,7 +40,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 | #781 (known wrong) | Codex `custom-home`: the real capture-root selector ignores CODEX_HOME, and scanning that root leaves the key NULL |
 | #784 | pi `escape-reply`, `ctrl-c`: the live error-shaped abort message settles Interrupted; other API errors remain Failed |
 | #785 | Claude `alias-resume`: history stored under the physical cwd is found through the alias spelling |
-| #786 (known wrong) | Copilot `clear-resume`: SessionStart changes the watcher's conversation while the persisted key stays old |
+| #786 | Copilot `clear-resume`: root SessionStart replaces the persisted key for the new conversation |
 
 `exit` tears down the watcher, then separately delivers already-in-flight Working and Ready snapshots through the manager observation seam. Both leave lifecycle, attention and activity unchanged, publish no status or mission row, and cannot rearm or consume completion.
 

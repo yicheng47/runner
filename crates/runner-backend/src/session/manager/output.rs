@@ -200,7 +200,7 @@ impl SessionManager {
                             Ok(())
                         })();
                         if let Err(error) = result {
-                            log::warn!("rekey Codex session {session_id}: {error}");
+                            log::warn!("rekey agent session {session_id}: {error}");
                         }
                     }
                     Ok(RuntimeOutput::StatusBridgeFailed) => {
