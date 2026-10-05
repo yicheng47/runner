@@ -3,8 +3,8 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{px, Context, Window};
 use runner_app::ui::{ContextMenu, MenuItem as UiMenuItem};
-use runner_backend::model::Role;
-use runner_backend::ops::role::RoleWithActivity;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::role::RoleWithActivity;
 
 use super::*;
 use crate::surfaces::*;
@@ -100,13 +100,12 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let role_id = role.id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::session::session_start_direct(
-                &core,
+            core.session_start_direct(
                 role_id,
                 None,
                 None,
                 None,
-                runner_backend::ops::project::ProjectScope::Root,
+                runner_core::protocol::project::ProjectScope::Root,
                 cwd,
                 Some(INITIAL_COLS),
                 Some(INITIAL_ROWS),

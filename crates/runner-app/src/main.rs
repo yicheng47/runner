@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod theme_snapshot;
 
 mod app_settings;
@@ -50,10 +52,12 @@ use runner_app::ui::{
     WORKSPACE_HEADER_HEIGHT,
 };
 use runner_app::{theme, Copy, Cut, Paste, Redo, SelectAll, Undo};
-use runner_backend::model::SessionStatus;
-use runner_backend::ops::session::DirectSessionEntry;
-use runner_backend::session::manager::SessionActivityState;
+#[cfg(test)]
 use runner_backend::AppCore;
+use runner_core::protocol::model::SessionStatus;
+use runner_core::protocol::session::DirectSessionEntry;
+use runner_core::protocol::session::SessionActivityState;
+use runner_core::protocol::DaemonClient;
 use runner_terminal::terminal::{TerminalSession, TerminalView};
 
 use app_settings::{settings_path, AppSettings};
@@ -547,10 +551,10 @@ struct NativeRoot {
     settings_return_route: AppRoute,
     usage_open: bool,
     usage_anchor: Option<Bounds<Pixels>>,
-    usage_installed: Vec<runner_backend::model::Runtime>,
+    usage_installed: Vec<runner_core::protocol::model::Runtime>,
     /// Agents with a newer version on npm; enabled ones dot the usage
     /// popover's Agent settings gear.
-    agent_updates: Vec<runner_backend::model::Runtime>,
+    agent_updates: Vec<runner_core::protocol::model::Runtime>,
     runtime_navigation_history: Vec<RuntimeLocation>,
     runtime_navigation_index: Option<usize>,
     sidebar_collapsed: bool,
@@ -607,10 +611,10 @@ impl NativeRoot {
     }
 
     pub(crate) fn request_model_catalog(&self, runtime: &str, cx: &Context<Self>) {
-        if let Some(runtime) = runner_backend::model::Runtime::parse(runtime)
+        if let Some(runtime) = runner_core::protocol::model::Runtime::parse(runtime)
             .filter(|runtime| self.settings(cx).model_runtimes().contains(runtime))
         {
-            runner_backend::ops::runtime::runtime_request_models(self.core(cx), &[runtime]);
+            let _ = self.core(cx).runtime_request_models(&[runtime]);
         }
     }
 
@@ -623,7 +627,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let core = app_store.read(cx).core.clone();
+        let core = app_store.read(cx).client.clone();
         let settings = app_store.read(cx).settings.clone();
         let sessions = app_store.read(cx).sessions.clone();
         let nodes = app_store.read(cx).nodes.clone();
@@ -631,14 +635,14 @@ impl NativeRoot {
         let startup_error = app_store.read(cx).error.clone();
 
         let (chat_event_tx, mut chat_event_rx) =
-            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
-        let mut chat_events = core.events.subscribe();
+            futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();
+        let mut chat_events = core.subscribe();
         cx.background_spawn(async move {
             loop {
                 match chat_events.recv().await {
                     Ok(event)
                         if matches!(
-                            event.name,
+                            event.name.as_str(),
                             "session/exit"
                                 | "session/status"
                                 | "session/spawned"
@@ -652,8 +656,8 @@ impl NativeRoot {
                             break;
                         }
                     }
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Ok(_) | Err(runner_core::protocol::EventError::Lagged(_)) => {}
+                    Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
         })
@@ -663,7 +667,7 @@ impl NativeRoot {
                 if weak
                     .update_in(cx, |this, window, cx| {
                         if matches!(
-                            event.name,
+                            event.name.as_str(),
                             "session/spawned" | "session/exit" | "session/archived"
                         ) {
                             this.refresh_agents_live_sessions(cx);
@@ -680,18 +684,20 @@ impl NativeRoot {
         .detach();
 
         let (runtime_event_tx, mut runtime_event_rx) =
-            futures::channel::mpsc::unbounded::<&'static str>();
-        let mut app_events = core.events.subscribe();
+            futures::channel::mpsc::unbounded::<String>();
+        let mut app_events = core.subscribe();
         cx.background_spawn(async move {
             loop {
                 match app_events.recv().await {
-                    Ok(event) if matches!(event.name, "runtime/changed" | "usage/updated") => {
+                    Ok(event)
+                        if matches!(event.name.as_str(), "runtime/changed" | "usage/updated") =>
+                    {
                         if runtime_event_tx.unbounded_send(event.name).is_err() {
                             break;
                         }
                     }
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Ok(_) | Err(runner_core::protocol::EventError::Lagged(_)) => {}
+                    Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
         })
@@ -776,11 +782,7 @@ impl NativeRoot {
         let active_chat_detail = tabs
             .active()
             .and_then(PaneLayout::focused_session_id)
-            .and_then(|session_id| {
-                runner_backend::ops::session::session_get(&core, session_id)
-                    .ok()
-                    .flatten()
-            });
+            .and_then(|session_id| core.session_get(session_id).ok().flatten());
         let initial_session_key = active_chat_detail
             .as_ref()
             .and_then(|entry| entry.agent_session_key.clone());
@@ -824,7 +826,7 @@ impl NativeRoot {
                 .iter()
                 .find(|node| {
                     node.id == parent_id
-                        && node.node_type == runner_backend::repo::node::NodeType::Project
+                        && node.node_type == runner_core::protocol::node::NodeType::Project
                 })
                 .and_then(|node| node.ref_id.clone())
         });
@@ -978,6 +980,9 @@ impl NativeRoot {
         root._bounds_subscription = Some(cx.observe_window_bounds(window, |this, window, cx| {
             mac_chrome::sync_traffic_lights(window, this.settings(cx).app_zoom);
             this.schedule_window_state_checkpoint(window, cx);
+            this.mission_workspace.update(cx, |workspace, cx| {
+                workspace.schedule_mission_grid_hint(window, cx)
+            });
             cx.notify();
         }));
         root._activation_subscription =
@@ -1024,8 +1029,8 @@ impl NativeRoot {
         root
     }
 
-    fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
-        &self.app_store.read(cx).core
+    fn core<'a>(&self, cx: &'a App) -> &'a DaemonClient {
+        &self.app_store.read(cx).client
     }
 
     fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
@@ -1072,9 +1077,10 @@ impl NativeRoot {
 
     fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
         let core = self.core(cx).clone();
-        if core.usage.set_enabled(self.settings(cx).model_runtimes()) {
-            core.usage
-                .request_refresh(core.clone(), runner_backend::usage::RefreshReason::Button);
+        if core
+            .usage_set_enabled(self.settings(cx).model_runtimes())
+            .unwrap_or(false)
+        {
             cx.notify();
         }
         let revisions = self.app_store.read(cx).revisions;
@@ -1167,10 +1173,10 @@ struct WindowLayoutCheckpoint {
 impl Global for WindowLayoutCheckpoint {}
 
 fn collect_window_layout(cx: &mut App) -> (window_state::WindowLayout, Vec<LiveWindowState>) {
-    let core = global_app_store(cx).read(cx).core.clone();
+    let core = global_app_store(cx).read(cx).client.clone();
     let focused_at = core
-        .windows
-        .snapshot()
+        .window_snapshot()
+        .unwrap_or_default()
         .into_iter()
         .map(|entry| (entry.label, entry.focused_at.timestamp_micros()))
         .collect::<HashMap<_, _>>();
@@ -1259,7 +1265,7 @@ fn checkpoint_window_layout_on_quit(cx: &mut App) {
 }
 
 fn save_window_layout_checkpoint(cx: &mut App, force: bool) {
-    let core = global_app_store(cx).read(cx).core.clone();
+    let app_data_dir = global_app_store(cx).read(cx).app_data_dir.clone();
     let (layout, windows) = collect_window_layout(cx);
     let main_frame = windows
         .iter()
@@ -1271,7 +1277,7 @@ fn save_window_layout_checkpoint(cx: &mut App, force: bool) {
 
     if save_main {
         if let Some(main_frame) = main_frame {
-            match window_state::save(&core.app_data_dir, main_frame) {
+            match window_state::save(&app_data_dir, main_frame) {
                 Ok(()) => {
                     cx.global_mut::<WindowLayoutCheckpoint>().last_main_frame = Some(main_frame);
                 }
@@ -1282,7 +1288,7 @@ fn save_window_layout_checkpoint(cx: &mut App, force: bool) {
     if !save_layout {
         return;
     }
-    match window_state::save_layout(&core.app_data_dir, &layout) {
+    match window_state::save_layout(&app_data_dir, &layout) {
         Ok(()) => {
             cx.global_mut::<WindowLayoutCheckpoint>().last_layout = Some(layout.clone());
             eprintln!(
@@ -1358,7 +1364,7 @@ fn run() -> Result<()> {
         // Installed here, rather than in `boot_core`, so AppKit
         // registration happens on GPUI's process main thread.
         #[cfg(target_os = "macos")]
-        runner_backend::wake::install(&core.events);
+        runner_app::bootstrap::install_wake(runner_app::bootstrap::daemon_client(core.clone()));
 
         let (settings, settings_error) = match AppSettings::load(&ui_settings_path) {
             Ok(settings) => (settings, None),
@@ -1487,7 +1493,7 @@ fn run() -> Result<()> {
         });
         cx.set_menus(app_menus());
 
-        let restored_layout = window_state::read_layout(&core.app_data_dir);
+        let restored_layout = window_state::read_layout(&paths.app_data_dir);
         for warning in &restored_layout.warnings {
             eprintln!("Runner window-layout: restore fallback: {warning}");
         }
@@ -1498,7 +1504,7 @@ fn run() -> Result<()> {
                     open_runner_window("main".into(), state.route, None, cx)
                 }
                 window_state::RestoredWindowState::Secondary(state) => open_runner_window(
-                    runner_backend::ops::window::allocate_label(),
+                    runner_core::protocol::window::allocate_label(),
                     state.route,
                     Some(state.frame),
                     cx,
@@ -1605,7 +1611,7 @@ fn open_new_runner_window(initial_route: Option<String>, cx: &mut App) -> Result
     let label = if !window_label_is_open(cx, "main") {
         "main".into()
     } else {
-        runner_backend::ops::window::allocate_label()
+        runner_core::protocol::window::allocate_label()
     };
     open_runner_window(label, initial_route, None, cx)
 }
@@ -1618,7 +1624,7 @@ fn open_runner_window(
 ) -> Result<String> {
     let app_store = global_app_store(cx);
     let log_dir = cx.global::<GlobalNativePaths>().0.log_dir.clone();
-    let core = app_store.read(cx).core.clone();
+    let core = app_store.read(cx).client.clone();
     let default_size = size(px(1440.), px(900.));
     let fallback = Bounds::centered(None, default_size, cx);
     let (bounds, initial_window_state) = if label == "main" {
@@ -1630,8 +1636,8 @@ fn open_runner_window(
             height: f32::from(fallback.size.height) as f64,
         });
         let restored = match window_state::load_and_migrate(
-            &core.app_data_dir,
-            &settings_path(&core.app_data_dir),
+            &global_app_store(cx).read(cx).app_data_dir,
+            &settings_path(&global_app_store(cx).read(cx).app_data_dir),
             default_rect,
         ) {
             Ok(state) => state,
@@ -1653,18 +1659,19 @@ fn open_runner_window(
             Some(state),
         )
     } else {
-        let origin =
-            runner_backend::ops::window::cascade_reference(&core.windows.snapshot(), &label)
-                .and_then(|reference| window_origin_for_label(cx, &reference))
-                .map(|origin| origin + point(px(32.), px(32.)))
-                .unwrap_or(fallback.origin);
+        let origin = runner_core::protocol::window::cascade_reference(
+            &core.window_snapshot().unwrap_or_default(),
+            &label,
+        )
+        .and_then(|reference| window_origin_for_label(cx, &reference))
+        .map(|origin| origin + point(px(32.), px(32.)))
+        .unwrap_or(fallback.origin);
         (
             WindowBounds::Windowed(Bounds::new(origin, default_size)),
             None,
         )
     };
-    core.windows.register(&label);
-    core.broadcast_focus_map();
+    core.window_register(&label)?;
     let open_label = label.clone();
     let result = cx.open_window(
         WindowOptions {
@@ -1713,20 +1720,17 @@ fn open_runner_window(
             Ok(label)
         }
         Err(error) => {
-            runner_backend::ops::window::unregister(&core, &label);
+            let _ = core.unregister(&label);
             Err(error)
         }
     }
 }
 
 fn window_label_is_open(cx: &App, label: &str) -> bool {
-    global_app_store(cx)
-        .read(cx)
-        .core
-        .windows
-        .snapshot()
-        .iter()
-        .any(|entry| entry.label == label)
+    cx.windows()
+        .into_iter()
+        .filter_map(|handle| handle.downcast::<NativeRoot>())
+        .any(|handle| handle.read(cx).is_ok_and(|root| root.window_label == label))
 }
 
 fn window_origin_for_label(cx: &mut App, label: &str) -> Option<gpui::Point<gpui::Pixels>> {
@@ -1970,7 +1974,7 @@ mod native_root_tests {
 
     #[test]
     fn tab_close_selection_survives_async_reload_for_middle_last_and_only_tabs() {
-        use runner_backend::repo::node::{NodeRow, NodeType};
+        use runner_core::protocol::node::{NodeRow, NodeType};
 
         let rows = ["first", "middle", "last"].map(|id| NodeRow {
             id: id.into(),

@@ -1,4 +1,3 @@
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
 #[cfg(test)]
@@ -6,33 +5,8 @@ use crate::golden::config_home as capture_home;
 #[cfg(not(test))]
 use runner_core::app_paths::home_dir as capture_home;
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[PermissionMode::Default, PermissionMode::Bypass],
-    strip_flags: &[("--permission-mode", true)],
-    equals_on_bool: false,
-    variadic_flag: None,
-    args: permission_args,
-    matches: mode_matches,
-    mission_bypass: None,
-    strip_on_mission_resume: true,
-};
-fn permission_args(mode: PermissionMode) -> Vec<String> {
-    match mode {
-        PermissionMode::Bypass => strings(&["--permission-mode", "bypass_permissions"]),
-        _ => Vec::new(),
-    }
-}
-fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
-    let pairs: &[(&str, Option<&str>)] = match mode {
-        PermissionMode::Bypass => &[("--permission-mode", Some("bypass_permissions"))],
-        PermissionMode::Auto => &[("--permission-mode", Some("auto"))],
-        _ => &[],
-    };
-    !pairs.is_empty()
-        && pairs
-            .iter()
-            .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
-}
+use runner_core::protocol::runtime_metadata::trae::{PERMISSIONS, SKILL_DIRS};
+
 pub struct Trae;
 impl RuntimeAdapter for Trae {
     fn mcp(&self) -> Option<&'static McpConfig> {
@@ -57,21 +31,7 @@ impl RuntimeAdapter for Trae {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        Some(RuntimeCatalog {
-            name: Runtime::Trae,
-            display_name: Runtime::Trae.display_name(),
-            command: Runtime::Trae.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: false,
-            description: "",
-            install_url: "",
-            default_enabled: true,
-            models: vec![default_model_option()],
-            efforts: common_efforts(),
-            skills_dirs: SKILL_DIRS,
-            update_args: &[],
-            npm_package: None,
-        })
+        runner_core::protocol::runtime_metadata::trae::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -101,8 +61,6 @@ pub(crate) fn config_path(home: &Path) -> PathBuf {
     home.join(TRAE_CONFIG_RELATIVE_PATH)
 }
 
-const SKILL_DIRS: &[&str] = &[".trae/skills"];
-
 static MCP: McpConfig = McpConfig {
     wire_name: "trae",
     serialized_name: "Trae",
@@ -113,7 +71,3 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: false,
     supports_http: true,
 };
-#[allow(non_upper_case_globals)]
-impl crate::ops::mcp::McpClientId {
-    pub const Trae: Self = Self(Runtime::Trae);
-}

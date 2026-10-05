@@ -17,35 +17,14 @@ use std::collections::HashSet;
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_rusqlite::from_row;
 
 use super::{de_err, select_list};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NodeType {
-    Project,
-    Tab,
-    Mission,
-}
+pub use runner_core::protocol::node::NodeType;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NodeRow {
-    pub id: String,
-    pub parent_id: Option<String>,
-    pub position: i64,
-    /// Column is named `type` in SQL; `type` is a Rust keyword.
-    #[serde(rename = "type")]
-    pub node_type: NodeType,
-    pub name: Option<String>,
-    pub ref_id: Option<String>,
-    pub layout: Option<String>,
-    pub pinned_position: Option<i64>,
-    pub last_completed_at: Option<String>,
-    pub last_viewed_at: Option<String>,
-    pub created_at: String,
-}
+pub use runner_core::protocol::node::NodeRow;
 
 #[derive(Debug, Clone, Deserialize)]
 struct StoredLayout {

@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext as _, Context, Entity, Global};
-use runner_backend::events::AppEvent;
-use runner_backend::model::Role;
-use runner_backend::ops::crew::CrewListItem;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::ops::session::DirectSessionEntry;
-use runner_backend::repo::node::NodeRow;
-use runner_backend::repo::project::ProjectRow;
-use runner_backend::session::manager::SessionActivityState;
-use runner_backend::AppCore;
+use runner_core::protocol::crew::CrewListItem;
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::node::NodeRow;
+use runner_core::protocol::project::ProjectRow;
+use runner_core::protocol::session::DirectSessionEntry;
+use runner_core::protocol::session::SessionActivityState;
+use runner_core::protocol::ClientEvent as AppEvent;
+use runner_core::protocol::DaemonClient;
 use runner_terminal::terminal::TerminalBridge;
 
 use crate::app_settings::{
@@ -46,9 +46,9 @@ pub(crate) enum StoreRefreshKind {
 
 impl StoreRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
-        match event.name {
+        match event.name.as_str() {
             "runtime/changed" => Some(Self::Runtimes),
-            "session/status" => Some(Self::Activity),
+            "usage/updated" | "window_focus_map" | "session/status" => Some(Self::Activity),
             "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
             "event/appended"
                 if event
@@ -243,21 +243,27 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
 }
 
 pub(crate) struct AppStore {
-    pub(crate) core: AppCore,
+    pub(crate) client: DaemonClient,
+    pub(crate) app_data_dir: PathBuf,
+    pub(crate) window_entries: Vec<runner_core::protocol::WindowEntry>,
     pub(crate) bridge: Arc<TerminalBridge>,
+    pub(crate) update_host: crate::surfaces::agent_update::UpdateHost,
     pub(crate) sessions: Vec<DirectSessionEntry>,
+    pub(crate) session_details: BTreeMap<String, DirectSessionEntry>,
     pub(crate) roles: Vec<Role>,
     pub(crate) crews: Vec<CrewListItem>,
     pub(crate) nodes: Vec<NodeRow>,
     pub(crate) projects: Vec<ProjectRow>,
     pub(crate) missions: Vec<MissionSummary>,
-    pub(crate) session_statuses: BTreeMap<String, runner_backend::session::status::AgentStatus>,
+    pub(crate) session_statuses: BTreeMap<String, runner_core::protocol::status::AgentStatus>,
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
     pub(crate) settings: AppSettings,
     settings_path: PathBuf,
     pub(crate) home_dir: Option<PathBuf>,
+    pub(crate) usage: runner_core::protocol::UsageSnapshot,
+    pub(crate) file_link_environment: (String, std::collections::HashMap<String, bool>),
     command_install_support: Option<CommandInstallSupport>,
-    runner_command_status: Option<runner_backend::cli_install::RunnerCommandStatus>,
+    runner_command_status: Option<runner_core::command_install::RunnerCommandStatus>,
     command_install_requires_escalation: bool,
     command_action_target: Option<PathBuf>,
     runner_skill_status: RunnerSkillStatus,
@@ -268,7 +274,7 @@ pub(crate) struct AppStore {
 
 impl AppStore {
     pub(crate) fn new(
-        core: AppCore,
+        host: impl Into<runner_app::bootstrap::ClientHost>,
         home_dir: Option<PathBuf>,
         command_install_support: Option<CommandInstallSupport>,
         settings_path: PathBuf,
@@ -276,11 +282,12 @@ impl AppStore {
         settings_error: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let host = host.into();
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
         });
-        let bridge = TerminalBridge::new(core.clone(), Arc::clone(&waker))
+        let bridge = TerminalBridge::new(host.terminal_core().clone(), Arc::clone(&waker))
             .expect("terminal event bridge installation is infallible");
 
         cx.spawn(async move |weak, cx| {
@@ -315,16 +322,20 @@ impl AppStore {
 
         let (event_tx, mut event_rx) =
             futures::channel::mpsc::unbounded::<(StoreRefreshKind, EntityRefreshKind)>();
-        let mut events = core.events.subscribe();
+        #[cfg(not(test))]
+        let client = host.client.clone();
+        #[cfg(test)]
+        let client = crate::test_support::client(host.terminal_core());
+        let mut events = client.subscribe();
         cx.background_spawn(async move {
             loop {
                 let refresh = match events.recv().await {
                     Ok(event) => StoreRefreshKind::for_event(&event)
                         .map(|store| (store, EntityRefreshKind::for_event(&event))),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    Err(runner_core::protocol::EventError::Lagged(_)) => {
                         Some((StoreRefreshKind::All, EntityRefreshKind::All))
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(runner_core::protocol::EventError::Closed) => break,
                 };
                 if refresh.is_some_and(|refresh| event_tx.unbounded_send(refresh).is_err()) {
                     break;
@@ -359,9 +370,13 @@ impl AppStore {
         .detach();
 
         let mut store = Self {
-            core,
+            app_data_dir: host.app_data_dir.clone(),
+            client,
+            window_entries: Vec::new(),
             bridge,
+            update_host: crate::surfaces::agent_update::UpdateHost::new(host),
             sessions: Vec::new(),
+            session_details: BTreeMap::new(),
             roles: Vec::new(),
             crews: Vec::new(),
             nodes: Vec::new(),
@@ -372,6 +387,8 @@ impl AppStore {
             settings,
             settings_path,
             home_dir,
+            usage: Default::default(),
+            file_link_environment: Default::default(),
             command_install_support,
             runner_command_status: None,
             command_install_requires_escalation: false,
@@ -395,6 +412,7 @@ impl AppStore {
         store.refresh_projects_inner();
         store.refresh_missions_blocking_inner();
         store.refresh_activity_inner();
+        store.refresh_render_snapshots();
         store.collecting_startup_errors = false;
         store
     }
@@ -419,10 +437,9 @@ impl AppStore {
             self.revisions.full_refresh = self.revisions.full_refresh.wrapping_add(1);
         }
         if matches!(refresh, StoreRefreshKind::Missions | StoreRefreshKind::All) {
-            let core = self.core.clone();
+            let core = self.client.clone();
             cx.spawn(async move |weak, cx| {
-                let result =
-                    runner_backend::ops::mission::mission_list_summary_impl(&core, None).await;
+                let result = core.mission_list_summary_impl(None);
                 let _ = weak.update(cx, |this, cx| {
                     match result {
                         Ok(missions) => {
@@ -436,6 +453,7 @@ impl AppStore {
             })
             .detach();
         }
+        self.refresh_render_snapshots();
         cx.notify();
     }
 
@@ -447,8 +465,8 @@ impl AppStore {
     pub(crate) fn refresh_nodes(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> runner_backend::error::Result<()> {
-        match runner_backend::ops::node::node_list(&self.core) {
+    ) -> std::result::Result<(), runner_core::protocol::ClientError> {
+        match self.client.node_list() {
             Ok(nodes) => {
                 self.nodes = nodes;
                 self.revisions.nodes = self.revisions.nodes.wrapping_add(1);
@@ -569,9 +587,10 @@ impl AppStore {
     }
 
     fn refresh_sessions_inner(&mut self) {
-        match runner_backend::ops::session::session_list_recent_direct(&self.core) {
+        match self.client.session_list_recent_direct() {
             Ok(sessions) => {
                 self.sessions = sessions;
+                self.session_details = self.client.session_details().unwrap_or_default();
                 self.revisions.sessions = self.revisions.sessions.wrapping_add(1);
             }
             Err(error) => self.record_error(error.to_string()),
@@ -579,7 +598,7 @@ impl AppStore {
     }
 
     fn refresh_roles_inner(&mut self) {
-        match runner_backend::ops::role::role_list(&self.core) {
+        match self.client.role_list() {
             Ok(roles) => {
                 self.roles = roles;
                 self.revisions.roles = self.revisions.roles.wrapping_add(1);
@@ -589,12 +608,7 @@ impl AppStore {
     }
 
     fn refresh_crews_inner(&mut self) {
-        let result = self
-            .core
-            .db
-            .get()
-            .map_err(runner_backend::error::Error::from)
-            .and_then(|conn| runner_backend::ops::crew::list(&conn));
+        let result = self.client.crew_list_all();
         match result {
             Ok(crews) => {
                 self.crews = crews;
@@ -605,7 +619,7 @@ impl AppStore {
     }
 
     fn refresh_nodes_inner(&mut self) {
-        match runner_backend::ops::node::node_list(&self.core) {
+        match self.client.node_list() {
             Ok(nodes) => {
                 self.nodes = nodes;
                 self.revisions.nodes = self.revisions.nodes.wrapping_add(1);
@@ -617,7 +631,7 @@ impl AppStore {
     }
 
     fn refresh_projects_inner(&mut self) {
-        match runner_backend::ops::project::project_list(&self.core) {
+        match self.client.project_list() {
             Ok(projects) => {
                 self.projects = projects;
                 self.revisions.projects = self.revisions.projects.wrapping_add(1);
@@ -627,9 +641,7 @@ impl AppStore {
     }
 
     fn refresh_missions_blocking_inner(&mut self) {
-        match futures::executor::block_on(runner_backend::ops::mission::mission_list_summary_impl(
-            &self.core, None,
-        )) {
+        match self.client.mission_list_summary_impl(None) {
             Ok(missions) => {
                 self.missions = missions;
                 self.revisions.missions = self.revisions.missions.wrapping_add(1);
@@ -639,8 +651,8 @@ impl AppStore {
     }
 
     fn refresh_activity_inner(&mut self) {
-        self.session_activity = runner_backend::ops::session::session_activity_snapshot(&self.core);
-        match runner_backend::ops::session::session_status_snapshot(&self.core) {
+        self.session_activity = self.client.session_activity_snapshot().unwrap_or_default();
+        match self.client.session_status_snapshot() {
             Ok(statuses) => {
                 for summary in &mut self.missions {
                     for (id, status) in &mut summary.session_statuses {
@@ -654,6 +666,12 @@ impl AppStore {
             Err(error) => self.record_error(error.to_string()),
         }
         self.revisions.activity = self.revisions.activity.wrapping_add(1);
+    }
+
+    fn refresh_render_snapshots(&mut self) {
+        self.window_entries = self.client.window_snapshot().unwrap_or_default();
+        self.usage = self.client.usage_snapshot().unwrap_or_default();
+        self.file_link_environment = self.client.file_link_environment().unwrap_or_default();
     }
 
     fn record_error(&mut self, error: String) {
@@ -680,7 +698,7 @@ enum EntityRefreshKind {
 
 impl EntityRefreshKind {
     fn for_event(event: &AppEvent) -> Self {
-        match event.name {
+        match event.name.as_str() {
             "role/activity" => Self::Roles,
             "role/changed" | "crew/changed" | "slot/changed" => Self::All,
             _ => Self::None,
@@ -716,7 +734,7 @@ mod tests {
 
     fn event(name: &'static str) -> AppEvent {
         AppEvent {
-            name,
+            name: name.to_owned(),
             payload: serde_json::Value::Null,
         }
     }

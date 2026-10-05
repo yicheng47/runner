@@ -14,8 +14,8 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{px, Context, Window};
 use runner_app::ui::{working_dir_text_field, ModelField, StyledSelect, TextField};
-use runner_backend::model::Role;
-use runner_backend::router::runtime::PermissionMode;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::permissions::PermissionMode;
 
 use super::*;
 use crate::*;

@@ -11,7 +11,7 @@ use gpui::{
     div, px, rems, svg, AnyElement, Context, Div, Entity, FontWeight, KeyDownEvent, SharedString,
 };
 use runner_app::ui::focus_ring;
-use runner_backend::model::{Crew, Mission, MissionStatus};
+use runner_core::protocol::model::{Crew, Mission, MissionStatus};
 
 use crate::surfaces::profile_page::{
     caption, card, card_column, card_meta, clamped_markdown, markdown_editor_body,
@@ -256,7 +256,7 @@ fn conventions_card(header_right: AnyElement) -> Div {
 
 fn mission_row(
     mission: &Mission,
-    now: runner_backend::model::Timestamp,
+    now: runner_core::protocol::model::Timestamp,
     local_now: &chrono::DateTime<chrono::Local>,
     interactive: bool,
     root: Entity<NativeRoot>,

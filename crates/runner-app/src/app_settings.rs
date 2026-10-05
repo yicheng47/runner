@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -369,12 +369,12 @@ impl AppSettings {
     }
 
     pub fn model_runtimes(&self) -> Vec<Runtime> {
-        runner_backend::ops::runtime::model_discovery_runtimes()
+        runner_core::protocol::runtime_metadata::model_discovery_runtimes()
             .into_iter()
             .filter(|runtime| {
                 self.is_agent_enabled(
                     *runtime,
-                    runner_backend::ops::runtime::runtime_default_enabled(*runtime),
+                    runner_core::protocol::runtime_metadata::runtime_default_enabled(*runtime),
                 )
             })
             .collect()

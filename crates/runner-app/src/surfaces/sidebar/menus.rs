@@ -1,10 +1,10 @@
 use super::elements::sidebar_fork_menu_target;
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 
 use super::*;
 use crate::*;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::repo::node::NodeRow;
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::node::NodeRow;
 
 /// Where a sidebar menu opens: at the pointer, as a right-click menu does,
 /// or under the row button that opened it.
@@ -189,7 +189,7 @@ impl Sidebar {
 
     pub(super) fn open_project_menu(
         &mut self,
-        project: runner_backend::repo::project::ProjectRow,
+        project: runner_core::protocol::project::ProjectRow,
         origin: MenuOrigin,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -252,7 +252,7 @@ impl Sidebar {
                 }
             }
             SidebarMenuAction::TogglePin { node_id, pinned } => {
-                match runner_backend::ops::node::node_set_pinned(self.core(cx), node_id, !pinned) {
+                match self.core(cx).node_set_pinned(node_id, !pinned) {
                     Ok(_) => self.refresh_store(StoreRefreshKind::All, cx),
                     Err(error) => self.report_error(error.to_string(), cx),
                 }
@@ -328,8 +328,7 @@ impl Sidebar {
                 let core = self.core(cx).clone();
                 let archive_id = mission_id.clone();
                 let archive_task = cx.background_spawn(async move {
-                    runner_backend::ops::mission::mission_archive_impl(&core, archive_id)
-                        .await
+                    core.mission_archive_impl(archive_id)
                         .map(drop)
                         .map_err(|error| error.to_string())
                 });
@@ -338,7 +337,7 @@ impl Sidebar {
                     let _ = weak.update(cx, |this, cx| {
                         this.archiving_missions.remove(&mission_id);
                         match result {
-                            Ok(()) => this.core(cx).events.emit("mission/changed", &()),
+                            Ok(()) => (),
                             Err(error) => this.report_error(error, cx),
                         }
                         this.refresh_store(StoreRefreshKind::All, cx);

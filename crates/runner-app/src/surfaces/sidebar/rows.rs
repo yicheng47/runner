@@ -2,8 +2,8 @@ use super::*;
 use crate::surfaces::sidebar_logic::AttentionState;
 use crate::*;
 use runner_app::ui::TextField;
-use runner_backend::model::Runtime;
-use runner_backend::repo::node::NodeType;
+use runner_core::protocol::model::Runtime;
+use runner_core::protocol::node::NodeType;
 
 impl Sidebar {
     pub(super) fn dismiss_transients(&mut self, cx: &mut Context<Self>) {
@@ -162,7 +162,7 @@ impl Sidebar {
         members: &[DirectSessionEntry],
         cx: &App,
     ) -> runner_app::ui::agent_status::StatusRollup {
-        use runner_backend::session::status::{AgentStatus, Lifecycle};
+        use runner_core::protocol::status::{AgentStatus, Lifecycle};
         let store = self.app_store.read(cx);
         let entries = members
             .iter()
@@ -192,7 +192,7 @@ impl Sidebar {
 
     pub(super) fn mission_status_rollup(
         &self,
-        summary: &runner_backend::ops::mission::MissionSummary,
+        summary: &runner_core::protocol::mission::MissionSummary,
     ) -> runner_app::ui::agent_status::StatusRollup {
         let mut entries = summary.session_statuses.clone();
         if self.archiving_missions.contains(&summary.mission.id) {
@@ -409,13 +409,9 @@ impl Sidebar {
                 if next == original.trim() {
                     Ok(())
                 } else if let Some(session_id) = session_id {
-                    runner_backend::ops::session::session_rename(
-                        self.core(cx),
-                        &session_id,
-                        Some(next),
-                    )
+                    self.core(cx).session_rename(&session_id, Some(next))
                 } else {
-                    runner_backend::ops::node::node_rename(self.core(cx), node_id, next).map(drop)
+                    self.core(cx).node_rename(node_id, next).map(drop)
                 }
             }
             SidebarRenameTarget::Project {
@@ -425,8 +421,7 @@ impl Sidebar {
                 if next.is_empty() || next == original.trim() {
                     Ok(())
                 } else {
-                    runner_backend::ops::project::project_rename(self.core(cx), project_id, next)
-                        .map(drop)
+                    self.core(cx).project_rename(project_id, next).map(drop)
                 }
             }
             SidebarRenameTarget::Mission {
@@ -436,12 +431,9 @@ impl Sidebar {
                 if next.is_empty() || next == original.trim() {
                     Ok(())
                 } else {
-                    futures::executor::block_on(runner_backend::ops::mission::mission_rename_impl(
-                        self.core(cx),
-                        mission_id,
-                        next,
-                    ))
-                    .map(drop)
+                    self.core(cx)
+                        .mission_rename_impl(mission_id, next)
+                        .map(drop)
                 }
             }
         };
@@ -472,8 +464,8 @@ fn status_attention(priority: u8) -> AttentionState {
     }
 }
 
-fn mark_archiving_status(status: &mut runner_backend::session::status::AgentStatus) {
-    use runner_backend::session::status::{Activity, Lifecycle, ObservationSource};
+fn mark_archiving_status(status: &mut runner_core::protocol::status::AgentStatus) {
+    use runner_core::protocol::status::{Activity, Lifecycle, ObservationSource};
     if runner_app::ui::agent_status::StatusRollup::priority(status) < 3 {
         status.lifecycle = Lifecycle::Running;
         status.observation.activity = Activity::Working;
@@ -485,7 +477,7 @@ fn mark_archiving_status(status: &mut runner_backend::session::status::AgentStat
 mod status_tests {
     use super::*;
     use runner_app::ui::agent_status::StatusRollup;
-    use runner_backend::session::status::{AgentStatus, HumanInteraction, Lifecycle, WaitReason};
+    use runner_core::protocol::status::{AgentStatus, HumanInteraction, Lifecycle, WaitReason};
 
     #[test]
     fn archive_feedback_preserves_higher_attention_and_unread() {

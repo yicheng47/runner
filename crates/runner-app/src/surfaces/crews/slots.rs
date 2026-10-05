@@ -11,7 +11,7 @@ use gpui::{
     KeyDownEvent, Pixels, SharedString,
 };
 use runner_app::ui::{ConfirmDialog, RoleAvatar};
-use runner_backend::model::SlotWithRole;
+use runner_core::protocol::model::SlotWithRole;
 
 use super::*;
 use crate::chat_icon::ChatIcon;
@@ -294,7 +294,8 @@ impl NativeRoot {
         let crew_id = self.crew_surfaces.editor.crew_id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            let result = runner_backend::ops::slot::slot_set_lead(&core, &slot_id)
+            let result = core
+                .slot_set_lead(&slot_id)
                 .map_err(|error| error.to_string());
             (crew_id, result)
         });
@@ -360,7 +361,7 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             let requested_crew_id = crew_id.clone();
-            runner_backend::ops::slot::slot_reorder(&core, &crew_id, ordered_ids)
+            core.slot_reorder(&crew_id, ordered_ids)
                 .map(|slots| (crew_id, slots))
                 .map_err(|error| (requested_crew_id, error.to_string()))
         });
@@ -504,8 +505,8 @@ pub(super) fn slot_setup_line(setup: &SlotSetup) -> gpui::Div {
     }
     if let Some(speed) = setup.speed {
         let label = match speed {
-            runner_backend::model::CodexSpeed::Standard => "Standard",
-            runner_backend::model::CodexSpeed::Fast => "Fast",
+            runner_core::protocol::model::CodexSpeed::Standard => "Standard",
+            runner_core::protocol::model::CodexSpeed::Fast => "Fast",
         };
         line = line.child(separator()).child(
             value(label.into(), setup.speed_overridden).when(cfg!(test), |item| {

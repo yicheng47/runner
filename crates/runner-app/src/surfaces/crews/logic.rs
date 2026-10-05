@@ -4,11 +4,11 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{div, rems, AnyElement, Context, FocusHandle, KeyDownEvent, SharedString, Window};
 use runner_app::ui::{RoleAvatar, SelectOption};
-use runner_backend::model::{Mission, MissionStatus, SlotWithRole, Timestamp};
-use runner_backend::ops::crew::CrewMemberPreview;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::ops::role::RoleWithActivity;
-use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
+use runner_core::protocol::crew::CrewMemberPreview;
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::model::{Mission, MissionStatus, SlotWithRole, Timestamp};
+use runner_core::protocol::role::RoleWithActivity;
+use runner_core::protocol::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
 
 use super::*;
 use crate::*;
@@ -212,7 +212,7 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
         .as_deref()
         .filter(|runtime| *runtime != slot.role.runtime)
     {
-        let command = runner_backend::ops::runtime::runtime_list()
+        let command = runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .find(|entry| entry.name.key() == runtime)
             .map(|entry| entry.command)
@@ -229,8 +229,8 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
                 overrides.push(format!(
                     "speed {}",
                     match speed {
-                        runner_backend::model::CodexSpeed::Standard => "Standard",
-                        runner_backend::model::CodexSpeed::Fast => "Fast",
+                        runner_core::protocol::model::CodexSpeed::Standard => "Standard",
+                        runner_core::protocol::model::CodexSpeed::Fast => "Fast",
                     }
                 ));
             }
@@ -260,8 +260,8 @@ pub(super) fn slot_command_summary(slot: &SlotWithRole) -> String {
             overrides.push(format!(
                 "speed {}",
                 match speed {
-                    runner_backend::model::CodexSpeed::Standard => "Standard",
-                    runner_backend::model::CodexSpeed::Fast => "Fast",
+                    runner_core::protocol::model::CodexSpeed::Standard => "Standard",
+                    runner_core::protocol::model::CodexSpeed::Fast => "Fast",
                 }
             ));
         }
@@ -386,7 +386,7 @@ pub(super) struct SlotSetup {
     pub(super) model_overridden: bool,
     pub(super) effort: Option<String>,
     pub(super) effort_overridden: bool,
-    pub(super) speed: Option<runner_backend::model::CodexSpeed>,
+    pub(super) speed: Option<runner_core::protocol::model::CodexSpeed>,
     pub(super) speed_overridden: bool,
 }
 

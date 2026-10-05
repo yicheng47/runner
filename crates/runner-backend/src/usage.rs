@@ -15,59 +15,17 @@ const MIN_REFRESH_VISIBLE: Duration = Duration::from_millis(400);
 const SCHEDULE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const OPEN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct UsageWindow {
-    pub name: String,
-    pub used_percent: f64,
-    pub resets_at: Option<DateTime<Utc>>,
-}
+pub use runner_core::protocol::usage::UsageWindow;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct AgentUsage {
-    pub windows: Vec<UsageWindow>,
-    pub updated_at: DateTime<Utc>,
-}
+pub use runner_core::protocol::usage::AgentUsage;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UnavailableReason {
-    SignIn,
-    KeychainDenied,
-    KeychainUnavailable,
-    ClaudeUnreachable,
-    CodexNoAnswer,
-    AntigravityNoAnswer,
-    InvalidResponse,
-}
+pub use runner_core::protocol::usage::UnavailableReason;
 
-#[derive(Clone, Debug, Default)]
-pub struct UsageSnapshot {
-    pub runtimes: std::collections::HashMap<Runtime, RuntimeUsage>,
-    pub last_fetch_at: Option<DateTime<Utc>>,
-    pub refreshing: bool,
-}
+pub use runner_core::protocol::usage::UsageSnapshot;
 
-#[derive(Clone, Debug, Default)]
-pub struct RuntimeUsage {
-    pub value: Option<AgentUsage>,
-    pub error: Option<UnavailableReason>,
-}
+pub use runner_core::protocol::usage::RuntimeUsage;
 
-impl UsageSnapshot {
-    pub fn get(&self, runtime: Runtime) -> Option<&AgentUsage> {
-        self.runtimes.get(&runtime)?.value.as_ref()
-    }
-    pub fn error(&self, runtime: Runtime) -> Option<UnavailableReason> {
-        self.runtimes.get(&runtime)?.error
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RefreshReason {
-    Launch,
-    Schedule,
-    Button,
-    Open,
-}
+pub use runner_core::protocol::usage::RefreshReason;
 
 #[derive(Default)]
 struct UsageState {

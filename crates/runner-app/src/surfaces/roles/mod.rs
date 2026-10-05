@@ -14,11 +14,11 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription};
 use runner_app::ui::{ContextMenu, ModelField, Scrollbar, SearchInput, StyledSelect, TextField};
-use runner_backend::model::Role;
-use runner_backend::ops::role::{RoleActivity, RoleWithActivity};
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
-use runner_backend::ops::slot::CrewMembership;
-use runner_backend::router::runtime::PermissionMode;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::permissions::PermissionMode;
+use runner_core::protocol::role::{RoleActivity, RoleWithActivity};
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
+use runner_core::protocol::slot::CrewMembership;
 
 use crate::list_controls::ListControls;
 use crate::*;

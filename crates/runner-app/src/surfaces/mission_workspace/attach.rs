@@ -6,8 +6,8 @@ use gpui::prelude::*;
 use gpui::{App, Window};
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::CopyValueButton;
-use runner_backend::model::SessionStatus;
-use runner_backend::windows::Subject;
+use runner_core::protocol::model::SessionStatus;
+use runner_core::protocol::window::Subject;
 
 use super::*;
 use crate::surfaces::*;
@@ -21,16 +21,11 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) {
         self.active = true;
-        self.core(cx).windows.set_subjects(
+        let _ = self.core(cx).window_set_mission(
             &self.window_label,
-            vec![Subject::Mission(mission_id.clone())],
+            &mission_id,
+            window.is_window_active(),
         );
-        if window.is_window_active() {
-            self.core(cx).windows.mark_focused(&self.window_label);
-        } else {
-            self.core(cx).windows.mark_blurred(&self.window_label);
-        }
-        self.core(cx).broadcast_focus_map();
         let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Roles);
         self.composer_input.update(cx, |input, input_cx| {
             input.reset("", input_cx);
@@ -79,18 +74,19 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let load_id = mission_id.clone();
         let load = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_attach(&core, &load_id)
-                .await
+            core.mission_attach(&load_id)
                 .map_err(|error| error.to_string())?;
-            let mission = runner_backend::ops::mission::mission_get(&core, &load_id)
+            let mission = core
+                .mission_get(&load_id)
                 .map_err(|error| error.to_string())?;
-            let sessions = runner_backend::ops::session::session_list(&core, &load_id)
+            let sessions = core
+                .session_list(&load_id)
                 .map_err(|error| error.to_string())?;
-            let events = runner_backend::ops::mission::mission_events_replay(&core, &load_id)
+            let events = core
+                .mission_events_replay(&load_id)
                 .map_err(|error| error.to_string())?;
-            let crew = runner_backend::ops::crew::crew_get(&core, &mission.crew_id).ok();
-            let roster =
-                runner_backend::ops::slot::slot_list(&core, &mission.crew_id).unwrap_or_default();
+            let crew = core.crew_get(&mission.crew_id).ok();
+            let roster = core.slot_list(&mission.crew_id).unwrap_or_default();
             Ok::<_, String>(MissionLoadResult {
                 mission,
                 crew,
@@ -138,6 +134,7 @@ impl MissionWorkspace {
                         this.rebuild_event_projection();
                         this.feed_scroll.scroll_to_bottom();
                         this.loading = false;
+                        this.schedule_mission_grid_hint(window, cx);
                         this.error = None;
                         if archived {
                             this.mission_node_id = None;
@@ -331,12 +328,33 @@ impl MissionWorkspace {
         }
     }
 
-    pub(crate) fn sync_mission_grid_hint(&self, window: &Window, cx: &App) {
+    pub(crate) fn schedule_mission_grid_hint(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if !self.is_active(cx) || self.secondary || self.grid_hint_pending {
+            return;
+        }
+        self.grid_hint_pending = true;
+        let weak = cx.entity().downgrade();
+        // The first frame measures the changed layout; the next callback reads that size.
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    this.grid_hint_pending = false;
+                    this.sync_mission_grid_hint(window, cx);
+                });
+            });
+        });
+    }
+
+    fn sync_mission_grid_hint(&mut self, window: &Window, cx: &mut Context<Self>) {
         if !self.is_active(cx) || self.secondary {
             return;
         }
         let (cols, rows) = self.current_mission_terminal_size(window, cx);
-        let _ = runner_backend::ops::mission::mission_grid_hint_set(self.core(cx), cols, rows);
+        if self.last_grid_hint == Some((cols, rows)) {
+            return;
+        }
+        self.last_grid_hint = Some((cols, rows));
+        let _ = self.core(cx).mission_grid_hint_set(cols, rows);
     }
 
     pub(super) fn ensure_mission_terminals_attached(
@@ -406,7 +424,7 @@ impl MissionWorkspace {
             && !self.transitions.contains_key(session_id);
         let core = self.core(cx);
         if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
-            runner_backend::ops::session::session_take_resume_on_launch(core, session_id)
+            core.session_take_resume_on_launch(session_id)
         })? {
             self.resume_terminal_drawer_shell_on_launch(session_id, window, cx);
         }
@@ -593,8 +611,8 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.as_ref() else {
             return;
         };
-        let state = runner_backend::ops::window::is_secondary_for(
-            &self.core(cx).windows.snapshot(),
+        let state = runner_core::protocol::window::is_secondary_for(
+            &self.core(cx).window_snapshot().unwrap_or_default(),
             &self.window_label,
             &Subject::Mission(mission_id.clone()),
         );

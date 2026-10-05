@@ -20,10 +20,10 @@ impl MissionWorkspace {
         let MissionTab::Session(session_id) = &self.active_tab else {
             return;
         };
-        if let Err(error) = runner_backend::ops::node::mark_direct_sessions_viewed(
-            self.core(cx),
-            std::slice::from_ref(session_id),
-        ) {
+        if let Err(error) = self
+            .core(cx)
+            .mark_direct_sessions_viewed(std::slice::from_ref(session_id))
+        {
             self.error = Some(error.to_string());
         }
     }
@@ -72,6 +72,7 @@ impl MissionWorkspace {
 
     pub(super) fn select_mission_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cache_active_terminal_size(window, cx);
+        self.schedule_mission_grid_hint(window, cx);
         self.clear_feed_selection();
         self.active_tab = MissionTab::Feed;
         if self.feed_was_near_bottom {
@@ -100,6 +101,7 @@ impl MissionWorkspace {
             return;
         }
         self.cache_active_terminal_size(window, cx);
+        self.schedule_mission_grid_hint(window, cx);
         self.clear_feed_selection();
         if !self.open_tabs.iter().any(|open| open == session_id) {
             self.open_tabs.push(session_id.to_owned());
@@ -130,6 +132,7 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) {
         self.cache_active_terminal_size(window, cx);
+        self.schedule_mission_grid_hint(window, cx);
         self.open_tabs.retain(|open| open != session_id);
         if let Some(mission_id) = &self.mission_id {
             if self
@@ -242,10 +245,11 @@ impl MissionWorkspace {
             return;
         }
         let item = cx.read_from_clipboard();
-        let Some(paste) = runner_app::terminal_paste::resolve_terminal_paste(
-            item.as_ref(),
-            runner_backend::ops::session::session_clipboard_file_paths,
-        ) else {
+        let Some(paste) = runner_app::terminal_paste::resolve_terminal_paste(item.as_ref(), || {
+            self.core(cx)
+                .session_clipboard_file_paths()
+                .unwrap_or_default()
+        }) else {
             return;
         };
         match paste {
@@ -257,12 +261,14 @@ impl MissionWorkspace {
                 else {
                     return;
                 };
+                let client = self.core(cx).clone();
                 let paste = cx.background_spawn(async move {
-                    runner_backend::ops::session::session_paste_image(
-                        image.bytes,
-                        image.format.mime_type(),
-                    )?;
-                    terminal.write_user_bytes(b"\x16")
+                    client
+                        .session_paste_image(image.bytes, image.format.mime_type())
+                        .map_err(|error| error.to_string())?;
+                    terminal
+                        .write_user_bytes(b"\x16")
+                        .map_err(|error| error.to_string())
                 });
                 cx.spawn(async move |weak, cx| {
                     let result = paste.await;

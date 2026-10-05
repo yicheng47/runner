@@ -20,8 +20,8 @@ use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, ContextMenu, EmptyStateCard, IconButton, IconButtonSize,
     MenuItem as UiMenuItem, PaginatedListPage, Tooltip,
 };
-use runner_backend::model::Mission;
-use runner_backend::ops::crew::CrewListItem;
+use runner_core::protocol::crew::CrewListItem;
+use runner_core::protocol::model::Mission;
 
 use crate::chat_icon::ChatIcon;
 
@@ -92,8 +92,7 @@ impl NativeRoot {
         let request_id = request.request_id;
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::crew::crew_list(
-                &core,
+            core.crew_list(
                 request.page as i64,
                 request.page_size as i64,
                 &request.query,
@@ -500,7 +499,7 @@ impl NativeRoot {
     fn start_crew_mission(&mut self, crew_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.open_start_mission_modal(
             Some(crew_id),
-            runner_backend::ops::project::ProjectScope::Root,
+            runner_core::protocol::project::ProjectScope::Root,
             window,
             cx,
         );

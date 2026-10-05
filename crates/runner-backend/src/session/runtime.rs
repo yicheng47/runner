@@ -119,16 +119,7 @@ pub struct SessionStatus {
     pub command: Option<String>,
 }
 
-/// Busy/idle of one session. The forwarder infers it from PTY-byte
-/// activity (issue #124), hook adapters may report it, the router projects
-/// it per handle, and the UI reads the same projection. Serialized lowercase
-/// in `session/status` events and in `session_status` rows on the mission log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionActivityState {
-    Busy,
-    Idle,
-}
+pub use runner_core::protocol::session::SessionActivityState;
 
 /// One unit of output produced by a runtime session. Raw stream bytes are
 /// appended to the GPUI terminal; `StatusTransition` is the forwarder's

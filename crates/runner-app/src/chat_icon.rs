@@ -1,6 +1,6 @@
 use gpui::prelude::*;
 use gpui::{div, img, rems, svg, AnyElement, DefiniteLength, Hsla};
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 
 use crate::assets::antigravity_icon_source;
 use crate::theme;

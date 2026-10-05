@@ -9,7 +9,7 @@ use crate::surfaces::sidebar_logic::{
 };
 use crate::*;
 use gpui::{svg, FontWeight};
-use runner_backend::repo::node::NodeType;
+use runner_core::protocol::node::NodeType;
 
 // Shared with the layout probe so the production flex constraints stay under test.
 pub(super) fn sidebar_scroll_frame() -> gpui::Div {

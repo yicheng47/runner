@@ -29,7 +29,6 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(1500);
 const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 
 pub(crate) mod claude_status;
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
@@ -143,48 +142,8 @@ pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
     conversation_file_exists(".claude", cwd, uuid, claude_code_project_dir)
 }
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[
-        PermissionMode::Default,
-        PermissionMode::AcceptEdits,
-        PermissionMode::Auto,
-        PermissionMode::Bypass,
-    ],
-    strip_flags: &[
-        ("--dangerously-skip-permissions", false),
-        ("--permission-mode", true),
-    ],
-    equals_on_bool: false,
-    variadic_flag: None,
-    args: permission_args,
-    matches: mode_matches,
-    mission_bypass: None,
-    strip_on_mission_resume: false,
-};
-fn permission_args(mode: PermissionMode) -> Vec<String> {
-    match mode {
-        PermissionMode::AcceptEdits => strings(&["--permission-mode", "acceptEdits"]),
-        PermissionMode::Auto => strings(&["--permission-mode", "auto"]),
-        PermissionMode::Bypass => strings(&["--permission-mode", "bypassPermissions"]),
-        _ => Vec::new(),
-    }
-}
-fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
-    if mode == PermissionMode::Bypass && args.iter().any(|a| a == "--dangerously-skip-permissions")
-    {
-        return true;
-    }
-    let pairs: &[(&str, Option<&str>)] = match mode {
-        PermissionMode::AcceptEdits => &[("--permission-mode", Some("acceptEdits"))],
-        PermissionMode::Auto => &[("--permission-mode", Some("auto"))],
-        PermissionMode::Bypass => &[("--permission-mode", Some("bypassPermissions"))],
-        _ => &[],
-    };
-    !pairs.is_empty()
-        && pairs
-            .iter()
-            .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
-}
+use runner_core::protocol::runtime_metadata::claude_code::{PERMISSIONS, SKILL_DIRS};
+
 pub struct ClaudeCode;
 impl RuntimeAdapter for ClaudeCode {
     fn mcp(&self) -> Option<&'static McpConfig> {
@@ -211,11 +170,7 @@ impl RuntimeAdapter for ClaudeCode {
         Some(&DISCOVERY)
     }
     fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            usage: true,
-            global_skill_toggle: true,
-            ..Default::default()
-        }
+        runner_core::protocol::runtime_metadata::claude_code::capabilities()
     }
     fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
         crate::runtime_defaults::json_defaults(&settings_path(home), false)
@@ -238,35 +193,7 @@ impl RuntimeAdapter for ClaudeCode {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        let claude_efforts = vec![
-            default_effort(),
-            plain_option("low", "low"),
-            plain_option("medium", "medium"),
-            plain_option("high", "high"),
-            plain_option("xhigh", "xhigh"),
-            plain_option("max", "max"),
-        ];
-        Some(RuntimeCatalog {
-            name: Runtime::ClaudeCode,
-            display_name: Runtime::ClaudeCode.display_name(),
-            command: Runtime::ClaudeCode.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: true,
-            description: "Anthropic Claude Code CLI",
-            install_url: "https://code.claude.com/docs/en/setup",
-            default_enabled: true,
-            models: vec![
-                default_model_option(),
-                option("fable", "fable", "Latest Claude Fable."),
-                option("opus", "opus", "Latest Claude Opus."),
-                option("sonnet", "sonnet", "Latest Claude Sonnet."),
-                option("haiku", "haiku", "Latest Claude Haiku."),
-            ],
-            efforts: claude_efforts,
-            skills_dirs: SKILL_DIRS,
-            update_args: &["update"],
-            npm_package: Some("@anthropic-ai/claude-code"),
-        })
+        runner_core::protocol::runtime_metadata::claude_code::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -454,8 +381,6 @@ static USAGE: UsageSource = UsageSource {
     },
 };
 
-const SKILL_DIRS: &[&str] = &[".claude/skills"];
-
 static MCP: McpConfig = McpConfig {
     wire_name: "claude_code",
     serialized_name: "ClaudeCode",
@@ -466,7 +391,3 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: false,
     supports_http: true,
 };
-#[allow(non_upper_case_globals)]
-impl crate::ops::mcp::McpClientId {
-    pub const ClaudeCode: Self = Self(Runtime::ClaudeCode);
-}

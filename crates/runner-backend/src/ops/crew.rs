@@ -7,8 +7,6 @@
 
 use chrono::Utc;
 use rusqlite::Connection;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
 
 use crate::{
@@ -17,45 +15,13 @@ use crate::{
     repo, AppCore,
 };
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct CreateCrewInput {
-    pub name: String,
-    /// Optional team-conventions text. Empty after trim → stored as NULL.
-    /// Plain Option (not Option<Option>) because create has no "leave
-    /// existing" semantic. See #54.
-    #[serde(default)]
-    pub system_prompt_addendum: Option<String>,
-}
+pub use runner_core::protocol::crew::CreateCrewInput;
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct UpdateCrewInput {
-    pub name: Option<String>,
-    /// Outer None = leave existing untouched; outer Some(inner) =
-    /// write inner. Inner Some("") / whitespace-only collapses to
-    /// NULL.
-    pub system_prompt_addendum: Option<Option<String>>,
-}
+pub use runner_core::protocol::crew::UpdateCrewInput;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrewListItem {
-    #[serde(flatten)]
-    pub crew: Crew,
-    pub role_count: i64,
-    /// Member preview for the Crews list cards: one entry per slot,
-    /// in `position` order, carrying just the labels the card pills
-    /// need (`@slot_handle` + `runtime-role_handle`). Sourced
-    /// inline so the frontend doesn't N+1 `slot_list` for each crew
-    /// on every page load.
-    pub members: Vec<CrewMemberPreview>,
-}
+pub use runner_core::protocol::crew::CrewListItem;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrewMemberPreview {
-    pub slot_handle: String,
-    pub role_handle: String,
-    pub runtime: String,
-    pub lead: bool,
-}
+pub use runner_core::protocol::crew::CrewMemberPreview;
 
 fn new_id() -> String {
     UlidGen::new().to_string()

@@ -22,7 +22,7 @@ use crate::surfaces::sidebar_logic::DropKind;
 use gpui::{
     prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
 };
-use runner_backend::events::AppEvent;
+use runner_core::protocol::ClientEvent as AppEvent;
 
 struct SidebarRenameTest {
     sidebar: Entity<Sidebar>,
@@ -52,8 +52,8 @@ fn seeded_store(
     cx: &mut TestAppContext,
     temp: &std::path::Path,
 ) -> (Arc<runner_backend::db::DbPool>, Entity<AppStore>) {
-    use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-    use std::sync::{Mutex, RwLock};
+    use runner_backend::{db, session, shell_path};
+    use std::sync::RwLock;
 
     let pool = Arc::new(db::open_pool(&temp.join("runner.db")).unwrap());
     let conn = pool.get().unwrap();
@@ -68,26 +68,17 @@ fn seeded_store(
     drop(conn);
     let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-    let core = AppCore {
-        db: pool.clone(),
-        app_data_dir: temp.to_owned(),
-        sessions: session::SessionManager::new(
+    let core = crate::test_support::core(
+        pool.clone(),
+        temp.to_owned(),
+        session::SessionManager::new(
             runtime_shell_env.clone(),
             runtime_discovery.clone(),
             Arc::new(session::pty_runtime::PtyRuntime::new()),
         ),
         runtime_shell_env,
         runtime_discovery,
-        usage: Arc::new(runner_backend::usage::UsageService::default()),
-        buses: event_bus::BusRegistry::new(),
-        routers: router::RouterRegistry::new(),
-        mission_grid_hint: Arc::new(Mutex::new(None)),
-        mcp: Arc::new(mcp::McpHandle::new()),
-        windows: Arc::new(windows::WindowRegistry::new()),
-        events: events::EventChannel::new(),
-        session_event_observer: Default::default(),
-        app_version: "0.0.0-test".into(),
-    };
+    );
     let store = cx.new(|cx| {
         AppStore::new(
             core,
@@ -511,7 +502,7 @@ fn sidebar_scroll_column(
 
 fn appended_event(signal: &str) -> AppEvent {
     AppEvent {
-        name: "event/appended",
+        name: "event/appended".into(),
         payload: serde_json::json!({ "event": { "type": signal } }),
     }
 }
@@ -1059,7 +1050,7 @@ fn mission_refresh_filters_appended_signals() {
     );
     assert_eq!(
         StoreRefreshKind::for_event(&AppEvent {
-            name: "event/appended",
+            name: "event/appended".into(),
             payload: serde_json::json!({ "event": { "kind": "message" } }),
         }),
         None

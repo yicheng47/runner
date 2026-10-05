@@ -5,8 +5,8 @@ use futures::StreamExt as _;
 use gpui::prelude::*;
 use gpui::{px, App, Entity, WeakEntity, Window};
 use runner_app::ui::{CopyValueButton, IconButtonSize, PopoverMenu, TextField};
-use runner_backend::model::{Event, EventKind, SessionStatus};
-use runner_backend::windows::Subject;
+use runner_core::protocol::model::{Event, EventKind, SessionStatus};
+use runner_core::protocol::window::Subject;
 
 use super::*;
 use crate::surfaces::mission_composer::{
@@ -92,14 +92,14 @@ impl MissionWorkspace {
             }
         });
         let (mission_event_tx, mut mission_event_rx) =
-            futures::channel::mpsc::unbounded::<runner_backend::events::AppEvent>();
-        let mut mission_events = app_store.read(cx).core.events.subscribe();
+            futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();
+        let mut mission_events = app_store.read(cx).client.subscribe();
         cx.background_spawn(async move {
             loop {
                 match mission_events.recv().await {
                     Ok(event)
                         if matches!(
-                            event.name,
+                            event.name.as_str(),
                             "event/appended"
                                 | "mission/changed"
                                 | "router/delivery-blocked"
@@ -117,10 +117,10 @@ impl MissionWorkspace {
                         }
                     }
                     Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    Err(runner_core::protocol::EventError::Lagged(_)) => {
                         if mission_event_tx
-                            .unbounded_send(runner_backend::events::AppEvent {
-                                name: "mission/resync",
+                            .unbounded_send(runner_core::protocol::ClientEvent {
+                                name: "mission/resync".to_owned(),
                                 payload: serde_json::Value::Null,
                             })
                             .is_err()
@@ -128,7 +128,7 @@ impl MissionWorkspace {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
         })
@@ -198,6 +198,8 @@ impl MissionWorkspace {
             active_tab: MissionTab::Feed,
             open_tabs: Vec::new(),
             last_measured_terminal_size: None,
+            last_grid_hint: None,
+            grid_hint_pending: false,
             delivery_blocked: HashMap::new(),
             transitions: HashMap::new(),
             next_transition_generation: 0,
@@ -217,8 +219,10 @@ impl MissionWorkspace {
             rename_modal: None,
             mission_id_copy,
             session_key_copies: HashMap::new(),
-            _store_subscription: cx
-                .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
+            _store_subscription: cx.observe_in(&app_store, window, |this, _, window, cx| {
+                this.handle_app_store_update(cx);
+                this.schedule_mission_grid_hint(window, cx);
+            }),
         }
     }
 
@@ -264,6 +268,7 @@ impl MissionWorkspace {
         self.active_tab = MissionTab::Feed;
         self.open_tabs.clear();
         self.last_measured_terminal_size = None;
+        self.last_grid_hint = None;
         self.delivery_blocked.clear();
         self.transitions.clear();
         self.slot_actions.clear();
@@ -318,12 +323,15 @@ impl MissionWorkspace {
         self.stopping || self.resuming || self.archiving || !self.slot_actions.is_empty()
     }
 
-    pub(super) fn secondary_state(&self, cx: &App) -> runner_backend::ops::window::SecondaryState {
+    pub(super) fn secondary_state(
+        &self,
+        cx: &App,
+    ) -> runner_core::protocol::window::SecondaryState {
         let Some(mission_id) = self.mission_id.as_ref() else {
-            return runner_backend::ops::window::SecondaryState::default();
+            return runner_core::protocol::window::SecondaryState::default();
         };
-        runner_backend::ops::window::is_secondary_for(
-            &self.core(cx).windows.snapshot(),
+        runner_core::protocol::window::is_secondary_for(
+            &self.app_store.read(cx).window_entries.clone(),
             &self.window_label,
             &Subject::Mission(mission_id.clone()),
         )
@@ -379,10 +387,8 @@ impl MissionWorkspace {
         &self,
         session_id: &str,
         cx: &App,
-    ) -> runner_backend::session::status::AgentStatus {
-        use runner_backend::session::status::{
-            Activity, AgentStatus, Lifecycle, ObservationSource,
-        };
+    ) -> runner_core::protocol::status::AgentStatus {
+        use runner_core::protocol::status::{Activity, AgentStatus, Lifecycle, ObservationSource};
         let Some(session) = self
             .sessions
             .iter()
@@ -397,7 +403,7 @@ impl MissionWorkspace {
             .or_else(|| self.session_observations.get(&session.handle).cloned())
             .unwrap_or_else(|| AgentStatus {
                 lifecycle: Lifecycle::Running,
-                observation: runner_backend::session::status::AgentObservation {
+                observation: runner_core::protocol::status::AgentObservation {
                     activity: match self.session_statuses.get(&session.handle) {
                         Some(SessionActivityState::Busy) => Activity::Working,
                         Some(SessionActivityState::Idle) => Activity::Idle,
@@ -456,8 +462,8 @@ impl MissionWorkspace {
         }
     }
 
-    pub(super) fn core<'a>(&self, cx: &'a App) -> &'a AppCore {
-        &self.app_store.read(cx).core
+    pub(super) fn core<'a>(&self, cx: &'a App) -> &'a DaemonClient {
+        &self.app_store.read(cx).client
     }
 
     pub(super) fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
@@ -501,7 +507,7 @@ impl MissionWorkspace {
             .nodes
             .iter()
             .find(|row| {
-                row.node_type == runner_backend::repo::node::NodeType::Mission
+                row.node_type == runner_core::protocol::node::NodeType::Mission
                     && row.ref_id.as_deref() == Some(mission_id)
             })
             .cloned()
@@ -518,11 +524,8 @@ impl MissionWorkspace {
             .mission_node_id
             .as_deref()
             .context("mission node is missing")?;
-        runner_backend::ops::node::node_mission_layout_set(
-            self.core(cx),
-            node_id,
-            self.layout.serialize()?,
-        )?;
+        self.core(cx)
+            .node_mission_layout_set(node_id, self.layout.serialize()?)?;
         Ok(())
     }
 
@@ -649,7 +652,7 @@ pub(super) fn project_session_statuses(
     events: &[Event],
 ) -> (
     BTreeMap<String, SessionActivityState>,
-    BTreeMap<String, runner_backend::session::status::AgentStatus>,
+    BTreeMap<String, runner_core::protocol::status::AgentStatus>,
 ) {
     let mut statuses = BTreeMap::new();
     let mut observations = BTreeMap::new();

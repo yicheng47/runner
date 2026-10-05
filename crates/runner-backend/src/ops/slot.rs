@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::model::CodexSpeed;
 // Slot CRUD — manages the `slots` join table.
 //
 // A Slot is a position in a crew that references a Role template
@@ -18,13 +20,11 @@
 //     unique by the schema.
 //   - `slot_handle` is unique within a crew (schema-enforced).
 
-use crate::model::{CodexSpeed, Runtime};
+use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
 use rusqlite::Connection;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use ulid::Ulid as UlidGen;
 
 use crate::{
@@ -34,57 +34,9 @@ use crate::{
     repo, AppCore,
 };
 
-/// One crew that a given role template is referenced by, plus the
-/// slot's lead flag and added-at timestamp. Returned by
-/// `role_crews_list` to render the "Crews using this role" panel
-/// on Role Detail.
-#[derive(Debug, Clone, Serialize)]
-pub struct CrewMembership {
-    pub crew_id: String,
-    pub crew_name: String,
-    pub slot_id: String,
-    pub slot_handle: String,
-    pub lead: bool,
-    pub position: i64,
-    pub added_at: Timestamp,
-}
+pub use runner_core::protocol::slot::CrewMembership;
 
-#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
-pub struct UpdateSlotInput {
-    pub slot_handle: Option<String>,
-    /// Per-slot engine choice. Omit to preserve, pass `null` to clear
-    /// (back to the role's own runtime), pass a registry runtime
-    /// name to override. Only agent runtimes are accepted; shell is not
-    /// a valid slot override.
-    #[serde(default, deserialize_with = "double_option")]
-    pub runtime_override: Option<Option<Runtime>>,
-    /// Per-slot model. Omit to preserve, pass `null` or blank to
-    /// inherit, or pass a model name to override.
-    #[serde(default, deserialize_with = "double_option")]
-    pub model_override: Option<Option<String>>,
-    /// Per-slot thinking effort. Omit to preserve, pass `null` or
-    /// blank to inherit, or pass an effort level to override.
-    #[serde(default, deserialize_with = "double_option")]
-    pub effort_override: Option<Option<String>>,
-    /// Per-slot Codex Speed. Omit to preserve, pass `null` to inherit
-    /// the role choice, or pass `standard` / `fast` to override it.
-    #[serde(default, deserialize_with = "double_option")]
-    pub codex_speed_override: Option<Option<CodexSpeed>>,
-}
-
-/// Present-vs-missing deserializer for the clear/preserve/set field.
-/// With plain serde, `Option<Option<T>>` swallows an explicit JSON
-/// `null` into the *outer* `None`, making "clear" arrive as
-/// "preserve". Any present value — including `null` — lands here and
-/// wraps in `Some`; only a missing key falls through to
-/// `#[serde(default)]`.
-pub(crate) fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
+pub use runner_core::protocol::slot::UpdateSlotInput;
 
 /// Normalize + validate a runtime-override value against the runtime
 /// registry. Blank (after trim) collapses to None — the "Role
@@ -468,21 +420,7 @@ pub fn role_crews_list(state: &AppCore, role_id: &str) -> Result<Vec<CrewMembers
     list_crews_for_role(&conn, role_id)
 }
 
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct CreateSlotInput {
-    pub crew_id: String,
-    pub role_id: String,
-    pub slot_handle: String,
-    /// Optional per-slot engine choice. Omit (or null) for the
-    /// "Role default" behavior; otherwise an agent runtime registry name.
-    /// Shell is not a valid slot override.
-    #[serde(default)]
-    pub runtime_override: Option<Runtime>,
-    /// Optional model pinned to the selected runtime. Blank or omitted
-    /// inherits from the role template.
-    #[serde(default)]
-    pub model_override: Option<String>,
-}
+pub use runner_core::protocol::slot::CreateSlotInput;
 
 pub fn slot_create(state: &AppCore, input: CreateSlotInput) -> Result<SlotWithRole> {
     let mut conn = state.db.get()?;

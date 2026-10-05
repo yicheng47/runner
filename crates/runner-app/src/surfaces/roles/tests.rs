@@ -44,8 +44,16 @@ fn role_edit_restores_disabled_runtimes_in_selector_order() {
         })
         .collect();
 
-    super::logic::ensure_runtime_present(&page.core, &mut runtimes, &role.runtime);
-    super::logic::ensure_runtime_present(&page.core, &mut runtimes, "pi");
+    super::logic::ensure_runtime_present(
+        &crate::test_support::client(&page.core),
+        &mut runtimes,
+        &role.runtime,
+    );
+    super::logic::ensure_runtime_present(
+        &crate::test_support::client(&page.core),
+        &mut runtimes,
+        "pi",
+    );
     let options = super::logic::role_edit_runtime_options(&runtimes, &role, "pi");
     assert_eq!(
         options
@@ -286,8 +294,8 @@ fn role_page_harness(label: &str) -> RolePageHarness {
     use crate::theme_snapshot::ThemeGuard;
     use crate::*;
     use gpui::{TestAppContext, VisualTestContext};
-    use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-    use std::sync::{Arc, Mutex, RwLock};
+    use runner_backend::{db, session, shell_path};
+    use std::sync::{Arc, RwLock};
 
     let theme = ThemeGuard::new();
     theme::set_active_variant(theme::ThemeVariant::Carbon);
@@ -295,26 +303,17 @@ fn role_page_harness(label: &str) -> RolePageHarness {
     let pool = Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap());
     let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-    let core = AppCore {
-        db: pool.clone(),
-        app_data_dir: temp.path().to_owned(),
-        sessions: session::SessionManager::new(
+    let core = crate::test_support::core(
+        pool.clone(),
+        temp.path().to_owned(),
+        session::SessionManager::new(
             runtime_shell_env.clone(),
             runtime_discovery.clone(),
             Arc::new(session::pty_runtime::PtyRuntime::new()),
         ),
         runtime_shell_env,
         runtime_discovery,
-        usage: Arc::new(runner_backend::usage::UsageService::default()),
-        buses: event_bus::BusRegistry::new(),
-        routers: router::RouterRegistry::new(),
-        mission_grid_hint: Arc::new(Mutex::new(None)),
-        mcp: Arc::new(mcp::McpHandle::new()),
-        windows: Arc::new(windows::WindowRegistry::new()),
-        events: events::EventChannel::new(),
-        session_event_observer: Default::default(),
-        app_version: "0.0.0-test".into(),
-    };
+    );
     let mut cx = TestAppContext::single();
     let store = cx.new(|cx| {
         AppStore::new(

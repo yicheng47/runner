@@ -1,25 +1,15 @@
 use crate::error::Result;
 use crate::ops::node::mark_direct_sessions_viewed;
-use crate::windows::{Subject, WindowEntry};
+use crate::windows::Subject;
+#[cfg(test)]
+use crate::windows::WindowEntry;
 use crate::AppCore;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SecondaryState {
-    pub secondary: bool,
-    pub primary_label: Option<String>,
-}
+pub use runner_core::protocol::window::SecondaryState;
 
-pub fn allocate_label() -> String {
-    format!("window-{}", ulid::Ulid::new())
-}
+pub use runner_core::protocol::window::allocate_label;
 
-pub fn cascade_reference(entries: &[WindowEntry], new_label: &str) -> Option<String> {
-    entries
-        .iter()
-        .filter(|entry| entry.label != new_label)
-        .max_by(|left, right| left.focused_at.cmp(&right.focused_at))
-        .map(|entry| entry.label.clone())
-}
+pub use runner_core::protocol::window::cascade_reference;
 
 pub fn report_subjects(
     core: &AppCore,
@@ -53,30 +43,7 @@ pub fn unregister(core: &AppCore, label: &str) {
     core.broadcast_focus_map();
 }
 
-pub fn is_secondary_for(
-    entries: &[WindowEntry],
-    my_label: &str,
-    subject: &Subject,
-) -> SecondaryState {
-    let mut primary_focus = entries
-        .iter()
-        .find(|entry| entry.label == my_label)
-        .map(|entry| entry.focused_at);
-    let mut primary_label = None;
-    for entry in entries {
-        if entry.label == my_label || !entry.subjects.contains(subject) {
-            continue;
-        }
-        if primary_focus.is_none_or(|focused_at| entry.focused_at > focused_at) {
-            primary_focus = Some(entry.focused_at);
-            primary_label = Some(entry.label.clone());
-        }
-    }
-    SecondaryState {
-        secondary: primary_label.is_some(),
-        primary_label,
-    }
-}
+pub use runner_core::protocol::window::is_secondary_for;
 
 #[cfg(test)]
 mod tests {

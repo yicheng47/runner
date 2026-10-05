@@ -6,13 +6,13 @@ use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
 use super::logic::trimmed_option;
 use super::logic::RoleFormKind;
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 
 use gpui::prelude::*;
 use gpui::{Context, Entity, KeyDownEvent, PathPromptOptions, Window};
 use runner_app::ui::TextField;
-use runner_backend::ops::role::UpdateRoleInput;
-use runner_backend::router::runtime::PermissionMode;
+use runner_core::protocol::permissions::PermissionMode;
+use runner_core::protocol::role::UpdateRoleInput;
 
 use crate::surfaces::*;
 use crate::*;
@@ -222,7 +222,7 @@ impl NativeRoot {
         let role_id = form.role.id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::role::role_update(&core, &role_id, update)
+            core.role_update(&role_id, update)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         });
@@ -232,7 +232,7 @@ impl NativeRoot {
                 match result {
                     Ok(()) => {
                         this.role_surfaces.edit = None;
-                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                        if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store
                                 .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }

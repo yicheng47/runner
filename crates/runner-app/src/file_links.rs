@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use gpui::{App, AppContext as _, SharedString};
-use runner_backend::runtime_status::{direct_chat_path, find_executable};
-use runner_backend::shell_path::LoginShellEnv;
+use runner_core::protocol::runtime_paths::find_executable;
 use runner_terminal::terminal::LinkTarget;
 
 use crate::app_settings::FileLinkEditor;
@@ -29,13 +28,6 @@ impl FileLinkTarget {
     }
 }
 
-/// Whether the editor's CLI is on the login-shell `PATH`; `None` for the
-/// default app, which doesn't launch through a CLI.
-pub(crate) fn cli_found(editor: FileLinkEditor, shell_env: &LoginShellEnv) -> Option<bool> {
-    let cli = editor.cli()?;
-    Some(find_executable(cli, &direct_chat_path(shell_env)).is_some())
-}
-
 /// The hover tooltip for a terminal link under the current editor setting.
 pub(crate) fn link_tooltip_content(
     target: &LinkTarget,
@@ -47,13 +39,14 @@ pub(crate) fn link_tooltip_content(
     let editor = store.settings.file_link_editor;
     let cli_found = matches!(target, LinkTarget::File { .. })
         .then(|| {
-            let shell_env = store
-                .core
-                .runtime_shell_env
-                .read()
-                .map(|env| env.clone())
-                .unwrap_or_default();
-            cli_found(editor, &shell_env)
+            editor.cli().map(|command| {
+                store
+                    .file_link_environment
+                    .1
+                    .get(command)
+                    .copied()
+                    .unwrap_or(false)
+            })
         })
         .flatten();
     link_tooltip(target, modifier_held, editor, cli_found).into()
@@ -114,15 +107,9 @@ pub(crate) fn open_file_link(target: FileLinkTarget, cx: &mut App) {
     let store = global_app_store(cx);
     let (editor, path_env) = {
         let store = store.read(cx);
-        let shell_env = store
-            .core
-            .runtime_shell_env
-            .read()
-            .map(|env| env.clone())
-            .unwrap_or_default();
         (
             store.settings.file_link_editor,
-            direct_chat_path(&shell_env),
+            store.client.direct_chat_path().unwrap_or_default(),
         )
     };
     cx.background_spawn(async move { launch(editor, &target, &path_env) })

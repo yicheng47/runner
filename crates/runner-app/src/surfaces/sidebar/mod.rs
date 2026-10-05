@@ -28,9 +28,9 @@ use crate::surfaces::sidebar_logic::{
 use crate::*;
 use gpui::WeakEntity;
 use runner_app::ui::TextField;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::ops::project::ProjectScope;
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::node::{NodeRow, NodeType};
+use runner_core::protocol::project::ProjectScope;
 
 #[derive(Clone, Copy)]
 enum ArchiveErrorTarget {

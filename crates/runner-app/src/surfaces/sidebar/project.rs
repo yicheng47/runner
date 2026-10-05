@@ -116,7 +116,7 @@ impl NativeRoot {
         }
         modal.submitting = true;
         modal.error = None;
-        match runner_backend::ops::project::project_create(self.core(cx), name, cwd) {
+        match self.core(cx).project_create(name, cwd) {
             Ok(project) => {
                 self.project_modal = None;
                 self._project_cwd_subscription = None;
@@ -178,7 +178,7 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let deleting_project_id = project_id.clone();
         cx.spawn(async move |weak, cx| {
-            let result = runner_backend::ops::project::project_delete(&core, project_id).await;
+            let result = core.project_delete(project_id);
             let _ = weak.update(cx, |this, cx| {
                 this.project_delete_busy = false;
                 if let Err(error) = result {

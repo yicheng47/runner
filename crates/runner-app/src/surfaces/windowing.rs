@@ -1,6 +1,6 @@
 use super::*;
 use crate::*;
-use runner_backend::windows::Subject;
+use runner_core::protocol::window::Subject;
 
 impl NativeRoot {
     pub(crate) fn current_subjects(&self) -> Vec<Subject> {
@@ -20,8 +20,7 @@ impl NativeRoot {
         if self.closing {
             return;
         }
-        if let Err(error) = runner_backend::ops::window::report_subjects(
-            self.core(cx),
+        if let Err(error) = self.core(cx).report_subjects(
             &self.window_label,
             self.current_subjects(),
             self.tabs
@@ -40,16 +39,14 @@ impl NativeRoot {
         }
         self.report_current_subjects(cx);
         if window.is_window_active() {
-            if let Err(error) =
-                runner_backend::ops::window::mark_focused(self.core(cx), &self.window_label)
-            {
+            if let Err(error) = self.core(cx).mark_focused(&self.window_label) {
                 self.error = Some(error.to_string());
             }
             if self.route == AppRoute::Chat {
                 self.mark_active_tab_viewed(window, cx);
             }
         } else {
-            runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
+            let _ = self.core(cx).mark_blurred(&self.window_label);
         }
         self.sync_subject_ownership(window, cx);
         if matches!(self.route, AppRoute::Mission(_)) {
@@ -62,7 +59,7 @@ impl NativeRoot {
 
     pub(crate) fn start_focus_map_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (focus_tx, mut focus_rx) = futures::channel::mpsc::unbounded::<()>();
-        let mut events = self.core(cx).events.subscribe();
+        let mut events = self.core(cx).subscribe();
         cx.background_spawn(async move {
             loop {
                 match events.recv().await {
@@ -71,8 +68,8 @@ impl NativeRoot {
                             break;
                         }
                     }
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Ok(_) | Err(runner_core::protocol::EventError::Lagged(_)) => {}
+                    Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
         })
@@ -82,6 +79,11 @@ impl NativeRoot {
                 while focus_rx.try_recv().is_ok() {}
                 if weak
                     .update_in(cx, |this, window, cx| {
+                        this.app_store.update(cx, |store, cx| {
+                            store.window_entries =
+                                store.client.window_snapshot().unwrap_or_default();
+                            cx.notify();
+                        });
                         this.sync_subject_ownership(window, cx)
                     })
                     .is_err()
@@ -120,11 +122,11 @@ impl NativeRoot {
             .filter(|_| self.route == AppRoute::Chat)
             .map(PaneLayout::session_ids)
             .unwrap_or_default();
-        let entries = self.core(cx).windows.snapshot();
+        let entries = self.core(cx).window_snapshot().unwrap_or_default();
         let next = active_ids
             .iter()
             .filter_map(|session_id| {
-                let state = runner_backend::ops::window::is_secondary_for(
+                let state = runner_core::protocol::window::is_secondary_for(
                     &entries,
                     &self.window_label,
                     &Subject::DirectChat(session_id.clone()),
@@ -150,9 +152,9 @@ impl NativeRoot {
         &self,
         session_id: &str,
         cx: &App,
-    ) -> runner_backend::ops::window::SecondaryState {
-        runner_backend::ops::window::is_secondary_for(
-            &self.core(cx).windows.snapshot(),
+    ) -> runner_core::protocol::window::SecondaryState {
+        runner_core::protocol::window::is_secondary_for(
+            &self.app_store.read(cx).window_entries.clone(),
             &self.window_label,
             &Subject::DirectChat(session_id.to_owned()),
         )
@@ -161,9 +163,9 @@ impl NativeRoot {
     pub(crate) fn cached_chat_secondary_state(
         &self,
         session_id: &str,
-    ) -> runner_backend::ops::window::SecondaryState {
+    ) -> runner_core::protocol::window::SecondaryState {
         let primary_label = self.chat_secondaries.get(session_id).cloned();
-        runner_backend::ops::window::SecondaryState {
+        runner_core::protocol::window::SecondaryState {
             secondary: primary_label.is_some(),
             primary_label,
         }
@@ -203,7 +205,7 @@ impl NativeRoot {
             .update(cx, |workspace, workspace_cx| {
                 workspace.release_window(workspace_cx)
             });
-        runner_backend::ops::window::unregister(self.core(cx), &self.window_label);
+        let _ = self.core(cx).unregister(&self.window_label);
         checkpoint_window_layout_deferred(cx);
     }
 }

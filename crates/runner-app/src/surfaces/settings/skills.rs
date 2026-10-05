@@ -1,5 +1,5 @@
 use super::SaveNotice;
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -13,9 +13,8 @@ use runner_app::ui::{
     OverlayWidth, PaneHeader, Scrollbar, SelectOption, SettingsCard, StyledSelect, TextField,
     Toggle, Tone, Tooltip,
 };
-use runner_backend::ops::skills;
 
-use runner_backend::skills::{parse_skill_document, GlobalState, SkillCatalog, SkillEntry};
+use runner_core::protocol::skills::{parse_skill_document, GlobalState, SkillCatalog, SkillEntry};
 
 use crate::app_store::AppStore;
 use crate::surfaces::mission_markdown;
@@ -34,11 +33,7 @@ struct SkillBadge {
 
 fn skill_badges(entry: &SkillEntry) -> Vec<SkillBadge> {
     let mut badges = Vec::new();
-    if entry
-        .path
-        .join(runner_backend::agent_skill::SKILL_MARKER)
-        .is_file()
-    {
+    if entry.path.join(runner_core::RUNNER_SKILL_MARKER).is_file() {
         badges.push(SkillBadge {
             label: "Managed by Runner".into(),
             tone: Tone::Muted,
@@ -246,8 +241,8 @@ impl SkillsPane {
             return;
         }
         self.loading = true;
-        let core = self.app_store.read(cx).core.clone();
-        let task = cx.background_spawn(async move { skills::skill_catalogs(&core) });
+        let core = self.app_store.read(cx).client.clone();
+        let task = cx.background_spawn(async move { core.skill_catalogs().unwrap_or_default() });
         cx.spawn(async move |weak, cx| {
             let catalogs = task.await;
             let _ = weak.update(cx, |this, cx| {
@@ -259,10 +254,12 @@ impl SkillsPane {
                             .map(|c| {
                                 SelectOption::new(
                                     c.runtime.key(),
-                                    runner_backend::runtimes::for_key(c.runtime.key())
-                                        .catalog()
-                                        .map(|catalog| catalog.display_name.to_string())
-                                        .unwrap_or_else(|| c.runtime.key().to_string()),
+                                    runner_core::protocol::runtime_metadata::for_key(
+                                        c.runtime.key(),
+                                    )
+                                    .catalog()
+                                    .map(|catalog| catalog.display_name.to_string())
+                                    .unwrap_or_else(|| c.runtime.key().to_string()),
                                 )
                             })
                             .collect(),
@@ -572,16 +569,16 @@ impl SkillDetail {
         self.busy = true;
         self.error = None;
         self.previous_focus = window.focused(cx);
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
-            let catalogs = skills::skill_catalogs(&core);
+            let catalogs = core.skill_catalogs().unwrap_or_default();
             let entry = catalogs
                 .iter()
                 .find(|c| c.runtime == runtime)
                 .and_then(|c| c.entries.iter().find(|e| e.path == path))
                 .cloned()
                 .ok_or_else(|| "Skill is no longer in the catalog".to_owned())?;
-            let read = skills::read_skill(&core, runtime, &path).map_err(|e| e.to_string());
+            let read = core.skill_read(runtime, &path).map_err(|e| e.to_string());
             Ok::<_, String>((OpenSkill::from_read(runtime, entry, read), catalogs))
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -638,11 +635,11 @@ impl SkillDetail {
         self.busy = true;
         self.pending_toggle = Some(path.clone());
         self.error = None;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
-            skills::set_global_enabled(&core, runtime, &path, enabled)
+            core.skill_set_global_enabled(runtime, &path, enabled)
                 .map_err(|e| e.to_string())?;
-            Ok::<_, String>(skills::skill_catalogs(&core))
+            Ok::<_, String>(core.skill_catalogs().unwrap_or_default())
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -749,14 +746,15 @@ impl SkillDetail {
         let path = skill.entry.path.clone();
         let name = skill.entry.name.clone();
         let text = self.editor.read(cx).text().to_owned();
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         self.busy = true;
         self.error = None;
         self.editor
             .update(cx, |editor, cx| editor.set_disabled(true, cx));
         let task = cx.background_spawn(async move {
-            let entry =
-                skills::save_skill(&core, runtime, &path, &text).map_err(|e| e.to_string())?;
+            let entry = core
+                .skill_save(runtime, &path, &text)
+                .map_err(|e| e.to_string())?;
             Ok::<_, String>((
                 OpenSkill {
                     runtime,
@@ -764,7 +762,7 @@ impl SkillDetail {
                     text,
                     read_error: None,
                 },
-                skills::skill_catalogs(&core),
+                core.skill_catalogs().unwrap_or_default(),
             ))
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -921,10 +919,12 @@ impl SkillDetail {
                                 .gap_1()
                                 .child(div().text_size(theme::text_ui()).child(format!(
                                         "Enabled in {}",
-                                        runner_backend::runtimes::for_key(skill.runtime.key())
-                                            .catalog()
-                                            .map(|catalog| catalog.display_name.to_string())
-                                            .unwrap_or_else(|| skill.runtime.key().to_string())
+                                        runner_core::protocol::runtime_metadata::for_key(
+                                            skill.runtime.key()
+                                        )
+                                        .catalog()
+                                        .map(|catalog| catalog.display_name.to_string())
+                                        .unwrap_or_else(|| skill.runtime.key().to_string())
                                     )))
                                 .child(
                                     div()
@@ -1278,33 +1278,22 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{
-            db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-        };
-        use std::sync::{Arc, Mutex, RwLock};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::{Arc, RwLock};
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
-            app_data_dir: path.into(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
+            path.into(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         cx.new(|cx| {
             AppStore::new(
                 core,
@@ -1654,13 +1643,9 @@ mod tests {
         entry.path = temp.path().join("runner");
         std::fs::create_dir_all(&entry.path).unwrap();
         assert!(skill_badges(&entry).is_empty());
-        std::fs::write(
-            entry.path.join(runner_backend::agent_skill::SKILL_MARKER),
-            "managed",
-        )
-        .unwrap();
+        std::fs::write(entry.path.join(runner_core::RUNNER_SKILL_MARKER), "managed").unwrap();
         assert_eq!(skill_badges(&entry)[0].label, "Managed by Runner");
-        std::fs::remove_file(entry.path.join(runner_backend::agent_skill::SKILL_MARKER)).unwrap();
+        std::fs::remove_file(entry.path.join(runner_core::RUNNER_SKILL_MARKER)).unwrap();
         assert!(skill_badges(&entry).is_empty());
     }
 

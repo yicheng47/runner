@@ -4,7 +4,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{AnyElement, KeyDownEvent, Window};
 use runner_app::ui::{MenuItem as UiMenuItem, SessionControlKind, TextField};
-use runner_backend::model::SessionStatus;
+use runner_core::protocol::model::SessionStatus;
 
 use super::*;
 use crate::*;
@@ -66,13 +66,8 @@ impl MissionWorkspace {
         let mission_id = mission.id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_pin_impl(
-                &core,
-                mission.id,
-                mission.pinned_at.is_none(),
-            )
-            .await
-            .map_err(|error| error.to_string())
+            core.mission_pin_impl(mission.id, mission.pinned_at.is_none())
+                .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
@@ -84,10 +79,6 @@ impl MissionWorkspace {
                     Ok(mission) => {
                         this.mission = Some(mission);
                         this.refresh_store(StoreRefreshKind::All, cx);
-                        this.core(cx).events.emit(
-                            "mission/changed",
-                            &serde_json::json!({ "mission_id": mission_id }),
-                        );
                     }
                     Err(error) => {
                         this.error = Some(action_failure("update the mission pin", error));
@@ -228,23 +219,13 @@ impl MissionWorkspace {
         let task_target = target.clone();
         let task = cx.background_spawn(async move {
             let result = match action {
-                SessionControlKind::Stop => {
-                    runner_backend::ops::session::session_kill(&core, &task_target)
-                }
-                SessionControlKind::Resume => runner_backend::ops::session::session_resume(
-                    &core,
-                    &task_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
-                .map(|_| ()),
-                SessionControlKind::Restart => runner_backend::ops::session::session_restart(
-                    &core,
-                    &task_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
-                .map(|_| ()),
+                SessionControlKind::Stop => core.session_kill(&task_target),
+                SessionControlKind::Resume => core
+                    .session_resume(&task_target, Some(size.0), Some(size.1))
+                    .map(|_| ()),
+                SessionControlKind::Restart => core
+                    .session_restart(&task_target, Some(size.0), Some(size.1))
+                    .map(|_| ()),
                 _ => unreachable!(),
             };
             result.map_err(|error| error.to_string())
@@ -331,10 +312,11 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let stop_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            let mission = runner_backend::ops::mission::mission_stop_impl(&core, stop_id.clone())
-                .await
+            let mission = core
+                .mission_stop_impl(stop_id.clone())
                 .map_err(|error| error.to_string())?;
-            let sessions = runner_backend::ops::session::session_list(&core, &stop_id)
+            let sessions = core
+                .session_list(&stop_id)
                 .map_err(|error| error.to_string())?;
             Ok::<_, String>((mission, sessions))
         });
@@ -404,7 +386,8 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let resume_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            let mut sessions = runner_backend::ops::session::session_list(&core, &resume_id)
+            let mut sessions = core
+                .session_list(&resume_id)
                 .map_err(|error| error.to_string())?;
             let mut first_error = None;
             for candidate in sessions.clone() {
@@ -415,15 +398,12 @@ impl MissionWorkspace {
                 if already_running {
                     continue;
                 }
-                if let Err(error) = runner_backend::ops::session::session_resume(
-                    &core,
-                    &candidate.session.id,
-                    Some(size.0),
-                    Some(size.1),
-                ) {
+                if let Err(error) =
+                    core.session_resume(&candidate.session.id, Some(size.0), Some(size.1))
+                {
                     let message = error.to_string();
                     if is_concurrent_resume_error(&message) {
-                        match runner_backend::ops::session::session_list(&core, &resume_id) {
+                        match core.session_list(&resume_id) {
                             Ok(refreshed) => sessions = refreshed,
                             Err(error) => {
                                 first_error.get_or_insert_with(|| error.to_string());
@@ -434,7 +414,7 @@ impl MissionWorkspace {
                     }
                 }
             }
-            match runner_backend::ops::session::session_list(&core, &resume_id) {
+            match core.session_list(&resume_id) {
                 Ok(refreshed) => sessions = refreshed,
                 Err(error) => {
                     first_error.get_or_insert_with(|| error.to_string());
@@ -493,8 +473,7 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let archive_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_archive_impl(&core, archive_id)
-                .await
+            core.mission_archive_impl(archive_id)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -515,10 +494,6 @@ impl MissionWorkspace {
                         });
                         this.leave_archived_mission(&mission_id, Some(false), true, window, cx);
                         this.refresh_store(StoreRefreshKind::All, cx);
-                        this.core(cx).events.emit(
-                            "mission/changed",
-                            &serde_json::json!({ "mission_id": mission_id }),
-                        );
                     }
                     Err(error) => {
                         this.archiving = false;
@@ -593,8 +568,7 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let rename_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_rename_impl(&core, rename_id, title)
-                .await
+            core.mission_rename_impl(rename_id, title)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -608,10 +582,6 @@ impl MissionWorkspace {
                         this.mission = Some(mission);
                         this.rename_modal = None;
                         this.refresh_store(StoreRefreshKind::All, cx);
-                        this.core(cx).events.emit(
-                            "mission/changed",
-                            &serde_json::json!({ "mission_id": mission_id }),
-                        );
                         this.focus_active_mission_terminal(window, cx);
                     }
                     Err(error) => {

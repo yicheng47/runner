@@ -5,7 +5,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, App, ElementId, FontWeight, SharedString, Task, Window,
 };
-use runner_backend::session::status::{
+use runner_core::protocol::status::{
     Activity, AgentStatus, Lifecycle, ObservationSource, TurnOutcome, WaitReason, WorkDetail,
 };
 
@@ -500,7 +500,7 @@ fn status_tooltip_with_unread(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_backend::session::status::{AgentObservation, HumanInteraction};
+    use runner_core::protocol::status::{AgentObservation, HumanInteraction};
 
     fn presentation(
         kind: StatusKind,
@@ -898,7 +898,7 @@ fn status_tooltip_text_at(status: StatusPresentation, unread: bool, now: i64) ->
 #[cfg(test)]
 mod rollup_tests {
     use super::*;
-    use runner_backend::session::status::{AgentObservation, HumanInteraction};
+    use runner_core::protocol::status::{AgentObservation, HumanInteraction};
 
     fn working() -> AgentStatus {
         AgentStatus {

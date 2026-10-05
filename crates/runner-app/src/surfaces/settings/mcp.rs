@@ -12,10 +12,8 @@ use runner_app::ui::{
     OverlayWidth, PaneHeader, Scrollbar, SelectOption, SettingsCard, StyledSelect, TextField,
     Toggle, Tone,
 };
-use runner_backend::ops::mcp::{
-    self, McpCatalog, McpClientId, McpServerDefinition, McpServerEntry,
-};
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
+use runner_core::protocol::mcp::{McpCatalog, McpClientId, McpServerDefinition, McpServerEntry};
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use crate::app_settings::AppSettings;
 use crate::app_store::AppStore;
@@ -137,7 +135,7 @@ fn copy_hint(entry: &McpServerEntry, client: McpClientId) -> Option<String> {
     let copyable = match &entry.clients[&source].definition {
         None => false,
         // Antigravity CLI's HTTP entry shape is unprobed (#644); the backend refuses it.
-        Some(McpServerDefinition::Http { .. }) => client.config().supports_http,
+        Some(McpServerDefinition::Http { .. }) => client.supports_http(),
         Some(McpServerDefinition::Stdio { .. }) => true,
     };
     (!copyable).then(|| {
@@ -525,12 +523,12 @@ impl McpDetail {
         self.generation += 1;
         let generation = self.generation;
         let home = self.app_store.read(cx).home_dir.clone();
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             let home = home.ok_or_else(|| "Home directory is not available".to_owned())?;
             Ok::<_, String>((
-                mcp::mcp_catalog(&home).map_err(|e| e.to_string())?,
-                runner_backend::ops::runtime::runtime_catalog(&core).map_err(|e| e.to_string())?,
+                core.mcp_catalog(&home).map_err(|e| e.to_string())?,
+                core.runtime_catalog().map_err(|e| e.to_string())?,
             ))
         });
         cx.spawn(async move |weak, cx| {
@@ -633,18 +631,20 @@ impl McpDetail {
             return;
         }
         self.write(
-            move |home| {
+            move |daemon, home| {
                 if enabled {
-                    mcp::mcp_copy_server(
+                    daemon.mcp_copy_server(
                         home,
                         source.ok_or_else(|| {
-                            runner_backend::error::Error::msg("Server is no longer registered")
+                            runner_core::protocol::ClientError::msg(
+                                "Server is no longer registered",
+                            )
                         })?,
                         client,
                         &name,
                     )
                 } else {
-                    mcp::mcp_remove_server(home, client, &name)
+                    daemon.mcp_remove_server(home, client, &name)
                 }
             },
             None,
@@ -654,7 +654,12 @@ impl McpDetail {
 
     fn write(
         &mut self,
-        operation: impl FnOnce(&std::path::Path) -> runner_backend::error::Result<()> + Send + 'static,
+        operation: impl FnOnce(
+                &runner_core::protocol::DaemonClient,
+                &std::path::Path,
+            ) -> std::result::Result<(), runner_core::protocol::ClientError>
+            + Send
+            + 'static,
         saved: Option<String>,
         cx: &mut Context<Self>,
     ) {
@@ -664,13 +669,14 @@ impl McpDetail {
         let generation = self.generation;
         self.editor.update(cx, |e, cx| e.set_disabled(true, cx));
         let home = self.app_store.read(cx).home_dir.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             let Some(home) = home else {
                 let error = "Home directory is not available".to_owned();
                 return (Err(error.clone()), Err(error));
             };
-            let result = operation(&home).map_err(|e| e.to_string());
-            (result, mcp::mcp_catalog(&home).map_err(|e| e.to_string()))
+            let result = operation(&core, &home).map_err(|e| e.to_string());
+            (result, core.mcp_catalog(&home).map_err(|e| e.to_string()))
         });
         cx.spawn(async move |weak, cx| {
             let (result, catalog) = task.await;
@@ -745,13 +751,16 @@ impl McpDetail {
             .name
             .as_deref()
             .ok_or_else(|| "No server selected".to_owned())?;
-        mcp::validate_mcp_edit(
-            self.viewing,
-            name,
-            self.editor.read(cx).text(),
-            &self.also.iter().copied().collect::<Vec<_>>(),
-        )
-        .map_err(|e| e.to_string())
+        self.app_store
+            .read(cx)
+            .client
+            .mcp_validate_edit(
+                self.viewing,
+                name,
+                self.editor.read(cx).text(),
+                &self.also.iter().copied().collect::<Vec<_>>(),
+            )
+            .map_err(|e| e.to_string())
     }
 
     fn can_save(&self, _cx: &Context<Self>) -> bool {
@@ -783,7 +792,7 @@ impl McpDetail {
             .join(" and ");
         let saved = format!("Saved {name} to {files}");
         self.write(
-            move |home| mcp::mcp_edit_server(home, client, &name, &text, &also),
+            move |daemon, home| daemon.mcp_edit_server(home, client, &name, &text, &also),
             Some(saved),
             cx,
         );
@@ -1261,33 +1270,22 @@ mod tests {
     use runner_backend::ops::mcp::McpServerClientEntry;
     use std::collections::BTreeMap;
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{
-            db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-        };
-        use std::sync::{Arc, Mutex, RwLock};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::{Arc, RwLock};
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
-            app_data_dir: path.into(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
+            path.into(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         cx.new(|cx| {
             AppStore::new(
                 core,
@@ -1352,11 +1350,11 @@ mod tests {
     }
 
     fn runtimes() -> Vec<RuntimeCatalogEntry> {
-        runner_backend::ops::runtime::runtime_list()
+        runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .map(|r| RuntimeCatalogEntry {
                 name: r.name,
-                capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                     r.name,
                 )
                 .map(|entry| entry.capabilities)
@@ -1367,7 +1365,7 @@ mod tests {
                 description: String::new(),
                 install_url: String::new(),
                 default_enabled: true,
-                available: r.name != runner_backend::model::Runtime::Trae,
+                available: r.name != runner_core::protocol::model::Runtime::Trae,
                 default_model: None,
                 default_effort: None,
                 models: vec![],
@@ -1515,7 +1513,7 @@ mod tests {
         let mut all_runtimes = runtimes();
         all_runtimes
             .iter_mut()
-            .find(|runtime| runtime.name == runner_backend::model::Runtime::Trae)
+            .find(|runtime| runtime.name == runner_core::protocol::model::Runtime::Trae)
             .unwrap()
             .available = true;
         assert_eq!(

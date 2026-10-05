@@ -8,7 +8,7 @@ use crate::surfaces::sidebar_logic::{
     SHORTCUT_PILL_REVEAL_DELAY,
 };
 use crate::*;
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_core::protocol::node::{NodeRow, NodeType};
 
 impl Sidebar {
     fn shortcut_row_walk(

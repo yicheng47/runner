@@ -13,7 +13,7 @@ use runner_app::ui::{
     Button, ButtonSize, IconButton, SessionControl, SessionControlKind, SessionControlVariant,
     SessionOverlay, SessionOverlayKind,
 };
-use runner_backend::model::MissionStatus;
+use runner_core::protocol::model::MissionStatus;
 
 use super::*;
 #[cfg(target_os = "macos")]
@@ -724,7 +724,7 @@ impl MissionWorkspace {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            runner_backend::app_paths::home_dir()
+                            runner_core::app_paths::home_dir()
                                 .as_deref()
                                 .and_then(|home| home.to_str()),
                         ),

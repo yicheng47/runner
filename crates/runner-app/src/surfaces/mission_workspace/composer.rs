@@ -331,16 +331,12 @@ impl MissionWorkspace {
         let generation = self.generation;
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_post_impl(
-                &core,
-                runner_backend::ops::mission::PostMessageInput {
-                    mission_id: mission_id.clone(),
-                    from: None,
-                    text: post.text,
-                    to: post.to,
-                },
-            )
-            .await
+            core.mission_post_impl(runner_core::protocol::mission::PostMessageInput {
+                mission_id: mission_id.clone(),
+                from: None,
+                text: post.text,
+                to: post.to,
+            })
             .map(|_| mission_id)
             .map_err(|error| error.to_string())
         });
