@@ -7,13 +7,13 @@ use super::logic::runtime_models;
 use super::logic::split_args;
 use super::logic::trimmed_option;
 use super::logic::RoleFormKind;
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::collections::HashMap;
 
 use gpui::prelude::*;
 use gpui::{Context, KeyDownEvent, Window};
-use runner_backend::ops::role::CreateRoleInput;
-use runner_backend::router::runtime::PermissionMode;
+use runner_core::protocol::permissions::PermissionMode;
+use runner_core::protocol::role::CreateRoleInput;
 
 use crate::*;
 
@@ -137,7 +137,7 @@ impl NativeRoot {
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::role::role_create(&core, input).map_err(|error| error.to_string())
+            core.role_create(input).map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
@@ -146,7 +146,7 @@ impl NativeRoot {
                     Ok(role) => {
                         let handle = role.handle.clone();
                         this.role_surfaces.create = None;
-                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                        if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store
                                 .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }

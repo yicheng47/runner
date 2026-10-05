@@ -19,7 +19,7 @@ use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, EmptyStateCard, IconButton, IconButtonSize,
     PaginatedListPage, RoleAvatar,
 };
-use runner_backend::ops::role::RoleWithActivity;
+use runner_core::protocol::role::RoleWithActivity;
 
 use crate::chat_icon::ChatIcon;
 
@@ -101,8 +101,7 @@ impl NativeRoot {
         let request_id = request.request_id;
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::role::role_list_with_activity(
-                &core,
+            core.role_list_with_activity(
                 request.page as i64,
                 request.page_size as i64,
                 &request.query,
@@ -144,10 +143,10 @@ impl NativeRoot {
         let task = cx.background_spawn(async move {
             let requested = handle.clone();
             let result = (|| {
-                let role = runner_backend::ops::role::role_get_by_handle(&core, &handle)?;
-                let activity = runner_backend::ops::role::role_activity(&core, &role.id)?;
-                let crews = runner_backend::ops::slot::role_crews_list(&core, &role.id)?;
-                Ok::<_, runner_backend::error::Error>((role, activity, crews))
+                let role = core.role_get_by_handle(&handle)?;
+                let activity = core.role_activity(&role.id)?;
+                let crews = core.role_crews_list(&role.id)?;
+                Ok::<_, runner_core::protocol::ClientError>((role, activity, crews))
             })();
             result
                 .map(|(role, activity, crews)| (requested.clone(), role, activity, crews))

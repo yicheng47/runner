@@ -3,7 +3,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, KeyDownEvent, Window};
 use runner_app::ui::{ConfirmDialog, TextField};
-use runner_backend::ops::crew::CreateCrewInput;
+use runner_core::protocol::crew::CreateCrewInput;
 
 use super::*;
 use crate::*;
@@ -110,7 +110,7 @@ impl NativeRoot {
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::crew::crew_create(&core, input).map_err(|error| error.to_string())
+            core.crew_create(input).map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;

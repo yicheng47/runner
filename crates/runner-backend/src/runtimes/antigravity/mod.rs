@@ -1,22 +1,13 @@
+#[cfg(test)]
+pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_EFFORTS;
 pub(crate) mod agy_capture;
 pub(crate) mod agy_status;
 pub(crate) mod agy_trust;
 pub(crate) mod models;
 pub(crate) mod usage;
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
-pub const ANTIGRAVITY_MODELS: &[(&str, &[&str])] = &[
-    ("gemini-3.8-flash", &["low", "medium", "high"]),
-    ("gemini-3.7-flash", &["low", "medium", "high"]),
-    ("gemini-3.6-flash", &["low", "medium", "high"]),
-    ("gemini-3.1-pro", &["low", "high"]),
-    ("claude-sonnet-4-6", &[]),
-    ("claude-opus-4-6-thinking", &[]),
-    ("gpt-oss-120b-medium", &[]),
-];
-
-pub const ANTIGRAVITY_EFFORTS: &[&str] = &["low", "medium", "high"];
+pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_MODELS;
 
 pub(crate) fn antigravity_status_args(app_data_dir: &Path) -> Vec<String> {
     if !Antigravity
@@ -54,43 +45,8 @@ fn antigravity_conversation_exists_at(home: &Path, key: &str) -> bool {
         .is_file()
 }
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[
-        PermissionMode::Default,
-        PermissionMode::AcceptEdits,
-        PermissionMode::Bypass,
-    ],
-    strip_flags: &[
-        ("--mode", true),
-        ("-mode", true),
-        ("--dangerously-skip-permissions", false),
-        ("-dangerously-skip-permissions", false),
-    ],
-    equals_on_bool: true,
-    variadic_flag: None,
-    args: permission_args,
-    matches: mode_matches,
-    mission_bypass: None,
-    strip_on_mission_resume: false,
-};
-fn permission_args(mode: PermissionMode) -> Vec<String> {
-    match mode {
-        PermissionMode::AcceptEdits => strings(&["--mode", "accept-edits"]),
-        PermissionMode::Bypass => strings(&["--dangerously-skip-permissions"]),
-        _ => Vec::new(),
-    }
-}
-fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
-    match mode {
-        PermissionMode::Bypass => args
-            .iter()
-            .any(|arg| go_bool_flag_is_set(arg, "dangerously-skip-permissions")),
-        PermissionMode::AcceptEdits => ["--mode", "-mode"]
-            .iter()
-            .any(|flag| flag_value_matches(args, flag, Some("accept-edits"))),
-        _ => false,
-    }
-}
+use runner_core::protocol::runtime_metadata::antigravity::{PERMISSIONS, SKILL_DIRS};
+
 pub struct Antigravity;
 impl RuntimeAdapter for Antigravity {
     fn mcp(&self) -> Option<&'static McpConfig> {
@@ -111,11 +67,7 @@ impl RuntimeAdapter for Antigravity {
         Some(&DISCOVERY)
     }
     fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            usage: true,
-            effort_needs_launch_model: true,
-            ..Default::default()
-        }
+        runner_core::protocol::runtime_metadata::antigravity::capabilities()
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
@@ -136,38 +88,7 @@ impl RuntimeAdapter for Antigravity {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        Some(RuntimeCatalog {
-            name: Runtime::Antigravity,
-            display_name: Runtime::Antigravity.display_name(),
-            command: Runtime::Antigravity.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: false,
-            description: "Google Antigravity CLI (signs in with a Google account)",
-            install_url: "https://antigravity.google/docs/cli/reference",
-            default_enabled: true,
-            models: std::iter::once(default_model_option())
-                .chain(
-                    ANTIGRAVITY_MODELS
-                        .iter()
-                        .map(|(model, efforts)| RuntimeCatalogOption {
-                            supported_efforts: Some(
-                                efforts.iter().map(|effort| (*effort).into()).collect(),
-                            ),
-                            ..plain_option(model, model)
-                        }),
-                )
-                .collect(),
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ANTIGRAVITY_EFFORTS
-                        .iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-            skills_dirs: SKILL_DIRS,
-            update_args: &[],
-            npm_package: None,
-        })
+        runner_core::protocol::runtime_metadata::antigravity::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -300,8 +221,6 @@ static USAGE: UsageSource = UsageSource {
     fetch: |command, env, _denied| usage::fetch_antigravity(command, env),
 };
 
-const SKILL_DIRS: &[&str] = &[".gemini/antigravity-cli/skills", ".gemini/skills"];
-
 static MCP: McpConfig = McpConfig {
     wire_name: "antigravity",
     serialized_name: "Antigravity",
@@ -312,10 +231,6 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: true,
     supports_http: false,
 };
-#[allow(non_upper_case_globals)]
-impl crate::ops::mcp::McpClientId {
-    pub const Antigravity: Self = Self(Runtime::Antigravity);
-}
 
 fn translate_mcp(
     definition: &crate::ops::mcp::McpServerDefinition,

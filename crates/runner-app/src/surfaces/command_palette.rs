@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -7,11 +7,11 @@ use gpui::{
     Render, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::TextField;
-use runner_backend::cli_install::{RunnerCommandState, RunnerCommandStatus};
-use runner_backend::model::Role;
-use runner_backend::ops::crew::CrewListItem;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::ops::session::DirectSessionEntry;
+use runner_core::protocol::command::{RunnerCommandState, RunnerCommandStatus};
+use runner_core::protocol::crew::CrewListItem;
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::session::DirectSessionEntry;
 
 use crate::*;
 

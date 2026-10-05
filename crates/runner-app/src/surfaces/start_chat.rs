@@ -1,5 +1,5 @@
 #[cfg(test)]
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -10,9 +10,9 @@ use gpui::{
     div, px, rems, svg, AnyElement, Context, Div, FontWeight, KeyDownEvent, PathPromptOptions,
     ScrollHandle, SharedString, Window,
 };
-use runner_backend::model::{CodexSpeed, Role};
-use runner_backend::ops::project::ProjectScope;
-use runner_backend::ops::runtime::{
+use runner_core::protocol::model::{CodexSpeed, Role};
+use runner_core::protocol::project::ProjectScope;
+use runner_core::protocol::runtime::{
     filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
 };
 
@@ -477,14 +477,13 @@ impl NativeRoot {
             None,
             project_cwd,
             &self.settings(cx).default_working_dir,
-            runner_backend::app_paths::home_dir()
+            runner_core::app_paths::home_dir()
                 .as_deref()
                 .and_then(|home| home.to_str()),
         );
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell_in(
-                self.core(cx),
+            let spawned = self.core(cx).session_start_shell_in(
                 scope,
                 cwd,
                 Some(INITIAL_COLS),
@@ -517,7 +516,7 @@ impl NativeRoot {
             }
             Err(error) => {
                 if let Some(session_id) = spawned_id {
-                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                    let _ = self.core(cx).session_close(&session_id);
                 }
                 self.refresh_sessions(cx);
                 let _ = self.reload_tabs(cx);
@@ -643,13 +642,9 @@ impl NativeRoot {
         let size = self.estimated_drawer_terminal_size(&original, window, cx);
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell_in(
-                self.core(cx),
-                scope,
-                cwd,
-                Some(size.0),
-                Some(size.1),
-            )?;
+            let spawned =
+                self.core(cx)
+                    .session_start_shell_in(scope, cwd, Some(size.0), Some(size.1))?;
             spawned_id = Some(spawned.id.clone());
             self.refresh_sessions(cx);
             self.tabs
@@ -677,10 +672,10 @@ impl NativeRoot {
             }
             Err(error) => {
                 if let Some(session_id) = spawned_id {
-                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                    let _ = self.core(cx).session_close(&session_id);
                 }
                 if let Ok(input) = original.upsert_input() {
-                    let _ = runner_backend::ops::node::node_tab_upsert(self.core(cx), input);
+                    let _ = self.core(cx).node_tab_upsert(input);
                 }
                 self.refresh_sessions(cx);
                 let _ = self.reload_tabs(cx);
@@ -744,7 +739,7 @@ impl NativeRoot {
             sibling_cwd.as_deref(),
             project_cwd,
             &self.settings(cx).default_working_dir,
-            runner_backend::app_paths::home_dir()
+            runner_core::app_paths::home_dir()
                 .as_deref()
                 .and_then(|home| home.to_str()),
         );
@@ -767,8 +762,7 @@ impl NativeRoot {
             .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell_in(
-                self.core(cx),
+            let spawned = self.core(cx).session_start_shell_in(
                 scope,
                 cwd,
                 Some(initial_size.0),
@@ -801,10 +795,10 @@ impl NativeRoot {
             }
             Err(error) => {
                 if let Some(session_id) = spawned_id {
-                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                    let _ = self.core(cx).session_close(&session_id);
                 }
                 if let Ok(input) = original.upsert_input() {
-                    let _ = runner_backend::ops::node::node_tab_upsert(self.core(cx), input);
+                    let _ = self.core(cx).node_tab_upsert(input);
                 }
                 self.refresh_sessions(cx);
                 let _ = self.reload_tabs(cx);
@@ -900,12 +894,12 @@ impl NativeRoot {
         &mut self,
         target: ChatTarget,
         default_role_id: Option<String>,
-        project: Option<runner_backend::repo::project::ProjectRow>,
+        project: Option<runner_core::protocol::project::ProjectRow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut error = None;
-        match runner_backend::ops::role::role_list(self.core(cx)) {
+        match self.core(cx).role_list() {
             Ok(roles) => self
                 .app_store
                 .update(cx, |store, store_cx| store.replace_roles(roles, store_cx)),
@@ -914,7 +908,7 @@ impl NativeRoot {
 
         let (runtimes, agents_checking, agents_error) =
             load_selectable_runtimes(self.core(cx), self.settings(cx));
-        let persisted_mode = read_start_chat_mode(&self.core(cx).app_data_dir);
+        let persisted_mode = read_start_chat_mode(&self.app_store.read(cx).app_data_dir);
         let mode = if default_role_id.is_some() {
             ChatMode::Role
         } else {
@@ -1130,7 +1124,7 @@ impl NativeRoot {
             .and_then(|modal| modal.active_runtime())
             .filter(|runtime| self.settings(cx).model_runtimes().contains(&runtime.name))
         {
-            runner_backend::ops::runtime::runtime_refresh_models(self.core(cx), &[runtime.name]);
+            let _ = self.core(cx).runtime_refresh_models(&[runtime.name]);
         }
     }
 
@@ -1248,7 +1242,7 @@ impl NativeRoot {
 
     fn set_start_chat_mode(&mut self, mode: ChatMode, cx: &mut Context<Self>) {
         let default_working_dir = self.settings(cx).default_working_dir.clone();
-        let app_data_dir = self.core(cx).app_data_dir.clone();
+        let app_data_dir = self.app_store.read(cx).app_data_dir.clone();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
@@ -1486,8 +1480,7 @@ impl NativeRoot {
                     effort,
                     speed,
                     cwd,
-                } => runner_backend::ops::session::session_start_direct_with_speed(
-                    self.core(cx),
+                } => self.core(cx).session_start_direct_with_speed(
                     role_id,
                     runtime,
                     model,
@@ -1505,27 +1498,23 @@ impl NativeRoot {
                     speed,
                     cwd,
                 } => {
-                    runner_backend::ops::session::session_start_runtime_with_speed(
-                        self.core(cx),
-                        &runtime,
-                        scope,
-                        cwd,
-                        Some(initial_size.0),
-                        Some(initial_size.1),
-                        model,
-                        effort,
-                        speed,
-                    )?
-                    .session
+                    self.core(cx)
+                        .session_start_runtime_with_speed(
+                            &runtime,
+                            scope,
+                            cwd,
+                            Some(initial_size.0),
+                            Some(initial_size.1),
+                            model,
+                            effort,
+                            speed,
+                        )?
+                        .session
                 }
             };
             spawned_id = Some(spawned.id.clone());
             if let Some(title) = title {
-                if let Err(error) = runner_backend::ops::session::session_rename(
-                    self.core(cx),
-                    &spawned.id,
-                    Some(title),
-                ) {
+                if let Err(error) = self.core(cx).session_rename(&spawned.id, Some(title)) {
                     rename_error = Some(format!(
                         "Chat started, but its title could not be saved: {error}"
                     ));
@@ -2771,15 +2760,11 @@ fn working_dir_hint(mode: ChatMode, role: Option<&Role>) -> &'static str {
 }
 
 pub(crate) fn load_selectable_runtimes(
-    core: &AppCore,
+    core: &DaemonClient,
     settings: &AppSettings,
 ) -> (Vec<RuntimeCatalogEntry>, bool, Option<String>) {
-    let checking = core
-        .runtime_discovery
-        .read()
-        .map(|discovery| discovery.checking)
-        .unwrap_or(false);
-    match runner_backend::ops::runtime::runtime_catalog(core) {
+    let checking = core.discovery_snapshot().is_ok_and(|state| state.checking);
+    match core.runtime_catalog() {
         Ok(catalog) => {
             let enabled = catalog
                 .iter()
@@ -2802,7 +2787,7 @@ fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String 
         .find(|runtime| runtime.name.key() == name)
         .map(|runtime| runtime.display_name.clone())
         .or_else(|| {
-            runner_backend::ops::runtime::runtime_list()
+            runner_core::protocol::runtime_metadata::runtime_list()
                 .into_iter()
                 .find(|runtime| runtime.name.key() == name)
                 .map(|runtime| runtime.display_name)
@@ -2842,7 +2827,7 @@ fn cwd_placeholder(mode: ChatMode, role: Option<&Role>, default_path: &str) -> S
 }
 
 fn project_start_scope(
-    project: Option<&runner_backend::repo::project::ProjectRow>,
+    project: Option<&runner_core::protocol::project::ProjectRow>,
 ) -> (ProjectScope, String) {
     project.map_or_else(
         || (ProjectScope::Root, String::new()),
@@ -2994,26 +2979,17 @@ pub(super) mod tests {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
-            app_data_dir: temp.path().to_owned(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            temp.path().to_owned(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         let mut cx = TestAppContext::single();
         cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
         #[cfg(not(windows))]
@@ -3204,8 +3180,8 @@ pub(super) mod tests {
     }
 
     use gpui::{size, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-    use std::sync::{Mutex, RwLock};
+    use runner_backend::{db, session, shell_path};
+    use std::sync::RwLock;
 
     fn test_role(handle: &str, runtime: &str) -> Role {
         Role {
@@ -4151,22 +4127,21 @@ pub(super) mod tests {
             let input =
                 serde_json::from_value(serde_json::to_value(test_role("saved", "codex")).unwrap())
                     .unwrap();
-            let role = runner_backend::ops::role::role_create(root.core(cx), input).unwrap();
-            write_start_chat_mode(&root.core(cx).app_data_dir, ChatMode::Role).unwrap();
+            let role = root.core(cx).role_create(input).unwrap();
+            write_start_chat_mode(&root.app_store.read(cx).app_data_dir, ChatMode::Role).unwrap();
             root.close_start_chat_modal(window, cx);
             root.open_new_tab_modal(&NewTab, window, cx);
             let form = root.start_chat_modal.as_ref().unwrap();
             assert!(form.role_select.read(cx).focus_handle().is_focused(window));
             root.close_start_chat_modal(window, cx);
-            write_start_chat_mode(&root.core(cx).app_data_dir, ChatMode::Runtime).unwrap();
+            write_start_chat_mode(&root.app_store.read(cx).app_data_dir, ChatMode::Runtime)
+                .unwrap();
             let mut layout = PaneLayout::single(None, &[]);
             layout.id = "01M3VD00000000000000000004".into();
             let pane_id = layout.focused_pane_id.clone();
-            runner_backend::ops::node::node_tab_upsert(
-                root.core(cx),
-                layout.upsert_input().unwrap(),
-            )
-            .unwrap();
+            root.core(cx)
+                .node_tab_upsert(layout.upsert_input().unwrap())
+                .unwrap();
             root.reload_tabs(cx).unwrap();
             root.last_focused_role_id = Some(role.id);
             root.open_pane_chat_modal(&pane_id, window, cx);
@@ -4209,6 +4184,7 @@ pub(super) mod tests {
         });
         let mut first_tab = String::new();
         let mut empty = String::new();
+        let mut extra = String::new();
         modal.act(|root, _, cx| {
             let layout = root.tabs.active_mut().unwrap();
             first_tab = layout.id.clone();
@@ -4216,7 +4192,7 @@ pub(super) mod tests {
                 .split(&layout.focused_pane_id.clone(), SplitOrientation::Row)
                 .unwrap();
             let input = layout.upsert_input().unwrap();
-            runner_backend::ops::node::node_tab_upsert(root.core(cx), input).unwrap();
+            root.core(cx).node_tab_upsert(input).unwrap();
         });
         modal.act(|root, window, cx| {
             root.app_store.update(cx, |store, cx| {
@@ -4225,6 +4201,8 @@ pub(super) mod tests {
             });
             assert_eq!(root.focused_empty_chat_pane(), Some(empty.clone()));
             root.new_terminal_action(&NewTerminal, window, cx);
+        });
+        modal.act(|root, window, cx| {
             let layout = root.tabs.active().unwrap();
             assert_eq!(layout.id, first_tab);
             assert_eq!(layout.root.leaves().len(), 2);
@@ -4235,12 +4213,14 @@ pub(super) mod tests {
             assert_eq!(session.cwd.as_deref(), Some(cwd.as_str()));
             assert_eq!(root.tabs.tabs().len(), 1);
             root.new_terminal_action(&NewTerminal, window, cx);
+        });
+        modal.act(|root, _, _| {
             assert_eq!(root.tabs.tabs().len(), 2);
         });
         modal.act(|root, window, cx| {
             root.tabs.activate(&first_tab);
             let layout = root.tabs.active_mut().unwrap();
-            let extra = layout
+            extra = layout
                 .split(&layout.focused_pane_id.clone(), SplitOrientation::Row)
                 .unwrap();
             let occupied = layout
@@ -4253,9 +4233,11 @@ pub(super) mod tests {
                 .clone();
             layout.focus_pane(&occupied);
             let input = layout.upsert_input().unwrap();
-            runner_backend::ops::node::node_tab_upsert(root.core(cx), input).unwrap();
+            root.core(cx).node_tab_upsert(input).unwrap();
             assert_eq!(root.focused_empty_chat_pane(), None);
             root.new_terminal_action(&NewTerminal, window, cx);
+        });
+        modal.act(|root, window, cx| {
             assert_eq!(root.tabs.tabs().len(), 3);
             assert!(root
                 .tabs
@@ -4272,11 +4254,12 @@ pub(super) mod tests {
                 .is_none());
             root.set_route(AppRoute::Crews, cx);
             root.new_terminal_action(&NewTerminal, window, cx);
+        });
+        modal.act(|root, _, cx| {
             assert_eq!(root.route, AppRoute::Chat);
             assert_eq!(root.tabs.tabs().len(), 4);
             for session in root.app_store.read(cx).sessions.clone() {
-                runner_backend::ops::session::session_close(root.core(cx), &session.session_id)
-                    .unwrap();
+                root.core(cx).session_close(&session.session_id).unwrap();
             }
         });
     }
@@ -4289,26 +4272,22 @@ pub(super) mod tests {
         let mut project_id = String::new();
         modal.act(|root, window, cx| {
             root.close_start_chat_modal(window, cx);
-            let project = runner_backend::ops::project::project_create(
-                root.core(cx),
-                "Terminal project".into(),
-                cwd.clone(),
-            )
-            .unwrap();
+            let project = root
+                .core(cx)
+                .project_create("Terminal project".into(), cwd.clone())
+                .unwrap();
             project_id = project.id.clone();
             let node = runner_backend::repo::node::ensure_project_node(
-                &root.core(cx).db.get().unwrap(),
+                &root.app_store.read(cx).update_host.0.db.get().unwrap(),
                 &project.id,
             )
             .unwrap();
             let mut layout = PaneLayout::single(None, &[]);
             layout.id = "01M3VD00000000000000000005".into();
             layout.parent_id = Some(node.id);
-            runner_backend::ops::node::node_tab_upsert(
-                root.core(cx),
-                layout.upsert_input().unwrap(),
-            )
-            .unwrap();
+            root.core(cx)
+                .node_tab_upsert(layout.upsert_input().unwrap())
+                .unwrap();
             root.app_store.update(cx, |store, cx| {
                 store.projects = vec![project];
                 cx.notify();
@@ -4327,7 +4306,7 @@ pub(super) mod tests {
             let session = root.session_entry(session_id, cx).unwrap();
             assert_eq!(session.project_id.as_deref(), Some(project_id.as_str()));
             assert_eq!(session.cwd.as_deref(), Some(cwd.as_str()));
-            runner_backend::ops::session::session_close(root.core(cx), session_id).unwrap();
+            root.core(cx).session_close(session_id).unwrap();
         });
     }
 
@@ -4385,11 +4364,9 @@ pub(super) mod tests {
             for id in ["01M3VD00000000000000000001", "01M3VD00000000000000000002"] {
                 let mut layout = PaneLayout::single(None, &[]);
                 layout.id = id.into();
-                runner_backend::ops::node::node_tab_upsert(
-                    root.core(cx),
-                    layout.upsert_input().unwrap(),
-                )
-                .unwrap();
+                root.core(cx)
+                    .node_tab_upsert(layout.upsert_input().unwrap())
+                    .unwrap();
             }
             root.reload_tabs(cx).unwrap();
             root.tabs.activate("01M3VD00000000000000000001");
@@ -4539,6 +4516,8 @@ pub(super) mod tests {
                 cx.notify();
             });
             root.new_terminal_tab(ProjectScope::Root, window, cx);
+        });
+        modal.act(|root, _, _| {
             session_id = root
                 .tabs
                 .active()
@@ -4587,7 +4566,7 @@ pub(super) mod tests {
         modal.visual.simulate_keystrokes("enter");
         modal.read(|form, _| assert!(form.error.is_some()));
         modal.act(|root, _, cx| {
-            runner_backend::ops::session::session_close(root.core(cx), &session_id).unwrap();
+            root.core(cx).session_close(&session_id).unwrap();
         });
     }
 
@@ -4995,7 +4974,7 @@ pub(super) mod tests {
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
             name: Runtime::parse(name).unwrap(),
-            capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+            capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::parse(name).unwrap(),
             )
             .map(|entry| entry.capabilities)
@@ -5166,7 +5145,7 @@ pub(super) mod tests {
 
     #[test]
     fn project_scope_seeds_cwd_before_role_and_settings_defaults() {
-        let project = runner_backend::repo::project::ProjectRow {
+        let project = runner_core::protocol::project::ProjectRow {
             id: "project-1".into(),
             name: "Runner".into(),
             cwd: "/project".into(),

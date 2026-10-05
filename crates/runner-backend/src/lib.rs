@@ -10,6 +10,7 @@ pub use runner_core::app_paths;
 
 pub mod agent_skill;
 pub mod cli_install;
+pub mod daemon;
 pub mod db;
 pub mod error;
 pub mod event_bus;

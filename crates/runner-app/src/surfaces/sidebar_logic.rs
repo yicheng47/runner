@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_core::protocol::node::{NodeRow, NodeType};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum AttentionState {

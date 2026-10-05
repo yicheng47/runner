@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context as _, Result};
-use runner_backend::ops::node::NodeTabUpsertInput;
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_core::protocol::node::NodeTabUpsertInput;
+use runner_core::protocol::node::{NodeRow, NodeType};
 use serde::{Deserialize, Deserializer, Serialize};
 
 pub const DEFAULT_DRAWER_HEIGHT: f32 = 280.;
@@ -861,7 +861,7 @@ fn valid_sizes(sizes: [f32; 2]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{leaf, split, DropSide, PaneLayout, PaneNode, SplitOrientation};
-    use runner_backend::repo::node::{NodeRow, NodeType};
+    use runner_core::protocol::node::{NodeRow, NodeType};
 
     fn tab_row(name: Option<&str>, layout: &PaneLayout) -> NodeRow {
         NodeRow {

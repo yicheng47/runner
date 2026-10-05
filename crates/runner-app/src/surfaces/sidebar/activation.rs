@@ -94,11 +94,10 @@ impl NativeRoot {
         let viewed_session_id = layout.focused_session_id().map(str::to_owned);
         if !window.is_window_active() {
             self.report_current_subjects(cx);
-            runner_backend::ops::window::mark_blurred(self.core(cx), &self.window_label);
+            let _ = self.core(cx).mark_blurred(&self.window_label);
             return;
         }
-        match runner_backend::ops::node::node_mark_viewed(
-            self.core(cx),
+        match self.core(cx).node_mark_viewed(
             &self.window_label,
             &tab_id,
             member_ids,

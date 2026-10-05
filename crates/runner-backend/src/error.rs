@@ -47,3 +47,9 @@ impl serde::Serialize for Error {
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+impl From<runner_core::protocol::ClientError> for Error {
+    fn from(error: runner_core::protocol::ClientError) -> Self {
+        Self::msg(error.message)
+    }
+}

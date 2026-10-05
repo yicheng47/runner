@@ -99,7 +99,7 @@ pub fn effective_working_dir(
     (!default_path.is_empty())
         .then(|| default_path.to_owned())
         .or_else(|| {
-            runner_backend::app_paths::home_dir()
+            runner_core::app_paths::home_dir()
                 .and_then(|home| home.into_os_string().into_string().ok())
         })
 }

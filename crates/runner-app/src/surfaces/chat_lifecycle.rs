@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use runner_backend::model::SessionStatus;
+use runner_core::protocol::model::SessionStatus;
 
 pub(crate) const TRANSITION_MIN_VISIBLE: Duration = Duration::from_secs(1);
 pub(crate) const TRANSITION_IDLE: Duration = Duration::from_millis(400);

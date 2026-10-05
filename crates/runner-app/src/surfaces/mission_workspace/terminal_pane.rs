@@ -3,8 +3,8 @@ use std::sync::Arc;
 use gpui::prelude::*;
 use gpui::{div, px, rems, svg, AnyElement, FontWeight, MouseButton, SharedString, Window};
 use runner_app::ui::{SessionControlKind, SessionOverlay, SessionOverlayKind};
-use runner_backend::model::SessionStatus;
-use runner_backend::ops::session::SessionRow;
+use runner_core::protocol::model::SessionStatus;
+use runner_core::protocol::session::SessionRow;
 
 use super::*;
 use crate::*;

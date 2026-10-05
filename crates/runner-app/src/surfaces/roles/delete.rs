@@ -77,9 +77,10 @@ impl NativeRoot {
         let id = confirm.id.clone();
         let handle = confirm.handle.clone();
         let core = self.core(cx).clone();
-        let task = cx.background_spawn(async move {
-            runner_backend::ops::role::role_delete(&core, &id).map_err(|error| error.to_string())
-        });
+        let task =
+            cx.background_spawn(
+                async move { core.role_delete(&id).map_err(|error| error.to_string()) },
+            );
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
@@ -87,7 +88,7 @@ impl NativeRoot {
                 match result {
                     Ok(()) => {
                         this.role_surfaces.delete_confirm = None;
-                        if let Ok(roles) = runner_backend::ops::role::role_list(this.core(cx)) {
+                        if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store
                                 .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));
                         }

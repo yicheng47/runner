@@ -99,7 +99,7 @@ fn working_directory_precedence_matches_main() {
         "/runner"
     );
     assert_eq!(working_dir_placeholder(None, "/default"), "/default");
-    let home = runner_backend::app_paths::home_dir()
+    let home = runner_core::app_paths::home_dir()
         .expect("home directory")
         .into_os_string()
         .into_string()

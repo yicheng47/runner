@@ -5,7 +5,7 @@ use gpui::{
     canvas, div, rems, svg, Bounds, Context, Entity, KeyDownEvent, MouseButton, Pixels, Render,
     ScrollHandle, Window,
 };
-use runner_backend::ops::runtime::RuntimeCatalogOption;
+use runner_core::protocol::runtime::RuntimeCatalogOption;
 
 use crate::theme;
 use crate::ui::app_zoom;

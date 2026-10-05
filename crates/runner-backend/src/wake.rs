@@ -46,7 +46,7 @@ pub fn install(events: &EventChannel) {
 /// nothing — which is what a process-lifetime observer wants. The test
 /// below is what keeps that claim honest: it registers, lets both handles
 /// drop, and only then posts.
-fn observe_wake<F: Fn() + Send + Sync + 'static>(on_wake: F) {
+pub fn observe_wake<F: Fn() + Send + Sync + 'static>(on_wake: F) {
     let block = RcBlock::new(move |_notification: NonNull<NSNotification>| {
         on_wake();
     });
