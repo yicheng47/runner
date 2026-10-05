@@ -1,252 +1,65 @@
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
-use std::time::Instant;
-
 use anyhow::{Context as _, Result};
-
-use runner_backend::{
-    cli_install, db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path,
-    windows, AppCore,
-};
-
-pub const AUTO_RESUME_STAGGER_MS: u64 = 300;
-
-pub use runner_core::protocol::AutoResumeReport;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativePaths {
-    pub home_dir: Option<PathBuf>,
-    pub app_data_dir: PathBuf,
-    pub log_dir: PathBuf,
-}
-
-pub struct NativeMcpServer {
-    core: AppCore,
-    _runtime: tokio::runtime::Runtime,
-}
-
-impl NativeMcpServer {
-    pub fn start(core: &AppCore) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("runner-ipc")
-            .enable_all()
-            .build()
-            .context("create native MCP runtime")?;
-        core.mcp
-            .start(
-                &runner_backend::app_paths::mcp_endpoint(
-                    &core.app_data_dir,
-                    cfg!(debug_assertions),
-                ),
-                core.clone(),
-                runtime.handle(),
-            )
-            .context("start native MCP listener")?;
-        Ok(Self {
-            core: core.clone(),
-            _runtime: runtime,
-        })
-    }
-}
-
-impl Drop for NativeMcpServer {
-    fn drop(&mut self) {
-        self.core.mcp.stop();
-    }
-}
-
-impl NativePaths {
-    pub fn new(app_data_dir: PathBuf, log_dir: PathBuf) -> Self {
-        Self {
-            home_dir: None,
-            app_data_dir,
-            log_dir,
-        }
-    }
-}
+pub use runner_core::daemon_process::NativePaths;
+use runner_core::protocol::DaemonClient;
+use std::path::PathBuf;
 
 pub fn native_paths() -> Result<NativePaths> {
-    let home = runner_backend::app_paths::home_dir().context("home directory is not available")?;
-    Ok(paths_for_home(&home, cfg!(debug_assertions)))
-}
-
-fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
-    NativePaths {
-        home_dir: Some(home.to_path_buf()),
-        app_data_dir: runner_backend::app_paths::app_data_dir_for_home(home, debug),
-        log_dir: runner_backend::app_paths::log_dir_for_home(home, debug),
-    }
-}
-
-/// Boots the application core. `model_runtimes` are the discoverable
-/// runtimes the user has enabled; startup may query their model catalogs
-/// once executable discovery resolves. Executable discovery itself always
-/// covers every runtime.
-pub fn boot_core(
-    paths: &NativePaths,
-    model_runtimes: Vec<runner_backend::model::Runtime>,
-) -> Result<AppCore> {
-    std::fs::create_dir_all(&paths.app_data_dir)
-        .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
-    // Mission shims exec `$APPDATA/bin/runner`, so the CLI must be in place
-    // before any session spawns. Best-effort: a copy failure is reported and
-    // the app keeps running (#480).
-    if let Err(error) = cli_install::install_runner_cli(&paths.app_data_dir) {
-        eprintln!("Runner bundled agent CLI install failed: {error}");
-    }
-    if let Err(error) = cli_install::remove_stale_mcp_cli(&paths.app_data_dir) {
-        eprintln!("Runner stale MCP bridge cleanup failed: {error}");
-    }
-    let pool = Arc::new(
-        db::open_pool(&paths.app_data_dir.join("runner.db")).context("open Runner database")?,
-    );
-    let login_shell_lkg = match db::login_shell_env_lkg(&pool) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("runtime discovery LKG read failed: {error}");
-            None
-        }
-    };
-    let runtime_shell_env = Arc::new(RwLock::new(
-        login_shell_lkg
-            .as_ref()
-            .map(|snapshot| snapshot.env.clone())
-            .unwrap_or_default(),
-    ));
-    let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(
-        login_shell_lkg
-            .as_ref()
-            .map(|snapshot| snapshot.shell.clone())
-            .filter(|shell| !shell.is_empty()),
-        login_shell_lkg
-            .as_ref()
-            .map(|snapshot| snapshot.captured_at.clone()),
-    )));
-    let runtime: Arc<dyn session::runtime::SessionRuntime> =
-        Arc::new(session::pty_runtime::PtyRuntime::new());
-    let sessions = session::SessionManager::new(
-        Arc::clone(&runtime_shell_env),
-        Arc::clone(&runtime_discovery),
-        runtime,
-    );
-    let window_registry = Arc::new(windows::WindowRegistry::new());
-    let event_channel = events::EventChannel::new();
-
-    let core = AppCore {
-        db: Arc::clone(&pool),
-        app_data_dir: paths.app_data_dir.clone(),
-        sessions,
-        runtime_shell_env: Arc::clone(&runtime_shell_env),
-        runtime_discovery: Arc::clone(&runtime_discovery),
-        usage: Arc::new(runner_backend::usage::UsageService::default()),
-        buses: event_bus::BusRegistry::new(),
-        routers: runner_backend::router::RouterRegistry::new(),
-        mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-        mcp: Arc::new(mcp::McpHandle::new()),
-        windows: window_registry,
-        events: event_channel.clone(),
-        session_event_observer: Default::default(),
-        app_version: crate::version::display_version(),
-    };
-
-    if let Err(error) = core.sessions.start_runtime_watchers(
-        &core.app_data_dir,
-        Arc::clone(&core.db),
-        Arc::new(core.session_events()),
-    ) {
-        eprintln!("Runner session watcher startup failed: {error}");
-    }
-
-    futures::executor::block_on(ops::mission::mount_all_running_mission_routers(&core));
-    session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
-        .context("clean up stale PTY sessions")?;
-    match pool.get() {
-        Ok(conn) => match repo::node::clear_unread_on_startup(&conn, chrono::Utc::now()) {
-            Ok(cleared) if cleared > 0 => {
-                eprintln!(
-                    "Runner startup cleanup: cleared {cleared} stale unread tab completion(s)"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => eprintln!("Runner tab unread startup cleanup failed: {error}"),
-        },
-        Err(error) => eprintln!("Runner tab unread startup cleanup failed: {error}"),
-    }
-    session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
-        .context("clean up orphan PTY processes")?;
-    core.usage.set_enabled(model_runtimes.clone());
-    runtime_status::start_background_discovery(
-        event_channel,
-        Arc::clone(&pool),
-        runtime_shell_env,
-        runtime_discovery,
-        false,
-        model_runtimes,
-    );
-    #[cfg(not(test))]
-    core.usage.start_scheduler(core.clone());
-    Ok(core)
-}
-
-#[cfg(test)]
-pub use runner_backend::daemon::resume::consume_resume_on_launch;
-
-#[cfg(test)]
-pub use runner_backend::daemon::resume::consume_launch_claims;
-
-pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
-    let ids = {
-        let mut conn = core.db.get().context("get database connection")?;
-        repo::session::mark_running_for_resume_on_launch(&mut conn)
-            .context("stamp sessions for resume on launch")?
-    };
-    let n = ids.len();
-    let started = Instant::now();
-    let result = core.sessions.kill_many(&ids);
-    if n > 0 {
-        let elapsed = started.elapsed();
-        tracing::info!("quit teardown: stopped {n} sessions in {elapsed:?}");
-    }
-    result.map_err(|error| anyhow::anyhow!("failed to stop sessions on quit: {error}"))
-}
-
-pub fn daemon_client(core: AppCore) -> runner_core::protocol::DaemonClient {
-    runner_backend::daemon::InProcessTransport::client(core)
-}
-
-#[cfg(target_os = "macos")]
-pub fn install_wake(client: runner_core::protocol::DaemonClient) {
-    runner_backend::wake::observe_wake(move || {
-        let _ = client.app_woke();
-    });
+    Ok(NativePaths::resolve()?)
 }
 
 #[derive(Clone)]
 pub struct ClientHost {
-    pub client: runner_core::protocol::DaemonClient,
+    pub client: DaemonClient,
     pub app_data_dir: PathBuf,
-    terminal_core: AppCore,
 }
 
-impl ClientHost {
-    pub fn terminal_core(&self) -> &AppCore {
-        &self.terminal_core
-    }
+pub fn connect(
+    paths: &NativePaths,
+) -> Result<(
+    ClientHost,
+    std::sync::Arc<runner_core::protocol::managed::ManagedTransport>,
+)> {
+    let source =
+        runner_core::cli_install::locate_source(runner_core::cli_install::AGENT_SOURCE_BIN_NAME)?
+            .context("bundled CLI sidecar unavailable; build runner-cli first")?;
+    let hash_source = source.clone();
+    let hash =
+        std::thread::spawn(move || runner_core::daemon_process::executable_hash(&hash_source))
+            .join()
+            .map_err(|_| anyhow::anyhow!("sidecar hash worker panicked"))??;
+    let connection = runner_core::protocol::managed::ManagedTransport::connect(
+        runner_core::daemon_process::Launch::new(paths.clone(), source, true),
+        hash,
+    )?;
+    Ok((
+        ClientHost {
+            client: connection.client(),
+            app_data_dir: paths.app_data_dir.clone(),
+        },
+        connection,
+    ))
 }
-
-impl From<AppCore> for ClientHost {
-    fn from(core: AppCore) -> Self {
-        Self {
-            client: runner_backend::daemon::InProcessTransport::client(core.clone()),
-            app_data_dir: core.app_data_dir.clone(),
-            terminal_core: core,
-        }
-    }
+#[cfg(target_os = "macos")]
+pub fn install_wake(client: DaemonClient) {
+    crate::wake::observe_wake(move || {
+        let _ = client.app_woke();
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use runner_backend::daemon::boot::NativeMcpServer;
+    use runner_backend::daemon::boot::{boot_core, stop_running_sessions_on_quit};
+    use runner_backend::daemon::resume::consume_launch_claims;
+    use runner_backend::{db, repo, session, shell_path};
+    use std::path::Path;
+    use std::sync::{Arc, RwLock};
+    fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
+        NativePaths::for_home(home, debug)
+    }
+
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
     #[cfg(unix)]
@@ -351,9 +164,7 @@ mod tests {
             Some(runner_backend::app_paths::IpcEndpoint(socket_path.clone()))
         );
         assert!(socket_path.exists());
-        server._runtime.block_on(async {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        });
+        std::thread::sleep(Duration::from_millis(1));
 
         drop(server);
         assert!(!socket_path.exists());

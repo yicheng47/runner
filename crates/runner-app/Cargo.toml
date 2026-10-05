@@ -21,7 +21,6 @@ base64 = "0.22"
 chrono = { workspace = true }
 futures = "0.3"
 runner-core = { path = "../runner-core" }
-runner-backend = { path = "../runner-backend" }
 runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true
 serde_json.workspace = true
@@ -35,8 +34,9 @@ unicode-segmentation = "1"
 gpui = { package = "gpui-pre", version = "=0.3.7" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSString"] }
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSOperation", "block2", "NSArray", "NSData", "NSDate", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSGeometry", "NSString"] }
 raw-window-handle = "0.6"
 
 [target.'cfg(windows)'.dependencies]
@@ -58,4 +58,5 @@ font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }
 gpui = { package = "gpui-pre", version = "=0.3.7", features = ["test-support"] }
 
 [dev-dependencies]
+runner-backend = { path = "../runner-backend" }
 runner-terminal = { path = "../runner-terminal", features = ["test-support"] }

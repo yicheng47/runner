@@ -5,7 +5,7 @@ use std::io::Write as _;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use runner_app::bootstrap::{boot_core, NativePaths};
+use runner_backend::daemon::boot::{boot_core, NativePaths};
 use runner_backend::model::Role;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};

@@ -18,6 +18,7 @@ pub struct ModelOptions {
 }
 
 pub struct TerminalModel {
+    workers: Mutex<Vec<thread::JoinHandle<()>>>,
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     host: Arc<dyn TerminalHost>,
     session_id: String,
@@ -37,6 +38,9 @@ pub struct TerminalModel {
 }
 
 impl TerminalModel {
+    pub fn take_workers(&self) -> Vec<thread::JoinHandle<()>> {
+        std::mem::take(&mut *self.workers.lock().unwrap())
+    }
     pub fn new(
         host: Arc<dyn TerminalHost>,
         session_id: String,
@@ -69,6 +73,7 @@ impl TerminalModel {
             }
         };
         let model = Arc::new(Self {
+            workers: Mutex::default(),
             term: Arc::clone(&term),
             host: Arc::clone(&host),
             session_id: session_id.clone(),
@@ -87,7 +92,7 @@ impl TerminalModel {
             live_cwd: Mutex::new(None),
         });
         let term_for_events = Arc::downgrade(&term);
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
                 let write = |bytes: &[u8]| {
@@ -183,8 +188,9 @@ impl TerminalModel {
                 }
             })
             .context("spawn terminal event thread")?;
+        model.workers.lock().unwrap().push(worker);
         let weak = Arc::downgrade(&model);
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("native-term-sync-{}", model.session_id))
             .spawn(move || {
                 while sync_flush_requests.recv().is_ok() {
@@ -205,6 +211,7 @@ impl TerminalModel {
                 }
             })
             .context("spawn terminal sync flush thread")?;
+        model.workers.lock().unwrap().push(worker);
         Ok(model)
     }
 

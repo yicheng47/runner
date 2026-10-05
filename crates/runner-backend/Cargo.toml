@@ -10,6 +10,8 @@ license.workspace = true
 name = "runner_backend"
 
 [dependencies]
+anyhow = "1"
+fs2 = { workspace = true }
 runner-terminal = { path = "../runner-terminal" }
 runner-core = { path = "../runner-core", features = ["schemars"] }
 log = "0.4"
@@ -37,7 +39,7 @@ notify = "6"
 # MCP server (impl 0013): local IPC transport for the bundled Runner CLI.
 rmcp = { version = "1.7", features = ["server"] }
 schemars = "1"
-tokio = { version = "1", features = ["net", "rt", "io-util", "sync"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "io-util", "sync", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 # Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
 # user-authored comments + formatting on round-trip writes.
@@ -53,7 +55,7 @@ reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features =
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_DataExchange", "Win32_System_JobObjects", "Win32_System_Ole", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_JobObjects", "Win32_System_Ole", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSPasteboardItem", "NSWorkspace"] }
@@ -65,10 +67,6 @@ block2 = "0.6"
 [dev-dependencies]
 alacritty_terminal = "0.26"
 runner-terminal = { path = "../runner-terminal", features = ["test-support"] }
-# Used by issue #124's forwarder-contention regression test to hold the
-# event-log flock from a second fd; matches the version `runner-core`
-# pulls in transitively so the trait impl resolves identically.
-fs2 = "0.4"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

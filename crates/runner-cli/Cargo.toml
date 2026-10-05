@@ -29,8 +29,12 @@ tokio = { version = "1", features = ["macros", "net", "rt", "time", "io-util", "
 rmcp = { version = "1.7", features = ["client"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading"] }
 
 [dev-dependencies]
+runner-terminal = { path = "../runner-terminal" }
 rmcp = { version = "1.7", features = ["server"] }
 tempfile = "3"
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

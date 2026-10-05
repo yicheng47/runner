@@ -358,8 +358,19 @@ pub struct TerminalMirror {
     palette: Mutex<PaletteState>,
     waker: Arc<dyn Fn() + Send + Sync>,
     viewers: Arc<AtomicUsize>,
+    frame_worker: Mutex<Option<FrameWorker>>,
     link_cwd: std::sync::OnceLock<Option<PathBuf>>,
     config: Mutex<Config>,
+}
+
+struct FrameWorker {
+    state: Arc<Mutex<FrameWorkerState>>,
+    thread: thread::JoinHandle<()>,
+}
+
+struct FrameWorkerState {
+    stopped: Arc<AtomicBool>,
+    cancel: Arc<dyn Fn() + Send + Sync>,
 }
 
 pub struct TerminalView {
@@ -399,6 +410,81 @@ fn term_config() -> Config {
 }
 
 impl TerminalMirror {
+    fn start_frames(
+        self: &Arc<Self>,
+        attachment: runner_core::protocol::terminal::TerminalAttachment,
+    ) -> Result<()> {
+        let weak = Arc::downgrade(self);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(Mutex::new(FrameWorkerState {
+            stopped: stopping.clone(),
+            cancel: attachment.frames.cancellation(),
+        }));
+        let stopped = stop.clone();
+        let worker = thread::Builder::new()
+            .name(format!("native-term-frames-{}", self.session_id))
+            .spawn(move || {
+                let mut frames = attachment.frames;
+                loop {
+                    let frame = match frames.recv() {
+                        Ok(frame) => frame,
+                        Err(_) => return,
+                    };
+                    if stopping.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let Some(mirror) = weak.upgrade() else {
+                        return;
+                    };
+                    match frame {
+                        TerminalFrame::Output { seq, bytes } => mirror.feed_output(seq, &bytes),
+                        TerminalFrame::Resized { seq, cols, rows } => {
+                            let mut sequence = mirror.sequence.lock().unwrap();
+                            if seq > sequence.last {
+                                sequence.last = seq;
+                                mirror.resize_local(cols, rows);
+                            }
+                        }
+                        TerminalFrame::Resync => match mirror.client.attach(&mirror.session_id) {
+                            Ok(attachment) => {
+                                let mut state = stopped.lock().unwrap();
+                                if state.stopped.load(Ordering::Acquire) {
+                                    return;
+                                }
+                                mirror.restore(&attachment);
+                                state.cancel = attachment.frames.cancellation();
+                                frames = attachment.frames;
+                            }
+                            Err(_) => return,
+                        },
+                    }
+                    mirror.refresh_metadata();
+                    mirror.wake_viewers();
+                }
+            })
+            .context("spawn terminal mirror frames")?;
+        *self.frame_worker.lock().unwrap() = Some(FrameWorker {
+            state: stop,
+            thread: worker,
+        });
+        Ok(())
+    }
+    pub fn reattach(self: &Arc<Self>) -> Result<()> {
+        if let Some(worker) = self.frame_worker.lock().unwrap().take() {
+            {
+                let state = worker.state.lock().unwrap();
+                state.stopped.store(true, Ordering::Release);
+                (state.cancel)();
+            }
+            let _ = worker.thread.join();
+        }
+        let attachment = self.client.attach(&self.session_id)?;
+        self.restore(&attachment);
+        self.start_frames(attachment)?;
+        self.refresh_metadata();
+        self.wake_viewers();
+        Ok(())
+    }
     pub fn attach(
         client: DaemonClient,
         session_id: String,
@@ -440,46 +526,13 @@ impl TerminalMirror {
             palette: Mutex::new(PaletteState::new(palette::RUNNER)),
             waker,
             viewers,
+            frame_worker: Mutex::default(),
             link_cwd: std::sync::OnceLock::new(),
             config: Mutex::new(term_config()),
         });
         mirror.restore(&attachment);
         mirror.refresh_metadata();
-        let weak = Arc::downgrade(&mirror);
-        thread::Builder::new()
-            .name(format!("native-term-frames-{}", mirror.session_id))
-            .spawn(move || {
-                let mut frames = attachment.frames;
-                loop {
-                    let frame = match frames.recv() {
-                        Ok(frame) => frame,
-                        Err(_) => return,
-                    };
-                    let Some(mirror) = weak.upgrade() else {
-                        return;
-                    };
-                    match frame {
-                        TerminalFrame::Output { seq, bytes } => mirror.feed_output(seq, &bytes),
-                        TerminalFrame::Resized { seq, cols, rows } => {
-                            let mut sequence = mirror.sequence.lock().unwrap();
-                            if seq > sequence.last {
-                                sequence.last = seq;
-                                mirror.resize_local(cols, rows);
-                            }
-                        }
-                        TerminalFrame::Resync => match mirror.client.attach(&mirror.session_id) {
-                            Ok(attachment) => {
-                                mirror.restore(&attachment);
-                                frames = attachment.frames;
-                            }
-                            Err(_) => return,
-                        },
-                    }
-                    mirror.refresh_metadata();
-                    mirror.wake_viewers();
-                }
-            })
-            .context("spawn terminal mirror frames")?;
+        mirror.start_frames(attachment)?;
         let weak = Arc::downgrade(&mirror);
         thread::Builder::new()
             .name(format!("native-term-sync-{}", mirror.session_id))
@@ -1262,7 +1315,28 @@ impl TerminalBridge {
         sessions.insert(session_id.to_owned(), Arc::clone(&mirror));
         Ok(mirror)
     }
+    pub fn attach_live_sessions(&self) -> Result<()> {
+        for id in self.client.session_live_ids()? {
+            self.attach(&id)?;
+        }
+        Ok(())
+    }
     pub fn handle_event(&self, event: &ClientEvent) {
+        if event.name == "daemon/reconnected" {
+            self.send_palette(*self.palette.lock().unwrap());
+            let mirrors: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+            for mirror in mirrors {
+                if let Err(error) = mirror.reattach() {
+                    log::debug!("reattach {}: {error}", mirror.session_id);
+                }
+            }
+            if let Err(error) = self.attach_live_sessions() {
+                log::error!("reattach live terminals: {error}");
+            }
+            (self.waker)();
+            return;
+        }
+
         let Some(id) = event.payload.get("session_id").and_then(|id| id.as_str()) else {
             return;
         };
@@ -1303,6 +1377,12 @@ impl TerminalBridge {
             return;
         }
         *current = palette;
+        self.send_palette(palette);
+        for session in sessions.values() {
+            session.set_palette(palette);
+        }
+    }
+    fn send_palette(&self, palette: palette::TerminalPalette) {
         let rgb = |color: alacritty_terminal::vte::ansi::Rgb| [color.r, color.g, color.b];
         let _ = self.client.terminal_palette(TerminalPalette {
             background: rgb(palette.background),
@@ -1312,9 +1392,6 @@ impl TerminalBridge {
             selection: rgb(palette.selection),
             ansi: palette.ansi.map(rgb),
         });
-        for session in sessions.values() {
-            session.set_palette(palette);
-        }
     }
     pub fn live_session_count(&self) -> usize {
         self.sessions.lock().unwrap().len()
@@ -1363,6 +1440,100 @@ impl runner_core::protocol::terminal::TerminalLifecycle for TerminalBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_cancels_an_idle_subscription_replaced_by_resync() {
+        use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
+        use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+        use std::time::Duration;
+        type FrameResult = std::result::Result<TerminalFrame, ClientError>;
+        struct Frames {
+            rx: mpsc::Receiver<FrameResult>,
+            tx: mpsc::Sender<FrameResult>,
+            id: u64,
+            ready: mpsc::Sender<u64>,
+        }
+        impl TerminalSubscription for Frames {
+            fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+                self.rx.recv().unwrap()
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                self.ready.send(self.id).unwrap();
+                let tx = self.tx.clone();
+                Arc::new(move || {
+                    let _ = tx.send(Err(ClientError::msg("cancelled")));
+                })
+            }
+        }
+        struct Mock {
+            senders: Mutex<Vec<mpsc::Sender<FrameResult>>>,
+            ready: mpsc::Sender<u64>,
+        }
+        impl Transport for Mock {
+            fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+                Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+                let (tx, rx) = mpsc::channel();
+                let mut senders = self.senders.lock().unwrap();
+                let id = senders.len() as u64;
+                senders.push(tx.clone());
+                Ok(TerminalAttachment {
+                    subscriber_id: id,
+                    snapshot: runner_core::protocol::terminal::TerminalSnapshot {
+                        seq: 0,
+                        cols: 80,
+                        rows: 24,
+                        bytes: Vec::new(),
+                        unfinished_len: 0,
+                        preceding_char: None,
+                    },
+                    frames: Box::new(Frames {
+                        rx,
+                        tx,
+                        id,
+                        ready: self.ready.clone(),
+                    }),
+                })
+            }
+        }
+        let (ready, installed) = mpsc::channel();
+        let host = Arc::new(Mock {
+            senders: Mutex::default(),
+            ready,
+        });
+        let mirror = TerminalMirror::attach(
+            DaemonClient::new(host.clone()),
+            "idle".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        assert_eq!(installed.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        host.senders.lock().unwrap()[0]
+            .send(Ok(TerminalFrame::Resync))
+            .unwrap();
+        assert_eq!(installed.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+        let next = mirror.clone();
+        let (done, result) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            done.send(next.reattach()).unwrap();
+        });
+        result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reattach must wake an idle Resync subscription")
+            .unwrap();
+        worker.join().unwrap();
+        let frames = mirror.frame_worker.lock().unwrap().take().unwrap();
+        {
+            let state = frames.state.lock().unwrap();
+            state.stopped.store(true, Ordering::Release);
+            (state.cancel)();
+        }
+        frames.thread.join().unwrap();
+    }
 
     #[test]
     fn shared_parse_keeps_only_the_bytes_held_after_a_capacity_restart() {

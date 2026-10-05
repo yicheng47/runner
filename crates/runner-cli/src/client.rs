@@ -83,6 +83,54 @@ impl SocketClient {
                     .to_owned(),
             )
         })?;
+        match Self::connect_endpoint(endpoint.clone()).await {
+            Err(ClientError::NotRunning) if std::env::var_os("SSH_CONNECTION").is_none() => {
+                let paths = runner_core::daemon_process::NativePaths::resolve()
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                let source = std::env::current_exe()
+                    .and_then(|path| path.canonicalize())
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                let launch = runner_core::daemon_process::Launch::new(paths, source, false);
+                Self::connect_or_start(&launch, false).await
+            }
+            result => result,
+        }
+    }
+
+    pub async fn connect_or_start(
+        launch: &runner_core::daemon_process::Launch,
+        ssh: bool,
+    ) -> Result<Self, ClientError> {
+        match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+            Err(ClientError::NotRunning) if !ssh => (),
+            result => return result,
+        }
+        let data = launch.paths.app_data_dir.clone();
+        let _starter =
+            tokio::task::spawn_blocking(move || runner_core::daemon_process::startup_lock(&data))
+                .await
+                .map_err(|error| ClientError::Protocol(error.to_string()))?
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+            Err(ClientError::NotRunning) => (),
+            result => return result,
+        }
+        let mut child = launch.spawn().map_err(|_| ClientError::NotRunning)?;
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+                Err(ClientError::NotRunning) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(20)).await
+                }
+                result => return result,
+            }
+        }
+    }
+
+    pub async fn connect_endpoint(endpoint: IpcEndpoint) -> Result<Self, ClientError> {
         let stream = match timeout(CONNECT_TIMEOUT, IpcStream::connect(&endpoint)).await {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {

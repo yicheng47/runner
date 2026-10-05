@@ -470,6 +470,25 @@ pub fn node_mark_viewed(
     member_ids: Vec<String>,
     viewed_session_id: Option<&str>,
 ) -> Result<Option<NodeRow>> {
+    node_mark_viewed_with(state, id, viewed_session_id, || {
+        state.windows.mark_focused(window_label);
+        state.windows.set_subjects(
+            window_label,
+            member_ids.into_iter().map(Subject::DirectChat).collect(),
+        );
+        state
+            .windows
+            .set_viewed_session(window_label, viewed_session_id);
+        Ok(())
+    })
+}
+
+pub(crate) fn node_mark_viewed_with(
+    state: &AppCore,
+    id: &str,
+    viewed_session_id: Option<&str>,
+    update_window: impl FnOnce() -> Result<()>,
+) -> Result<Option<NodeRow>> {
     let viewed_ids: Vec<_> = viewed_session_id.into_iter().map(str::to_owned).collect();
     let row = {
         let mut conn = state.db.get()?;
@@ -491,14 +510,7 @@ pub fn node_mark_viewed(
         row
     };
     state.sessions.mark_status_viewed(&viewed_ids);
-    state.windows.mark_focused(window_label);
-    state.windows.set_subjects(
-        window_label,
-        member_ids.into_iter().map(Subject::DirectChat).collect(),
-    );
-    state
-        .windows
-        .set_viewed_session(window_label, viewed_session_id);
+    update_window()?;
     state.events.emit(
         ATTENTION_CHANGED_EVENT,
         &serde_json::json!({ "tab_id": id }),

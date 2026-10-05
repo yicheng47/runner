@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, ImageSource, Resource, Result, SharedString};
 
+#[cfg(any(not(test), target_os = "macos"))]
 pub const INTER_FONTS: [&[u8]; 8] = [
     include_bytes!("../../../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../../../assets/fonts/Inter-Italic.ttf"),
@@ -12,6 +13,7 @@ pub const INTER_FONTS: [&[u8]; 8] = [
     include_bytes!("../../../assets/fonts/Inter-Bold.ttf"),
     include_bytes!("../../../assets/fonts/Inter-BoldItalic.ttf"),
 ];
+#[cfg(any(not(test), target_os = "macos"))]
 pub const JETBRAINS_MONO_FONTS: [&[u8]; 4] = [
     include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Regular.ttf"),
     include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-Italic.ttf"),

@@ -9,6 +9,7 @@ use std::path::PathBuf;
 #[macro_export]
 macro_rules! daemon_api {
     ($consumer:ident) => { $consumer! {
+        session_live_ids() -> Vec<String> [true] => |core: &crate::AppCore| { Ok(core.sessions.live_session_ids()) };
         runtime_update_prepare(runtime: Runtime => Runtime = { runtime }, size: (u16, u16) => (u16, u16) = { size }) -> RuntimeUpdateCommand [false] => |core: &crate::AppCore, runtime: Runtime, size: (u16, u16)| { crate::ops::runtime::runtime_update_prepare(core, runtime, size) };
         runtime_update_run(command: RuntimeUpdateCommand => RuntimeUpdateCommand = { command }) -> () [false] => |core: &crate::AppCore, command: RuntimeUpdateCommand| { crate::ops::runtime::runtime_update_run(core, command) };
         terminal_metadata(session_id: &str => String = { session_id.to_owned() }) -> TerminalMetadata [true] => |core: &crate::AppCore, session_id: String| { crate::session::manager::terminal::metadata(core, &session_id) };

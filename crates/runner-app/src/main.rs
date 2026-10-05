@@ -20,6 +20,7 @@ mod surfaces;
 mod terminal;
 mod window_state;
 
+#[cfg(not(test))]
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 use gpui::QuitMode;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds,
@@ -37,9 +38,7 @@ use gpui::{
     Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription,
     SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
-use runner_app::bootstrap::{
-    boot_core, native_paths, stop_running_sessions_on_quit, NativeMcpServer, NativePaths,
-};
+use runner_app::bootstrap::NativePaths;
 use runner_app::pane_layout::{
     DropSide, MissionLayout, PaneLayout, PaneLeaf, PaneNode, SplitOrientation, TabSet,
     MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
@@ -64,6 +63,7 @@ use app_settings::{settings_path, AppSettings};
 #[cfg(not(test))]
 use app_store::CommandInstallSupport;
 use app_store::{global_app_store, AppStore, GlobalAppStore, StoreRefreshKind, StoreRevisions};
+#[cfg(not(test))]
 use assets::{Assets, INTER_FONTS, JETBRAINS_MONO_FONTS};
 use chat_icon::ChatIcon;
 use runner_app::updater::{global_updater, GlobalUpdater, Updater};
@@ -127,10 +127,12 @@ impl Global for GlobalNativePaths {}
 
 mod toast;
 
+#[cfg(not(test))]
+use surfaces::{pane_close_behavior, PaneCloseBehavior};
 use surfaces::{
-    pane_close_behavior, AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace,
-    PaneCloseBehavior, PaneKey, ProjectModal, RoleSurfaces, SettingsPane, SettingsState, Sidebar,
-    SplitMenuKey, StartChatModal, StartMissionModalState,
+    AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace, PaneKey, ProjectModal,
+    RoleSurfaces, SettingsPane, SettingsState, Sidebar, SplitMenuKey, StartChatModal,
+    StartMissionModalState,
 };
 
 const INITIAL_COLS: u16 = 100;
@@ -267,6 +269,7 @@ fn close_target(
     }
 }
 
+#[cfg(not(test))]
 fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
     let drawer_focused = this.route == AppRoute::Chat
         && this.tabs.active().is_some_and(PaneLayout::drawer_open)
@@ -321,6 +324,7 @@ fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<Native
     }
 }
 
+#[cfg(not(test))]
 fn close_window(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
     this.prepare_window_close(window, cx);
     window.remove_window();
@@ -1025,7 +1029,6 @@ impl NativeRoot {
             }
             root.focus_active_terminal(window, cx);
         }
-        root.start_launch_auto_resume(window, cx);
         root.start_focus_map_listener(window, cx);
         root
     }
@@ -1143,6 +1146,7 @@ impl Render for NativeRoot {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg(not(test))]
 fn install_app_icon() {
     use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
@@ -1261,6 +1265,7 @@ fn checkpoint_window_layout(cx: &mut App) {
     save_window_layout_checkpoint(cx, false);
 }
 
+#[cfg(not(test))]
 fn checkpoint_window_layout_on_quit(cx: &mut App) {
     save_window_layout_checkpoint(cx, true);
 }
@@ -1307,6 +1312,7 @@ fn checkpoint_window_layout_deferred(cx: &mut Context<NativeRoot>) {
     cx.defer(checkpoint_window_layout);
 }
 
+#[cfg(not(test))]
 fn save_window_settings(cx: &mut App) {
     for handle in cx.windows() {
         if let Some(window) = handle.downcast::<NativeRoot>() {
@@ -1315,8 +1321,9 @@ fn save_window_settings(cx: &mut App) {
     }
 }
 
+#[cfg(not(test))]
 fn run() -> Result<()> {
-    let paths = native_paths()?;
+    let paths = runner_app::bootstrap::native_paths()?;
     if let Err(error) = runner_app::logging::install(&paths.log_dir) {
         eprintln!("Runner file logging unavailable: {error:#}");
     }
@@ -1324,19 +1331,9 @@ fn run() -> Result<()> {
         &runner_app::version::display_version(),
         &paths.app_data_dir,
     );
-    let model_runtimes = AppSettings::load(&settings_path(&paths.app_data_dir))
-        .unwrap_or_default()
-        .model_runtimes();
-    let core = boot_core(&paths, model_runtimes)?;
-    let mcp_server = match NativeMcpServer::start(&core) {
-        Ok(server) => Some(server),
-        Err(error) => {
-            eprintln!("Runner MCP listener failed to start: {error:#}");
-            None
-        }
-    };
+    let (core, connection) = runner_app::bootstrap::connect(&paths)?;
     print_startup_paths(&paths);
-    let shutdown_core = core.clone();
+    let shutdown_connection = connection.clone();
     let ui_settings_path = settings_path(&paths.app_data_dir);
 
     #[cfg(target_os = "macos")]
@@ -1365,7 +1362,7 @@ fn run() -> Result<()> {
         // Installed here, rather than in `boot_core`, so AppKit
         // registration happens on GPUI's process main thread.
         #[cfg(target_os = "macos")]
-        runner_app::bootstrap::install_wake(runner_app::bootstrap::daemon_client(core.clone()));
+        runner_app::bootstrap::install_wake(core.client.clone());
 
         let (settings, settings_error) = match AppSettings::load(&ui_settings_path) {
             Ok(settings) => (settings, None),
@@ -1420,11 +1417,11 @@ fn run() -> Result<()> {
 
         // App::shutdown clears its windows before polling the returned future, so the
         // checkpoint must run in this callback body rather than inside the future.
-        let quit_core = core.clone();
+        let quit_connection = connection.clone();
         cx.on_app_quit(move |cx| {
             save_window_settings(cx);
             checkpoint_window_layout_on_quit(cx);
-            if let Err(error) = stop_running_sessions_on_quit(&quit_core) {
+            if let Err(error) = quit_connection.shutdown() {
                 eprintln!("Runner quit session teardown failed: {error:#}");
             }
             std::future::ready(())
@@ -1534,9 +1531,7 @@ fn run() -> Result<()> {
         cx.activate(true);
     });
 
-    let shutdown_result = stop_running_sessions_on_quit(&shutdown_core);
-    drop(mcp_server);
-    shutdown_result
+    shutdown_connection.shutdown().map_err(Into::into)
 }
 
 /// Rebuilt whenever key bindings change: the macOS menu bar reads its
@@ -1608,6 +1603,7 @@ fn handle_reopen(cx: &mut App) {
     cx.activate(true);
 }
 
+#[cfg(not(test))]
 fn open_new_runner_window(initial_route: Option<String>, cx: &mut App) -> Result<String> {
     let label = if !window_label_is_open(cx, "main") {
         "main".into()
@@ -1760,6 +1756,7 @@ fn focus_other_window(label: &str, cx: &mut App) {
     }
 }
 
+#[cfg(not(test))]
 fn print_startup_paths(paths: &NativePaths) {
     eprintln!(
         "Runner: database={} logs={}",
@@ -1768,6 +1765,7 @@ fn print_startup_paths(paths: &NativePaths) {
     );
 }
 
+#[cfg(not(test))]
 fn main() {
     if let Err(error) = run() {
         eprintln!("Runner failed: {error:#}");

@@ -43,15 +43,28 @@ impl ServerHandler for RunnerMcpHandler {
     }
 }
 
-pub(crate) async fn serve_connection(stream: crate::ipc::IpcStream, state: AppCore) {
+pub(crate) async fn serve_connection(
+    stream: crate::ipc::IpcStream,
+    state: AppCore,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    struct Client(crate::AppCore);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            self.0.usage.client_disconnected();
+        }
+    }
+    state.usage.client_connected(state.clone());
+    let _client = Client(state.clone());
     let (read, write) = stream.into_split();
     let handler = RunnerMcpHandler::new(state);
     // WriteHalf needs to be wrapped in BufWriter for the
     // async-rw transport codec (it expects AsyncBufRead + AsyncWrite).
     let write = tokio::io::BufWriter::new(write);
-    match handler.serve((read, write)).await {
+    let result = tokio::select! { result = handler.serve((read, write)) => result, _ = cancel.cancelled() => return };
+    match result {
         Ok(server) => {
-            let _ = server.waiting().await;
+            tokio::select! { _ = server.waiting() => (), _ = cancel.cancelled() => () }
         }
         Err(e) => {
             log::warn!("mcp: session handshake failed: {e}");

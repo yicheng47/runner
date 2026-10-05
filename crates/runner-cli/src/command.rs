@@ -41,6 +41,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Inspect or stop the local daemon.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
     /// Check whether Runner is running.
     Status,
     /// Manage projects.
@@ -101,6 +106,12 @@ enum Command {
     },
     /// Print the command reference.
     Help { topic: Option<String> },
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonCommand {
+    Status,
+    Stop,
 }
 
 #[derive(Subcommand, Debug)]
@@ -561,6 +572,7 @@ fn output_view(command: &Command) -> output::View {
     use output::View;
 
     match command {
+        Command::Daemon { .. } => View::Generic,
         Command::Status => View::Status,
         Command::Project { command } => match command {
             ProjectCommand::List => View::ProjectList,
@@ -837,7 +849,59 @@ fn mission_arg(command: &MissionCommand) -> Option<&Option<String>> {
     }
 }
 
+fn daemon_command(command: &DaemonCommand) -> Result<ToolResponse, CliError> {
+    use runner_core::{
+        daemon_process,
+        protocol::{
+            socket::{ConnectError, SocketTransport},
+            wire::Hello,
+        },
+    };
+    let paths = daemon_process::NativePaths::resolve()
+        .map_err(|error| CliError::from(ClientError::Protocol(error.to_string())))?;
+    let endpoint =
+        runner_core::app_paths::daemon_endpoint(&paths.app_data_dir, cfg!(debug_assertions));
+    let client = SocketTransport::connect(
+        &endpoint,
+        Hello {
+            exe_sha256: String::new(),
+            client: "cli".into(),
+        },
+    )
+    .map_err(|error| {
+        CliError::from(match error {
+            ConnectError::Blocked => ClientError::Blocked,
+            ConnectError::NotRunning => ClientError::NotRunning,
+            other => ClientError::Protocol(other.to_string()),
+        })
+    })?;
+    let value = match command {
+        DaemonCommand::Status => {
+            json!({ "running": true, "pid": client.welcome.pid, "started_at": client.welcome.started_at, "exe_sha256": client.welcome.exe_sha256 })
+        }
+        DaemonCommand::Stop => {
+            let started = std::time::Instant::now();
+            client
+                .shutdown(true)
+                .map_err(|error| CliError::from(ClientError::Protocol(error.to_string())))?;
+            daemon_process::wait_unlocked(
+                &paths.app_data_dir,
+                Duration::from_secs(10).saturating_sub(started.elapsed()),
+            )
+            .map_err(|error| CliError::from(ClientError::Protocol(error.to_string())))?;
+            json!({ "stopped": true })
+        }
+    };
+    Ok(ToolResponse {
+        raw_json: value.to_string(),
+        value,
+    })
+}
+
 async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolResponse>, CliError> {
+    if let Command::Daemon { command } = &cli.command {
+        return daemon_command(command).map(Some);
+    }
     let client = SocketClient::connect().await?;
     if matches!(cli.command, Command::Status) {
         return status_response(&client, context).map(Some);
@@ -884,6 +948,7 @@ async fn run_connected(
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
     match &cli.command {
+        Command::Daemon { .. } => unreachable!(),
         Command::Status => unreachable!(),
         Command::Project { command } => run_project(client, command).await,
         Command::Role { command } => run_role(client, command).await,

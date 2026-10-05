@@ -809,45 +809,6 @@ impl NativeRoot {
         .detach();
     }
 
-    pub(crate) fn start_launch_auto_resume(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let enabled = self.settings(cx).resume_on_launch;
-        let mut direct_sizes = HashMap::new();
-        for layout in self.tabs.tabs() {
-            for leaf in layout.root.leaves() {
-                let Some(session_id) = leaf.session_id.as_deref() else {
-                    continue;
-                };
-                let size = self
-                    .attached
-                    .get(session_id)
-                    .map(|chat| chat.terminal.size())
-                    .unwrap_or_else(|| self.estimated_terminal_size(layout, &leaf.id, window, cx));
-                direct_sizes.insert(session_id.to_owned(), size);
-            }
-        }
-        let mission_size = self.estimated_mission_terminal_size(window, cx);
-        let core = self.core(cx).clone();
-        let task = cx.background_spawn(async move {
-            core.consume_resume_on_launch(enabled, direct_sizes, mission_size)
-        });
-        cx.spawn_in(window, async move |weak, cx| match task.await {
-            Ok(report) => {
-                for error in report.errors {
-                    eprintln!("Runner launch auto-resume failed: {error}");
-                }
-                if !report.resumed.is_empty() {
-                    let _ = weak.update_in(cx, |this, _, cx| {
-                        this.refresh_sessions(cx);
-                        this.refresh_store(StoreRefreshKind::All, cx);
-                        cx.notify();
-                    });
-                }
-            }
-            Err(error) => eprintln!("Runner launch auto-resume queue failed: {error:#}"),
-        })
-        .detach();
-    }
-
     pub(crate) fn enter_settings_pane(
         &mut self,
         pane: SettingsPane,
