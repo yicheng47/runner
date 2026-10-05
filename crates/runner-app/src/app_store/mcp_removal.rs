@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use runner_backend::error::{Error, Result};
-use runner_backend::ops::mcp::{self, McpClientId, McpClientStatus};
+use runner_core::protocol::ClientError as Error;
+type Result<T> = std::result::Result<T, Error>;
+use runner_core::protocol::mcp::{McpClientId, McpClientStatus};
 
 use super::AppStore;
 use crate::app_settings::AppSettings;
@@ -15,23 +16,22 @@ impl AppStore {
             return;
         };
         let bridge = self
-            .core
             .app_data_dir
             .join("bin")
-            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME);
+            .join(runner_core::protocol::command::MCP_DEST_BIN_NAME);
         let report = remove_mcp_registrations(
             &mut self.settings,
             &home,
-            || remove_registration_at(McpClientId::ClaudeCode, &home, &bridge),
-            || remove_registration_at(McpClientId::Codex, &home, &bridge),
-            || remove_registration_at(McpClientId::Trae, &home, &bridge),
-            || remove_registration_at(McpClientId::Copilot, &home, &bridge),
+            || remove_registration_at(&self.client, McpClientId::ClaudeCode, &home, &bridge),
+            || remove_registration_at(&self.client, McpClientId::Codex, &home, &bridge),
+            || remove_registration_at(&self.client, McpClientId::Trae, &home, &bridge),
+            || remove_registration_at(&self.client, McpClientId::Copilot, &home, &bridge),
         );
-        for message in report.logs {
-            eprintln!("{message}");
-        }
         if report.completed {
             self.save_settings();
+        }
+        for message in report.logs {
+            eprintln!("{message}");
         }
     }
 }
@@ -148,13 +148,14 @@ fn handle_client(
 }
 
 fn remove_registration_at(
+    daemon: &runner_core::protocol::DaemonClient,
     client: McpClientId,
     home: &Path,
     bridge: &Path,
 ) -> Result<ClientRemoval> {
     let path = client.config_path(home);
     let bridge = bridge.to_string_lossy();
-    let status = client.status_at(&path, &bridge);
+    let status = daemon.mcp_client_status(client, &path, &bridge);
     let status = match status {
         Ok(status) => status,
         Err(error) => {
@@ -174,12 +175,14 @@ fn remove_registration_at(
             configured_command(&status)
         )));
     }
-    let removed = mcp::remove_runner_entry(client, &path, &bridge).map_err(|error| {
-        Error::msg(format!(
-            "write {} while removing runner: {error}",
-            path.display()
-        ))
-    })?;
+    let removed = daemon
+        .mcp_remove_runner_entry(client, &path, &bridge)
+        .map_err(|error| {
+            Error::msg(format!(
+                "write {} while removing runner: {error}",
+                path.display()
+            ))
+        })?;
     if !removed {
         return Ok(ClientRemoval::Deferred(format!(
             "Runner MCP removal deferred for {}: runner changed before removal",
@@ -212,11 +215,12 @@ mod tests {
     #[test]
     fn removes_only_initialized_current_registration_and_records_once() {
         let temp = tempfile::tempdir().unwrap();
+        let client = crate::test_support::isolated_client(temp.path());
         let home = temp.path().join("home");
         let bridge = temp
             .path()
             .join("app/bin")
-            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME);
+            .join(runner_core::protocol::command::MCP_DEST_BIN_NAME);
         let bridge_text = bridge.to_string_lossy();
         let claude = McpClientId::ClaudeCode.config_path(&home);
         let codex = McpClientId::Codex.config_path(&home);
@@ -262,10 +266,10 @@ mod tests {
         let report = remove_mcp_registrations(
             &mut settings,
             &home,
-            || remove_registration_at(McpClientId::ClaudeCode, &home, &bridge),
-            || remove_registration_at(McpClientId::Codex, &home, &bridge),
-            || remove_registration_at(McpClientId::Trae, &home, &bridge),
-            || remove_registration_at(McpClientId::Copilot, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::ClaudeCode, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::Codex, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::Trae, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::Copilot, &home, &bridge),
         );
 
         assert!(report.completed);
@@ -317,11 +321,12 @@ mod tests {
     #[test]
     fn unparseable_config_defers_completion_and_retries() {
         let temp = tempfile::tempdir().unwrap();
+        let client = crate::test_support::isolated_client(temp.path());
         let home = temp.path().join("home");
         let bridge = temp
             .path()
             .join("app/bin")
-            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME);
+            .join(runner_core::protocol::command::MCP_DEST_BIN_NAME);
         let bridge_text = bridge.to_string_lossy();
         let trae = McpClientId::Trae.config_path(&home);
         std::fs::create_dir_all(trae.parent().unwrap()).unwrap();
@@ -336,7 +341,7 @@ mod tests {
             &home,
             || panic!("uninitialized client must not run"),
             || panic!("uninitialized client must not run"),
-            || remove_registration_at(McpClientId::Trae, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::Trae, &home, &bridge),
             || panic!("uninitialized client must not run"),
         );
         assert!(!first.completed);
@@ -361,13 +366,13 @@ mod tests {
             &home,
             || panic!("uninitialized client must not run"),
             || panic!("uninitialized client must not run"),
-            || remove_registration_at(McpClientId::Trae, &home, &bridge),
+            || remove_registration_at(&client, McpClientId::Trae, &home, &bridge),
             || panic!("uninitialized client must not run"),
         );
         assert!(second.completed);
         assert!(settings.mcp_registrations_removed);
         assert!(
-            !mcp::codex_status_at(&trae, &bridge_text)
+            !runner_backend::ops::mcp::codex_status_at(&trae, &bridge_text)
                 .unwrap()
                 .registered
         );

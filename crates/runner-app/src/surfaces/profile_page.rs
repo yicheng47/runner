@@ -622,7 +622,7 @@ where
     }
 }
 
-pub(crate) fn local_short_timestamp(timestamp: runner_backend::model::Timestamp) -> String {
+pub(crate) fn local_short_timestamp(timestamp: runner_core::protocol::model::Timestamp) -> String {
     short_timestamp(
         &timestamp.with_timezone(&chrono::Local),
         &chrono::Local::now(),

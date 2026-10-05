@@ -1,89 +1,17 @@
-use serde::{Deserialize, Serialize};
+pub use runner_core::protocol::status::Activity;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Activity {
-    Working,
-    Idle,
-    Ready,
-    #[default]
-    Unavailable,
-}
+pub use runner_core::protocol::status::ObservationSource;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ObservationSource {
-    Hook,
-    Baseline,
-    #[default]
-    Unavailable,
-}
+pub use runner_core::protocol::status::TurnOutcome;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnOutcome {
-    Completed,
-    Interrupted,
-    Failed,
-}
+pub use runner_core::protocol::status::WaitReason;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitReason {
-    Approval,
-    Answer,
-    Unknown,
-}
+pub use runner_core::protocol::status::WorkDetail;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkDetail {
-    UsingTools,
-    CompactingContext,
-}
+pub use runner_core::protocol::status::HumanInteraction;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HumanInteraction {
-    pub id: String,
-    pub reason: WaitReason,
-    pub owners: Vec<String>,
-    pub since: i64,
-}
+pub use runner_core::protocol::status::AgentObservation;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentObservation {
-    pub activity: Activity,
-    pub source: ObservationSource,
-    pub outcome: Option<TurnOutcome>,
-    pub interactions: Vec<HumanInteraction>,
-    #[serde(default)]
-    pub detail: Option<WorkDetail>,
-}
+pub use runner_core::protocol::status::Lifecycle;
 
-impl AgentObservation {
-    pub fn needs_you(&self) -> bool {
-        !self.interactions.is_empty()
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Lifecycle {
-    #[default]
-    Starting,
-    Resuming,
-    Running,
-    Stopped,
-    Error,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentStatus {
-    pub lifecycle: Lifecycle,
-    pub observation: AgentObservation,
-    pub exit_code: Option<i32>,
-    pub error_since: Option<i64>,
-    #[serde(default)]
-    pub failed_since: Option<i64>,
-    pub unread_since: Option<i64>,
-}
+pub use runner_core::protocol::status::AgentStatus;

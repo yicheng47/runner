@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathStyle {
@@ -8,7 +8,7 @@ pub enum PathStyle {
     Windows,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunnerCommandState {
     NotInstalled,
@@ -18,7 +18,7 @@ pub enum RunnerCommandState {
     Unsupported,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunnerCommandStatus {
     pub state: RunnerCommandState,
     #[serde(skip_serializing_if = "Option::is_none")]

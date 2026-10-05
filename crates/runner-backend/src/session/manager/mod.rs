@@ -445,17 +445,7 @@ pub struct WarningEvent {
     pub message: String,
 }
 
-/// Row returned to the frontend after a spawn. Subset of the DB `sessions`
-/// row with the role handle denormalized so the debug page can render
-/// `@coder`-style labels without a separate lookup.
-#[derive(Debug, Clone, Serialize)]
-pub struct SpawnedSession {
-    pub id: String,
-    pub mission_id: Option<String>,
-    pub role_id: Option<String>,
-    pub handle: String,
-    pub pid: Option<u32>,
-}
+pub use runner_core::protocol::session::SpawnedSession;
 
 struct SessionHandle {
     #[cfg(windows)]

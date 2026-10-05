@@ -1,7 +1,6 @@
 pub(crate) mod copilot_status;
 pub(crate) mod copilot_trust;
 pub(crate) mod skills;
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
 
@@ -48,50 +47,8 @@ fn copilot_conversation_exists_at(home: &Path, key: &str) -> bool {
         .is_file()
 }
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[
-        PermissionMode::Default,
-        PermissionMode::AcceptEdits,
-        PermissionMode::Bypass,
-    ],
-    strip_flags: &[
-        ("--allow-tool", true),
-        ("--yolo", false),
-        ("--allow-all", false),
-        ("--allow-all-tools", false),
-        ("--allow-all-paths", false),
-        ("--allow-all-urls", false),
-    ],
-    equals_on_bool: false,
-    variadic_flag: Some("--allow-tool"),
-    args: permission_args,
-    matches: mode_matches,
-    mission_bypass: None,
-    strip_on_mission_resume: false,
-};
-fn permission_args(mode: PermissionMode) -> Vec<String> {
-    match mode {
-        PermissionMode::AcceptEdits => strings(&["--allow-tool=write"]),
-        PermissionMode::Bypass => strings(&["--yolo"]),
-        _ => Vec::new(),
-    }
-}
-fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
-    if mode == PermissionMode::Bypass {
-        return ["--yolo", "--allow-all"]
-            .iter()
-            .any(|flag| flag_value_matches(args, flag, None));
-    }
-    let pairs: &[(&str, Option<&str>)] = match mode {
-        PermissionMode::AcceptEdits => &[("--allow-tool", Some("write"))],
-        PermissionMode::Bypass => &[("--yolo", None)],
-        _ => &[],
-    };
-    !pairs.is_empty()
-        && pairs
-            .iter()
-            .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
-}
+use runner_core::protocol::runtime_metadata::copilot::{PERMISSIONS, SKILL_DIRS};
+
 pub struct Copilot;
 impl RuntimeAdapter for Copilot {
     fn mcp(&self) -> Option<&'static McpConfig> {
@@ -107,10 +64,7 @@ impl RuntimeAdapter for Copilot {
     }
 
     fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            global_skill_toggle: true,
-            ..Default::default()
-        }
+        runner_core::protocol::runtime_metadata::copilot::capabilities()
     }
     fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
         crate::runtime_defaults::json_defaults(&settings_path(home), true)
@@ -132,61 +86,7 @@ impl RuntimeAdapter for Copilot {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        Some(RuntimeCatalog {
-            name: Runtime::Copilot,
-            display_name: Runtime::Copilot.display_name(),
-            command: Runtime::Copilot.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: false,
-            description: "GitHub Copilot CLI (requires a Copilot subscription)",
-            install_url: "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
-            default_enabled: true,
-            models: std::iter::once(default_model_option())
-                .chain(
-                    [
-                        "auto",
-                        "claude-sonnet-5",
-                        "claude-fable-5.1",
-                        "claude-fable-5",
-                        "claude-opus-5",
-                        "claude-opus-4.8",
-                        "claude-opus-4.8-fast",
-                        "claude-opus-4.7",
-                        "claude-sonnet-4.6",
-                        "claude-haiku-4.5",
-                        "gpt-5.6-sol",
-                        "gpt-5.6-terra",
-                        "gpt-5.6-luna",
-                        "gpt-5.5",
-                        "gpt-5.4",
-                        "gpt-5.4-mini",
-                        "gpt-5.3-codex",
-                        "gpt-5-mini",
-                        "mai-code-1.1-flash",
-                        "mai-code-1-flash-picker",
-                        "gemini-3.8-flash",
-                        "gemini-3.7-flash",
-                        "gemini-3.6-flash",
-                        "gemini-3.5-flash",
-                        "grok-4.5",
-                        "kimi-k3",
-                        "kimi-k2.7-code",
-                    ]
-                    .into_iter()
-                    .map(|model| plain_option(model, model)),
-                )
-                .collect(),
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .into_iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-            skills_dirs: SKILL_DIRS,
-    update_args: &["update"],
-    npm_package: Some("@github/copilot"),
-})
+        runner_core::protocol::runtime_metadata::copilot::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -304,8 +204,6 @@ pub(crate) fn settings_path(home: &Path) -> PathBuf {
     home.join(COPILOT_SETTINGS_RELATIVE_PATH)
 }
 
-const SKILL_DIRS: &[&str] = &[".copilot/skills", ".agents/skills"];
-
 static MCP: McpConfig = McpConfig {
     wire_name: "copilot",
     serialized_name: "Copilot",
@@ -316,10 +214,6 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: false,
     supports_http: true,
 };
-#[allow(non_upper_case_globals)]
-impl crate::ops::mcp::McpClientId {
-    pub const Copilot: Self = Self(Runtime::Copilot);
-}
 
 fn translate_mcp(
     definition: &crate::ops::mcp::McpServerDefinition,

@@ -4,7 +4,6 @@ pub(crate) mod models;
 pub(crate) mod skills;
 mod terminal;
 pub(crate) mod usage;
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
 #[cfg(test)]
@@ -113,59 +112,8 @@ pub(crate) fn codex_status_args(
     args
 }
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[
-        PermissionMode::Default,
-        PermissionMode::Auto,
-        PermissionMode::Bypass,
-    ],
-    strip_flags: &[("--ask-for-approval", true), ("--sandbox", true)],
-    equals_on_bool: false,
-    variadic_flag: None,
-    args: permission_args,
-    matches: mode_matches,
-    mission_bypass: Some(&[
-        "--ask-for-approval",
-        "never",
-        "--sandbox",
-        "danger-full-access",
-    ]),
-    strip_on_mission_resume: false,
-};
-fn permission_args(mode: PermissionMode) -> Vec<String> {
-    match mode {
-        PermissionMode::Auto => strings(&[
-            "--ask-for-approval",
-            "on-request",
-            "--sandbox",
-            "workspace-write",
-        ]),
-        PermissionMode::Bypass => strings(&[
-            "--ask-for-approval",
-            "never",
-            "--sandbox",
-            "workspace-write",
-        ]),
-        _ => Vec::new(),
-    }
-}
-fn mode_matches(args: &[String], mode: PermissionMode) -> bool {
-    let pairs: &[(&str, Option<&str>)] = match mode {
-        PermissionMode::Auto => &[
-            ("--ask-for-approval", Some("on-request")),
-            ("--sandbox", Some("workspace-write")),
-        ],
-        PermissionMode::Bypass => &[
-            ("--ask-for-approval", Some("never")),
-            ("--sandbox", Some("workspace-write")),
-        ],
-        _ => &[],
-    };
-    !pairs.is_empty()
-        && pairs
-            .iter()
-            .all(|&(flag, expected)| flag_value_matches(args, flag, expected))
-}
+use runner_core::protocol::runtime_metadata::codex::{PERMISSIONS, SKILL_DIRS};
+
 pub struct Codex;
 impl RuntimeAdapter for Codex {
     fn mcp(&self) -> Option<&'static McpConfig> {
@@ -189,13 +137,7 @@ impl RuntimeAdapter for Codex {
         Some(&DISCOVERY)
     }
     fn capabilities(&self) -> RuntimeCapabilities {
-        RuntimeCapabilities {
-            usage: true,
-            global_skill_toggle: true,
-            skill_toggle_requires_marker: true,
-            codex_speed: true,
-            ..Default::default()
-        }
+        runner_core::protocol::runtime_metadata::codex::capabilities()
     }
     fn native_defaults(&self, home: &Path) -> crate::runtime_defaults::RuntimeDefaults {
         crate::runtime_defaults::toml_defaults(&config_path(home))
@@ -232,70 +174,7 @@ impl RuntimeAdapter for Codex {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        let mut codex_efforts = common_efforts();
-        codex_efforts.push(option(
-            "max",
-            "Max",
-            "Maximum reasoning depth for the hardest problems.",
-        ));
-        codex_efforts.push(option(
-            "ultra",
-            "Ultra",
-            "Maximum reasoning with automatic task delegation.",
-        ));
-        Some(RuntimeCatalog {
-            name: Runtime::Codex,
-            display_name: Runtime::Codex.display_name(),
-            command: Runtime::Codex.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: true,
-            description: "OpenAI Codex CLI",
-            install_url: "https://developers.openai.com/codex/cli",
-            default_enabled: true,
-            models: vec![
-                default_model_option(),
-                option(
-                    "gpt-6-astra",
-                    "gpt-6-astra",
-                    "Our most capable model for complex, demanding work.",
-                ),
-                option(
-                    "gpt-5.6-sol",
-                    "gpt-5.6-sol",
-                    "Reliable agentic workhorse for everyday tasks.",
-                ),
-                option(
-                    "gpt-5.6-terra",
-                    "gpt-5.6-terra",
-                    "Balanced agentic coding model for everyday work.",
-                ),
-                option(
-                    "gpt-5.6-luna",
-                    "gpt-5.6-luna",
-                    "Fast and affordable agentic coding model.",
-                ),
-                option(
-                    "gpt-5.5",
-                    "gpt-5.5",
-                    "Frontier model for complex coding, research, and real-world work.",
-                ),
-                option("gpt-5.4", "gpt-5.4", "Strong model for everyday coding."),
-                option(
-                    "gpt-5.4-mini",
-                    "gpt-5.4-mini",
-                    "Small, fast, and cost-efficient model for simpler coding tasks.",
-                ),
-                option(
-                    "gpt-5.3-codex-spark",
-                    "gpt-5.3-codex-spark",
-                    "Ultra-fast coding model.",
-                ),
-            ],
-            efforts: codex_efforts,
-            skills_dirs: SKILL_DIRS,
-            update_args: &["update"],
-            npm_package: Some("@openai/codex"),
-        })
+        runner_core::protocol::runtime_metadata::codex::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -412,8 +291,6 @@ static USAGE: UsageSource = UsageSource {
     fetch: |command, env, _denied| usage::fetch_codex(command, env),
 };
 
-const SKILL_DIRS: &[&str] = &[".agents/skills", ".codex/skills"];
-
 static MCP: McpConfig = McpConfig {
     wire_name: "codex",
     serialized_name: "Codex",
@@ -424,7 +301,3 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: false,
     supports_http: true,
 };
-#[allow(non_upper_case_globals)]
-impl crate::ops::mcp::McpClientId {
-    pub const Codex: Self = Self(Runtime::Codex);
-}

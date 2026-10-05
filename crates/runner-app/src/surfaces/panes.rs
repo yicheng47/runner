@@ -6,7 +6,7 @@ use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 use runner_app::ui::{
     ButtonVariant, Modal, OverlayWidth, SessionControlVariant, SessionOverlay, SessionOverlayKind,
 };
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 
 use crate::chat_icon::runtime_mark;
 use crate::surfaces::chat_lifecycle::{
@@ -1744,7 +1744,7 @@ impl NativeRoot {
                             exit_code,
                             &default_session_label(&entry),
                             entry.cwd.as_deref(),
-                            runner_backend::app_paths::home_dir()
+                            runner_core::app_paths::home_dir()
                                 .as_deref()
                                 .and_then(|home| home.to_str()),
                         ),
@@ -2281,7 +2281,7 @@ impl NativeRoot {
                                         exit_code,
                                         &default_session_label(entry),
                                         entry.cwd.as_deref(),
-                                        runner_backend::app_paths::home_dir()
+                                        runner_core::app_paths::home_dir()
                                             .as_deref()
                                             .and_then(|home| home.to_str()),
                                     ),
@@ -2837,7 +2837,7 @@ struct ChatPanelActions {
 
 fn chat_panel_content(
     detail: &DirectSessionEntry,
-    role: Option<&runner_backend::model::Role>,
+    role: Option<&runner_core::protocol::model::Role>,
     width: f32,
     session_key_copy: Entity<CopyValueButton>,
     actions: ChatPanelActions,
@@ -3004,7 +3004,7 @@ fn chat_panel_content(
 
 fn chat_panel_setup(
     detail: &DirectSessionEntry,
-    role: Option<&runner_backend::model::Role>,
+    role: Option<&runner_core::protocol::model::Role>,
     column: f32,
 ) -> AnyElement {
     let identity_width = column - 40. - 12.;
@@ -3194,8 +3194,8 @@ mod tests {
     use crate::keymap;
     use gpui::{point, px, size, AppContext, Bounds};
     use runner_app::pane_layout::{DropSide, PaneLayout, SplitOrientation};
-    use runner_backend::model::SessionStatus;
-    use runner_backend::ops::session::DirectSessionEntry;
+    use runner_core::protocol::model::SessionStatus;
+    use runner_core::protocol::session::DirectSessionEntry;
 
     fn direct_session(runtime: &str, native_fork: bool, forkable: bool) -> DirectSessionEntry {
         DirectSessionEntry {
@@ -3223,8 +3223,8 @@ mod tests {
         }
     }
 
-    fn panel_role() -> runner_backend::model::Role {
-        runner_backend::model::Role {
+    fn panel_role() -> runner_core::protocol::model::Role {
+        runner_core::protocol::model::Role {
             id: "role-architect".into(),
             handle: "architect".into(),
             display_name: "Architect".into(),
@@ -3244,7 +3244,7 @@ mod tests {
 
     struct ChatPanel {
         detail: DirectSessionEntry,
-        role: Option<runner_backend::model::Role>,
+        role: Option<runner_core::protocol::model::Role>,
         width: f32,
         copy: gpui::Entity<runner_app::ui::CopyValueButton>,
     }
@@ -3280,7 +3280,7 @@ mod tests {
 
     fn panel_harness(
         detail: DirectSessionEntry,
-        role: Option<runner_backend::model::Role>,
+        role: Option<runner_core::protocol::model::Role>,
         width: f32,
     ) -> (gpui::TestAppContext, gpui::VisualTestContext) {
         let mut cx = gpui::TestAppContext::single();

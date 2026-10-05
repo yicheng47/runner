@@ -250,7 +250,7 @@ impl AgentUpdateDialog {
     /// Spawns the update command. Kept out of `new` so a dialog can be built
     /// without running anything.
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).update_host.0.clone();
         let size = initial_grid(&terminal_style_for(&self.app_store.read(cx).settings));
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -373,7 +373,7 @@ impl AgentUpdateDialog {
             "runtime update exited: runtime={} exit_code={exit_code:?}",
             self.request.runtime
         );
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).update_host.0.clone();
         let runtime = self.request.runtime;
         let probe = cx.background_spawn(async move {
             let version = runner_backend::ops::runtime::runtime_probe_version(&core, runtime);
@@ -744,6 +744,14 @@ impl NativeRoot {
     }
 }
 
+pub(crate) struct UpdateHost(pub(crate) AppCore);
+
+impl UpdateHost {
+    pub(crate) fn new(host: runner_app::bootstrap::ClientHost) -> Self {
+        Self(host.terminal_core().clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,33 +848,22 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{
-            db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-        };
+        use runner_backend::{db, session, shell_path};
         use std::sync::RwLock;
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
-            app_data_dir: path.into(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
+            path.into(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         cx.new(|cx| {
             AppStore::new(
                 core,

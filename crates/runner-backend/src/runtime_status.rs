@@ -1,5 +1,9 @@
 use crate::model::Runtime;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use crate::shell_path::DiscoveryOutcome;
+use std::path::Path;
+#[cfg(all(test, unix))]
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use crate::db::{self, DbPool, LoginShellEnvLkg};
@@ -7,8 +11,7 @@ use crate::error::{Error, Result};
 use crate::events::EventChannel;
 
 use crate::session::launch;
-use crate::shell_path::{DiscoveryOutcome, DiscoveryResult, DiscoveryState, LoginShellEnv};
-use serde::Serialize;
+use crate::shell_path::{DiscoveryResult, DiscoveryState, LoginShellEnv};
 
 pub(crate) mod models;
 pub(crate) mod versions;
@@ -16,13 +19,7 @@ pub(crate) mod versions;
 pub type SharedShellEnv = Arc<RwLock<LoginShellEnv>>;
 pub type SharedDiscoveryState = Arc<RwLock<DiscoveryState>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeCommandSource {
-    Override,
-    Detected,
-    Catalog,
-}
+pub use runner_core::protocol::runtime::RuntimeCommandSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveRuntimeCommand {
@@ -30,66 +27,15 @@ pub struct EffectiveRuntimeCommand {
     pub source: RuntimeCommandSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeRowState {
-    Detected,
-    Override,
-    NotFound,
-    Checking,
-    ProbeTimedOut,
-    InvalidOverride,
-}
+pub use runner_core::protocol::runtime::RuntimeRowState;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ShellDiscoveryStatus {
-    pub shell: Option<String>,
-    pub outcome: Option<DiscoveryOutcome>,
-    pub duration_ms: Option<u64>,
-    pub checking: bool,
-    pub using_last_known_good: bool,
-    pub last_known_good_captured_at: Option<String>,
-}
+pub use runner_core::protocol::runtime::ShellDiscoveryStatus;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RuntimeExecutableStatus {
-    pub name: Runtime,
-    pub display_name: String,
-    pub command: String,
-    pub default_model: Option<String>,
-    pub default_effort: Option<String>,
-    pub detected_path: Option<String>,
-    pub override_path: Option<String>,
-    pub effective_command: Option<String>,
-    pub effective_source: Option<RuntimeCommandSource>,
-    pub state: RuntimeRowState,
-    pub invalid_reason: Option<String>,
-    /// First semver token of `<effective command> --version`, once probed.
-    pub installed_version: Option<String>,
-    /// npm's latest version when it is newer than `installed_version` and
-    /// the runtime can update itself; its presence shows the Update button.
-    pub available_version: Option<String>,
-}
+pub use runner_core::protocol::runtime::RuntimeExecutableStatus;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RuntimeStatusResponse {
-    pub shell: ShellDiscoveryStatus,
-    pub runtimes: Vec<RuntimeExecutableStatus>,
-}
+pub use runner_core::protocol::runtime::RuntimeStatusResponse;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct OverrideValidationError {
-    pub code: String,
-    pub message: String,
-}
-
-impl std::fmt::Display for OverrideValidationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for OverrideValidationError {}
+pub use runner_core::protocol::runtime::OverrideValidationError;
 
 pub fn status_list(
     pool: &DbPool,
@@ -292,41 +238,13 @@ pub fn validate_override(
     validate_executable_path(Path::new(path))
 }
 
-fn validate_executable_path(path: &Path) -> std::result::Result<(), OverrideValidationError> {
-    if !path.is_absolute() {
-        return Err(validation_error(
-            "not_absolute",
-            "Choose an absolute executable path.",
-        ));
-    }
-    let metadata = std::fs::metadata(path)
-        .map_err(|_| validation_error("not_found", "File does not exist."))?;
-    if !metadata.is_file() {
-        return Err(validation_error("not_file", "Not a regular file."));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(validation_error(
-                "not_executable",
-                "Not an executable file.",
-            ));
-        }
-    }
-    Ok(())
-}
+use runner_core::protocol::runtime_paths::validate_executable_path;
 
 pub(crate) fn executable_path_is_valid(path: &Path) -> bool {
     validate_executable_path(path).is_ok()
 }
 
-fn validation_error(code: &str, message: impl Into<String>) -> OverrideValidationError {
-    OverrideValidationError {
-        code: code.to_string(),
-        message: message.into(),
-    }
-}
+use runner_core::protocol::runtime_paths::validation_error;
 
 pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
     let process_path = std::env::var("PATH").ok();
@@ -340,41 +258,7 @@ pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
     )
 }
 
-pub fn find_executable(command: &str, path: &str) -> Option<PathBuf> {
-    #[cfg(windows)]
-    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    for entry in std::env::split_paths(path).filter(|entry| !entry.as_os_str().is_empty()) {
-        #[cfg(windows)]
-        for extension in extensions
-            .split(';')
-            .filter(|extension| !extension.is_empty())
-        {
-            let candidate = entry.join(format!("{command}{extension}"));
-            if validate_executable_path(&candidate).is_ok() {
-                return Some(candidate);
-            }
-        }
-        #[cfg(windows)]
-        if !Path::new(command)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                extensions.split(';').any(|suffix| {
-                    suffix
-                        .strip_prefix('.')
-                        .is_some_and(|suffix| extension.eq_ignore_ascii_case(suffix))
-                })
-            })
-        {
-            continue;
-        }
-        let candidate = entry.join(command);
-        if validate_executable_path(&candidate).is_ok() {
-            return Some(candidate);
-        }
-    }
-    None
-}
+pub use runner_core::protocol::runtime_paths::find_executable;
 
 pub fn apply_discovery_result(
     pool: &DbPool,

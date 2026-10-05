@@ -4,7 +4,7 @@ use gpui::{
     MouseButton, SharedString, Window,
 };
 use runner_app::ui::{RoleAvatar, Tooltip};
-use runner_backend::model::{Event, EventKind};
+use runner_core::protocol::model::{Event, EventKind};
 
 use super::*;
 use crate::surfaces::mission_feed::{message_target, message_text, FeedBlock};
@@ -27,14 +27,14 @@ impl MissionWorkspace {
                     .map(|terminal| terminal.title())
             })
             .and_then(|title| {
-                runner_backend::session::title::provider_title(
+                runner_core::protocol::session_title::provider_title(
                     &title,
                     session.session.cwd.as_deref(),
                 )
             })
             .or_else(|| {
                 session.live_title.as_deref().and_then(|title| {
-                    runner_backend::session::title::provider_title(
+                    runner_core::protocol::session_title::provider_title(
                         title,
                         session.session.cwd.as_deref(),
                     )
@@ -134,8 +134,8 @@ impl MissionWorkspace {
                                 .child(format!("@{}", session.handle)),
                         )
                         .when(
-                            !runner_backend::model::Runtime::parse(&session.runtime)
-                                .is_some_and(runner_backend::model::Runtime::is_shell),
+                            !runner_core::protocol::model::Runtime::parse(&session.runtime)
+                                .is_some_and(runner_core::protocol::model::Runtime::is_shell),
                             |tab| {
                                 tab.child(rollup.render(SharedString::from(format!(
                                     "mission-tab-status-{session_id}"
@@ -854,19 +854,15 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let post_question = question_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_signal_impl(
-                &core,
-                runner_backend::ops::mission::PostSignalInput {
-                    mission_id,
-                    from: None,
-                    signal_type: "human_response".into(),
-                    payload: serde_json::json!({
-                        "question_id": post_question,
-                        "choice": choice,
-                    }),
-                },
-            )
-            .await
+            core.mission_signal_impl(runner_core::protocol::mission::PostSignalInput {
+                mission_id,
+                from: None,
+                signal_type: "human_response".into(),
+                payload: serde_json::json!({
+                    "question_id": post_question,
+                    "choice": choice,
+                }),
+            })
             .map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {

@@ -4,8 +4,8 @@ use gpui::{
 };
 use runner_app::ui::button::spinner;
 use runner_app::ui::menu::popup_layer;
-use runner_backend::model::Runtime;
-use runner_backend::usage::{
+use runner_core::protocol::model::Runtime;
+use runner_core::protocol::usage::{
     AgentUsage, RefreshReason, UnavailableReason, UsageSnapshot, UsageWindow,
 };
 
@@ -86,21 +86,18 @@ pub(crate) fn terminal_style_for(
 }
 
 /// Agents whose npm `latest` is newer than the installed version.
-pub(crate) fn agents_with_updates(core: &AppCore) -> Vec<Runtime> {
-    runner_backend::runtime_status::status_list(
-        &core.db,
-        &core.runtime_shell_env,
-        &core.runtime_discovery,
-    )
-    .map(|status| {
-        status
-            .runtimes
-            .into_iter()
-            .filter(|runtime| runtime.available_version.is_some())
-            .map(|runtime| runtime.name)
-            .collect()
-    })
-    .unwrap_or_default()
+pub(crate) fn agents_with_updates(core: &DaemonClient) -> Vec<Runtime> {
+    core.runtime_status_list()
+        .ok()
+        .map(|status| {
+            status
+                .runtimes
+                .into_iter()
+                .filter(|runtime| runtime.available_version.is_some())
+                .map(|runtime| runtime.name)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The Agent settings gear carries a dot while any enabled agent has an
@@ -112,35 +109,32 @@ pub(crate) fn update_dot_visible(
     updates.iter().any(|runtime| {
         settings.is_agent_enabled(
             *runtime,
-            runner_backend::ops::runtime::runtime_default_enabled(*runtime),
+            runner_core::protocol::runtime_metadata::runtime_default_enabled(*runtime),
         )
     })
 }
 
-pub(crate) fn usage_installed(core: &AppCore) -> Vec<Runtime> {
-    runner_backend::runtime_status::status_list(
-        &core.db,
-        &core.runtime_shell_env,
-        &core.runtime_discovery,
-    )
-    .map(|status| {
-        status
-            .runtimes
-            .into_iter()
-            .filter(|runtime| {
-                crate::runtime_ui::catalog_capabilities(&[], runtime.name.key()).usage
-                    && matches!(
-                        runtime.effective_source,
-                        Some(
-                            runner_backend::runtime_status::RuntimeCommandSource::Detected
-                                | runner_backend::runtime_status::RuntimeCommandSource::Override
+pub(crate) fn usage_installed(core: &DaemonClient) -> Vec<Runtime> {
+    core.runtime_status_list()
+        .ok()
+        .map(|status| {
+            status
+                .runtimes
+                .into_iter()
+                .filter(|runtime| {
+                    crate::runtime_ui::catalog_capabilities(&[], runtime.name.key()).usage
+                        && matches!(
+                            runtime.effective_source,
+                            Some(
+                                runner_core::protocol::RuntimeCommandSource::Detected
+                                    | runner_core::protocol::RuntimeCommandSource::Override
+                            )
                         )
-                    )
-            })
-            .map(|runtime| runtime.name)
-            .collect()
-    })
-    .unwrap_or_default()
+                })
+                .map(|runtime| runtime.name)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,7 +522,7 @@ pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 
 impl NativeRoot {
     fn render_usage_popover(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let snapshot = self.core(cx).usage.snapshot();
+        let snapshot = self.app_store.read(cx).usage.clone();
         let now = chrono::Utc::now();
         let updated = snapshot
             .runtimes
@@ -561,8 +555,7 @@ impl NativeRoot {
                     .hover(|button| button.bg(theme::sidebar_selected()))
                     .on_click(cx.listener(|this, _, _, cx| {
                         let core = this.core(cx).clone();
-                        core.usage
-                            .request_refresh(core.clone(), RefreshReason::Button);
+                        let _ = core.usage_refresh(RefreshReason::Button);
                         cx.notify();
                     }))
             })
@@ -1020,7 +1013,7 @@ impl NativeRoot {
         let show_usage = !visible_usage_runtimes.is_empty() && !self.sidebar_collapsed;
         let anchor_owner = cx.entity();
         let usage_pill = show_usage.then(|| {
-            let snapshot = self.core(cx).usage.snapshot();
+            let snapshot = self.app_store.read(cx).usage.clone();
             let trigger = usage_pill_element(
                 &snapshot,
                 &visible_usage_runtimes,
@@ -1034,9 +1027,8 @@ impl NativeRoot {
                 this.usage_open = !this.usage_open;
                 if this.usage_open {
                     let core = this.core(cx).clone();
-                    core.usage
-                        .request_refresh(core.clone(), RefreshReason::Open);
-                    runner_backend::ops::runtime::runtime_check_updates(&core, false);
+                    let _ = core.usage_refresh(RefreshReason::Open);
+                    let _ = this.core(cx).runtime_check_updates(false);
                 }
                 cx.notify();
             }));
@@ -1593,7 +1585,9 @@ impl NativeRoot {
             return;
         }
         self.note_window_state(window);
-        if let Err(error) = window_state::save(&self.core(cx).app_data_dir, self.window_state) {
+        if let Err(error) =
+            window_state::save(&self.app_store.read(cx).app_data_dir, self.window_state)
+        {
             eprintln!("Runner window-state save failed: {error:#}");
         }
     }
@@ -1822,21 +1816,21 @@ mod tests {
                 runtimes: [
                     (
                         Runtime::ClaudeCode,
-                        runner_backend::usage::RuntimeUsage {
+                        runner_core::protocol::usage::RuntimeUsage {
                             value: Some(usage("Week")),
                             ..Default::default()
                         },
                     ),
                     (
                         Runtime::Codex,
-                        runner_backend::usage::RuntimeUsage {
+                        runner_core::protocol::usage::RuntimeUsage {
                             value: Some(usage("Week")),
                             ..Default::default()
                         },
                     ),
                     (
                         Runtime::Antigravity,
-                        runner_backend::usage::RuntimeUsage {
+                        runner_core::protocol::usage::RuntimeUsage {
                             value: Some(usage("Gemini Models · Week used")),
                             ..Default::default()
                         },
@@ -2008,7 +2002,7 @@ mod tests {
             &settings
         ));
         let copilot_default =
-            runner_backend::ops::runtime::runtime_default_enabled(Runtime::Copilot);
+            runner_core::protocol::runtime_metadata::runtime_default_enabled(Runtime::Copilot);
         assert_eq!(
             update_dot_visible(&[Runtime::Copilot], &settings),
             copilot_default
@@ -2047,7 +2041,7 @@ mod tests {
             runtimes: [
                 (
                     Runtime::ClaudeCode,
-                    runner_backend::usage::RuntimeUsage {
+                    runner_core::protocol::usage::RuntimeUsage {
                         value: Some(AgentUsage {
                             windows: vec![
                                 UsageWindow {
@@ -2068,7 +2062,7 @@ mod tests {
                 ),
                 (
                     Runtime::Antigravity,
-                    runner_backend::usage::RuntimeUsage {
+                    runner_core::protocol::usage::RuntimeUsage {
                         value: Some(AgentUsage {
                             windows: vec![
                                 UsageWindow {
@@ -2176,8 +2170,8 @@ mod tests {
     fn sidebar_resize_bar_rides_the_divider() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{px, size, TestAppContext, VisualTestContext};
-        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-        use std::sync::{Arc, Mutex, RwLock};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::{Arc, RwLock};
 
         let _theme = ThemeGuard::new();
         theme::set_active_variant(theme::ThemeVariant::Carbon);
@@ -2185,26 +2179,17 @@ mod tests {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
-            app_data_dir: temp.path().to_owned(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            temp.path().to_owned(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         let mut cx = TestAppContext::single();
         let store = cx.new(|cx| {
             AppStore::new(

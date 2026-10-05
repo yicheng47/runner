@@ -1,16 +1,13 @@
 use std::path::PathBuf;
 
-use runner_backend::agent_skill;
-use runner_backend::cli_install::NoUserPathRegistry;
-#[cfg(target_os = "macos")]
-use runner_backend::cli_install::OsascriptEscalation;
-use runner_backend::cli_install::{
-    self, CommandActionOutcome, CommandEscalation, CommandInstallInputs, CommandPlatform,
-    NoEscalation, RunnerCommandStatus, UserPathRegistry,
-};
-
 use super::AppStore;
 use crate::app_settings::AppSettings;
+#[cfg(test)]
+use runner_backend::cli_install::{CommandEscalation, UserPathRegistry};
+use runner_core::protocol::agent_skill;
+use runner_core::protocol::command::{
+    CommandActionOutcome, CommandInstallInputs, CommandPlatform, RunnerCommandStatus,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UserCommandAction {
@@ -65,15 +62,23 @@ impl AppStore {
                     .as_ref()
                     .expect("command inputs require support")
                     .integration;
-                let result = with_command_registry(integration, |registry| {
-                    let mut escalation = NoEscalation;
-                    initialize_command_default_with(
-                        &mut self.settings,
-                        Some(&inputs),
-                        registry,
-                        &mut escalation,
-                    )
-                });
+                let result = self
+                    .client
+                    .command_install_default(&inputs, integration.system)
+                    .map(|outcome| {
+                        if matches!(
+                            outcome,
+                            CommandActionOutcome::Installed(_)
+                                | CommandActionOutcome::AlreadyInstalled(_)
+                                | CommandActionOutcome::Foreign(_)
+                                | CommandActionOutcome::Unsupported
+                        ) {
+                            self.settings.initialized_command_install = true;
+                            true
+                        } else {
+                            false
+                        }
+                    });
                 match result {
                     Ok(true) => self.save_settings(),
                     Ok(false) => {}
@@ -97,7 +102,7 @@ impl AppStore {
         let platform = CommandPlatform::Unix;
 
         let login_path = if platform == CommandPlatform::Unix {
-            let discovery = self.core.runtime_discovery.read().ok()?;
+            let discovery = self.client.discovery_snapshot().ok()?;
             if require_finished_discovery
                 && !matches!(
                     discovery.result.as_ref(),
@@ -111,12 +116,12 @@ impl AppStore {
                 .result
                 .as_ref()
                 .and_then(|result| result.env.path.clone())
-                .or_else(|| self.core.runtime_shell_env.read().ok()?.path.clone())
+                .or_else(|| discovery.shell_env.path.clone())
                 .unwrap_or_default()
         } else {
             std::env::var("PATH").unwrap_or_default()
         };
-        let sidecar = agent_skill::sidecar_path(&self.core.app_data_dir);
+        let sidecar = agent_skill::sidecar_path(&self.app_data_dir);
         let local_bin = home.join(".local/bin");
         let system_bin = support.system_bin.clone();
         Some(CommandInstallInputs {
@@ -126,7 +131,10 @@ impl AppStore {
             sidecar,
             local_bin,
             system_bin: system_bin.clone(),
-            system_bin_writable: cli_install::directory_writable(&system_bin),
+            system_bin_writable: self
+                .client
+                .command_directory_writable(&system_bin)
+                .unwrap_or(false),
             debug,
             platform,
         })
@@ -144,16 +152,8 @@ impl AppStore {
             .as_ref()
             .expect("command inputs require support")
             .integration;
-        let force_escalated = cli_install::force_escalated_command_install();
-        let result = with_command_registry(integration, |registry| {
-            let status = cli_install::command_status(&inputs, registry)?;
-            let requires_escalation = inputs.platform == CommandPlatform::Unix
-                && (force_escalated
-                    || cli_install::default_command_target(&inputs, registry)?.is_none());
-            let target =
-                cli_install::explicit_command_target_path(&inputs, registry, force_escalated)?;
-            Ok::<_, runner_backend::error::Error>((status, requires_escalation, target))
-        });
+
+        let result = self.client.command_status(&inputs, integration.system);
         match result {
             Ok((status, requires_escalation, target)) => {
                 self.runner_command_status = Some(status);
@@ -163,7 +163,9 @@ impl AppStore {
             Err(error) => eprintln!("Runner command status failed: {error}"),
         }
     }
+}
 
+impl super::AppStore {
     pub(crate) fn runner_command_status(&self) -> Option<&RunnerCommandStatus> {
         self.runner_command_status.as_ref()
     }
@@ -184,67 +186,21 @@ impl AppStore {
 }
 
 pub(crate) fn run_user_command_action(
+    client: &runner_core::protocol::DaemonClient,
     inputs: &CommandInstallInputs,
     action: UserCommandAction,
     integration: CommandInstallIntegration,
-) -> runner_backend::error::Result<CommandActionOutcome> {
-    with_command_registry(integration, |registry| {
-        with_command_escalation(integration, |escalation| match action {
-            UserCommandAction::Install => cli_install::install_command_explicit(
-                inputs,
-                registry,
-                escalation,
-                cli_install::force_escalated_command_install(),
-            ),
-            UserCommandAction::Uninstall => {
-                cli_install::uninstall_command(inputs, registry, escalation)
-            }
-        })
-    })
+) -> Result<CommandActionOutcome, runner_core::protocol::ClientError> {
+    client.command_action(
+        inputs,
+        action == UserCommandAction::Install,
+        integration.system,
+    )
 }
 
-fn with_command_registry<T>(
-    integration: CommandInstallIntegration,
-    action: impl FnOnce(&mut dyn UserPathRegistry) -> T,
-) -> T {
-    if integration.system {
-        #[cfg(windows)]
-        {
-            let mut registry = cli_install::SystemUserPathRegistry;
-            action(&mut registry)
-        }
-        #[cfg(not(windows))]
-        {
-            let mut registry = NoUserPathRegistry;
-            action(&mut registry)
-        }
-    } else {
-        let mut registry = NoUserPathRegistry;
-        action(&mut registry)
-    }
-}
-
-fn with_command_escalation<T>(
-    integration: CommandInstallIntegration,
-    action: impl FnOnce(&mut dyn CommandEscalation) -> T,
-) -> T {
-    if integration.system {
-        #[cfg(target_os = "macos")]
-        {
-            let mut escalation = OsascriptEscalation;
-            action(&mut escalation)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let mut escalation = NoEscalation;
-            action(&mut escalation)
-        }
-    } else {
-        let mut escalation = NoEscalation;
-        action(&mut escalation)
-    }
-}
-
+#[cfg(test)]
+#[cfg(test)]
+#[cfg(test)]
 fn initialize_command_default_with(
     settings: &mut AppSettings,
     inputs: Option<&CommandInstallInputs>,
@@ -257,7 +213,8 @@ fn initialize_command_default_with(
     let Some(inputs) = inputs else {
         return Ok(false);
     };
-    let outcome = cli_install::install_command_default(inputs, registry, escalation)?;
+    let outcome =
+        runner_backend::cli_install::install_command_default(inputs, registry, escalation)?;
     if matches!(
         outcome,
         CommandActionOutcome::Installed(_)
@@ -275,41 +232,32 @@ fn initialize_command_default_with(
 mod tests {
     use super::*;
     #[cfg(unix)]
+    use crate::app_store::AppStore;
+    #[cfg(unix)]
     use gpui::{AppContext as _, TestAppContext};
     use runner_backend::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
+    use runner_backend::{db, session, shell_path, AppCore};
     #[cfg(unix)]
-    use runner_backend::shell_path::DiscoveryOutcome;
-    use runner_backend::{
-        db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-    };
+    use runner_core::protocol::discovery::DiscoveryOutcome;
     use std::path::Path;
-    use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::{Arc, RwLock};
 
     #[cfg_attr(not(unix), allow(dead_code))]
     fn test_core(temp: &Path, app_data_dir: PathBuf) -> AppCore {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        AppCore {
-            db: Arc::new(db::open_pool(&temp.join("runner.db")).unwrap()),
+        crate::test_support::core(
+            Arc::new(db::open_pool(&temp.join("runner.db")).unwrap()),
             app_data_dir,
-            sessions: session::SessionManager::new(
+            session::SessionManager::new(
                 Arc::clone(&runtime_shell_env),
                 Arc::clone(&runtime_discovery),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        }
+        )
     }
 
     #[derive(Default)]
@@ -562,7 +510,8 @@ mod tests {
         let mut escalation = FakeEscalation::default();
 
         assert!(matches!(
-            cli_install::uninstall_command(&inputs, &mut registry, &mut escalation).unwrap(),
+            runner_backend::cli_install::uninstall_command(&inputs, &mut registry, &mut escalation)
+                .unwrap(),
             CommandActionOutcome::Removed(_)
         ));
         assert!(!initialize_command_default_with(

@@ -3,8 +3,8 @@
 //! split resizing.
 use super::*;
 use crate::*;
-use runner_backend::model::Runtime;
-use runner_backend::ops::project::ProjectScope;
+use runner_core::protocol::model::Runtime;
+use runner_core::protocol::project::ProjectScope;
 
 pub(super) fn tab_is_terminal(
     layout: &PaneLayout,
@@ -180,8 +180,7 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let backend_source_session_id = source_session_id.clone();
         let fork = cx.background_spawn(async move {
-            runner_backend::ops::session::session_fork(
-                &core,
+            core.session_fork(
                 &backend_source_session_id,
                 title,
                 Some(INITIAL_COLS),
@@ -250,7 +249,7 @@ impl NativeRoot {
 
     pub(crate) fn handle_chat_lifecycle_event(
         &mut self,
-        event: runner_backend::events::AppEvent,
+        event: runner_core::protocol::ClientEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -271,7 +270,7 @@ impl NativeRoot {
         {
             self.mark_active_tab_viewed(window, cx);
         }
-        match event.name {
+        match event.name.as_str() {
             "session/exit" => {
                 if let Some(session_id) = session_id {
                     let exit_code = event
@@ -401,10 +400,7 @@ impl NativeRoot {
         let Some(session_id) = selected else {
             return;
         };
-        self.active_chat_detail =
-            runner_backend::ops::session::session_get(self.core(cx), &session_id)
-                .ok()
-                .flatten();
+        self.active_chat_detail = self.core(cx).session_get(&session_id).ok().flatten();
         let session_key = self
             .active_chat_detail
             .as_ref()
@@ -420,7 +416,16 @@ impl NativeRoot {
             .as_ref()
             .map(|entry| entry.session_id.as_str());
         if active.as_deref() != loaded {
-            self.sync_active_chat_detail(cx);
+            self.active_chat_detail = active
+                .as_ref()
+                .and_then(|id| self.app_store.read(cx).session_details.get(id))
+                .cloned();
+            let key = self
+                .active_chat_detail
+                .as_ref()
+                .and_then(|detail| detail.agent_session_key.clone());
+            self.session_key_copy
+                .update(cx, |copy, cx| copy.set_value(key, cx));
         }
     }
 
@@ -545,7 +550,7 @@ impl NativeRoot {
         let target = session_id.to_owned();
         let stop_target = target.clone();
         let stop = cx.background_spawn(async move {
-            runner_backend::ops::session::session_kill(&core, &stop_target)
+            core.session_kill(&stop_target)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -680,7 +685,7 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let target = session_id.clone();
         let pin = cx.background_spawn(async move {
-            runner_backend::ops::session::session_pin(&core, &target, next)
+            core.session_pin(&target, next)
                 .map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {
@@ -824,12 +829,9 @@ impl NativeRoot {
         let rename = cx.background_spawn(async move {
             match target {
                 ChatRenameTarget::Session { session_id, .. } => {
-                    runner_backend::ops::session::session_rename(&core, &session_id, Some(next))
-                        .map(drop)
+                    core.session_rename(&session_id, Some(next)).map(drop)
                 }
-                ChatRenameTarget::Tab { tab_id, .. } => {
-                    runner_backend::ops::node::node_rename(&core, tab_id, next).map(drop)
-                }
+                ChatRenameTarget::Tab { tab_id, .. } => core.node_rename(tab_id, next).map(drop),
             }
             .map_err(|error| error.to_string())
         });
@@ -908,8 +910,7 @@ impl NativeRoot {
         let result = match change {
             PaneRenameChange::Unchanged => Ok(()),
             PaneRenameChange::Persist(title) => {
-                runner_backend::ops::session::session_rename(self.core(cx), &session_id, title)
-                    .map(drop)
+                self.core(cx).session_rename(&session_id, title).map(drop)
             }
         };
         match result {
@@ -1031,7 +1032,7 @@ impl NativeRoot {
             && !self.chat_transitions.contains_key(session_id);
         let core = self.core(cx);
         if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
-            runner_backend::ops::session::session_take_resume_on_launch(core, session_id)
+            core.session_take_resume_on_launch(session_id)
         })? {
             self.resume_drawer_shell_on_launch(session_id, window, cx);
         }
@@ -1473,10 +1474,11 @@ impl NativeRoot {
             return;
         }
         let item = cx.read_from_clipboard();
-        let Some(paste) = runner_app::terminal_paste::resolve_terminal_paste(
-            item.as_ref(),
-            runner_backend::ops::session::session_clipboard_file_paths,
-        ) else {
+        let Some(paste) = runner_app::terminal_paste::resolve_terminal_paste(item.as_ref(), || {
+            self.core(cx)
+                .session_clipboard_file_paths()
+                .unwrap_or_default()
+        }) else {
             return;
         };
         match paste {
@@ -1488,12 +1490,14 @@ impl NativeRoot {
                 else {
                     return;
                 };
+                let client = self.core(cx).clone();
                 let paste = cx.background_spawn(async move {
-                    runner_backend::ops::session::session_paste_image(
-                        image.bytes,
-                        image.format.mime_type(),
-                    )?;
-                    terminal.write_user_bytes(b"\x16")
+                    client
+                        .session_paste_image(image.bytes, image.format.mime_type())
+                        .map_err(|error| error.to_string())?;
+                    terminal
+                        .write_user_bytes(b"\x16")
+                        .map_err(|error| error.to_string())
                 });
                 cx.spawn(async move |weak, cx| {
                     let result = paste.await;
@@ -1557,14 +1561,9 @@ impl NativeRoot {
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
-            runner_backend::ops::session::session_resume(
-                &core,
-                &resume_target,
-                Some(size.0),
-                Some(size.1),
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
+            core.session_resume(&resume_target, Some(size.0), Some(size.1))
+                .map(drop)
+                .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = resume.await;
@@ -1647,19 +1646,9 @@ impl NativeRoot {
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
             if launch_claim {
-                runner_backend::ops::session::session_resume_on_launch(
-                    &core,
-                    &resume_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
+                core.session_resume_on_launch(&resume_target, Some(size.0), Some(size.1))
             } else {
-                runner_backend::ops::session::session_resume(
-                    &core,
-                    &resume_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
+                core.session_resume(&resume_target, Some(size.0), Some(size.1))
             }
             .map(drop)
             .map_err(|error| error.to_string())
@@ -1873,7 +1862,7 @@ impl NativeRoot {
             .active()
             .context("active tab is missing")?
             .upsert_input()?;
-        runner_backend::ops::node::node_tab_upsert(self.core(cx), input)?;
+        self.core(cx).node_tab_upsert(input)?;
         Ok(())
     }
 
@@ -1940,7 +1929,7 @@ impl NativeRoot {
         let close_target = target.clone();
         let pane_id = pane_id.to_owned();
         let close = cx.background_spawn(async move {
-            runner_backend::ops::session::session_close(&core, &close_target)
+            core.session_close(&close_target)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -1978,7 +1967,7 @@ impl NativeRoot {
         let target = session_id.to_owned();
         let close_target = target.clone();
         let close = cx.background_spawn(async move {
-            runner_backend::ops::session::session_close(&core, &close_target)
+            core.session_close(&close_target)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -2025,10 +2014,10 @@ impl NativeRoot {
         if self.tabs.active_tab_id().is_none() {
             return;
         }
-        match runner_backend::ops::session::session_shell_has_foreground_process(
-            self.core(cx),
-            session_id,
-        ) {
+        match self
+            .core(cx)
+            .session_shell_has_foreground_process(session_id)
+        {
             Ok(true) => {
                 TerminalCloseConfirm::open(
                     &mut self.terminal_close_confirm,
@@ -2055,10 +2044,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match runner_backend::ops::session::session_shell_has_foreground_process(
-            self.core(cx),
-            session_id,
-        ) {
+        match self
+            .core(cx)
+            .session_shell_has_foreground_process(session_id)
+        {
             Ok(true) => {
                 TerminalCloseConfirm::open(
                     &mut self.terminal_close_confirm,
@@ -2137,7 +2126,9 @@ impl NativeRoot {
             }
             (TabCloseBehavior::DeleteEmptyTab, _) => {
                 self.prepare_tab_close(&[], cx);
-                let result = runner_backend::ops::node::node_tab_delete(self.core(cx), &tab_id)
+                let result = self
+                    .core(cx)
+                    .node_tab_delete(&tab_id)
                     .map_err(anyhow::Error::from)
                     .and_then(|_| self.reload_tabs(cx))
                     .and_then(|_| self.ensure_active_tab_attached(window, cx));
@@ -2196,10 +2187,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match runner_backend::ops::session::session_shell_has_foreground_process(
-            self.core(cx),
-            session_id,
-        ) {
+        match self
+            .core(cx)
+            .session_shell_has_foreground_process(session_id)
+        {
             Ok(true) => {
                 self.tabs.activate(tab_id);
                 self.set_route(AppRoute::Chat, cx);
@@ -2239,7 +2230,7 @@ impl NativeRoot {
         let target = session_id.to_owned();
         let close_target = target.clone();
         let close = cx.background_spawn(async move {
-            runner_backend::ops::session::session_close(&core, &close_target)
+            core.session_close(&close_target)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -2441,8 +2432,8 @@ mod tests {
     };
     use crate::{PendingPaneClose, TerminalCloseTarget};
     use runner_app::pane_layout::{PaneLayout, SplitOrientation};
-    use runner_backend::model::{Runtime, SessionStatus};
-    use runner_backend::ops::session::DirectSessionEntry;
+    use runner_core::protocol::model::{Runtime, SessionStatus};
+    use runner_core::protocol::session::DirectSessionEntry;
     use std::collections::HashMap;
 
     #[test]

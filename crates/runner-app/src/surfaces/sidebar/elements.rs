@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::path::Path;
 
 use super::*;
@@ -452,9 +452,9 @@ pub(super) fn attention_indicator(attention: AttentionState) -> AnyElement {
 
 pub(crate) fn direct_chat_display_status(
     session: &DirectSessionEntry,
-    status: Option<&runner_backend::session::status::AgentStatus>,
+    status: Option<&runner_core::protocol::status::AgentStatus>,
 ) -> runner_app::ui::agent_status::StatusPresentation {
-    use runner_backend::session::status::{AgentStatus, Lifecycle};
+    use runner_core::protocol::status::{AgentStatus, Lifecycle};
     let mut status = status.cloned().unwrap_or(AgentStatus {
         lifecycle: Lifecycle::Running,
         ..Default::default()

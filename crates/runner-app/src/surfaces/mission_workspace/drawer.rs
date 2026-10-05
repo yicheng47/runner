@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{App, DragMoveEvent, Window};
-use runner_backend::model::SessionStatus;
-use runner_backend::ops::project::ProjectScope;
+use runner_core::protocol::model::SessionStatus;
+use runner_core::protocol::project::ProjectScope;
 
 use super::*;
 use crate::*;
@@ -112,15 +112,14 @@ impl MissionWorkspace {
             mission.cwd.as_deref(),
             project_cwd,
             &self.settings(cx).default_working_dir,
-            runner_backend::app_paths::home_dir()
+            runner_core::app_paths::home_dir()
                 .as_deref()
                 .and_then(|home| home.to_str()),
         );
         let size = self.estimated_mission_drawer_terminal_size(window, cx);
         let mut spawned_id = None;
         let result = (|| -> Result<String> {
-            let spawned = runner_backend::ops::session::session_start_shell_in(
-                self.core(cx),
+            let spawned = self.core(cx).session_start_shell_in(
                 ProjectScope::or_root(mission.project_id),
                 cwd,
                 Some(size.0),
@@ -152,7 +151,7 @@ impl MissionWorkspace {
             }
             Err(error) => {
                 if let Some(session_id) = spawned_id {
-                    let _ = runner_backend::ops::session::session_close(self.core(cx), &session_id);
+                    let _ = self.core(cx).session_close(&session_id);
                 }
                 self.layout = original;
                 let _ = self.persist_mission_layout(cx);
@@ -210,19 +209,9 @@ impl MissionWorkspace {
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
             if launch_claim {
-                runner_backend::ops::session::session_resume_on_launch(
-                    &core,
-                    &resume_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
+                core.session_resume_on_launch(&resume_target, Some(size.0), Some(size.1))
             } else {
-                runner_backend::ops::session::session_resume(
-                    &core,
-                    &resume_target,
-                    Some(size.0),
-                    Some(size.1),
-                )
+                core.session_resume(&resume_target, Some(size.0), Some(size.1))
             }
             .map(drop)
             .map_err(|error| error.to_string())
@@ -271,7 +260,7 @@ impl MissionWorkspace {
         let target = session_id.to_owned();
         let close_target = target.clone();
         let close = cx.background_spawn(async move {
-            runner_backend::ops::session::session_close(&core, &close_target)
+            core.session_close(&close_target)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -312,10 +301,10 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match runner_backend::ops::session::session_shell_has_foreground_process(
-            self.core(cx),
-            session_id,
-        ) {
+        match self
+            .core(cx)
+            .session_shell_has_foreground_process(session_id)
+        {
             Ok(true) => {
                 if let Some(shell) = self.shell.upgrade() {
                     let session_id = session_id.to_owned();

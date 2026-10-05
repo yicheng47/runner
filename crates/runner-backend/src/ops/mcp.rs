@@ -5,155 +5,11 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct McpClientStatus {
-    pub registered: bool,
-    pub matches_current: bool,
-    pub command: Option<String>,
-    pub args: Vec<String>,
-}
+pub use runner_core::protocol::mcp::McpClientStatus;
 
-impl McpClientStatus {
-    fn empty() -> Self {
-        Self {
-            registered: false,
-            matches_current: false,
-            command: None,
-            args: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct McpClientId(pub(crate) crate::model::Runtime);
-
-impl McpClientId {
-    pub fn parse(raw: &str) -> Result<Self> {
-        Self::all().into_iter().find(|client| client.key() == raw).ok_or_else(|| Error::msg(format!(
-            "unknown MCP client: {raw:?} (expected codex, claude_code, antigravity, copilot, or trae)"
-        )))
-    }
-
-    pub fn all() -> Vec<Self> {
-        crate::model::Runtime::ALL
-            .into_iter()
-            .filter_map(Self::for_runtime)
-            .collect()
-    }
-
-    pub fn config(self) -> &'static crate::runtimes::McpConfig {
-        crate::runtimes::adapter(self.0)
-            .mcp()
-            .expect("an MCP client has config support")
-    }
-}
-
-impl std::fmt::Debug for McpClientId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.config().serialized_name)
-    }
-}
-
-impl PartialOrd for McpClientId {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for McpClientId {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.config().order.cmp(&other.config().order)
-    }
-}
-impl Serialize for McpClientId {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_unit_variant(
-            "McpClientId",
-            self.config().order.into(),
-            self.config().serialized_name,
-        )
-    }
-}
-fn serialized_names() -> &'static [&'static str] {
-    static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
-    NAMES.get_or_init(|| {
-        let mut clients = McpClientId::all();
-        clients.sort();
-        clients
-            .into_iter()
-            .map(|client| client.config().serialized_name)
-            .collect()
-    })
-}
-impl<'de> Deserialize<'de> for McpClientId {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        struct Variant;
-        impl<'de> serde::de::Visitor<'de> for Variant {
-            type Value = McpClientId;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("variant identifier")
-            }
-            fn visit_str<E: serde::de::Error>(
-                self,
-                value: &str,
-            ) -> std::result::Result<Self::Value, E> {
-                McpClientId::all()
-                    .into_iter()
-                    .find(|client| client.config().serialized_name == value)
-                    .ok_or_else(|| E::unknown_variant(value, serialized_names()))
-            }
-            fn visit_u64<E: serde::de::Error>(
-                self,
-                value: u64,
-            ) -> std::result::Result<Self::Value, E> {
-                McpClientId::all()
-                    .into_iter()
-                    .find(|client| u64::from(client.config().order) == value)
-                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Unsigned(value), &self))
-            }
-            fn visit_bytes<E: serde::de::Error>(
-                self,
-                value: &[u8],
-            ) -> std::result::Result<Self::Value, E> {
-                match std::str::from_utf8(value) {
-                    Ok(value) => self.visit_str(value),
-                    Err(_) => Err(E::invalid_value(serde::de::Unexpected::Bytes(value), &self)),
-                }
-            }
-        }
-        struct Identifier(McpClientId);
-        impl<'de> Deserialize<'de> for Identifier {
-            fn deserialize<D: serde::Deserializer<'de>>(
-                deserializer: D,
-            ) -> std::result::Result<Self, D::Error> {
-                deserializer.deserialize_identifier(Variant).map(Self)
-            }
-        }
-        struct Client;
-        impl<'de> serde::de::Visitor<'de> for Client {
-            type Value = McpClientId;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("string or map")
-            }
-            fn visit_enum<A: serde::de::EnumAccess<'de>>(
-                self,
-                data: A,
-            ) -> std::result::Result<Self::Value, A::Error> {
-                let (client, variant) = data.variant::<Identifier>()?;
-                serde::de::VariantAccess::unit_variant(variant)?;
-                Ok(client.0)
-            }
-        }
-        deserializer.deserialize_enum("McpClientId", serialized_names(), Client)
-    }
-}
+pub use runner_core::protocol::mcp::McpClientId;
 
 fn args_match_current(args: &[String]) -> bool {
     args.is_empty()
@@ -257,192 +113,13 @@ pub fn remove_runner_entry(client: McpClientId, path: &Path, binary_path: &str) 
     Ok(true)
 }
 
-impl McpClientId {
-    pub fn key(self) -> &'static str {
-        self.config().wire_name
-    }
-    pub fn for_runtime(runtime: crate::model::Runtime) -> Option<Self> {
-        crate::runtimes::adapter(runtime)
-            .mcp()
-            .map(|_| Self(runtime))
-    }
-    pub fn runtime(self) -> crate::model::Runtime {
-        self.0
-    }
-    pub fn label(self) -> &'static str {
-        self.0.display_name()
-    }
-    pub fn config_file(self) -> &'static str {
-        self.config().config_file
-    }
-    pub fn status_at(self, path: &Path, binary_path: &str) -> Result<McpClientStatus> {
-        if self.is_json() {
-            claude_code_status_at(path, binary_path)
-        } else {
-            codex_status_at(path, binary_path)
-        }
-    }
-    pub fn entry_key(self, name: &str) -> String {
-        format!(
-            "{}.{name}",
-            if self.is_json() {
-                "mcpServers"
-            } else {
-                "mcp_servers"
-            }
-        )
-    }
+pub use runner_core::protocol::mcp::McpServerDefinition;
 
-    pub fn config_path(self, home: &Path) -> PathBuf {
-        home.join(self.config_file().trim_start_matches("~/"))
-    }
-    pub fn is_json(self) -> bool {
-        self.config().format == crate::runtimes::McpFormat::Json
-    }
-}
+pub use runner_core::protocol::mcp::McpServerClientEntry;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum McpServerDefinition {
-    Stdio {
-        command: String,
-        args: Vec<String>,
-        env: BTreeMap<String, String>,
-    },
-    Http {
-        url: String,
-        headers: BTreeMap<String, String>,
-    },
-}
+pub use runner_core::protocol::mcp::McpServerEntry;
 
-impl McpServerDefinition {
-    pub fn from_claude(value: &serde_json::Value) -> Option<Self> {
-        let kind = value.get("type").and_then(serde_json::Value::as_str);
-        if !matches!(kind, None | Some("stdio" | "local" | "http")) {
-            return None;
-        }
-        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
-            match value.get(key) {
-                None => Some(BTreeMap::new()),
-                Some(v) => v
-                    .as_object()?
-                    .iter()
-                    .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
-                    .collect(),
-            }
-        };
-        if kind != Some("http") {
-            if let Some(command) = value.get("command").and_then(serde_json::Value::as_str) {
-                let args = match value.get("args") {
-                    None => Vec::new(),
-                    Some(v) => v
-                        .as_array()?
-                        .iter()
-                        .map(|a| a.as_str().map(str::to_owned))
-                        .collect::<Option<_>>()?,
-                };
-                return Some(Self::Stdio {
-                    command: command.into(),
-                    args,
-                    env: strings("env")?,
-                });
-            }
-        }
-        if kind == Some("stdio") {
-            return None;
-        }
-        Some(Self::Http {
-            url: value.get("url")?.as_str()?.into(),
-            headers: strings("headers")?,
-        })
-    }
-
-    pub fn from_toml(table: &toml_edit::Table) -> Option<Self> {
-        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
-            match table.get(key) {
-                None => Some(BTreeMap::new()),
-                Some(v) => v
-                    .as_table_like()?
-                    .iter()
-                    .map(|(k, v)| Some((k.into(), v.as_str()?.into())))
-                    .collect(),
-            }
-        };
-        if let Some(command) = table.get("command").and_then(toml_edit::Item::as_str) {
-            let args = match table.get("args") {
-                None => Vec::new(),
-                Some(v) => v
-                    .as_array()?
-                    .iter()
-                    .map(|a| a.as_str().map(str::to_owned))
-                    .collect::<Option<_>>()?,
-            };
-            return Some(Self::Stdio {
-                command: command.into(),
-                args,
-                env: strings("env")?,
-            });
-        }
-        Some(Self::Http {
-            url: table.get("url")?.as_str()?.into(),
-            headers: strings("http_headers")?,
-        })
-    }
-
-    pub fn to_claude(&self) -> serde_json::Value {
-        match self {
-            Self::Stdio { command, args, env } => {
-                json!({"type": "stdio", "command": command, "args": args, "env": env})
-            }
-            Self::Http { url, headers } => json!({"type": "http", "url": url, "headers": headers}),
-        }
-    }
-
-    pub fn write_toml(&self, table: &mut toml_edit::Table) {
-        let map = |values: &BTreeMap<String, String>| {
-            let mut result = toml_edit::InlineTable::new();
-            for (key, value) in values {
-                result.insert(key, value.as_str().into());
-            }
-            toml_edit::value(result)
-        };
-        match self {
-            Self::Stdio { command, args, env } => {
-                table.remove("url");
-                table.remove("http_headers");
-                table["command"] = toml_edit::value(command);
-                table["args"] = toml_edit::value(args.iter().collect::<toml_edit::Array>());
-                table["env"] = map(env);
-            }
-            Self::Http { url, headers } => {
-                for key in ["command", "args", "env"] {
-                    table.remove(key);
-                }
-                table["url"] = toml_edit::value(url);
-                table["http_headers"] = map(headers);
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct McpServerClientEntry {
-    pub registered: bool,
-    pub native_text: String,
-    pub definition: Option<McpServerDefinition>,
-    pub conflicting: bool,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServerEntry {
-    pub name: String,
-    pub clients: BTreeMap<McpClientId, McpServerClientEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpCatalog {
-    pub servers: Vec<McpServerEntry>,
-}
+pub use runner_core::protocol::mcp::McpCatalog;
 
 #[derive(Clone)]
 pub enum NativeEntry {
@@ -1998,4 +1675,85 @@ fn codex_write_at(path: &Path) -> Result<()> {
 #[cfg(test)]
 fn copilot_write_at(path: &Path) -> Result<()> {
     write_entry_at(path, McpClientId::Copilot, "runner", None, false)
+}
+pub trait McpDefinitionExt: Sized {
+    fn from_toml(table: &toml_edit::Table) -> Option<Self>;
+    fn write_toml(&self, table: &mut toml_edit::Table);
+}
+impl McpDefinitionExt for McpServerDefinition {
+    fn from_toml(table: &toml_edit::Table) -> Option<Self> {
+        let strings = |key: &str| -> Option<BTreeMap<String, String>> {
+            match table.get(key) {
+                None => Some(BTreeMap::new()),
+                Some(v) => v
+                    .as_table_like()?
+                    .iter()
+                    .map(|(k, v)| Some((k.into(), v.as_str()?.into())))
+                    .collect(),
+            }
+        };
+        if let Some(command) = table.get("command").and_then(toml_edit::Item::as_str) {
+            let args = match table.get("args") {
+                None => Vec::new(),
+                Some(v) => v
+                    .as_array()?
+                    .iter()
+                    .map(|a| a.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()?,
+            };
+            return Some(Self::Stdio {
+                command: command.into(),
+                args,
+                env: strings("env")?,
+            });
+        }
+        Some(Self::Http {
+            url: table.get("url")?.as_str()?.into(),
+            headers: strings("http_headers")?,
+        })
+    }
+    fn write_toml(&self, table: &mut toml_edit::Table) {
+        let map = |values: &BTreeMap<String, String>| {
+            let mut result = toml_edit::InlineTable::new();
+            for (key, value) in values {
+                result.insert(key, value.as_str().into());
+            }
+            toml_edit::value(result)
+        };
+        match self {
+            Self::Stdio { command, args, env } => {
+                table.remove("url");
+                table.remove("http_headers");
+                table["command"] = toml_edit::value(command);
+                table["args"] = toml_edit::value(args.iter().collect::<toml_edit::Array>());
+                table["env"] = map(env);
+            }
+            Self::Http { url, headers } => {
+                for key in ["command", "args", "env"] {
+                    table.remove(key);
+                }
+                table["url"] = toml_edit::value(url);
+                table["http_headers"] = map(headers);
+            }
+        }
+    }
+}
+
+pub trait McpClientExt {
+    fn config(self) -> &'static crate::runtimes::McpConfig;
+    fn status_at(self, path: &Path, binary_path: &str) -> Result<McpClientStatus>;
+}
+impl McpClientExt for McpClientId {
+    fn config(self) -> &'static crate::runtimes::McpConfig {
+        crate::runtimes::adapter(self.runtime())
+            .mcp()
+            .expect("an MCP client has config support")
+    }
+    fn status_at(self, path: &Path, binary_path: &str) -> Result<McpClientStatus> {
+        if self.is_json() {
+            claude_code_status_at(path, binary_path)
+        } else {
+            codex_status_at(path, binary_path)
+        }
+    }
 }

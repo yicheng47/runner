@@ -1,73 +1,16 @@
 use crate::model::Runtime;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-
-use serde::Serialize;
 
 use crate::error::{Error, Result};
 use crate::runtime_status::{OverrideValidationError, RuntimeCommandSource, RuntimeStatusResponse};
 use crate::AppCore;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct RuntimeDefinition {
-    pub name: Runtime,
-    pub display_name: String,
-    pub command: String,
-    pub native_fork: bool,
-}
+pub use runner_core::protocol::runtime::RuntimeDefinition;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct RuntimeCatalogOption {
-    pub value: String,
-    pub label: String,
-    pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub supported_efforts: Option<Vec<String>>,
-}
+pub use runner_core::protocol::runtime::RuntimeCatalogOption;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RuntimeCatalogEntry {
-    pub name: Runtime,
-    pub display_name: String,
-    pub command: String,
-    pub native_fork: bool,
-    #[serde(skip)]
-    pub capabilities: crate::runtimes::RuntimeCapabilities,
-    pub description: String,
-    pub install_url: String,
-    pub default_enabled: bool,
-    pub available: bool,
-    pub default_model: Option<String>,
-    pub default_effort: Option<String>,
-    pub models: Vec<RuntimeCatalogOption>,
-    pub efforts: Vec<RuntimeCatalogOption>,
-}
-
-impl RuntimeCatalogEntry {
-    pub fn for_runtime(runtime: Runtime) -> Option<Self> {
-        crate::runtimes::adapter(runtime)
-            .catalog()
-            .map(|catalog| catalog.into_entry())
-    }
-
-    pub fn efforts_for_model(&self, model: &str) -> Vec<RuntimeCatalogOption> {
-        let model = model.trim();
-        let supported = self
-            .models
-            .iter()
-            .find(|entry| entry.value == model)
-            .and_then(|entry| entry.supported_efforts.as_ref());
-        self.efforts
-            .iter()
-            .filter(|effort| {
-                effort.value.is_empty()
-                    || (!model.is_empty()
-                        && supported.is_none_or(|levels| levels.contains(&effort.value)))
-            })
-            .cloned()
-            .collect()
-    }
-}
+pub use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 pub fn runtime_list() -> Vec<RuntimeDefinition> {
     crate::runtimes::catalogs()
@@ -359,24 +302,7 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
         .collect())
 }
 
-pub fn filter_selectable_runtime_catalog(
-    catalog: Vec<RuntimeCatalogEntry>,
-    enabled_agents: Option<&[String]>,
-) -> Vec<RuntimeCatalogEntry> {
-    let enabled_agents: Option<HashSet<&str>> =
-        enabled_agents.map(|agents| agents.iter().map(String::as_str).collect());
-    catalog
-        .into_iter()
-        .filter(|runtime| {
-            let enabled = enabled_agents
-                .as_ref()
-                .map_or(runtime.default_enabled, |agents| {
-                    agents.contains(runtime.name.key())
-                });
-            enabled && runtime.available
-        })
-        .collect()
-}
+pub use runner_core::protocol::runtime::filter_selectable_runtime_catalog;
 
 use crate::runtimes::catalog::default_model_option;
 

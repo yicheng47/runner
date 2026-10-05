@@ -41,8 +41,7 @@ impl NativeRoot {
             .iter()
             .map(|slot| slot.slot.slot_handle.clone())
             .collect::<HashSet<_>>();
-        let runtimes =
-            runner_backend::ops::runtime::runtime_catalog(self.core(cx)).unwrap_or_default();
+        let runtimes = self.core(cx).runtime_catalog().unwrap_or_default();
         let query = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", "Search roles...", false)
                 .text_size(theme::text_body())
@@ -138,7 +137,7 @@ impl NativeRoot {
         let crew_id = form.crew_id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::role::role_list_with_activity(&core, 1, 1_000_000, "")
+            core.role_list_with_activity(1, 1_000_000, "")
                 .map(|page| page.items)
                 .map_err(|error| error.to_string())
         });
@@ -285,7 +284,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn refresh_add_slot_runtimes(&mut self, cx: &mut Context<Self>) {
-        let Ok(catalog) = runner_backend::ops::runtime::runtime_catalog(self.core(cx)) else {
+        let Ok(catalog) = self.core(cx).runtime_catalog() else {
             return;
         };
         let Some(form) = self.crew_surfaces.add_slot.as_mut() else {
@@ -356,18 +355,18 @@ impl NativeRoot {
         form.submitting = true;
         form.error = None;
         let crew_id = form.crew_id.clone();
-        let input = runner_backend::ops::slot::CreateSlotInput {
+        let input = runner_core::protocol::slot::CreateSlotInput {
             crew_id: crew_id.clone(),
             role_id,
             slot_handle: handle,
-            runtime_override: runner_backend::model::Runtime::parse(&form.runtime_override),
+            runtime_override: runner_core::protocol::model::Runtime::parse(&form.runtime_override),
             model_override: (!form.runtime_override.is_empty())
                 .then(|| trimmed_option(form.model_override.read(cx).text()))
                 .flatten(),
         };
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::slot::slot_create(&core, input).map_err(|error| error.to_string())
+            core.slot_create(input).map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;

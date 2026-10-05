@@ -1,8 +1,8 @@
 use crate::theme;
 use gpui::Hsla;
-use runner_backend::model::Runtime;
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
-use runner_backend::runtimes::RuntimeCapabilities;
+use runner_core::protocol::model::Runtime;
+use runner_core::protocol::runtime::RuntimeCapabilities;
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 pub(crate) struct RuntimeUi {
     pub icon: &'static str,

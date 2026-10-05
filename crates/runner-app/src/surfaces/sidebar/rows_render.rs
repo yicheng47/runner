@@ -20,8 +20,8 @@ use crate::surfaces::*;
 use crate::*;
 use gpui::{svg, DragMoveEvent};
 use runner_app::ui::Tooltip;
-use runner_backend::ops::mission::MissionSummary;
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_core::protocol::mission::MissionSummary;
+use runner_core::protocol::node::{NodeRow, NodeType};
 
 pub(super) fn project_header_icon(collapsed: bool) -> ChatIcon {
     ChatIcon::generic(if collapsed {
@@ -335,7 +335,7 @@ impl Sidebar {
     pub(super) fn render_project(
         &self,
         node: NodeRow,
-        project: runner_backend::repo::project::ProjectRow,
+        project: runner_core::protocol::project::ProjectRow,
         nested: Vec<SidebarRow>,
         attention: AttentionState,
         visible_projects: Vec<String>,

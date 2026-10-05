@@ -18,35 +18,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 
-/// What a window is currently looking at. Granularity is mission-id /
-/// session-id, not full URL — two windows on the same mission but different
-/// inner tabs are still "looking at the same mission" (spec decision 1).
-///
-/// Serialized adjacently-tagged as
-/// `{ "type": "Mission", "value": "<id>" }` so the shape survives in
-/// persisted window state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value")]
-pub enum Subject {
-    Mission(String),
-    DirectChat(String),
-}
+pub use runner_core::protocol::window::Subject;
 
-/// One window's row in the registry. `focused_at` is the tiebreak that
-/// decides primary ownership: among windows holding the same subject, the
-/// largest `focused_at` wins. `subjects` is every subject the window has on
-/// screen — one for a single-pane surface, one per pane in a split tab.
-#[derive(Debug, Clone, Serialize)]
-pub struct WindowEntry {
-    pub label: String,
-    pub subjects: Vec<Subject>,
-    #[serde(skip)]
-    pub viewed_session_id: Option<String>,
-    pub focused_at: DateTime<Utc>,
-    pub focused: bool,
-}
+pub use runner_core::protocol::window::WindowEntry;
 
 /// `Mutex<HashMap<label, WindowEntry>>`, mirroring the shape used by the
 /// other in-memory registries in this crate (`BusRegistry`, `RouterRegistry`).
