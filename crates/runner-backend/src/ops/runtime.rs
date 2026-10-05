@@ -152,7 +152,7 @@ pub fn runtime_update_spawn_spec(
 }
 
 /// Starts the update PTY `runtime_update_spawn_spec` described. It is not a
-/// session: `events` alone hears its output and exit.
+/// listed session; its terminal is attached by id.
 pub fn runtime_update_start(
     state: &AppCore,
     spec: crate::session::runtime::SpawnSpec,
@@ -327,6 +327,53 @@ fn persistence_error(error: Error) -> OverrideValidationError {
         code: "persistence_failed".into(),
         message: error.to_string(),
     }
+}
+
+pub fn runtime_update_prepare(
+    state: &AppCore,
+    runtime: Runtime,
+    size: (u16, u16),
+) -> Result<runner_core::protocol::terminal::RuntimeUpdateCommand> {
+    let spec = runtime_update_spawn_spec(state, runtime, size)?;
+    let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(state.session_events());
+    state
+        .sessions
+        .prepare_unlisted_terminal(&spec.session_id, size, &state.db, &events)?;
+    Ok(runner_core::protocol::terminal::RuntimeUpdateCommand {
+        session_id: spec.session_id,
+        command: spec.command,
+        args: spec.args,
+        cwd: spec.cwd,
+        env: spec.env,
+        shell_path: spec.shell_path,
+        size,
+    })
+}
+
+pub fn runtime_update_run(
+    state: &AppCore,
+    command: runner_core::protocol::terminal::RuntimeUpdateCommand,
+) -> Result<()> {
+    let spec = crate::session::runtime::SpawnSpec {
+        agent_runtime: None,
+        pending_turn: None,
+        session_id: command.session_id,
+        cwd: command.cwd,
+        command: command.command,
+        args: command.args,
+        env: command.env,
+        mission: false,
+        shim_dir: None,
+        bundled_bin_dir: None,
+        shell_path: command.shell_path,
+        initial_size: Some(command.size),
+    };
+    let id = spec.session_id.clone();
+    let result = runtime_update_start(state, spec, Arc::new(state.session_events()));
+    if result.is_err() {
+        state.sessions.discard_unlisted_terminal(&id);
+    }
+    result
 }
 
 #[cfg(test)]

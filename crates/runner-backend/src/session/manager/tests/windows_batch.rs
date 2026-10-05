@@ -31,11 +31,11 @@ fn assert_windows_batch_first_turn(mode: &str) {
         .insert("RUNNER_BATCH_PROMPT_MODE".into(), mode.into());
     let pool = pool_with_schema();
     insert_crew_role(&pool, "batch-prompt", &role.id);
-    let events = capture();
     let mgr = manager_with_runtime(
         Default::default(),
         Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
     );
+    let events = capture_for(&mgr);
     let spawned = mgr
         .spawn_direct(
             &role,
@@ -52,11 +52,6 @@ fn assert_windows_batch_first_turn(mode: &str) {
             Some("first line\nsecond line".into()),
         )
         .unwrap();
-    // The ConPTY host asks the terminal for the cursor position and
-    // device attributes as soon as it starts and holds the client for
-    // seconds when nothing answers. The app's terminal answers these;
-    // this test has no terminal, so it stands in for one (#524).
-    let mut host_handshake_answered = false;
     let deadline = Instant::now() + Duration::from_secs(15);
     let output = loop {
         let bytes = events
@@ -66,10 +61,6 @@ fn assert_windows_batch_first_turn(mode: &str) {
             .iter()
             .flat_map(|event| event.bytes.iter().copied())
             .collect::<Vec<_>>();
-        if !host_handshake_answered && bytes.windows(4).any(|w| w == b"\x1b[6n") {
-            mgr.inject_stdin(&spawned.id, b"\x1b[1;1R\x1b[?6c").unwrap();
-            host_handshake_answered = true;
-        }
         let output = String::from_utf8_lossy(&bytes).into_owned();
         if output.contains("BATCH_INPUT_FIRST=first line")
             && output.contains("BATCH_INPUT_SECOND=second line")

@@ -11,7 +11,7 @@ use runner_backend::session::pty_runtime::PtyRuntime;
 use runner_backend::session::SessionManager;
 use runner_backend::AppCore;
 use runner_terminal::replay::visible_lines;
-use runner_terminal::terminal::{TerminalBridge, TerminalSession};
+use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 #[derive(Default)]
 struct StopSessions(Vec<(Arc<SessionManager>, String)>);
@@ -59,11 +59,11 @@ fn transcript(home: &Path, key: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn grid_text(terminal: &TerminalSession) -> String {
+fn grid_text(terminal: &TerminalMirror) -> String {
     visible_lines(&*terminal.term.lock()).join("\n")
 }
 
-fn wait_for_turn(terminal: &TerminalSession, home: &Path, key: &str, expected: &str) {
+fn wait_for_turn(terminal: &TerminalMirror, home: &Path, key: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let events = transcript(home, key);
@@ -131,7 +131,11 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
         },
     )
     .unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("You are the Runner smoke agent. Reply with exactly RUNNER_COPILOT_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
     let key = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
@@ -150,7 +154,11 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
 
     // A new manager is the backend relaunch boundary; the app itself is not restarted.
     let relaunched = core_at(core.app_data_dir.clone(), db.clone());
-    let resumed_bridge = TerminalBridge::new(relaunched.clone(), Arc::new(|| {})).unwrap();
+    let resumed_bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(relaunched.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     relaunched
         .sessions
         .resume(
@@ -246,7 +254,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
         .unwrap()
         .agent_session_key
         .unwrap();
-    let terminal = resumed_bridge.session(&spawned.id).unwrap();
+    let terminal = resumed_bridge.attach(&spawned.id).unwrap();
     let _view = terminal.view();
     wait_for_turn(&terminal, &home, &mission_key, "RUNNER_COPILOT_MISSION_OK");
     let raw_config = std::fs::read_to_string(home.join("config.json")).unwrap();

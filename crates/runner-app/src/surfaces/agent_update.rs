@@ -15,10 +15,8 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::button::spinner;
 use runner_app::ui::{Button, ButtonSize, ButtonVariant, Scrollbar};
 use runner_app::{Copy, Paste};
-use runner_backend::model::Runtime;
-use runner_backend::session::manager::{ExitEvent, OutputEvent, SessionEvents};
-use runner_backend::AppCore;
-use runner_terminal::terminal::{TerminalSession, TerminalView};
+use runner_core::protocol::{ClientEvent, DaemonClient, Runtime};
+use runner_terminal::terminal::{TerminalMirror, TerminalView};
 
 use crate::app_settings::{self, AppSettings};
 use crate::app_store::AppStore;
@@ -47,8 +45,7 @@ pub(crate) struct AgentUpdateRequest {
 
 impl AgentUpdateRequest {
     fn command_label(&self) -> String {
-        let args = runner_backend::runtimes::adapter(self.runtime)
-            .catalog()
+        let args = runner_core::protocol::runtime_metadata::catalog_for(self.runtime)
             .map(|definition| definition.update_args.join(" "))
             .unwrap_or_default();
         format!("{} {args}", self.command).trim().to_owned()
@@ -90,13 +87,18 @@ struct Footer {
     button: Option<&'static str>,
 }
 
-fn footer(phase: &Phase, waiting: bool, request: &AgentUpdateRequest) -> Footer {
+fn footer(
+    phase: &Phase,
+    waiting: bool,
+    request: &AgentUpdateRequest,
+    input_error: Option<&str>,
+) -> Footer {
     let line = |text: String, tone| Footer {
         lines: vec![(text, tone)],
         busy: false,
         button: None,
     };
-    match phase {
+    let mut footer = match phase {
         Phase::Starting => Footer {
             busy: true,
             ..line(
@@ -149,7 +151,13 @@ fn footer(phase: &Phase, waiting: bool, request: &AgentUpdateRequest) -> Footer 
             button: Some("Close"),
             ..line(message.clone(), FooterTone::Danger)
         },
+    };
+    if *phase == Phase::Running {
+        if let Some(error) = input_error {
+            footer.lines.push((error.to_owned(), FooterTone::Danger));
+        }
     }
+    footer
 }
 
 fn exit_message(exit_code: Option<i32>) -> String {
@@ -179,29 +187,8 @@ fn initial_grid(style: &TerminalStyle) -> (u16, u16) {
     )
 }
 
-/// Hears the unlisted PTY: output feeds the modal's terminal and nothing
-/// else, and the exit code waits for the modal's next tick.
-struct UpdateTerminalEvents {
-    terminal: Arc<TerminalSession>,
-    exit: Arc<Mutex<Option<Option<i32>>>>,
-    waker: Arc<dyn Fn() + Send + Sync>,
-}
-
-impl SessionEvents for UpdateTerminalEvents {
-    fn output(&self, event: &OutputEvent) {
-        if let Err(error) = self.terminal.feed_output(event) {
-            tracing::warn!("feed agent update terminal failed: {error}");
-        }
-    }
-
-    fn exit(&self, event: &ExitEvent) {
-        *self.exit.lock().unwrap() = Some(event.exit_code);
-        (self.waker)();
-    }
-}
-
 struct UpdateTerminal {
-    terminal: Arc<TerminalSession>,
+    terminal: Arc<TerminalMirror>,
     _view: TerminalView,
     interaction: Entity<TerminalInteraction>,
     input: Entity<TerminalInput>,
@@ -216,6 +203,7 @@ pub(crate) struct AgentUpdateDialog {
     waiting: bool,
     terminal: Option<UpdateTerminal>,
     exit: Arc<Mutex<Option<Option<i32>>>>,
+    input_error: Arc<Mutex<Option<String>>>,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     close: CloseHandler,
@@ -240,6 +228,7 @@ impl AgentUpdateDialog {
             waiting: false,
             terminal: None,
             exit: Arc::new(Mutex::new(None)),
+            input_error: Arc::new(Mutex::new(None)),
             focus,
             previous_focus,
             close,
@@ -250,7 +239,7 @@ impl AgentUpdateDialog {
     /// Spawns the update command. Kept out of `new` so a dialog can be built
     /// without running anything.
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let core = self.app_store.read(cx).update_host.0.clone();
+        let client = self.app_store.read(cx).client.clone();
         let size = initial_grid(&terminal_style_for(&self.app_store.read(cx).settings));
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -258,9 +247,11 @@ impl AgentUpdateDialog {
         });
         let start = {
             let exit = Arc::clone(&self.exit);
+            let input_error = Arc::clone(&self.input_error);
             let runtime = self.request.runtime;
             cx.background_spawn(async move {
-                start_update(core, runtime, size, exit, waker).map_err(|error| error.to_string())
+                start_update(client, runtime, size, exit, input_error, waker)
+                    .map_err(|error| error.to_string())
             })
         };
         let started = cx.spawn_in(window, async move |this, cx| {
@@ -299,7 +290,7 @@ impl AgentUpdateDialog {
 
     fn started(
         &mut self,
-        result: Result<Arc<TerminalSession>, String>,
+        result: Result<Arc<TerminalMirror>, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -373,11 +364,12 @@ impl AgentUpdateDialog {
             "runtime update exited: runtime={} exit_code={exit_code:?}",
             self.request.runtime
         );
-        let core = self.app_store.read(cx).update_host.0.clone();
+        let client = self.app_store.read(cx).client.clone();
         let runtime = self.request.runtime;
         let probe = cx.background_spawn(async move {
-            let version = runner_backend::ops::runtime::runtime_probe_version(&core, runtime);
-            let running = runner_backend::ops::session::live_session_counts(&core)
+            let version = client.runtime_probe_version(runtime).ok().flatten();
+            let running = client
+                .live_session_counts()
                 .ok()
                 .and_then(|counts| counts.get(&runtime).copied())
                 .unwrap_or(0);
@@ -448,6 +440,8 @@ impl AgentUpdateDialog {
             Ok(false) => {}
             Err(error) => {
                 tracing::warn!("agent update terminal input failed: {error}");
+                *self.input_error.lock().unwrap() = Some(error.to_string());
+                cx.notify();
                 cx.stop_propagation();
             }
         }
@@ -460,6 +454,8 @@ impl AgentUpdateDialog {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             if let Err(error) = attached.terminal.paste(&text) {
                 tracing::warn!("agent update terminal paste failed: {error}");
+                *self.input_error.lock().unwrap() = Some(error.to_string());
+                cx.notify();
             }
         }
     }
@@ -524,7 +520,12 @@ impl AgentUpdateDialog {
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let footer = footer(&self.phase, self.waiting, &self.request);
+        let footer = footer(
+            &self.phase,
+            self.waiting,
+            &self.request,
+            self.input_error.lock().unwrap().as_deref(),
+        );
         let done = cx.weak_entity();
         div()
             .debug_selector(|| "AGENT_UPDATE_FOOTER".into())
@@ -583,27 +584,63 @@ impl AgentUpdateDialog {
 }
 
 fn start_update(
-    core: AppCore,
+    client: DaemonClient,
     runtime: Runtime,
     size: (u16, u16),
     exit: Arc<Mutex<Option<Option<i32>>>>,
+    input_error: Arc<Mutex<Option<String>>>,
     waker: Arc<dyn Fn() + Send + Sync>,
-) -> anyhow::Result<Arc<TerminalSession>> {
-    let spec = runner_backend::ops::runtime::runtime_update_spawn_spec(&core, runtime, size)?;
-    let terminal = TerminalSession::attach(
-        core.clone(),
-        spec.session_id.clone(),
-        size.0,
-        size.1,
-        Arc::clone(&waker),
-    )?;
-    let events = Arc::new(UpdateTerminalEvents {
-        terminal: Arc::clone(&terminal),
-        exit,
-        waker,
+) -> anyhow::Result<Arc<TerminalMirror>> {
+    let mut events = client.subscribe();
+    let command = client.runtime_update_prepare(runtime, size)?;
+    let id = command.session_id.clone();
+    let terminal = TerminalMirror::attach(client.clone(), id.clone(), Arc::clone(&waker))?;
+    client.runtime_update_run(command)?;
+    std::thread::spawn(move || {
+        futures::executor::block_on(async move {
+            while let Ok(event) = events.recv().await {
+                if let Some(exited) = record_terminal_event(&event, &id, &exit, &input_error) {
+                    (waker)();
+                    if exited {
+                        break;
+                    }
+                }
+            }
+        })
     });
-    runner_backend::ops::runtime::runtime_update_start(&core, spec, events)?;
     Ok(terminal)
+}
+
+fn record_terminal_event(
+    event: &ClientEvent,
+    id: &str,
+    exit: &Mutex<Option<Option<i32>>>,
+    input_error: &Mutex<Option<String>>,
+) -> Option<bool> {
+    if event.payload.get("session_id").and_then(|id| id.as_str()) != Some(id) {
+        return None;
+    }
+    match event.name.as_str() {
+        "session/input-error" => {
+            *input_error.lock().unwrap() = event
+                .payload
+                .get("message")
+                .and_then(|message| message.as_str())
+                .map(str::to_owned);
+            Some(false)
+        }
+        "session/exit" => {
+            *exit.lock().unwrap() = Some(
+                event
+                    .payload
+                    .get("exit_code")
+                    .and_then(|code| code.as_i64())
+                    .and_then(|code| i32::try_from(code).ok()),
+            );
+            Some(true)
+        }
+        _ => None,
+    }
 }
 
 fn cursor_shape(settings: &AppSettings) -> alacritty_terminal::vte::ansi::CursorShape {
@@ -744,14 +781,6 @@ impl NativeRoot {
     }
 }
 
-pub(crate) struct UpdateHost(pub(crate) AppCore);
-
-impl UpdateHost {
-    pub(crate) fn new(host: runner_app::bootstrap::ClientHost) -> Self {
-        Self(host.terminal_core().clone())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -771,7 +800,7 @@ mod tests {
         let request = request();
         assert_eq!(request.command_label(), "codex update");
         assert_eq!(
-            footer(&Phase::Running, false, &request),
+            footer(&Phase::Running, false, &request, None),
             Footer {
                 lines: vec![("Running codex update…".into(), FooterTone::Muted)],
                 busy: true,
@@ -779,7 +808,7 @@ mod tests {
             }
         );
         assert_eq!(
-            footer(&Phase::Running, true, &request),
+            footer(&Phase::Running, true, &request, None),
             Footer {
                 lines: vec![(
                     "Waiting for input in the terminal.".into(),
@@ -796,7 +825,8 @@ mod tests {
                     running_sessions: 0,
                 },
                 false,
-                &request
+                &request,
+                None
             ),
             Footer {
                 lines: vec![("Codex is now 0.155.0.".into(), FooterTone::Text)],
@@ -811,7 +841,8 @@ mod tests {
                     running_sessions: 3,
                 },
                 false,
-                &request
+                &request,
+                None
             )
             .lines,
             [
@@ -823,15 +854,24 @@ mod tests {
             ]
         );
         assert_eq!(
-            footer(&Phase::Failed(exit_message(Some(243))), false, &request),
+            footer(
+                &Phase::Failed(exit_message(Some(243))),
+                false,
+                &request,
+                None
+            ),
             Footer {
                 lines: vec![("Exited with code 243.".into(), FooterTone::Danger)],
                 busy: false,
                 button: Some("Close"),
             }
         );
-        assert!(footer(&Phase::Starting, false, &request).button.is_none());
-        assert!(footer(&Phase::Verifying, false, &request).button.is_none());
+        assert!(footer(&Phase::Starting, false, &request, None)
+            .button
+            .is_none());
+        assert!(footer(&Phase::Verifying, false, &request, None)
+            .button
+            .is_none());
     }
 
     #[test]
@@ -875,6 +915,44 @@ mod tests {
                 cx,
             )
         })
+    }
+
+    #[test]
+    fn queued_update_input_errors_are_scoped_and_visible_in_the_running_footer() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let core = cx.update(|cx| store.read(cx).test_core.clone());
+        let client = runner_backend::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("update", (80, 24), &core.db, &events)
+            .unwrap();
+        let mut received = client.subscribe();
+        let mirror = TerminalMirror::attach(client, "update".into(), Arc::new(|| {})).unwrap();
+        mirror.paste("x").unwrap();
+        let event = futures::executor::block_on(received.recv()).unwrap();
+        assert_eq!(event.name, "session/input-error");
+        let exit = Mutex::new(None);
+        let input_error = Mutex::new(None);
+        assert_eq!(
+            record_terminal_event(&event, "other-update", &exit, &input_error),
+            None
+        );
+        assert!(input_error.lock().unwrap().is_none());
+        assert_eq!(
+            record_terminal_event(&event, "update", &exit, &input_error),
+            Some(false)
+        );
+        let input_error = input_error.lock().unwrap();
+        let footer = footer(&Phase::Running, false, &request(), input_error.as_deref());
+        assert!(footer
+            .lines
+            .iter()
+            .any(|(text, tone)| text.contains("session not found") && *tone == FooterTone::Danger));
+        assert!(footer.button.is_none());
+        assert!(exit.lock().unwrap().is_none());
     }
 
     struct Host(Entity<AgentUpdateDialog>);

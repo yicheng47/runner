@@ -1,19 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const ALLOWLIST: &[(&str, &str)] = &[
-    (
-        "bootstrap.rs",
-        "1c: boot_core, NativeMcpServer, client host, wake installation and quit teardown",
-    ),
-    ("terminal/", "1b: TerminalSession and terminal renderer"),
-    ("terminal_ime.rs", "1b: terminal input error type"),
-    ("surfaces/agent_update.rs", "1b: UpdateTerminalEvents"),
-    (
-        "app_store.rs:TerminalBridge::new",
-        "1b: terminal bridge construction",
-    ),
-];
+const ALLOWLIST: &[(&str, &str)] = &[(
+    "bootstrap.rs",
+    "1c: boot_core, NativeMcpServer, client host, wake installation and quit teardown",
+)];
 
 fn sources(root: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(root).unwrap() {
@@ -200,12 +191,7 @@ fn violations(path: &str, source: &str) -> Vec<String> {
                 .is_some_and(|token| fields.contains(&token.0));
         let update_host = tail.starts_with(&[".", "update_host", ".", "0"]);
         let terminal = tail.starts_with(&[".", "terminal_core", "("]);
-        let bridge_construction = path == "app_store.rs"
-            && source[..offset]
-                .lines()
-                .last()
-                .is_some_and(|line| line.contains("TerminalBridge::new"));
-        if backend || db || field || update_host || (terminal && !bridge_construction) {
+        if backend || db || field || update_host || (terminal) {
             let line = source[..offset].bytes().filter(|b| *b == b'\n').count() + 1;
             failures.push(format!("{path}:{line}: {token}"));
         }

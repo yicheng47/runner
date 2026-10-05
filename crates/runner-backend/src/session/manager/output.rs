@@ -704,12 +704,32 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
+        self.resize_with_origin(session_id, cols, rows, pool, None)
+    }
+    pub(super) fn resize_with_origin(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        pool: &Arc<DbPool>,
+        origin: Option<u64>,
+    ) -> Result<()> {
         let state = self.session_state_or_insert(session_id);
         let settle_ms = self
             .resize_settle_ms
             .load(std::sync::atomic::Ordering::Relaxed);
         let (settle_generation, resize_result) = {
             let mut session = state.lock().unwrap();
+            if let Some(model) = &session.terminal {
+                model.resize(cols, rows);
+            }
+            session.output_seq += 1;
+            let seq = session.output_seq;
+            Self::push_frame(
+                &mut session,
+                runner_core::protocol::terminal::TerminalFrame::Resized { seq, cols, rows },
+                origin,
+            );
             session.last_requested_size = Some((cols, rows));
             session.last_requested_size_dirty = true;
 
@@ -893,10 +913,32 @@ impl SessionManager {
         bytes: &[u8],
         events: &dyn SessionEvents,
     ) {
-        let ev = self.record_output(session_id, mission_id, bytes);
-        events.output(&ev);
+        let _ = (mission_id, events);
+        let state = self.session_state_or_insert(session_id);
+        let (model, observation) = {
+            let mut state = state.lock().unwrap();
+            state.output_seq += 1;
+            let seq = state.output_seq;
+            Self::push_frame(
+                &mut state,
+                runner_core::protocol::terminal::TerminalFrame::Output {
+                    seq,
+                    bytes: bytes.to_vec(),
+                },
+                None,
+            );
+            let model = state.terminal.clone();
+            let observation = model
+                .as_ref()
+                .and_then(|model| model.feed_output(seq, bytes));
+            (model, observation)
+        };
+        if let Some(model) = model {
+            model.publish_input(observation);
+        }
     }
 
+    #[cfg(test)]
     pub(super) fn record_output(
         &self,
         session_id: &str,

@@ -12,7 +12,7 @@ use runner_backend::session::pty_runtime::PtyRuntime;
 use runner_backend::session::SessionManager;
 use runner_backend::AppCore;
 use runner_terminal::replay::visible_lines;
-use runner_terminal::terminal::{TerminalBridge, TerminalSession};
+use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 const DEFAULT_MODEL: &str = "deepseek/deepseek-v4-flash";
 
@@ -96,11 +96,11 @@ fn user_message_count(events: &[serde_json::Value]) -> usize {
         .count()
 }
 
-fn grid_text(terminal: &TerminalSession) -> String {
+fn grid_text(terminal: &TerminalMirror) -> String {
     visible_lines(&*terminal.term.lock()).join("\n")
 }
 
-fn wait_for_ready(terminal: &TerminalSession) {
+fn wait_for_ready(terminal: &TerminalMirror) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !grid_text(terminal).contains("escape interrupt") {
         assert!(
@@ -111,7 +111,7 @@ fn wait_for_ready(terminal: &TerminalSession) {
     }
 }
 
-fn wait_for_turn(terminal: &TerminalSession, agent_dir: &Path, key: &str, expected: &str) {
+fn wait_for_turn(terminal: &TerminalMirror, agent_dir: &Path, key: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let events = transcript(agent_dir, key);
@@ -192,7 +192,11 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
         },
     )
     .unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("When the user asks for the smoke result, reply with exactly RUNNER_PI_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
     let direct_row = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
@@ -213,7 +217,11 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     drop(terminal);
 
     let relaunched = core_at(core.app_data_dir.clone(), db.clone());
-    let resumed_bridge = TerminalBridge::new(relaunched.clone(), Arc::new(|| {})).unwrap();
+    let resumed_bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(relaunched.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     relaunched
         .sessions
         .resume(

@@ -34,11 +34,25 @@ pub struct FixtureHeader {
 #[serde(untagged)]
 pub enum FixtureEvent {
     /// PTY output chunk, base64-encoded, `ms` since spawn.
-    Data { ms: u64, data: String },
+    Data {
+        ms: u64,
+        data: String,
+    },
     /// Human input observed by the native terminal tracker.
-    Input { ms: u64, input: FixtureInput },
+    Input {
+        ms: u64,
+        input: FixtureInput,
+    },
     /// Child exit, if observed before the recording window closed.
-    Exit { ms: u64, exit: i32 },
+    Exit {
+        ms: u64,
+        exit: i32,
+    },
+    Resize {
+        ms: u64,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,7 +132,7 @@ impl FixtureRecorder {
             rows,
             command: session_id.to_owned(),
             args: Vec::new(),
-            note: Some("recorded by TerminalSession".into()),
+            note: Some("recorded by TerminalModel".into()),
         };
         serde_json::to_writer(&mut file, &header).context("serialize input fixture header")?;
         file.write_all(b"\n")
@@ -140,6 +154,14 @@ impl FixtureRecorder {
         self.record(&FixtureEvent::Input {
             ms: self.elapsed_ms(),
             input: FixtureInput::Event(input.clone()),
+        });
+    }
+
+    pub fn record_resize(&self, cols: u16, rows: u16) {
+        self.record(&FixtureEvent::Resize {
+            ms: self.elapsed_ms(),
+            cols,
+            rows,
         });
     }
 

@@ -7,17 +7,31 @@ enum ForwardedEvent {
 }
 
 #[derive(Default)]
-struct ForwarderCapture(Mutex<Vec<ForwardedEvent>>);
-
-impl SessionEvents for ForwarderCapture {
-    fn output(&self, ev: &OutputEvent) {
-        self.0
+struct ForwarderCapture(Mutex<Vec<ForwardedEvent>>, Arc<terminal::FrameQueue>);
+impl ForwarderCapture {
+    fn drain(&self) {
+        for frame in self.1.drain() {
+            if let runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes } = frame {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(ForwardedEvent::Output(seq, bytes));
+            }
+        }
+    }
+    fn subscribe(&self, manager: &SessionManager, id: &str) {
+        manager
+            .session_state_or_insert(id)
             .lock()
             .unwrap()
-            .push(ForwardedEvent::Output(ev.seq, ev.bytes.clone()));
+            .subscribers
+            .push((1, Arc::clone(&self.1)));
     }
+}
 
+impl SessionEvents for ForwarderCapture {
     fn status(&self, ev: &SessionActivityEvent) {
+        self.drain();
         self.0
             .lock()
             .unwrap()
@@ -50,6 +64,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
     }
     fake.close_spawn(0);
     let capture = Arc::new(ForwarderCapture::default());
+    capture.subscribe(&mgr, &rt_session.session_id);
     let app_data = tempfile::tempdir().unwrap();
     mgr.start_forwarder_thread(
         rt_session.session_id.clone(),
@@ -67,6 +82,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
     )
     .join()
     .unwrap();
+    capture.drain();
     let events = std::mem::take(&mut *capture.0.lock().unwrap());
     events
 }
@@ -261,6 +277,7 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
     fake.push_output(0, redraw);
     fake.push_output(0, restore);
     let capture = Arc::new(ForwarderCapture::default());
+    capture.subscribe(&mgr, &rt_session.session_id);
     let app_data = tempfile::tempdir().unwrap();
     let forwarder = mgr.start_forwarder_thread(
         rt_session.session_id.clone(),
@@ -277,9 +294,14 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
         app_data.path().to_path_buf(),
     );
     let deadline = Instant::now() + Duration::from_secs(2);
-    while capture.0.lock().unwrap().is_empty() && Instant::now() < deadline {
+    while {
+        capture.drain();
+        capture.0.lock().unwrap().is_empty()
+    } && Instant::now() < deadline
+    {
         thread::sleep(Duration::from_millis(5));
     }
+    capture.drain();
     let events = std::mem::take(&mut *capture.0.lock().unwrap());
     fake.close_spawn(0);
     forwarder.join().unwrap();

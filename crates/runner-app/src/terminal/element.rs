@@ -36,7 +36,7 @@ use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
 use runner_terminal::palette::{self, TerminalPalette};
-use runner_terminal::terminal::{LinkTarget, TerminalLink, TerminalSession};
+use runner_terminal::terminal::{LinkTarget, TerminalLink, TerminalMirror};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 
@@ -102,7 +102,7 @@ struct LinkTooltip {
 }
 
 pub(crate) struct TerminalInteraction {
-    session: Arc<TerminalSession>,
+    session: Arc<TerminalMirror>,
     scroll_accumulator: f32,
     drag: Option<DragState>,
     next_generation: u64,
@@ -115,7 +115,7 @@ pub(crate) struct TerminalInteraction {
 }
 
 impl TerminalInteraction {
-    pub(crate) fn new(session: Arc<TerminalSession>) -> Self {
+    pub(crate) fn new(session: Arc<TerminalMirror>) -> Self {
         Self {
             session,
             scroll_accumulator: 0.,
@@ -563,7 +563,7 @@ fn autoscroll_amount(bounds: Bounds<Pixels>, position: Point<Pixels>) -> i32 {
 }
 
 fn viewport_edge_hit(
-    session: &TerminalSession,
+    session: &TerminalMirror,
     geometry: TerminalGeometry,
     hit: TerminalHit,
     column_select: bool,
@@ -614,7 +614,7 @@ fn cell_and_side(local_x: f32, cell_width: f32, raw_column: usize) -> (usize, Si
 }
 
 fn hit_test(
-    session: &TerminalSession,
+    session: &TerminalMirror,
     geometry: TerminalGeometry,
     position: Point<Pixels>,
 ) -> TerminalHit {
@@ -661,7 +661,7 @@ pub(crate) fn to_hsla(rgb: Rgb, alpha: f32) -> Hsla {
 }
 
 pub struct TerminalElement {
-    session: Arc<TerminalSession>,
+    session: Arc<TerminalMirror>,
     interaction: Entity<TerminalInteraction>,
     input: Entity<TerminalInput>,
     focus_handle: FocusHandle,
@@ -681,7 +681,7 @@ pub struct TerminalStyle {
 
 impl TerminalElement {
     pub fn new(
-        session: Arc<TerminalSession>,
+        session: Arc<TerminalMirror>,
         interaction: Entity<TerminalInteraction>,
         input: Entity<TerminalInput>,
         focus_handle: FocusHandle,
@@ -1503,7 +1503,7 @@ impl IntoElement for TerminalElement {
 mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::{Arc, Condvar, Mutex, RwLock};
 
     use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
     use gpui::prelude::*;
@@ -1511,13 +1511,12 @@ mod tests {
         div, point, px, Bounds, Context, Entity, FocusHandle, Render, TestAppContext,
         VisualTestContext, Window,
     };
-    use runner_backend::session::manager::OutputEvent;
     use runner_backend::session::runtime::{
         OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
         SpawnSpec,
     };
     use runner_backend::{db, session, shell_path, AppCore};
-    use runner_terminal::terminal::TerminalSession;
+    use runner_terminal::terminal::TerminalMirror;
 
     use super::{
         accumulate_scroll, autoscroll_amount, cell_and_side, link_modifier, point_for_viewport,
@@ -1531,6 +1530,22 @@ mod tests {
     struct RecordingRuntime {
         outputs: Mutex<HashMap<String, std::sync::mpsc::Sender<RuntimeOutput>>>,
         writes: Mutex<Vec<(String, Vec<u8>)>>,
+        written: Condvar,
+    }
+
+    impl RecordingRuntime {
+        fn wait_for_writes(&self, count: usize) {
+            let (writes, timeout) = self
+                .written
+                .wait_timeout_while(
+                    self.writes.lock().unwrap(),
+                    std::time::Duration::from_secs(5),
+                    |writes| writes.len() < count,
+                )
+                .unwrap();
+            assert!(!timeout.timed_out(), "queued terminal input did not arrive");
+            assert_eq!(writes.len(), count);
+        }
     }
 
     impl SessionRuntime for RecordingRuntime {
@@ -1559,6 +1574,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((session.session_id.clone(), bytes.to_vec()));
+            self.written.notify_all();
             Ok(())
         }
 
@@ -1602,7 +1618,7 @@ mod tests {
         core: &AppCore,
         role: &runner_backend::model::Role,
         root: &std::path::Path,
-    ) -> Arc<TerminalSession> {
+    ) -> Arc<TerminalMirror> {
         let spawned = core
             .sessions
             .spawn_direct(
@@ -1620,23 +1636,19 @@ mod tests {
                 None,
             )
             .unwrap();
-        let terminal =
-            TerminalSession::attach(core.clone(), spawned.id.clone(), 80, 24, Arc::new(|| {}))
-                .unwrap();
-        terminal
-            .feed_output(&OutputEvent {
-                session_id: spawned.id,
-                mission_id: None,
-                seq: 1,
-                bytes: b"\x1b[?1000h\x1b[?1006h".to_vec(),
-            })
-            .unwrap();
+        let terminal = TerminalMirror::attach(
+            crate::test_support::client(core),
+            spawned.id.clone(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        terminal.test_feed(1, b"\x1b[?1000h\x1b[?1006h");
         terminal
     }
 
     #[derive(Clone)]
     struct WheelPane {
-        terminal: Arc<TerminalSession>,
+        terminal: Arc<TerminalMirror>,
         interaction: Entity<TerminalInteraction>,
         input: Entity<TerminalInput>,
         focus: FocusHandle,
@@ -1736,14 +1748,7 @@ mod tests {
         let left_terminal = spawn_terminal(&core, &role, temp.path());
         let right_terminal = spawn_terminal(&core, &role, temp.path());
         for terminal in [&left_terminal, &right_terminal] {
-            terminal
-                .feed_output(&OutputEvent {
-                    session_id: terminal.session_id().to_owned(),
-                    mission_id: None,
-                    seq: 2,
-                    bytes: "scrollback line\r\n".repeat(40).into_bytes(),
-                })
-                .unwrap();
+            terminal.test_feed(2, &"scrollback line\r\n".repeat(40).into_bytes());
             assert!(terminal.scroll_state().history_lines > 0);
         }
         let right_id = right_terminal.session_id().to_owned();
@@ -1796,11 +1801,13 @@ mod tests {
             ..Default::default()
         };
         visual.simulate_event(wheel(body, 1.));
+        runtime.wait_for_writes(1);
         assert_eq!(
             runtime.writes.lock().unwrap().as_slice(),
             &[(right_id.clone(), b"\x1b[<64;8;5M".to_vec())]
         );
         visual.simulate_event(wheel(header, 1.));
+        runtime.wait_for_writes(2);
         assert_eq!(
             runtime.writes.lock().unwrap().last(),
             Some(&(right_id.clone(), b"\x1b[<64;8;1M".to_vec()))
@@ -1814,6 +1821,7 @@ mod tests {
             delta: ScrollDelta::Pixels(point(px(0.), half_line)),
             ..Default::default()
         });
+        runtime.wait_for_writes(3);
         assert_eq!(
             runtime.writes.lock().unwrap().last(),
             Some(&(right_id.clone(), b"\x1b[<64;8;5M".to_vec()))
@@ -1848,6 +1856,7 @@ mod tests {
                 + px(1.),
         );
         visual.simulate_event(wheel(changed_body, 1.));
+        runtime.wait_for_writes(4);
         assert_eq!(
             runtime.writes.lock().unwrap().last(),
             Some(&(right_id.clone(), b"\x1b[<64;6;4M".to_vec()))

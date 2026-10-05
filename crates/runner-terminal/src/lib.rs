@@ -1,16 +1,11 @@
-//! UI-agnostic terminal model for Runner's native app — the `terminal`
-//! half of the Zed-style `terminal` / `terminal_view` split (impl 0046
-//! Workstream C). Owns the `alacritty_terminal` state, parsing, input
-//! encoding, and the fixture corpus; rendering lives in `runner-app`.
-//!
-//! Deliberate deviation from Zed: this crate does not own the PTY.
-//! `runner_backend`'s `SessionManager` spawns and manages sessions; this
-//! crate consumes its output events and produces renderable grid state
-//! plus encoded input bytes.
+//! Shared terminal parsing, session-owned authoritative models, and app mirrors.
+//! The backend owns PTYs and implements `TerminalHost`; this crate owns VT state,
+//! input encoding, snapshots, and the fixture corpus. Rendering lives in the app.
 
 pub mod fixtures;
 pub mod input_state;
 pub mod mappings;
 pub mod palette;
 pub mod replay;
+pub mod snapshot;
 pub mod terminal;

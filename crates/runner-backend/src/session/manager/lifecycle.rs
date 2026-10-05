@@ -290,6 +290,11 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
+                state.terminal = None;
+                state.terminal_input = None;
+                for (_, queue) in state.subscribers.drain(..) {
+                    queue.close();
+                }
                 state.model.apply(
                     SessionEvent::Detached { stopped: false },
                     crate::session::clock::state_now(),
