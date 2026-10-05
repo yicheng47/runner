@@ -335,11 +335,11 @@ fn codex_pre_hook_startup_ignores_continuing_idle_redraw() {
         let app_data = tempfile::tempdir().unwrap();
         let role = codex_redraw_role(app_data.path());
         let pool = pool_with_schema();
-        let events = capture();
         let manager = manager_with_runtime(
             Default::default(),
             Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
         );
+        let events = capture_for(&manager);
         let spawned = if launch == "keyed-mission" {
             let (mission, slot) = seed_mission_rows(&pool, &role);
             let mut row = crate::repo::session::SessionRowDb::new_running("resumed-slot".into());
@@ -473,18 +473,26 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
                     manager.agent_status(id).observation.activity,
                     Activity::Idle
                 );
-                assert_eq!(
+                assert!(matches!(
                     manager.reserve_delivery(id).unwrap(),
-                    router::DeliveryReservation::LocalInputPending
-                );
+                    router::DeliveryReservation::RecentlyTyping(_)
+                ));
                 manager
                     .inject_direct_stdin(id, b"\r", events.as_ref())
                     .unwrap();
             }
             "router" => {
-                let token = match manager.reserve_delivery(id).unwrap() {
-                    router::DeliveryReservation::Ready(token) => token,
-                    other => panic!("{other:?}"),
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let token = loop {
+                    match manager.reserve_delivery(id).unwrap() {
+                        router::DeliveryReservation::Ready(token) => break token,
+                        router::DeliveryReservation::RecentlyTyping(_)
+                            if Instant::now() < deadline =>
+                        {
+                            thread::sleep(Duration::from_millis(10))
+                        }
+                        other => panic!("{other:?}"),
+                    }
                 };
                 assert!(manager.inject_reserved(id, token, b"routed work").unwrap());
                 assert!(manager.inject_reserved(id, token, b"\r").unwrap());
@@ -620,11 +628,11 @@ fn codex_pre_hook_automatic_mission_turn_stays_working() {
         let pool = pool_with_schema();
         let (mission, mut slot) = seed_mission_rows(&pool, &role);
         slot.lead = lead;
-        let events = capture();
         let manager = manager_with_runtime(
             Default::default(),
             Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
         );
+        let events = capture_for(&manager);
         let spawned = manager
             .spawn(
                 &mission,

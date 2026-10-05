@@ -9,7 +9,7 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
 
-use crate::fixtures::Fixture;
+use crate::fixtures::{decode_chunk, Fixture, FixtureEvent};
 
 pub fn new_term(cols: u16, rows: u16) -> Term<VoidListener> {
     let size = TermSize::new(cols as usize, rows as usize);
@@ -23,11 +23,18 @@ pub fn replay_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Term<VoidListener> {
 }
 
 pub fn replay_fixture(fixture: &Fixture) -> anyhow::Result<Term<VoidListener>> {
-    Ok(replay_bytes(
-        fixture.header.cols,
-        fixture.header.rows,
-        &fixture.output_bytes()?,
-    ))
+    let mut term = new_term(fixture.header.cols, fixture.header.rows);
+    let mut parser: Processor = Processor::new();
+    for event in &fixture.events {
+        match event {
+            FixtureEvent::Data { data, .. } => parser.advance(&mut term, &decode_chunk(data)?),
+            FixtureEvent::Resize { cols, rows, .. } => {
+                term.resize(TermSize::new(*cols as usize, *rows as usize))
+            }
+            _ => {}
+        }
+    }
+    Ok(term)
 }
 
 pub fn feed(term: &mut Term<VoidListener>, bytes: &[u8]) {

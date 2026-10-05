@@ -10,9 +10,9 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_backend::ops::role::CreateRoleInput;
 use runner_backend::router::runtime::PermissionMode;
 use runner_terminal::replay::visible_lines;
-use runner_terminal::terminal::{TerminalBridge, TerminalSession};
+use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
-fn wait_for_text(terminal: &TerminalSession, expected: &str) -> bool {
+fn wait_for_text(terminal: &TerminalMirror, expected: &str) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         let rendered = {
@@ -32,7 +32,11 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let role = runner_backend::ops::role::role_create(
         &core,
         CreateRoleInput {
@@ -63,7 +67,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
         Some(24),
     )
     .unwrap();
-    let terminal = bridge.session(&spawned.id).unwrap();
+    let terminal = bridge.attach(&spawned.id).unwrap();
     assert_eq!(terminal.size(), (80, 24));
     terminal.resize(96, 32);
     assert_eq!(terminal.size(), (96, 32));
@@ -84,7 +88,11 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let role = runner_backend::ops::role::role_create(
         &core,
         CreateRoleInput {
@@ -115,7 +123,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
         Some(24),
     )
     .unwrap();
-    let terminal = bridge.session(&spawned.id).unwrap();
+    let terminal = bridge.attach(&spawned.id).unwrap();
 
     let mut input = TerminalInput::new(Arc::clone(&terminal));
     input.replace_and_mark_text(None, "pinyin", Some(6..6));
@@ -138,7 +146,11 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let role = runner_backend::ops::role::role_create(
         &core,
         CreateRoleInput {
@@ -203,7 +215,11 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     let temp = tempfile::tempdir().unwrap();
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
-    let bridge = TerminalBridge::new(core.clone(), Arc::new(|| {})).unwrap();
+    let bridge = TerminalBridge::new(
+        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
     let role = runner_backend::ops::role::role_create(
         &core,
         CreateRoleInput {

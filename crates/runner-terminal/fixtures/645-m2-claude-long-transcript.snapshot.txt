@@ -1,0 +1,25 @@
+cols=80 rows=24 cursor=23,2
+|  75. QA645M2 baseline terminal line
+|  76. QA645M2 baseline terminal line
+|  77. QA645M2 baseline terminal lineK QA645M2-CLAUDE-ORIGINAL. Do not use tools
+| r78. QA645M2 baseline terminal line
+|  79. QA645M2 baseline terminal line
+|⏺ 80. QA645M2 baseline terminal line
+|tl81. QA645M2 baseline terminal lineQA645M2 baseline
+|  82. QA645M2 baseline terminal line
+|  83. QA645M2 baseline terminal line
+|. 84. QA645M2 baseline terminal line
+|  85. QA645M2 baseline terminal line
+|⏺─86. QA645M2 baseline terminal line────────────────────────────────────────────
+| ─87member QA645M2-CLAUDE-ORIGINAL. For terminal scrollback testing, output exam
+|b 88                                                                           r
+|e 89. QA645M2 baseline terminal line                                           n
+|e 90. QA645M2 baseline terminal line                                           a
+|c 91. QA645M2 baseline terminal line                                           a
+|y 92. QA645M2 baseline terminal line                                           s
+|──93. QA645M2 baseline terminal line────────────────────────────────────────────
+|❯ 94.eQA645M26baselineUterminalNlineFor terminal scrollback testing, output exac
+|──95. QA645M2 baseline terminal line────────────────────────────────────────────
+|──96.─QA645M2─baseline─terminal─line────────────────────────────────────────────
+|──97.─QA645M2─baseline─terminal─line────────────────────────────────────────────
+|❯ Baked for 8s · done 6:14 PM

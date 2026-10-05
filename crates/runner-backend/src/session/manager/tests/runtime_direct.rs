@@ -199,7 +199,7 @@ fn shell_resume_uses_nearest_existing_cwd_and_feeds_notice_first() {
         fake_for_hook.push_output(0, b"shell startup\r\n");
     }));
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let events = capture();
+    let events = capture_for(&mgr);
     mgr.resume_on_launch(
         "shell-missing-cwd",
         None,

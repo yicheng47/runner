@@ -5,22 +5,27 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::Color;
-use serde::{Deserialize, Serialize};
+pub use runner_core::protocol::terminal::InputEvent;
 
-pub use runner_backend::session::manager::{InputObservation, InputState};
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputState {
+    Idle,
+    Drafting,
+    Submitted,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct InputObservation {
+    pub state: InputState,
+    pub since: Instant,
+    pub composing: bool,
+    pub composer_visible: bool,
+}
 
 use crate::mappings::InputKind;
 use crate::replay::row_to_string;
 
 pub const ECHO_WINDOW: Duration = Duration::from_millis(500);
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum InputEvent {
-    Key { kind: InputKind },
-    Paste { text: String },
-    Composing { composing: bool },
-}
 
 #[derive(Clone, Debug)]
 struct Composer {

@@ -58,7 +58,7 @@ use runner_core::protocol::model::SessionStatus;
 use runner_core::protocol::session::DirectSessionEntry;
 use runner_core::protocol::session::SessionActivityState;
 use runner_core::protocol::DaemonClient;
-use runner_terminal::terminal::{TerminalSession, TerminalView};
+use runner_terminal::terminal::{TerminalMirror, TerminalView};
 
 use app_settings::{settings_path, AppSettings};
 #[cfg(not(test))]
@@ -139,7 +139,7 @@ const PANE_HEADER_HEIGHT: f32 = 26.;
 const WINDOW_STATE_SAVE_DELAY_MS: u64 = 300;
 
 struct AttachedChat {
-    terminal: Arc<TerminalSession>,
+    terminal: Arc<TerminalMirror>,
     _terminal_view: TerminalView,
     terminal_interaction: Entity<TerminalInteraction>,
     terminal_scrollbar: Entity<Scrollbar>,
@@ -650,6 +650,7 @@ impl NativeRoot {
                                 | "session/updated"
                                 | "session/archived"
                                 | "session/warning"
+                                | "session/input-error"
                         ) =>
                     {
                         if chat_event_tx.unbounded_send(event).is_err() {
