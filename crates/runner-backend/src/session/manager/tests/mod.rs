@@ -377,7 +377,8 @@ fn mgr_with_fake(shell: Option<String>, fake: Arc<FakeRuntime>) -> Arc<SessionMa
 /// in unit tests — no frontend dependency.
 #[derive(Default)]
 struct Capture {
-    output: Mutex<Vec<OutputEvent>>,
+    output: Arc<Mutex<Vec<OutputEvent>>>,
+    output_manager: Mutex<Weak<SessionManager>>,
     exit: Mutex<Vec<ExitEvent>>,
     updated: Mutex<Vec<SessionUpdatedEvent>>,
     fork_started: Mutex<Vec<SessionForkStartedEvent>>,
@@ -386,9 +387,29 @@ struct Capture {
 }
 
 impl SessionEvents for Capture {
-    fn output(&self, ev: &OutputEvent) {
-        self.output.lock().unwrap().push(ev.clone());
+    fn spawned(&self, event: &SessionSpawnedEvent) {
+        let Some(manager) = self.output_manager.lock().unwrap().upgrade() else {
+            return;
+        };
+        let mut frames = manager.attach_terminal(&event.session_id).unwrap().frames;
+        let output = Arc::clone(&self.output);
+        let id = event.session_id.clone();
+        let mission_id = event.mission_id.clone();
+        thread::spawn(move || {
+            while let Ok(frame) = frames.recv() {
+                if let runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes } = frame
+                {
+                    output.lock().unwrap().push(OutputEvent {
+                        session_id: id.clone(),
+                        mission_id: mission_id.clone(),
+                        seq,
+                        bytes,
+                    });
+                }
+            }
+        });
     }
+
     fn exit(&self, ev: &ExitEvent) {
         self.exit.lock().unwrap().push(ev.clone());
     }
@@ -463,6 +484,13 @@ fn mission() -> Mission {
         pinned_at: None,
         archived_at: None,
     }
+}
+
+fn capture_for(manager: &Arc<SessionManager>) -> Arc<Capture> {
+    Arc::new(Capture {
+        output_manager: Mutex::new(Arc::downgrade(manager)),
+        ..Default::default()
+    })
 }
 
 fn capture() -> Arc<Capture> {

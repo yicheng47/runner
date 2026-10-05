@@ -253,7 +253,7 @@ mod tests {
 
     use super::*;
     use crate::model::SessionStatus;
-    use crate::session::manager::{ExitEvent, OutputEvent};
+    use crate::session::manager::ExitEvent;
 
     #[derive(Default)]
     struct Capture {
@@ -261,8 +261,6 @@ mod tests {
     }
 
     impl SessionEvents for Capture {
-        fn output(&self, _ev: &OutputEvent) {}
-
         fn exit(&self, _ev: &ExitEvent) {}
 
         fn updated(&self, ev: &SessionUpdatedEvent) {

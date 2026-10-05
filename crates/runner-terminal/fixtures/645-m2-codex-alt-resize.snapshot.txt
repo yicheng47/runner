@@ -1,0 +1,31 @@
+cols=100 rows=30 cursor=29,2
+|
+|  The code must flow.
+|
+|
+|› You are a development smoke-test role. Follow only the bounded test prompt. Do not inspect reposit
+|  send messages, or launch other agents.
+|
+|  <!-- runner-codex-session-key-capture:01M45S4DNQSXH353K7JNGYA6BS -->
+|
+|
+|• Understood. I’ll follow only the bounded smoke-test prompt.
+|
+|  Worked for 4s • 6:18 PM
+|
+|
+|› Remember QA645M2-CODEX-ORIGINAL. Reply exactly ACK QA645M2-CODEX-ORIGINAL. Do not use tools.
+|
+|
+|• ACK QA645M2-CODEX-ORIGINAL
+|
+|  Worked for 1s • 6:18 PM
+|
+|
+|› Reply exactly RESIZE-OK. Do not use tools.
+|
+|
+|• RESIZE-OK
+|  Worked for 1s • 6:19 PM
+|  ? for shortcutsfast · weekly 78% left                                                            ⚠
+| 2 warnings · f2 to view

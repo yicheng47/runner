@@ -10,7 +10,7 @@ use gpui::{
 
 use crate::theme;
 use crate::ui::app_zoom;
-use runner_terminal::terminal::TerminalSession;
+use runner_terminal::terminal::TerminalMirror;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScrollbarKind {
@@ -138,7 +138,7 @@ impl Scrollbar {
         Self::new(kind, metrics, scroll_to)
     }
 
-    pub fn terminal(terminal: Arc<TerminalSession>) -> Self {
+    pub fn terminal(terminal: Arc<TerminalMirror>) -> Self {
         let read_terminal = Arc::clone(&terminal);
         Self::new(
             ScrollbarKind::Terminal,

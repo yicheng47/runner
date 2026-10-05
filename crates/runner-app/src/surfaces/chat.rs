@@ -271,6 +271,21 @@ impl NativeRoot {
             self.mark_active_tab_viewed(window, cx);
         }
         match event.name.as_str() {
+            "session/input-error" => {
+                if self.route == AppRoute::Chat
+                    && session_id.as_deref().is_some_and(|id| {
+                        self.tabs.active().is_some_and(|layout| {
+                            layout.all_session_ids().iter().any(|session| session == id)
+                        })
+                    })
+                {
+                    self.chat_error = event
+                        .payload
+                        .get("message")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                }
+            }
             "session/exit" => {
                 if let Some(session_id) = session_id {
                     let exit_code = event
@@ -2435,6 +2450,75 @@ mod tests {
     use runner_core::protocol::model::{Runtime, SessionStatus};
     use runner_core::protocol::session::DirectSessionEntry;
     use std::collections::HashMap;
+
+    #[test]
+    fn queued_input_errors_reach_only_the_active_chat_tab() {
+        use crate::surfaces::start_chat::{tests::modal_harness, ChatMode};
+        use crate::AppRoute;
+        use runner_app::pane_layout::TabSet;
+        use runner_core::protocol::NodeTabUpsertInput;
+        use runner_terminal::terminal::TerminalMirror;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let mut core = None;
+        harness.act(|root, _, cx| {
+            let store = root.app_store.read(cx);
+            let layout = PaneLayout::single(Some("missing-session"), &[]);
+            let row = store
+                .client
+                .node_tab_upsert(NodeTabUpsertInput {
+                    id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+                    parent_id: None,
+                    name: "Error tab".into(),
+                    layout: layout.serialize().unwrap(),
+                })
+                .unwrap();
+            core = Some(store.test_core.clone());
+            root.tabs = TabSet::from_rows(&[row]);
+            root.route = AppRoute::Chat;
+            root.start_chat_modal = None;
+        });
+        let core = core.unwrap();
+        let client = runner_backend::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        for id in ["other-session", "missing-session"] {
+            core.sessions
+                .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+                .unwrap();
+            let mut received = client.subscribe();
+            let mirror =
+                TerminalMirror::attach(client.clone(), id.into(), Arc::new(|| {})).unwrap();
+            mirror.write_user_bytes(b"x").unwrap();
+            let event = futures::executor::block_on(received.recv()).unwrap();
+            assert_eq!(event.name, "session/input-error");
+            assert_eq!(event.payload["session_id"], id);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let mut visible = false;
+                harness.act(|root, _, _| {
+                    visible = root
+                        .chat_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("session not found"));
+                });
+                if id == "other-session" {
+                    assert!(!visible);
+                    break;
+                }
+                if visible {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "queued error did not reach the chat surface"
+                );
+                std::thread::yield_now();
+            }
+        }
+    }
 
     #[test]
     fn single_pane_tab_close_dispatches_chat_terminal_and_empty_panes() {

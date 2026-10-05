@@ -96,7 +96,7 @@ fn unlisted_pty_reports_only_to_its_listener_and_leaves_no_trace() {
     let pool = pool_with_schema();
     let spec = mgr.update_spawn_spec("/bin/codex".into(), vec!["update".into()], None, (80, 24));
     let session_id = spec.session_id.clone();
-    let listener = capture();
+    let listener = capture_for(&mgr);
     mgr.spawn_unlisted(spec, &pool, Arc::clone(&listener) as Arc<dyn SessionEvents>)
         .unwrap();
 

@@ -4278,7 +4278,7 @@ pub(super) mod tests {
                 .unwrap();
             project_id = project.id.clone();
             let node = runner_backend::repo::node::ensure_project_node(
-                &root.app_store.read(cx).update_host.0.db.get().unwrap(),
+                &root.app_store.read(cx).test_core.db.get().unwrap(),
                 &project.id,
             )
             .unwrap();

@@ -66,7 +66,7 @@ fn session_status_projection_reads_legacy_runner_status_rows() {
 fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     use crate::theme_snapshot::{assert_fill, ThemeGuard};
     use gpui::{TestAppContext, VisualTestContext};
-    use runner_backend::session::manager::{OutputEvent, SessionEvents};
+
     use runner_backend::{db, session, shell_path};
     use std::sync::RwLock;
 
@@ -122,15 +122,16 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(crate::GlobalUpdater(updater));
     });
-    for (id, mission_id) in [("direct", None), ("slot", Some("mission".into()))] {
-        core.session_events().output(&OutputEvent {
-            session_id: id.into(),
-            mission_id,
-            seq: 1,
-            bytes: b"ready".to_vec(),
-        });
-    }
     let bridge = cx.update(|cx| store.read(cx).bridge.clone());
+    for id in ["direct", "slot"] {
+        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+            .unwrap();
+        let terminal = bridge.attach(id).unwrap();
+        terminal.test_feed(1, b"ready");
+    }
     let host = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "theme-snapshot".into(),

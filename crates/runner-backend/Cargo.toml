@@ -10,6 +10,7 @@ license.workspace = true
 name = "runner_backend"
 
 [dependencies]
+runner-terminal = { path = "../runner-terminal" }
 runner-core = { path = "../runner-core", features = ["schemars"] }
 log = "0.4"
 serde = { workspace = true }
@@ -62,6 +63,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 block2 = "0.6"
 
 [dev-dependencies]
+alacritty_terminal = "0.26"
+runner-terminal = { path = "../runner-terminal", features = ["test-support"] }
 # Used by issue #124's forwarder-contention regression test to hold the
 # event-log flock from a second fd; matches the version `runner-core`
 # pulls in transitively so the trait impl resolves identically.

@@ -521,8 +521,8 @@ impl SessionManager {
     }
 
     /// Runs a PTY that is not a session: no `sessions` row, no mission or
-    /// role, no busy/idle inference. Only `events` hears its output and exit,
-    /// so it never reaches the chat surface, the sidebar, the archive,
+    /// role, no busy/idle inference. Clients attach to its terminal by id;
+    /// it never reaches the chat surface, the sidebar, the archive,
     /// relaunch or any session list. Input, resize and kill work by id like
     /// any live session until the process exits.
     pub fn spawn_unlisted(
@@ -551,7 +551,7 @@ impl SessionManager {
             None,
             initial_size,
             pool,
-            events.as_ref(),
+            &events,
         );
         let manager = Arc::clone(self);
         let forwarder_id = session_id.clone();
@@ -1174,7 +1174,7 @@ impl SessionManager {
             spawn_emit_ctx.clone(),
             initial_size,
             &pool,
-            events.as_ref(),
+            &events,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -1742,7 +1742,7 @@ impl SessionManager {
             None,
             initial_size,
             &pool,
-            events.as_ref(),
+            &events,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(&session_id);
@@ -2144,7 +2144,7 @@ impl SessionManager {
                     None,
                     initial_size,
                     &pool,
-                    events.as_ref(),
+                    &events,
                 );
                 self.publish_direct_activity(
                     &session_id,
@@ -2906,7 +2906,7 @@ impl SessionManager {
             resume_emit_ctx.clone(),
             Some(initial_size),
             &pool,
-            events.as_ref(),
+            &events,
         );
         if first_turn_delivered_via_argv {
             self.arm_completion(session_id);

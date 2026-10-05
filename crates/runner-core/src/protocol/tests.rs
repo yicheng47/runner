@@ -1,3 +1,4 @@
+use super::terminal::*;
 use super::*;
 use super::{agent_skill::*, command::*, skills::*};
 use serde::{de::DeserializeOwned, Serialize};
@@ -531,3 +532,39 @@ impl<A: Sample, B: Sample, C: Sample> Sample for (A, B, C) {
     }
 }
 record!(ClientEvent { name, payload });
+
+record!(TerminalMetadata {
+    title,
+    live_cwd,
+    link_cwd,
+    cols,
+    rows
+});
+record!(RuntimeUpdateCommand {
+    session_id,
+    command,
+    args,
+    cwd,
+    env,
+    shell_path,
+    size
+});
+impl Sample for InputEvent {
+    fn sample() -> Self {
+        Self::Paste {
+            text: String::sample(),
+        }
+    }
+}
+impl Sample for TerminalPalette {
+    fn sample() -> Self {
+        Self {
+            background: [1, 2, 3],
+            foreground: [4, 5, 6],
+            cursor: [7, 8, 9],
+            cursor_accent: [10, 11, 12],
+            selection: [13, 14, 15],
+            ansi: [[16, 17, 18]; 16],
+        }
+    }
+}

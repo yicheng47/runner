@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{Bounds, Context, EntityInputHandler, Pixels, UTF16Selection, Window};
-use runner_terminal::terminal::TerminalSession;
+use runner_terminal::terminal::TerminalMirror;
 
 use crate::text_util;
 
@@ -142,13 +142,13 @@ impl TerminalComposition {
 }
 
 pub struct TerminalInput {
-    session: Arc<TerminalSession>,
+    session: Arc<TerminalMirror>,
     composition: TerminalComposition,
     write_result: Option<Result<(), String>>,
 }
 
 impl TerminalInput {
-    pub fn new(session: Arc<TerminalSession>) -> Self {
+    pub fn new(session: Arc<TerminalMirror>) -> Self {
         Self {
             session,
             composition: TerminalComposition::default(),
@@ -189,7 +189,7 @@ impl TerminalInput {
         self.write_result.take()
     }
 
-    pub fn commit_text(&mut self, text: &str) -> runner_backend::error::Result<()> {
+    pub fn commit_text(&mut self, text: &str) -> runner_core::protocol::ClientResult<()> {
         self.composition.clear();
         self.session.set_composing(false);
         if text.is_empty() {
@@ -200,12 +200,12 @@ impl TerminalInput {
         Ok(())
     }
 
-    fn commit_marked_text(&mut self) -> runner_backend::error::Result<()> {
+    fn commit_marked_text(&mut self) -> runner_core::protocol::ClientResult<()> {
         let text = self.marked_text().unwrap_or_default().to_owned();
         self.commit_text(&text)
     }
 
-    fn record_write_result(&mut self, result: runner_backend::error::Result<()>) {
+    fn record_write_result(&mut self, result: runner_core::protocol::ClientResult<()>) {
         self.write_result = Some(result.map_err(|error| error.to_string()));
     }
 }

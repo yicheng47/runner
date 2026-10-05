@@ -4,17 +4,7 @@
 //! in, bytes come out.
 
 use alacritty_terminal::term::TermMode;
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InputKind {
-    Content { text: String },
-    Edit,
-    Submit,
-    Cancel,
-    Navigate,
-}
+pub use runner_core::protocol::terminal::InputKind;
 
 pub fn classify_key(
     key: &str,
