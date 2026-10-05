@@ -15,8 +15,8 @@ use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, ModelField, RoleAvatar,
     SelectOption, StyledSelect, TextField,
 };
-use runner_backend::model::{CodexSpeed, Runtime, SlotWithRole};
-use runner_backend::ops::slot::UpdateSlotInput;
+use runner_core::protocol::model::{CodexSpeed, Runtime, SlotWithRole};
+use runner_core::protocol::slot::UpdateSlotInput;
 
 use super::*;
 use crate::chat_icon::ChatIcon;
@@ -925,7 +925,7 @@ impl NativeRoot {
         let crew_id = slot.slot.crew_id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::slot::slot_update(&core, &slot_id, input)
+            core.slot_update(&slot_id, input)
                 .map(|_| ())
                 .map_err(|error| error.to_string())
         });

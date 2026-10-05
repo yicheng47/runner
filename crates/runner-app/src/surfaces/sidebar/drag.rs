@@ -176,7 +176,7 @@ impl Sidebar {
                     dragged_id,
                     target.index,
                 );
-                runner_backend::ops::node::node_reorder_pinned(self.core(cx), order)
+                self.core(cx).node_reorder_pinned(order)
             }
             DropKind::Project => {
                 let order = ordered_root_node_ids_after_project_drop(
@@ -184,12 +184,7 @@ impl Sidebar {
                     dragged_id,
                     target.index,
                 );
-                runner_backend::ops::node::node_move(
-                    self.core(cx),
-                    dragged_id.to_owned(),
-                    None,
-                    order,
-                )
+                self.core(cx).node_move(dragged_id.to_owned(), None, order)
             }
             DropKind::Leaf => {
                 let visible = self
@@ -205,12 +200,8 @@ impl Sidebar {
                     dragged_id,
                     &visible,
                 );
-                runner_backend::ops::node::node_move(
-                    self.core(cx),
-                    dragged_id.to_owned(),
-                    target.parent_id,
-                    order,
-                )
+                self.core(cx)
+                    .node_move(dragged_id.to_owned(), target.parent_id, order)
             }
         };
         match result {

@@ -1516,9 +1516,7 @@ mod tests {
         OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
         SpawnSpec,
     };
-    use runner_backend::{
-        db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-    };
+    use runner_backend::{db, session, shell_path, AppCore};
     use runner_terminal::terminal::TerminalSession;
 
     use super::{
@@ -1587,26 +1585,17 @@ mod tests {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        AppCore {
-            db: pool,
+        crate::test_support::core(
+            pool,
             app_data_dir,
-            sessions: session::SessionManager::new(
+            session::SessionManager::new(
                 Arc::clone(&runtime_shell_env),
                 Arc::clone(&runtime_discovery),
                 runtime,
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        }
+        )
     }
 
     fn spawn_terminal(

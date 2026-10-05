@@ -1,19 +1,11 @@
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 use serde_rusqlite::from_row;
 use std::path::Path;
 
 use super::{de_err, select_list};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProjectRow {
-    pub id: String,
-    pub name: String,
-    pub cwd: String,
-    pub position: i64,
-    pub created_at: String,
-}
+pub use runner_core::protocol::project::ProjectRow;
 
 const COLUMNS: &[&str] = &["id", "name", "cwd", "position", "created_at"];
 

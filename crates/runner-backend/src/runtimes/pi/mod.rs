@@ -1,6 +1,5 @@
 pub(crate) mod models;
 pub(crate) mod pi_status;
-use super::catalog::*;
 use super::helpers::*;
 use super::*;
 use std::ffi::{OsStr, OsString};
@@ -131,16 +130,7 @@ fn pi_resolve_path(path: &OsStr, cwd: Option<&Path>, home: Option<&Path>) -> Opt
     }
 }
 
-static PERMISSIONS: Permissions = Permissions {
-    offered: &[],
-    strip_flags: &[],
-    equals_on_bool: false,
-    variadic_flag: None,
-    args: |_| Vec::new(),
-    matches: |_, _| false,
-    mission_bypass: None,
-    strip_on_mission_resume: false,
-};
+use runner_core::protocol::runtime_metadata::pi::{PERMISSIONS, SKILL_DIRS};
 pub struct Pi;
 impl RuntimeAdapter for Pi {
     fn skills(&self) -> SkillSupport {
@@ -168,27 +158,7 @@ impl RuntimeAdapter for Pi {
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
-        Some(RuntimeCatalog {
-            name: Runtime::Pi,
-            display_name: Runtime::Pi.display_name(),
-            command: Runtime::Pi.command().unwrap(),
-            capabilities: self.capabilities(),
-            native_fork: true,
-            description: "pi coding agent (bring your own model provider)",
-            install_url: "https://github.com/earendil-works/pi",
-            default_enabled: true,
-            models: vec![default_model_option()],
-            efforts: std::iter::once(default_effort())
-                .chain(
-                    ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
-                        .into_iter()
-                        .map(|effort| plain_option(effort, effort)),
-                )
-                .collect(),
-            skills_dirs: SKILL_DIRS,
-            update_args: &["update"],
-            npm_package: Some("@earendil-works/pi-coding-agent"),
-        })
+        runner_core::protocol::runtime_metadata::pi::catalog()
     }
     fn permissions(&self) -> &'static Permissions {
         &PERMISSIONS
@@ -352,5 +322,3 @@ static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
     query: models::query,
     config_home: || config_home(None, ".pi/agent"),
 };
-
-const SKILL_DIRS: &[&str] = &[".pi/agent/skills", ".agents/skills"];

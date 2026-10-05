@@ -4,14 +4,7 @@
 // in-memory pool) plus state-level functions over `AppCore` used by the GPUI
 // frontend and MCP tools.
 
-use serde::Serialize;
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ListPage<T> {
-    pub items: Vec<T>,
-    pub total_count: i64,
-    pub filtered_count: i64,
-}
+pub use runner_core::protocol::mod_types::ListPage;
 
 pub(super) fn escaped_like_pattern(query: &str) -> String {
     let escaped = query

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use gpui::prelude::*;
 use gpui::Window;
-use runner_backend::model::Event;
+use runner_core::protocol::model::Event;
 
 use super::*;
 use crate::*;
@@ -11,7 +11,7 @@ use crate::*;
 impl MissionWorkspace {
     pub(crate) fn handle_mission_workspace_event(
         &mut self,
-        event: runner_backend::events::AppEvent,
+        event: runner_core::protocol::ClientEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -42,7 +42,7 @@ impl MissionWorkspace {
         {
             self.mark_active_session_viewed(window, cx);
         }
-        match event.name {
+        match event.name.as_str() {
             "event/appended" => {
                 if event
                     .payload
@@ -278,7 +278,7 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let resync_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_events_replay(&core, &resync_id)
+            core.mission_events_replay(&resync_id)
                 .map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {
@@ -331,9 +331,11 @@ impl MissionWorkspace {
         let core = self.core(cx).clone();
         let refresh_id = mission_id.clone();
         let refresh = cx.background_spawn(async move {
-            let mission = runner_backend::ops::mission::mission_get(&core, &refresh_id)
+            let mission = core
+                .mission_get(&refresh_id)
                 .map_err(|error| error.to_string())?;
-            let sessions = runner_backend::ops::session::session_list(&core, &refresh_id)
+            let sessions = core
+                .session_list(&refresh_id)
                 .map_err(|error| error.to_string())?;
             Ok::<_, String>((mission, sessions))
         });

@@ -3,7 +3,6 @@
 
 use crate::model::Runtime;
 use chrono::Utc;
-use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::db::DbPool;
@@ -32,16 +31,7 @@ fn validate_layout(layout: &str) -> Result<()> {
         .map_err(|e| Error::msg(format!("invalid tab layout: {e}")))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct NodeTabUpsertInput {
-    pub id: String,
-    /// Scope for a NEW tab node; an existing node keeps its stored
-    /// placement — reparenting/reordering go through `node_move` only,
-    /// so a layout/name write can never scramble sibling positions.
-    pub parent_id: Option<String>,
-    pub name: String,
-    pub layout: String,
-}
+pub use runner_core::protocol::node::NodeTabUpsertInput;
 
 pub fn node_list(state: &AppCore) -> Result<Vec<NodeRow>> {
     let mut conn = state.db.get()?;

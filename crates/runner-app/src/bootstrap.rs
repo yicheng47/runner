@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
+
 use runner_backend::{
     cli_install, db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path,
     windows, AppCore,
@@ -10,11 +11,7 @@ use runner_backend::{
 
 pub const AUTO_RESUME_STAGGER_MS: u64 = 300;
 
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct AutoResumeReport {
-    pub resumed: Vec<String>,
-    pub errors: Vec<String>,
-}
+pub use runner_core::protocol::AutoResumeReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePaths {
@@ -191,78 +188,11 @@ pub fn boot_core(
     Ok(core)
 }
 
-pub fn consume_resume_on_launch(
-    core: &AppCore,
-    enabled: bool,
-    dims_for: impl Fn(&str) -> Option<(u16, u16)>,
-) -> Result<AutoResumeReport> {
-    let drawer_session_ids = {
-        let conn = core.db.get().context("get launch-resume connection")?;
-        repo::node::list(&conn)
-            .context("list launch-resume node layouts")?
-            .into_iter()
-            .filter(|row| {
-                matches!(
-                    row.node_type,
-                    repo::node::NodeType::Tab | repo::node::NodeType::Mission
-                )
-            })
-            .flat_map(|row| repo::node::drawer_session_ids(&row))
-            .collect()
-    };
-    consume_launch_claims(
-        enabled,
-        || {
-            let conn = core.db.get().context("get launch-resume connection")?;
-            repo::session::clear_chat_resume_on_launch(&conn)
-                .context("clear chat launch-resume claims")?;
-            Ok(())
-        },
-        || {
-            let mut conn = core.db.get().context("get launch-resume connection")?;
-            repo::session::take_resume_on_launch_excluding(&mut conn, &drawer_session_ids)
-                .context("take launch-resume claim")
-        },
-        |session_id| {
-            let dims = dims_for(session_id);
-            ops::session::session_resume_on_launch(
-                core,
-                session_id,
-                dims.map(|size| size.0),
-                dims.map(|size| size.1),
-            )
-            .map(drop)
-            .map_err(|error| error.to_string())
-        },
-        || std::thread::sleep(Duration::from_millis(AUTO_RESUME_STAGGER_MS)),
-    )
-}
+#[cfg(test)]
+pub use runner_backend::daemon::resume::consume_resume_on_launch;
 
-fn consume_launch_claims(
-    enabled: bool,
-    mut clear: impl FnMut() -> Result<()>,
-    mut take: impl FnMut() -> Result<Option<repo::session::ResumeOnLaunchClaim>>,
-    mut resume: impl FnMut(&str) -> std::result::Result<(), String>,
-    mut wait: impl FnMut(),
-) -> Result<AutoResumeReport> {
-    if !enabled {
-        clear()?;
-    }
-
-    let mut report = AutoResumeReport::default();
-    let mut attempted_chat = false;
-    while let Some(claim) = take()? {
-        if attempted_chat && !claim.shell {
-            wait();
-        }
-        attempted_chat |= !claim.shell;
-        match resume(&claim.session_id) {
-            Ok(()) => report.resumed.push(claim.session_id),
-            Err(error) => report.errors.push(format!("{}: {error}", claim.session_id)),
-        }
-    }
-    Ok(report)
-}
+#[cfg(test)]
+pub use runner_backend::daemon::resume::consume_launch_claims;
 
 pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
     let ids = {
@@ -280,11 +210,47 @@ pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {
     result.map_err(|error| anyhow::anyhow!("failed to stop sessions on quit: {error}"))
 }
 
+pub fn daemon_client(core: AppCore) -> runner_core::protocol::DaemonClient {
+    runner_backend::daemon::InProcessTransport::client(core)
+}
+
+#[cfg(target_os = "macos")]
+pub fn install_wake(client: runner_core::protocol::DaemonClient) {
+    runner_backend::wake::observe_wake(move || {
+        let _ = client.app_woke();
+    });
+}
+
+#[derive(Clone)]
+pub struct ClientHost {
+    pub client: runner_core::protocol::DaemonClient,
+    pub app_data_dir: PathBuf,
+    terminal_core: AppCore,
+}
+
+impl ClientHost {
+    pub fn terminal_core(&self) -> &AppCore {
+        &self.terminal_core
+    }
+}
+
+impl From<AppCore> for ClientHost {
+    fn from(core: AppCore) -> Self {
+        Self {
+            client: runner_backend::daemon::InProcessTransport::client(core.clone()),
+            app_data_dir: core.app_data_dir.clone(),
+            terminal_core: core,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
+    #[cfg(unix)]
+    use std::time::Duration;
 
     fn launch_claim(session_id: &str, shell: bool) -> repo::session::ResumeOnLaunchClaim {
         repo::session::ResumeOnLaunchClaim {
@@ -438,26 +404,17 @@ mod tests {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::clone(&pool),
-            app_data_dir: PathBuf::new(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::clone(&pool),
+            PathBuf::new(),
+            session::SessionManager::new(
                 Arc::clone(&runtime_shell_env),
                 Arc::clone(&runtime_discovery),
                 runtime,
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: runner_backend::router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
 
         stop_running_sessions_on_quit(&core).unwrap();
 

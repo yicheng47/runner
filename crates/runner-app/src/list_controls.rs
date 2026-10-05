@@ -1,4 +1,4 @@
-use runner_backend::ops::ListPage;
+use runner_core::protocol::ListPage;
 
 use runner_app::ui::{clamp_page, PAGE_SIZE};
 

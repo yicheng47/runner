@@ -12,7 +12,9 @@ use runner_app::ui::{
     PaneHeader, Scrollbar, SelectHandler, SelectOption, SettingsCard, SettingsRow, StepHandler,
     Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
 };
-use runner_backend::cli_install::{CommandActionOutcome, RunnerCommandState, RunnerCommandStatus};
+use runner_core::protocol::command::{
+    CommandActionOutcome, RunnerCommandState, RunnerCommandStatus,
+};
 
 use super::*;
 use crate::app_settings::{
@@ -259,6 +261,7 @@ fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
         .collect()
 }
 
+#[cfg(test)]
 fn launch_dims_for(
     session_id: &str,
     direct_sizes: &HashMap<String, (u16, u16)>,
@@ -756,8 +759,7 @@ impl NativeRoot {
     fn refresh_settings_crews(&self, cx: &mut Context<Self>) {
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            let conn = core.db.get().map_err(|error| error.to_string())?;
-            runner_backend::ops::crew::list(&conn)
+            core.crew_list_all()
                 .map(|crews| {
                     crews
                         .into_iter()
@@ -826,9 +828,7 @@ impl NativeRoot {
         let mission_size = self.estimated_mission_terminal_size(window, cx);
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_app::bootstrap::consume_resume_on_launch(&core, enabled, |session_id| {
-                launch_dims_for(session_id, &direct_sizes, mission_size)
-            })
+            core.consume_resume_on_launch(enabled, direct_sizes, mission_size)
         });
         cx.spawn_in(window, async move |weak, cx| match task.await {
             Ok(report) => {
@@ -896,7 +896,7 @@ impl NativeRoot {
                 if let Some(agents) = self.settings_page.agents.clone() {
                     agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
-                runner_backend::ops::runtime::runtime_check_updates(self.core(cx), false);
+                let _ = self.core(cx).runtime_check_updates(false);
             }
             SettingsPane::Skills => {
                 if self.settings_page.skills.is_none() {
@@ -1095,8 +1095,9 @@ impl NativeRoot {
             CommandInstallActivity::Install => crate::app_store::UserCommandAction::Install,
             CommandInstallActivity::Uninstall => crate::app_store::UserCommandAction::Uninstall,
         };
+        let client = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            crate::app_store::run_user_command_action(&inputs, action, integration)
+            crate::app_store::run_user_command_action(&client, &inputs, action, integration)
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -1929,18 +1930,16 @@ impl NativeRoot {
         )
         .browse_focus(self.settings_page.working_dir_browse_focus.clone());
         let file_link_editor = self.settings(cx).file_link_editor;
-        let shell_env = self
-            .app_store
-            .read(cx)
-            .core
-            .runtime_shell_env
-            .read()
-            .map(|env| env.clone())
-            .unwrap_or_default();
-        let (file_link_hint, file_link_warns) = file_link_hint(
-            file_link_editor,
-            crate::file_links::cli_found(file_link_editor, &shell_env),
-        );
+        let found = file_link_editor.cli().map(|command| {
+            self.app_store
+                .read(cx)
+                .file_link_environment
+                .1
+                .get(command)
+                .copied()
+                .unwrap_or(false)
+        });
+        let (file_link_hint, file_link_warns) = file_link_hint(file_link_editor, found);
         let file_link_row = SettingsRow::new(
             "Open file links in",
             self.settings_page.file_link_editor.clone(),
@@ -2083,7 +2082,7 @@ impl NativeRoot {
                 }
                 if let Some(path) = status.and_then(|status| status.shadowed_by.as_ref()) {
                     let command_name =
-                        runner_backend::cli_install::runner_command_name(cfg!(debug_assertions));
+                        runner_core::command_install::runner_command_name(cfg!(debug_assertions));
                     lines.push(command_status_text(
                         format!(
                             "{} comes first on your PATH, so typing {} starts that one.",
@@ -2139,12 +2138,12 @@ impl NativeRoot {
                         .unwrap_or_else(|| {
                             format!(
                                 "/usr/local/bin/{}",
-                                runner_backend::cli_install::runner_command_name(cfg!(
+                                runner_core::command_install::runner_command_name(cfg!(
                                     debug_assertions
                                 ))
                             )
                         });
-                    if runner_backend::cli_install::force_escalated_command_install() {
+                    if runner_core::protocol::command::force_escalated_command_install() {
                         format!(
                             "Not installed. Install links {target} and asks for your password once."
                         )
@@ -2201,7 +2200,7 @@ impl NativeRoot {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::text())
                 .child(div().font_family(theme::UI_MONOSPACE_FONT).child(
-                    runner_backend::cli_install::runner_command_name(cfg!(debug_assertions)),
+                    runner_core::command_install::runner_command_name(cfg!(debug_assertions)),
                 ))
                 .child(" command")
                 .into_any_element(),
@@ -2826,8 +2825,8 @@ mod tests {
     fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_one() {
         use crate::theme_snapshot::{assert_fill, ThemeGuard};
         use gpui::{size, Render, TestAppContext, VisualTestContext};
-        use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows};
-        use std::sync::{Arc, Mutex, RwLock};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::{Arc, RwLock};
 
         struct PaneHost(Entity<NativeRoot>);
         impl Render for PaneHost {
@@ -2856,26 +2855,17 @@ mod tests {
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
-            app_data_dir: temp.path().to_owned(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+            temp.path().to_owned(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         let mut cx = TestAppContext::single();
         let store = cx.new(|cx| {
             AppStore::new(

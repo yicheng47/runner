@@ -12,8 +12,8 @@ use runner_app::ui::{
     Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogState, PaneHeader, SettingsCard,
     TextField,
 };
-use runner_backend::model::Mission;
-use runner_backend::ops::session::DirectSessionEntry;
+use runner_core::protocol::model::Mission;
+use runner_core::protocol::session::DirectSessionEntry;
 
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSDate, NSDateFormatter, NSString};
@@ -130,11 +130,13 @@ impl ArchivedPane {
         self.loading = true;
         self.items = None;
         self.error = None;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
-            let missions = runner_backend::ops::mission::mission_list_archived(&core, None)
+            let missions = core
+                .mission_list_archived(None)
                 .map_err(|error| error.to_string())?;
-            let chats = runner_backend::ops::session::session_list_archived(&core)
+            let chats = core
+                .session_list_archived()
                 .map_err(|error| error.to_string())?;
             Ok::<_, String>(merge_archived_items(&missions, &chats))
         });
@@ -182,11 +184,11 @@ impl ArchivedPane {
             });
             return;
         }
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let session_id = item.id;
         let shell = self.shell.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::session::session_get(&core, &session_id)
+            core.session_get(&session_id)
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("session not found: {session_id}"))
         });
@@ -220,20 +222,17 @@ impl ArchivedPane {
             items.retain(|row| (row.kind, row.id.as_str()) != (key.0, key.1.as_str()));
         }
         self.error = None;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task_item = item.clone();
         let task = cx.background_spawn(async move {
             match task_item.kind {
-                ArchivedKind::Mission => {
-                    runner_backend::ops::mission::mission_unarchive(&core, task_item.id)
-                        .await
-                        .map(|_| ())
-                        .map_err(|error| error.to_string())
-                }
-                ArchivedKind::Chat => {
-                    runner_backend::ops::session::session_unarchive(&core, &task_item.id)
-                        .map_err(|error| error.to_string())
-                }
+                ArchivedKind::Mission => core
+                    .mission_unarchive(task_item.id)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                ArchivedKind::Chat => core
+                    .session_unarchive(&task_item.id)
+                    .map_err(|error| error.to_string()),
             }
         });
         cx.spawn(async move |weak, cx| {
@@ -290,18 +289,14 @@ impl ArchivedPane {
             return;
         };
         self.error = None;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             let mut failed = Vec::new();
             let mut first_error = None;
             for item in items {
                 let result = match item.kind {
-                    ArchivedKind::Mission => {
-                        runner_backend::ops::mission::mission_delete(&core, &item.id)
-                    }
-                    ArchivedKind::Chat => {
-                        runner_backend::ops::session::session_delete(&core, &item.id)
-                    }
+                    ArchivedKind::Mission => core.mission_delete(&item.id),
+                    ArchivedKind::Chat => core.session_delete(&item.id),
                 };
                 if let Err(error) = result {
                     first_error.get_or_insert_with(|| error.to_string());
@@ -768,7 +763,7 @@ fn localized_timestamp(timestamp: DateTime<Local>, time_only: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_backend::model::{MissionStatus, SessionStatus};
+    use runner_core::protocol::model::{MissionStatus, SessionStatus};
 
     fn mission(id: &str, title: &str, cwd: &str, archived_at: &str) -> Mission {
         Mission {

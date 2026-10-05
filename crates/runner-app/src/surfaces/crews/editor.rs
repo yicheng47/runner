@@ -14,8 +14,8 @@ use gpui::{
     div, px, rems, AnyElement, App, Context, FontWeight, KeyDownEvent, SharedString, Window,
 };
 use runner_app::ui::{Button, ButtonVariant, TextField};
-use runner_backend::model::{Crew, SlotWithRole};
-use runner_backend::ops::crew::UpdateCrewInput;
+use runner_core::protocol::crew::UpdateCrewInput;
+use runner_core::protocol::model::{Crew, SlotWithRole};
 
 use super::*;
 use crate::surfaces::profile_page::{
@@ -46,9 +46,9 @@ impl NativeRoot {
         let task = cx.background_spawn(async move {
             let requested = crew_id.clone();
             let result = (|| {
-                let crew = runner_backend::ops::crew::crew_get(&core, &crew_id)?;
-                let slots = runner_backend::ops::slot::slot_list(&core, &crew_id)?;
-                Ok::<_, runner_backend::error::Error>((crew, slots))
+                let crew = core.crew_get(&crew_id)?;
+                let slots = core.slot_list(&crew_id)?;
+                Ok::<_, runner_core::protocol::ClientError>((crew, slots))
             })();
             result
                 .map(|(crew, slots)| (requested.clone(), crew, slots))
@@ -382,7 +382,7 @@ impl NativeRoot {
                                             start_root.update(cx, |this, cx| {
                                                 this.open_start_mission_modal(
                                                     Some(crew_id),
-                                                    runner_backend::ops::project::ProjectScope::Root,
+                                                    runner_core::protocol::project::ProjectScope::Root,
                                                     window,
                                                     cx,
                                                 )
@@ -601,7 +601,8 @@ impl NativeRoot {
         let crew_id = crew.id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            let result = runner_backend::ops::crew::crew_update(&core, &crew_id, input)
+            let result = core
+                .crew_update(&crew_id, input)
                 .map(|_| ())
                 .map_err(|error| error.to_string());
             (crew_id, result)
@@ -681,7 +682,7 @@ pub(super) fn crew_edit_is_dirty(form: &CrewEditForm, crew: &Crew, cx: &App) -> 
 
 fn crew_details(crew: &Crew, editing: bool) -> AnyElement {
     let now = chrono::Local::now();
-    let date = |timestamp: runner_backend::model::Timestamp| {
+    let date = |timestamp: runner_core::protocol::model::Timestamp| {
         short_date(&timestamp.with_timezone(&chrono::Local), &now)
     };
     let (created, updated) = (date(crew.created_at), date(crew.updated_at));

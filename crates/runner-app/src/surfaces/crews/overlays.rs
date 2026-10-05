@@ -17,7 +17,8 @@ impl NativeRoot {
         let crew_id = confirm.slot.slot.crew_id.clone();
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            let result = runner_backend::ops::slot::slot_delete(&core, &slot_id)
+            let result = core
+                .slot_delete(&slot_id)
                 .map_err(|error| error.to_string());
             (crew_id, result)
         });
@@ -65,9 +66,10 @@ impl NativeRoot {
         let id = confirm.id.clone();
         let name = confirm.name.clone();
         let core = self.core(cx).clone();
-        let task = cx.background_spawn(async move {
-            runner_backend::ops::crew::crew_delete(&core, &id).map_err(|error| error.to_string())
-        });
+        let task =
+            cx.background_spawn(
+                async move { core.crew_delete(&id).map_err(|error| error.to_string()) },
+            );
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {

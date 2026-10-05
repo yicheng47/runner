@@ -17,10 +17,10 @@ use gpui::{
     Window,
 };
 use runner_app::ui::{focus_ring, Button, ButtonVariant, RoleAvatar, WorkingDirField};
-use runner_backend::model::CodexSpeed;
-use runner_backend::model::Role;
-use runner_backend::ops::role::RoleActivity;
-use runner_backend::ops::slot::CrewMembership;
+use runner_core::protocol::model::CodexSpeed;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::role::RoleActivity;
+use runner_core::protocol::slot::CrewMembership;
 
 use super::ROLE_COLUMN_WIDTH;
 use crate::chat_icon::ChatIcon;

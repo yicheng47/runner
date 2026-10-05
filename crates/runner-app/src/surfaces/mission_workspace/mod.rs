@@ -19,10 +19,10 @@ use std::time::Instant;
 use gpui::prelude::*;
 use gpui::{div, px, rems, App, Bounds, Entity, Pixels, SharedString, WeakEntity, Window};
 use runner_app::ui::{CopyValueButton, PopoverMenu, SessionControlKind, TextField};
-use runner_backend::model::{
+use runner_core::protocol::model::{
     Crew, Event, EventKind, Mission, MissionStatus, SessionStatus, SlotWithRole,
 };
-use runner_backend::ops::session::SessionRow;
+use runner_core::protocol::session::SessionRow;
 
 use super::*;
 use crate::surfaces::mission_composer::ComposerState;
@@ -257,7 +257,7 @@ pub(crate) struct MissionWorkspace {
     sessions: Vec<SessionRow>,
     events: Vec<Event>,
     session_statuses: BTreeMap<String, SessionActivityState>,
-    session_observations: BTreeMap<String, runner_backend::session::status::AgentStatus>,
+    session_observations: BTreeMap<String, runner_core::protocol::status::AgentStatus>,
     goal: Option<String>,
     feed_blocks: Vec<FeedBlock>,
     feed_selection: Option<FeedSelection>,
@@ -282,6 +282,8 @@ pub(crate) struct MissionWorkspace {
     active_tab: MissionTab,
     open_tabs: Vec<String>,
     last_measured_terminal_size: Option<CachedTerminalSize>,
+    last_grid_hint: Option<(u16, u16)>,
+    grid_hint_pending: bool,
     delivery_blocked: HashMap<String, DeliveryBlocked>,
     transitions: HashMap<String, MissionTransition>,
     next_transition_generation: u64,
@@ -458,7 +460,6 @@ fn mission_tab_in_direction(
 
 impl Render for MissionWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_mission_grid_hint(window, cx);
         self.render_mission_workspace(window, cx)
     }
 }

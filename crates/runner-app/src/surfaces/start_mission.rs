@@ -6,10 +6,10 @@ use runner_app::ui::{
     working_dir_text_field, Button, ButtonVariant, Field, IconButton, Modal, OverlayWidth,
     SelectOption, StyledSelect, TextField, WorkingDirField,
 };
-use runner_backend::model::SlotWithRole;
-use runner_backend::ops::crew::CrewListItem;
-use runner_backend::ops::project::ProjectScope;
-use runner_backend::repo::project::ProjectRow;
+use runner_core::protocol::crew::CrewListItem;
+use runner_core::protocol::model::SlotWithRole;
+use runner_core::protocol::project::ProjectRow;
+use runner_core::protocol::project::ProjectScope;
 
 use crate::*;
 
@@ -146,7 +146,7 @@ impl NativeRoot {
 
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::crew::crew_list(&core, 1, 10_000, "")
+            core.crew_list(1, 10_000, "")
                 .map(|page| page.items)
                 .map_err(|error| error.to_string())
         });
@@ -207,7 +207,7 @@ impl NativeRoot {
         let core = self.core(cx).clone();
         let load_id = crew_id.clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::slot::slot_list(&core, &load_id).map_err(|error| error.to_string())
+            core.slot_list(&load_id).map_err(|error| error.to_string())
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -319,7 +319,7 @@ impl NativeRoot {
         if !modal.can_submit(cx) || modal.is_composing(cx) {
             return;
         }
-        let input = runner_backend::ops::mission::MissionStart {
+        let input = runner_core::protocol::mission::MissionStart {
             crew_id: modal.crew_id.clone(),
             scope: ProjectScope::or_root(modal.project.as_ref().map(|project| project.id.clone())),
             title: modal.title.read(cx).text().trim().to_owned(),
@@ -332,8 +332,7 @@ impl NativeRoot {
         let size = self.estimated_mission_terminal_size(window, cx);
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            runner_backend::ops::mission::mission_start_impl_with_size(&core, input, Some(size))
-                .await
+            core.mission_start_impl_with_size(input, Some(size))
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -753,22 +752,20 @@ mod keyboard_tests {
             root.new_mission_action(&NewMission, window, cx);
         });
         harness.act(|root, _, cx| {
-            let crew = runner_backend::ops::crew::crew_create(
-                root.core(cx),
-                runner_backend::ops::crew::CreateCrewInput {
+            let crew = root
+                .core(cx)
+                .crew_create(runner_core::protocol::crew::CreateCrewInput {
                     name: "First".into(),
                     ..Default::default()
-                },
-            )
-            .unwrap();
-            let other = runner_backend::ops::crew::crew_create(
-                root.core(cx),
-                runner_backend::ops::crew::CreateCrewInput {
+                })
+                .unwrap();
+            let other = root
+                .core(cx)
+                .crew_create(runner_core::protocol::crew::CreateCrewInput {
                     name: "Second".into(),
                     ..Default::default()
-                },
-            )
-            .unwrap();
+                })
+                .unwrap();
             let form = root.start_mission_modal.as_mut().unwrap();
             form.loading = false;
             form.crews = vec![
@@ -965,26 +962,22 @@ mod keyboard_tests {
         let mut project_id = String::new();
         harness.act(|root, window, cx| {
             root.close_start_mission_modal(window, cx);
-            let project = runner_backend::ops::project::project_create(
-                root.core(cx),
-                "Project".into(),
-                "/tmp".into(),
-            )
-            .unwrap();
+            let project = root
+                .core(cx)
+                .project_create("Project".into(), "/tmp".into())
+                .unwrap();
             project_id = project.id.clone();
             let project_node = runner_backend::repo::node::ensure_project_node(
-                &root.core(cx).db.get().unwrap(),
+                &root.app_store.read(cx).update_host.0.db.get().unwrap(),
                 &project.id,
             )
             .unwrap();
             let mut layout = PaneLayout::single(None, &[]);
             layout.id = "01M3VD00000000000000000003".into();
             layout.parent_id = Some(project_node.id);
-            runner_backend::ops::node::node_tab_upsert(
-                root.core(cx),
-                layout.upsert_input().unwrap(),
-            )
-            .unwrap();
+            root.core(cx)
+                .node_tab_upsert(layout.upsert_input().unwrap())
+                .unwrap();
             root.app_store.update(cx, |store, cx| {
                 store.projects = vec![project];
                 cx.notify();

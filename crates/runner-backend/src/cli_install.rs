@@ -253,24 +253,9 @@ fn up_to_date(source: &Path, dest: &Path) -> Result<bool> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CommandPlatform {
-    Unix,
-    Windows,
-}
+pub use runner_core::protocol::command::CommandPlatform;
 
-#[derive(Clone, Debug)]
-pub struct CommandInstallInputs {
-    pub home: PathBuf,
-    pub login_path: String,
-    pub system_path: String,
-    pub sidecar: PathBuf,
-    pub local_bin: PathBuf,
-    pub system_bin: PathBuf,
-    pub system_bin_writable: bool,
-    pub debug: bool,
-    pub platform: CommandPlatform,
-}
+pub use runner_core::protocol::command::CommandInstallInputs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistryValueKind {
@@ -352,17 +337,7 @@ impl CommandEscalation for NoEscalation {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CommandActionOutcome {
-    Installed(PathBuf),
-    AlreadyInstalled(PathBuf),
-    Removed(PathBuf),
-    NotInstalled,
-    Foreign(PathBuf),
-    NoTarget,
-    Cancelled,
-    Unsupported,
-}
+pub use runner_core::protocol::command::CommandActionOutcome;
 
 pub fn command_status(
     inputs: &CommandInstallInputs,
@@ -533,25 +508,9 @@ pub fn uninstall_command(
     }
 }
 
-pub fn force_escalated_command_install() -> bool {
-    #[cfg(debug_assertions)]
-    {
-        force_escalated_setting(
-            true,
-            std::env::var("RUNNER_COMMAND_INSTALL_FORCE_ESCALATED")
-                .ok()
-                .as_deref(),
-        )
-    }
-    #[cfg(not(debug_assertions))]
-    {
-        false
-    }
-}
+pub use runner_core::protocol::command::force_escalated_command_install;
 
-fn force_escalated_setting(debug: bool, value: Option<&str>) -> bool {
-    debug && value == Some("1")
-}
+pub use runner_core::protocol::command::force_escalated_setting;
 
 pub fn escalated_link_script(sidecar: &Path, link: &Path) -> String {
     let parent = link.parent().unwrap_or(Path::new("/usr/local/bin"));

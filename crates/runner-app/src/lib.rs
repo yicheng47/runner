@@ -1,5 +1,7 @@
 use gpui::actions;
 #[cfg(test)]
+mod test_support;
+#[cfg(test)]
 mod theme_snapshot;
 
 actions!(runner_app_ui, [Copy, Cut, Paste, Redo, SelectAll, Undo]);

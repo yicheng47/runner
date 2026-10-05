@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use chrono::Duration;
-use runner_backend::model::{Event, EventKind, SignalType};
+use runner_core::protocol::model::{Event, EventKind, SignalType};
 
 #[derive(Clone, Debug)]
 pub(crate) enum FeedBlock {

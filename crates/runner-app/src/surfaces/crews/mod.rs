@@ -19,10 +19,10 @@ use gpui::{
     div, rems, Bounds, Context, Entity, FocusHandle, Pixels, ScrollHandle, Subscription, Window,
 };
 use runner_app::ui::{ContextMenu, ModelField, Scrollbar, SearchInput, StyledSelect, TextField};
-use runner_backend::model::{Crew, SlotWithRole};
-use runner_backend::ops::crew::CrewListItem;
-use runner_backend::ops::role::RoleWithActivity;
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
+use runner_core::protocol::crew::CrewListItem;
+use runner_core::protocol::model::{Crew, SlotWithRole};
+use runner_core::protocol::role::RoleWithActivity;
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use crate::list_controls::ListControls;
 use crate::*;
@@ -107,7 +107,7 @@ struct SlotOverrideForm {
     /// The effort override; empty inherits.
     effort: String,
     effort_select: Entity<StyledSelect>,
-    speed: Option<runner_backend::model::CodexSpeed>,
+    speed: Option<runner_core::protocol::model::CodexSpeed>,
     speed_select: Entity<StyledSelect>,
     /// Reset for runtime, model, effort and Speed.
     reset_focus: [FocusHandle; 4],

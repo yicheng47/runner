@@ -1,14 +1,14 @@
-use runner_backend::model::{CodexSpeed, Runtime};
+use runner_core::protocol::model::{CodexSpeed, Runtime};
 
 use chrono::{DateTime, TimeZone};
 use gpui::prelude::*;
 use gpui::{div, AnyElement, Context};
 use runner_app::ui::SelectOption;
-use runner_backend::model::Role;
-use runner_backend::ops::role::RoleActivity;
-use runner_backend::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
-use runner_backend::ops::slot::CrewMembership;
-use runner_backend::router::runtime::PermissionMode;
+use runner_core::protocol::model::Role;
+use runner_core::protocol::permissions::PermissionMode;
+use runner_core::protocol::role::RoleActivity;
+use runner_core::protocol::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
+use runner_core::protocol::slot::CrewMembership;
 
 use super::*;
 pub(super) use crate::surfaces::profile_page::{
@@ -65,14 +65,14 @@ pub(super) fn speed_options() -> Vec<SelectOption> {
 }
 
 pub(crate) fn ensure_runtime_present(
-    core: &AppCore,
+    core: &DaemonClient,
     runtimes: &mut Vec<RuntimeCatalogEntry>,
     name: &str,
 ) {
     if runtimes.iter().any(|runtime| runtime.name.key() == name) {
         return;
     }
-    if let Ok(catalog) = runner_backend::ops::runtime::runtime_catalog(core) {
+    if let Ok(catalog) = core.runtime_catalog() {
         if let Some(runtime) = catalog
             .into_iter()
             .find(|runtime| runtime.name.key() == name)
@@ -236,7 +236,7 @@ fn role_model_efforts(runtime: &RuntimeCatalogEntry, model: &str) -> Vec<Runtime
 }
 
 pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
-    runner_backend::runtimes::for_key(runtime)
+    runner_core::protocol::runtime_metadata::for_key(runtime)
         .permissions()
         .offered
 }
@@ -250,7 +250,7 @@ pub(super) fn role_permission_mode(role: &Role) -> Option<PermissionMode> {
     if modes.is_empty() {
         return None;
     }
-    let inferred = runner_backend::runtimes::for_key(&role.runtime)
+    let inferred = runner_core::protocol::runtime_metadata::for_key(&role.runtime)
         .permissions()
         .infer(&role.args);
     Some(if modes.contains(&inferred) {
@@ -301,7 +301,7 @@ pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) 
 
 /// Mission permissions are fixed, so old role permission flags stay out of the form.
 pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
-    runner_backend::runtimes::for_key(&role.runtime)
+    runner_core::protocol::runtime_metadata::for_key(&role.runtime)
         .permissions()
         .strip(&role.args)
 }
@@ -421,7 +421,7 @@ where
 }
 
 pub(crate) fn runtime_display_name(runtime: &str) -> String {
-    runner_backend::ops::runtime::runtime_list()
+    runner_core::protocol::runtime_metadata::runtime_list()
         .into_iter()
         .find(|definition| definition.name.key() == runtime)
         .map(|definition| definition.display_name)

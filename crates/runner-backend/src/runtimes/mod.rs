@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::router::runtime::MissionPermissionMode;
 pub(crate) mod antigravity;
 pub(crate) mod catalog;
 pub(crate) mod claude_code;
@@ -12,11 +14,8 @@ mod tests;
 pub(crate) mod trae;
 
 use crate::model::{CodexSpeed, Runtime};
-use crate::ops::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
 use crate::router::prompt::{LaunchPromptInput, SessionPromptKind};
-use crate::router::runtime::{
-    ForkPlan, MissionPermissionMode, PermissionMode, ResumePlan, FIRST_TURN_ARGV_MAX_BYTES,
-};
+use crate::router::runtime::{ForkPlan, PermissionMode, ResumePlan, FIRST_TURN_ARGV_MAX_BYTES};
 use crate::session::hook_feed::HookWatcher;
 use crate::session::runtime::SpawnSpec;
 #[cfg(all(test, windows))]
@@ -28,42 +27,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
-pub struct RuntimeCatalog {
-    pub name: Runtime,
-    pub display_name: &'static str,
-    pub command: &'static str,
-    pub native_fork: bool,
-    pub capabilities: RuntimeCapabilities,
-    pub skills_dirs: &'static [&'static str],
-    pub update_args: &'static [&'static str],
-    pub npm_package: Option<&'static str>,
-    pub description: &'static str,
-    pub install_url: &'static str,
-    pub default_enabled: bool,
-    pub models: Vec<RuntimeCatalogOption>,
-    pub efforts: Vec<RuntimeCatalogOption>,
-}
-
-impl RuntimeCatalog {
-    pub fn into_entry(self) -> RuntimeCatalogEntry {
-        RuntimeCatalogEntry {
-            name: self.name,
-            display_name: self.display_name.into(),
-            command: self.command.into(),
-            native_fork: self.native_fork,
-            capabilities: self.capabilities,
-            description: self.description.into(),
-            install_url: self.install_url.into(),
-            default_enabled: self.default_enabled,
-            available: false,
-            default_model: None,
-            default_effort: None,
-            models: self.models,
-            efforts: self.efforts,
-        }
-    }
-}
+pub use runner_core::protocol::runtime::RuntimeCatalog;
 
 pub fn catalogs() -> Vec<RuntimeCatalog> {
     Runtime::ALL
@@ -194,14 +158,7 @@ pub trait StatusHooks: Send + Sync {
     fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>>;
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RuntimeCapabilities {
-    pub usage: bool,
-    pub global_skill_toggle: bool,
-    pub skill_toggle_requires_marker: bool,
-    pub codex_speed: bool,
-    pub effort_needs_launch_model: bool,
-}
+pub use runner_core::protocol::runtime::RuntimeCapabilities;
 
 pub struct ModelDiscoverySource {
     pub order: u8,

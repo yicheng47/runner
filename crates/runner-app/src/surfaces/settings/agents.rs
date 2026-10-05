@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -12,12 +12,12 @@ use runner_app::ui::{
     Badge, BrowseField, Button, ButtonSize, ButtonVariant, FieldValidation, PaneHeader,
     SettingsCard, TextField, Toggle, Tone, Tooltip,
 };
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
-use runner_backend::runtime_status::{
+use runner_core::protocol::discovery::DiscoveryOutcome;
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
+use runner_core::protocol::runtime::{
     OverrideValidationError, RuntimeCommandSource, RuntimeExecutableStatus, RuntimeRowState,
     RuntimeStatusResponse, ShellDiscoveryStatus,
 };
-use runner_backend::shell_path::DiscoveryOutcome;
 
 use crate::app_settings::AppSettings;
 use crate::app_store::AppStore;
@@ -84,7 +84,7 @@ impl AgentsPane {
     ) -> Self {
         let mut overrides = HashMap::new();
         let mut subscriptions = Vec::new();
-        for runtime in runner_backend::ops::runtime::runtime_list() {
+        for runtime in runner_core::protocol::runtime_metadata::runtime_list() {
             let runtime_name = runtime.name;
             let enter_shell = shell.clone();
             let escape_pane = cx.weak_entity();
@@ -178,13 +178,13 @@ impl AgentsPane {
             return;
         }
         self.loading = true;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
-            let status = runner_backend::ops::runtime::runtime_status_list(&core)
+            let status = core
+                .runtime_status_list()
                 .map_err(|error| error.to_string())?;
-            let catalog = runner_backend::ops::runtime::runtime_catalog(&core)
-                .map_err(|error| error.to_string())?;
-            let live = runner_backend::ops::session::live_session_counts(&core).unwrap_or_default();
+            let catalog = core.runtime_catalog().map_err(|error| error.to_string())?;
+            let live = core.live_session_counts().unwrap_or_default();
             Ok::<_, String>((status, catalog, live))
         });
         cx.spawn(async move |weak, cx| {
@@ -210,11 +210,8 @@ impl AgentsPane {
     /// Recounts live sessions per agent, which the Update guard reads, as
     /// sessions start and stop while Settings is open.
     pub(crate) fn refresh_live_sessions(&mut self, cx: &mut Context<Self>) {
-        let core = self.app_store.read(cx).core.clone();
-        let task =
-            cx.background_spawn(
-                async move { runner_backend::ops::session::live_session_counts(&core) },
-            );
+        let core = self.app_store.read(cx).client.clone();
+        let task = cx.background_spawn(async move { core.live_session_counts() });
         cx.spawn(async move |weak, cx| {
             if let Ok(live) = task.await {
                 let _ = weak.update(cx, |this, cx| {
@@ -265,13 +262,13 @@ impl AgentsPane {
             return;
         }
         self.refreshing = true;
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let model_runtimes = self.app_store.read(cx).settings.model_runtimes();
         let task = cx.background_spawn(async move {
-            let status = runner_backend::ops::runtime::runtime_refresh(&core, &model_runtimes)
+            let status = core
+                .runtime_refresh(&model_runtimes)
                 .map_err(|error| error.to_string())?;
-            let catalog = runner_backend::ops::runtime::runtime_catalog(&core)
-                .map_err(|error| error.to_string())?;
+            let catalog = core.runtime_catalog().map_err(|error| error.to_string())?;
             Ok::<_, String>((status, catalog))
         });
         cx.spawn(async move |weak, cx| {
@@ -460,7 +457,7 @@ impl AgentsPane {
         self.saving.insert(runtime);
         self.set_validation(runtime, None, cx);
         field.update(cx, |field, field_cx| field.set_disabled(true, field_cx));
-        let core = self.app_store.read(cx).core.clone();
+        let core = self.app_store.read(cx).client.clone();
         let runtime_name = runtime;
         let task_runtime = runtime_name;
         // A new executable is a new model source; only query it when the user
@@ -473,14 +470,17 @@ impl AgentsPane {
             .contains(&runtime);
         let task = cx.background_spawn(async move {
             let status = if draft.is_empty() {
-                runner_backend::ops::runtime::runtime_clear_override(&core, task_runtime)
+                core.runtime_clear_override(task_runtime)
                     .map_err(|error| error.to_string())
             } else {
-                runner_backend::ops::runtime::runtime_set_override(&core, task_runtime, &draft)
-                    .map_err(|error| override_validation_error_message(&error))
+                core.runtime_set_override(task_runtime, &draft)
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| {
+                        result.map_err(|error| override_validation_error_message(&error))
+                    })
             };
             if status.is_ok() && refresh_models {
-                runner_backend::ops::runtime::runtime_request_models(&core, &[task_runtime]);
+                let _ = core.runtime_request_models(&[task_runtime]);
             }
             status
         });
@@ -1070,7 +1070,7 @@ impl Render for AgentsPane {
                 .gap_4()
                 .child(self.render_installed_header(None, cx))
                 .children(
-                    runner_backend::ops::runtime::runtime_list()
+                    runner_core::protocol::runtime_metadata::runtime_list()
                         .into_iter()
                         .map(|_| {
                             SettingsCard::new([div()
@@ -1463,7 +1463,7 @@ fn shell_description(shell: Option<&ShellDiscoveryStatus>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_backend::runtime_status::ShellDiscoveryStatus;
+    use runner_core::protocol::runtime::ShellDiscoveryStatus;
 
     #[test]
     fn no_shell_description_reports_missing_login_shell() {
@@ -1803,33 +1803,22 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{
-            db, event_bus, events, mcp, router, session, shell_path, windows, AppCore,
-        };
-        use std::sync::{Arc, Mutex, RwLock};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::{Arc, RwLock};
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
             Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-        let core = AppCore {
-            db: Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
-            app_data_dir: path.into(),
-            sessions: session::SessionManager::new(
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&path.join("runner.db")).unwrap()),
+            path.into(),
+            session::SessionManager::new(
                 runtime_shell_env.clone(),
                 runtime_discovery.clone(),
                 Arc::new(session::pty_runtime::PtyRuntime::new()),
             ),
             runtime_shell_env,
             runtime_discovery,
-            usage: Arc::new(runner_backend::usage::UsageService::default()),
-            buses: event_bus::BusRegistry::new(),
-            routers: router::RouterRegistry::new(),
-            mission_grid_hint: Arc::new(Mutex::new(None)),
-            mcp: Arc::new(mcp::McpHandle::new()),
-            windows: Arc::new(windows::WindowRegistry::new()),
-            events: events::EventChannel::new(),
-            session_event_observer: Default::default(),
-            app_version: "0.0.0-test".into(),
-        };
+        );
         cx.new(|cx| {
             AppStore::new(
                 core,
@@ -1852,11 +1841,11 @@ mod tests {
     }
 
     fn test_catalog() -> Vec<RuntimeCatalogEntry> {
-        runner_backend::ops::runtime::runtime_list()
+        runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .map(|entry| RuntimeCatalogEntry {
                 name: entry.name,
-                capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+                capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                     entry.name,
                 )
                 .map(|entry| entry.capabilities)
@@ -1937,7 +1926,7 @@ mod tests {
     #[test]
     fn none_installed_invites_installation_above_all_missing_cards() {
         let mut cx = gpui::TestAppContext::single();
-        let rows = runner_backend::ops::runtime::runtime_list()
+        let rows = runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .map(|entry| {
                 let mut row = runtime(RuntimeRowState::NotFound);
@@ -1971,7 +1960,7 @@ mod tests {
     #[test]
     fn install_link_shares_the_description_line_and_both_are_omitted_when_empty() {
         let mut cx = gpui::TestAppContext::single();
-        let rows = runner_backend::ops::runtime::runtime_list()
+        let rows = runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .filter(|entry| matches!(entry.name, Runtime::Codex | Runtime::Trae))
             .map(|entry| {
@@ -2344,7 +2333,7 @@ mod tests {
     fn unavailable_default_waits_for_discovery_then_clears() {
         let catalog = vec![RuntimeCatalogEntry {
             name: Runtime::Codex,
-            capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+            capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::Codex,
             )
             .map(|entry| entry.capabilities)

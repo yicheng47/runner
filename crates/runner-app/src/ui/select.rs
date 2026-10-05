@@ -1,5 +1,5 @@
 #[cfg(test)]
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -8,7 +8,7 @@ use gpui::{
     Entity, FocusHandle, FontWeight, KeyDownEvent, Pixels, Render, ScrollHandle, SharedString,
     Window,
 };
-use runner_backend::ops::runtime::RuntimeCatalogEntry;
+use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use crate::theme;
 use crate::ui::app_zoom;
@@ -1218,7 +1218,7 @@ mod tests {
     fn runtime_select_hides_unavailable_catalog_entries() {
         let mut catalog = vec![RuntimeCatalogEntry {
             name: Runtime::Codex,
-            capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
+            capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::Codex,
             )
             .map(|entry| entry.capabilities)
@@ -1239,17 +1239,17 @@ mod tests {
         catalog[0].available = true;
         assert_eq!(runtime_select_options(&catalog)[0].value, "codex");
         let mut copilot = catalog[0].clone();
-        copilot.name = runner_backend::model::Runtime::Copilot;
+        copilot.name = runner_core::protocol::model::Runtime::Copilot;
         copilot.display_name = "GitHub Copilot CLI".into();
         copilot.command = "copilot".into();
         catalog.push(copilot);
         let mut pi = catalog[0].clone();
-        pi.name = runner_backend::model::Runtime::Pi;
+        pi.name = runner_core::protocol::model::Runtime::Pi;
         pi.display_name = "pi".into();
         pi.command = "pi".into();
         catalog.push(pi);
         let mut agy = catalog[0].clone();
-        agy.name = runner_backend::model::Runtime::Antigravity;
+        agy.name = runner_core::protocol::model::Runtime::Antigravity;
         agy.display_name = "Antigravity CLI".into();
         agy.command = "agy".into();
         catalog.push(agy);

@@ -1,4 +1,4 @@
-use runner_backend::model::Runtime;
+use runner_core::protocol::model::Runtime;
 
 use super::*;
 use crate::*;
@@ -182,14 +182,12 @@ impl Sidebar {
             let mut removed = Vec::new();
             for (session_id, operation) in plan {
                 let result = match operation {
-                    ArchiveSessionOperation::CloseTerminal => {
-                        runner_backend::ops::session::session_close(&core, &session_id)
-                    }
+                    ArchiveSessionOperation::CloseTerminal => core.session_close(&session_id),
                     ArchiveSessionOperation::ArchiveChat { running } => {
                         if running {
-                            let _ = runner_backend::ops::session::session_kill(&core, &session_id);
+                            let _ = core.session_kill(&session_id);
                         }
-                        runner_backend::ops::session::session_archive(&core, &session_id)
+                        core.session_archive(&session_id)
                     }
                 };
                 if let Err(error) = result {
@@ -291,7 +289,7 @@ impl NativeRoot {
             return;
         }
         let result = layout.upsert_input().and_then(|input| {
-            runner_backend::ops::node::node_tab_upsert(self.core(cx), input)?;
+            self.core(cx).node_tab_upsert(input)?;
             self.reload_tabs(cx)
         });
         if let Err(error) = result {
