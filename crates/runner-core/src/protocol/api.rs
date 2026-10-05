@@ -1,4 +1,5 @@
 use super::mcp::*;
+use super::terminal::*;
 use super::*;
 use super::{agent_skill, command};
 use std::collections::{BTreeMap, HashMap};
@@ -8,6 +9,15 @@ use std::path::PathBuf;
 #[macro_export]
 macro_rules! daemon_api {
     ($consumer:ident) => { $consumer! {
+        runtime_update_prepare(runtime: Runtime => Runtime = { runtime }, size: (u16, u16) => (u16, u16) = { size }) -> RuntimeUpdateCommand [false] => |core: &crate::AppCore, runtime: Runtime, size: (u16, u16)| { crate::ops::runtime::runtime_update_prepare(core, runtime, size) };
+        runtime_update_run(command: RuntimeUpdateCommand => RuntimeUpdateCommand = { command }) -> () [false] => |core: &crate::AppCore, command: RuntimeUpdateCommand| { crate::ops::runtime::runtime_update_run(core, command) };
+        terminal_metadata(session_id: &str => String = { session_id.to_owned() }) -> TerminalMetadata [true] => |core: &crate::AppCore, session_id: String| { crate::session::manager::terminal::metadata(core, &session_id) };
+        terminal_link_cwd(session_id: &str => String = { session_id.to_owned() }) -> Option<PathBuf> [false] => |core: &crate::AppCore, session_id: String| { crate::session::manager::terminal::link_cwd(core, &session_id) };
+        terminal_configure(session_id: &str => String = { session_id.to_owned() }, scrollback: usize => usize = { scrollback }, shape: &str => String = { shape.to_owned() }) -> () [true] => |core: &crate::AppCore, session_id: String, scrollback: usize, shape: String| { crate::session::manager::terminal::configure(core, &session_id, scrollback, &shape) };
+        terminal_palette(palette: TerminalPalette => TerminalPalette = { palette }) -> () [true] => |core: &crate::AppCore, palette: TerminalPalette| { crate::session::manager::terminal::set_palette(core, palette) };
+        terminal_observe_input(session_id: &str => String = { session_id.to_owned() }, input: InputEvent => InputEvent = { input }) -> () [true] => |core: &crate::AppCore, session_id: String, input: InputEvent| { core.sessions.terminal_model(&session_id)?.observe_input(&input); Ok(()) };
+        terminal_input_reset_guard(session_id: &str => String = { session_id.to_owned() }) -> u64 [true] => |core: &crate::AppCore, session_id: String| { Ok(core.sessions.terminal_model(&session_id)?.input_reset_guard()) };
+        terminal_reset_input_state(session_id: &str => String = { session_id.to_owned() }, guard: u64 => u64 = { guard }) -> () [true] => |core: &crate::AppCore, session_id: String, guard: u64| { core.sessions.terminal_model(&session_id)?.reset_input_state(guard); Ok(()) };
         crew_create(input: CreateCrewInput => CreateCrewInput = { input }) -> Crew [false] => |core: &crate::AppCore, input: CreateCrewInput| { crate::ops::crew::crew_create(core, input) };
         crew_delete(id: &str => String = { id.to_owned() }) -> () [false] => |core: &crate::AppCore, id: String| { crate::ops::crew::crew_delete(core, &id) };
         crew_get(id: &str => String = { id.to_owned() }) -> Crew [false] => |core: &crate::AppCore, id: String| { crate::ops::crew::crew_get(core, &id) };

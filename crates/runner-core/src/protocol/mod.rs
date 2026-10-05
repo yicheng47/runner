@@ -16,6 +16,7 @@ pub mod session_title;
 pub mod skills;
 pub mod slot;
 pub mod status;
+pub mod terminal;
 pub mod usage;
 pub mod window;
 pub use api::{Request, Response};

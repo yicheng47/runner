@@ -46,6 +46,7 @@ use crate::session::runtime::{
 mod lifecycle;
 mod output;
 mod spawn;
+pub mod terminal;
 
 #[cfg(test)]
 use super::state::ObservedInput;
@@ -218,7 +219,8 @@ fn drop_streak_is_loggable(streak: u64) -> bool {
 /// can be unit-tested with a fake. Prod uses `CoreSessionEvents`; tests use
 /// a no-op or a channel-capture impl.
 pub trait SessionEvents: Send + Sync + 'static {
-    fn output(&self, ev: &OutputEvent);
+    fn input_error(&self, _id: &str, _message: &str) {}
+    fn terminal_metadata_changed(&self, _id: &str) {}
     fn spawned(&self, _ev: &SessionSpawnedEvent) {}
     fn fork_started(&self, _ev: &SessionForkStartedEvent) {}
     fn exit(&self, ev: &ExitEvent);
@@ -242,6 +244,7 @@ pub trait SessionEvents: Send + Sync + 'static {
 #[derive(Clone, Default)]
 pub struct SessionEventObserverRegistry {
     observer: Arc<RwLock<Option<Weak<dyn SessionEvents>>>>,
+    adapter: Arc<Mutex<Option<Arc<dyn SessionEvents>>>>,
 }
 
 impl SessionEventObserverRegistry {
@@ -249,6 +252,10 @@ impl SessionEventObserverRegistry {
         *self.observer.write().unwrap() = Some(observer);
     }
 
+    pub fn install_owned(&self, adapter: Arc<dyn SessionEvents>) {
+        self.install(Arc::downgrade(&adapter));
+        *self.adapter.lock().unwrap() = Some(adapter);
+    }
     fn observer(&self) -> Option<Arc<dyn SessionEvents>> {
         self.observer
             .read()
@@ -285,8 +292,8 @@ pub struct SessionActivityEvent {
     pub status: AgentStatus,
 }
 
-/// Production emitter. Raw output goes synchronously to the process-local
-/// observer; lifecycle and metadata changes stay on the app event channel.
+/// Lifecycle and metadata emitter. Terminal frames use the manager's
+/// per-session subscriber queues.
 ///
 /// Holds the manager as `Weak`: instances get stored inside the manager's
 /// own session state (codex capture context, forwarder threads), so a
@@ -321,10 +328,19 @@ impl CoreSessionEvents {
 }
 
 impl SessionEvents for CoreSessionEvents {
-    fn output(&self, ev: &OutputEvent) {
+    fn terminal_metadata_changed(&self, id: &str) {
         if let Some(observer) = self.observer.observer() {
-            observer.output(ev);
+            observer.updated(&SessionUpdatedEvent {
+                session_id: id.to_owned(),
+                mission_id: None,
+            });
         }
+    }
+    fn input_error(&self, id: &str, message: &str) {
+        self.events.emit(
+            "session/input-error",
+            &serde_json::json!({ "session_id": id, "message": message }),
+        );
     }
     fn spawned(&self, ev: &SessionSpawnedEvent) {
         if let Some(observer) = self.observer.observer() {
@@ -348,6 +364,9 @@ impl SessionEvents for CoreSessionEvents {
         self.events.emit("session/archived", ev);
     }
     fn updated(&self, ev: &SessionUpdatedEvent) {
+        if let Some(observer) = self.observer.observer() {
+            observer.updated(ev);
+        }
         self.events.emit("session/updated", ev);
     }
     fn status(&self, ev: &SessionActivityEvent) {
@@ -390,7 +409,8 @@ impl SessionEvents for CoreSessionEvents {
     }
 }
 
-/// Raw PTY output delivered synchronously to the process-local terminal sink.
+/// Test carrier for the pre-existing output assertions.
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputEvent {
     pub session_id: String,
@@ -556,6 +576,10 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     output_seq: u64,
+    terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
+    terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
+    next_subscriber_id: u64,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
@@ -570,6 +594,9 @@ impl SessionState {
     fn is_empty(&self) -> bool {
         self.handle.is_none()
             && self.model.is_empty()
+            && self.terminal.is_none()
+            && self.terminal_input.is_none()
+            && self.subscribers.is_empty()
             && self.mission_status_sink.is_none()
             && self.output_seq == 0
             && self.last_requested_size.is_none()
@@ -623,6 +650,7 @@ pub struct SessionManager {
     runtime: Arc<dyn SessionRuntime>,
     resize_settle_ms: AtomicU64,
     resize_generation: AtomicU64,
+    terminal_palette: Mutex<runner_terminal::palette::TerminalPalette>,
     /// App-wide permission mode for mission slots (feature 527). The
     /// GPUI settings store pushes the current value here; every
     /// mission spawn and resume reads it, so the MCP `mission_start`
@@ -749,6 +777,7 @@ impl SessionManager {
             runtime,
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
             resize_generation: AtomicU64::new(0),
+            terminal_palette: Mutex::new(runner_terminal::palette::RUNNER),
             mission_permission_mode: RwLock::new(router::runtime::MissionPermissionMode::default()),
         })
     }
@@ -1097,14 +1126,44 @@ impl SessionManager {
     }
 
     fn install_handle(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
         pool: &DbPool,
-        events: &dyn SessionEvents,
+        events: &Arc<dyn SessionEvents>,
     ) {
+        let (cols, rows) = initial_size.expect("spawn size must be resolved before handle install");
+        let prepared = self.session_state(session_id).and_then(|state| {
+            let state = state.lock().unwrap();
+            state
+                .handle
+                .is_none()
+                .then(|| state.terminal.clone())
+                .flatten()
+        });
+        let terminal = prepared.unwrap_or_else(|| {
+            self.create_terminal(session_id, cols, rows, pool, events)
+                .expect("create session terminal model")
+        });
+        let input =
+            self.start_terminal_input(session_id, Arc::clone(&terminal), Arc::clone(events));
+        {
+            let state = self.session_state_or_insert(session_id);
+            let mut state = state.lock().unwrap();
+            if state
+                .terminal
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(current, &terminal))
+            {
+                for (_, queue) in state.subscribers.drain(..) {
+                    queue.close();
+                }
+            }
+            state.terminal = Some(terminal);
+            state.terminal_input = Some(input);
+        }
         self.install_handle_with_size_persistence(
             session_id,
             handle,
@@ -1123,7 +1182,7 @@ impl SessionManager {
                     false
                 }
             },
-            events,
+            events.as_ref(),
         );
     }
 
@@ -1189,6 +1248,12 @@ impl SessionManager {
                 }
             }
             state.pending_resize = None;
+            if let Some(terminal) = &state.terminal {
+                terminal.resize(terminal_size.0, terminal_size.1);
+            }
+        }
+        if let Ok(terminal) = self.terminal_model(session_id) {
+            terminal.publish_initial();
         }
         events.spawned(&SessionSpawnedEvent {
             session_id: session_id.to_owned(),

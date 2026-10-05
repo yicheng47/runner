@@ -6,3 +6,4 @@ crates/runner-terminal/fixtures/*.txt text eol=lf
 make.cmd text eol=crlf
 crates/runner-backend/src/session/fixtures/scenarios/**/*.ndjson text eol=lf
 crates/runner-backend/src/session/fixtures/expectations/**/*.txt text eol=lf
+vendor/alacritty_terminal/tests/ref/**/alacritty.recording -text -diff

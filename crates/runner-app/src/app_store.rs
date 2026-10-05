@@ -247,7 +247,8 @@ pub(crate) struct AppStore {
     pub(crate) app_data_dir: PathBuf,
     pub(crate) window_entries: Vec<runner_core::protocol::WindowEntry>,
     pub(crate) bridge: Arc<TerminalBridge>,
-    pub(crate) update_host: crate::surfaces::agent_update::UpdateHost,
+    #[cfg(test)]
+    pub(crate) test_core: runner_backend::AppCore,
     pub(crate) sessions: Vec<DirectSessionEntry>,
     pub(crate) session_details: BTreeMap<String, DirectSessionEntry>,
     pub(crate) roles: Vec<Role>,
@@ -287,7 +288,7 @@ impl AppStore {
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
         });
-        let bridge = TerminalBridge::new(host.terminal_core().clone(), Arc::clone(&waker))
+        let bridge = TerminalBridge::new(host.client.clone(), Arc::clone(&waker))
             .expect("terminal event bridge installation is infallible");
 
         cx.spawn(async move |weak, cx| {
@@ -374,7 +375,8 @@ impl AppStore {
             client,
             window_entries: Vec::new(),
             bridge,
-            update_host: crate::surfaces::agent_update::UpdateHost::new(host),
+            #[cfg(test)]
+            test_core: host.terminal_core().clone(),
             sessions: Vec::new(),
             session_details: BTreeMap::new(),
             roles: Vec::new(),

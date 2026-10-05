@@ -1,5 +1,6 @@
 use crate::AppCore;
 use runner_core::protocol::command;
+use runner_core::protocol::terminal::*;
 use runner_core::protocol::*;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -32,6 +33,29 @@ impl Transport for InProcessTransport {
         let bytes =
             serde_json::to_vec(&response).map_err(|error| ClientError::msg(error.to_string()))?;
         serde_json::from_slice(&bytes).map_err(|error| ClientError::msg(error.to_string()))
+    }
+    fn observe_terminals(&self, observer: std::sync::Weak<dyn TerminalLifecycle>) {
+        let observer: Arc<dyn crate::session::manager::SessionEvents> =
+            Arc::new(TerminalEvents(observer));
+        self.0.session_event_observer.install_owned(observer);
+    }
+    fn attach(&self, id: &str) -> Result<TerminalAttachment, ClientError> {
+        self.0
+            .sessions
+            .attach_terminal(id)
+            .map_err(|error| ClientError::msg(error.to_string()))
+    }
+    fn input(&self, id: &str, bytes: &[u8]) -> Result<(), ClientError> {
+        self.0
+            .sessions
+            .queue_terminal_input(id, bytes)
+            .map_err(|error| ClientError::msg(error.to_string()))
+    }
+    fn resize(&self, id: &str, origin: u64, cols: u16, rows: u16) {
+        let _ = self
+            .0
+            .sessions
+            .resize_terminal(id, origin, cols, rows, &self.0.db);
     }
     fn subscribe(&self) -> Box<dyn EventSubscription> {
         Box::new(InProcessEvents(self.0.events.subscribe()))
@@ -100,6 +124,32 @@ fn discovery_snapshot(core: &AppCore) -> crate::error::Result<DiscoverySnapshot>
 mod commands;
 
 pub mod resume;
+
+struct TerminalEvents(std::sync::Weak<dyn TerminalLifecycle>);
+impl TerminalEvents {
+    fn emit(&self, name: &str, event: &impl serde::Serialize) {
+        if let Some(observer) = self.0.upgrade() {
+            observer.event(ClientEvent {
+                name: name.into(),
+                payload: serde_json::to_value(event).expect("terminal lifecycle event"),
+            });
+        }
+    }
+}
+impl crate::session::manager::SessionEvents for TerminalEvents {
+    fn spawned(&self, event: &crate::session::manager::SessionSpawnedEvent) {
+        self.emit("session/spawned", event);
+    }
+    fn exit(&self, event: &crate::session::manager::ExitEvent) {
+        self.emit("session/exit", event);
+    }
+    fn archived(&self, event: &crate::session::manager::SessionUpdatedEvent) {
+        self.emit("session/archived", event);
+    }
+    fn updated(&self, event: &crate::session::manager::SessionUpdatedEvent) {
+        self.emit("session/updated", event);
+    }
+}
 
 #[cfg(test)]
 mod tests {

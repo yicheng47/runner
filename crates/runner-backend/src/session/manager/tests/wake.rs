@@ -20,7 +20,7 @@ fn synthetic_wake_busy_updates_activity_and_allows_final_idle() {
         runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
+    let cap = capture_for(&mgr);
     let spawned = mgr
         .spawn(
             &mission,
@@ -119,7 +119,7 @@ fn suppressed_busy_then_agent_output_and_quiet_appends_final_idle() {
         runner_core::event_log::path::mission_dir(app_data.path(), &mission.crew_id, &mission.id);
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
+    let cap = capture_for(&mgr);
     let spawned = mgr
         .spawn(
             &mission,

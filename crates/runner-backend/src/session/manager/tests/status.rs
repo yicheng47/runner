@@ -111,7 +111,7 @@ fn direct_chat_typing_stays_idle_until_submit() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
+    let cap = capture_for(&mgr);
     let spawned = mgr
         .spawn_direct(
             &role,
@@ -229,9 +229,15 @@ fn direct_chat_typing_stays_idle_until_submit() {
         "paste-then-Enter delivery must arm completion",
     );
 
-    let stale_token = match mgr.reserve_delivery(&spawned.id).unwrap() {
-        router::DeliveryReservation::Ready(token) => token,
-        other => panic!("expected delivery reservation, got {other:?}"),
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let stale_token = loop {
+        match mgr.reserve_delivery(&spawned.id).unwrap() {
+            router::DeliveryReservation::Ready(token) => break token,
+            router::DeliveryReservation::RecentlyTyping(_) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10))
+            }
+            other => panic!("expected delivery reservation, got {other:?}"),
+        }
     };
     mgr.kill(&spawned.id).unwrap();
     assert!(!mgr
@@ -400,7 +406,7 @@ fn mission_typing_stays_idle_until_submit() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let cap = capture();
+    let cap = capture_for(&mgr);
     let spawned = mgr
         .spawn(
             &mission,

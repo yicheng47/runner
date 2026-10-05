@@ -84,8 +84,6 @@ struct RepairingCapture {
 
 #[cfg(unix)]
 impl SessionEvents for RepairingCapture {
-    fn output(&self, _ev: &OutputEvent) {}
-
     fn exit(&self, _ev: &ExitEvent) {}
 
     fn updated(&self, ev: &SessionUpdatedEvent) {

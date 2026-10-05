@@ -59,6 +59,13 @@ fn recorded_input_transitions_follow_the_grid() {
                     ..
                 }
                 | FixtureEvent::Exit { .. } => continue,
+                FixtureEvent::Resize { cols, rows, .. } => {
+                    term.resize(alacritty_terminal::term::test::TermSize::new(
+                        cols as usize,
+                        rows as usize,
+                    ));
+                    continue;
+                }
             };
             if let Some(observation) = observation {
                 actual.push(transition(ms, observation));

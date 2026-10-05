@@ -69,20 +69,7 @@ impl std::fmt::Display for StatusSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InputState {
-    Idle,
-    Drafting,
-    Submitted,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct InputObservation {
-    pub state: InputState,
-    pub since: Instant,
-    pub composing: bool,
-    pub composer_visible: bool,
-}
+pub use runner_terminal::input_state::{InputObservation, InputState};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ObservedInput {
