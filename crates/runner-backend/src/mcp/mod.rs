@@ -14,6 +14,10 @@ struct RunningListener {
     cancel: CancellationToken,
     handle: JoinHandle<()>,
     endpoint: IpcEndpoint,
+    #[cfg(unix)]
+    identity: (u64, u64),
+    #[cfg(windows)]
+    pipe: std::os::windows::io::OwnedHandle,
 }
 
 pub struct McpHandle {
@@ -57,6 +61,14 @@ impl McpHandle {
         let cancel_clone = cancel.clone();
         let endpoint_owned = endpoint.clone();
 
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = std::fs::symlink_metadata(&endpoint.0)?;
+            (meta.dev(), meta.ino())
+        };
+        #[cfg(windows)]
+        let pipe = listener.duplicate_handle()?;
         let handle = rt.spawn(async move {
             loop {
                 tokio::select! {
@@ -64,7 +76,7 @@ impl McpHandle {
                         match result {
                             Ok(stream) => {
                                 let conn_state = state.clone();
-                                tokio::spawn(server::serve_connection(stream, conn_state));
+                                tokio::spawn(server::serve_connection(stream, conn_state, cancel_clone.clone()));
                             }
                             Err(e) => {
                                 log::error!("mcp: accept failed: {e}");
@@ -82,10 +94,29 @@ impl McpHandle {
             cancel,
             handle,
             endpoint: endpoint_owned,
+            #[cfg(unix)]
+            identity,
+            #[cfg(windows)]
+            pipe,
         });
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub fn duplicate_handle(&self) -> std::io::Result<std::os::windows::io::OwnedHandle> {
+        let guard = self.inner.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("MCP listener unavailable"))?
+            .pipe
+            .try_clone()
+    }
+    pub fn stop_accepting(&self) {
+        if let Some(running) = self.inner.lock().unwrap().as_ref() {
+            running.cancel.cancel();
+            running.handle.abort();
+        }
+    }
     pub fn stop(&self) {
         let mut guard = self.inner.lock().unwrap();
         if let Some(running) = guard.take() {
@@ -93,7 +124,14 @@ impl McpHandle {
             running.cancel.cancel();
             running.handle.abort();
             #[cfg(unix)]
-            let _ = std::fs::remove_file(&running.endpoint.0);
+            {
+                use std::os::unix::fs::MetadataExt;
+                if std::fs::symlink_metadata(&running.endpoint.0)
+                    .is_ok_and(|meta| (meta.dev(), meta.ino()) == running.identity)
+                {
+                    let _ = std::fs::remove_file(&running.endpoint.0);
+                }
+            }
         }
     }
 

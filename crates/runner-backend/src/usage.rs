@@ -39,6 +39,11 @@ pub struct UsageService {
     state: Mutex<UsageState>,
     wake_scheduler: Condvar,
     enabled: RwLock<Vec<Runtime>>,
+    polling_enabled: std::sync::atomic::AtomicBool,
+    clients: std::sync::atomic::AtomicUsize,
+    transport_lifetime: std::sync::atomic::AtomicBool,
+    discovery_started: std::sync::atomic::AtomicBool,
+    isolated: std::sync::atomic::AtomicBool,
 }
 
 impl Default for UsageService {
@@ -47,11 +52,70 @@ impl Default for UsageService {
             state: Mutex::new(UsageState::default()),
             wake_scheduler: Condvar::new(),
             enabled: RwLock::new(Vec::new()),
+            polling_enabled: std::sync::atomic::AtomicBool::new(true),
+            clients: std::sync::atomic::AtomicUsize::new(0),
+            transport_lifetime: std::sync::atomic::AtomicBool::new(false),
+            discovery_started: std::sync::atomic::AtomicBool::new(false),
+            isolated: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
 
 impl UsageService {
+    pub fn manage_client_lifetime(&self, isolated: bool) {
+        self.transport_lifetime
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.isolated
+            .store(isolated, std::sync::atomic::Ordering::Release);
+        self.set_polling_enabled(false);
+    }
+    pub fn client_connected(self: &Arc<Self>, core: AppCore) {
+        use std::sync::atomic::Ordering;
+        if !self.transport_lifetime.load(Ordering::Acquire) {
+            return;
+        }
+        if self.clients.fetch_add(1, Ordering::AcqRel) != 0 {
+            return;
+        }
+        log::info!("runnerd client connected: UI work resumed");
+        if self.isolated.load(Ordering::Acquire) {
+            return;
+        }
+        self.set_polling_enabled(true);
+        if !self.discovery_started.swap(true, Ordering::AcqRel) {
+            crate::runtime_status::start_background_discovery(
+                core.events.clone(),
+                core.db.clone(),
+                core.runtime_shell_env.clone(),
+                core.runtime_discovery.clone(),
+                false,
+                self.enabled(),
+            );
+        } else {
+            let _ = crate::runtime_status::refresh_background_discovery(
+                core.events.clone(),
+                core.db.clone(),
+                core.runtime_shell_env.clone(),
+                core.runtime_discovery.clone(),
+                self.enabled(),
+            );
+        }
+    }
+    pub fn client_disconnected(&self) {
+        use std::sync::atomic::Ordering;
+        if self.transport_lifetime.load(Ordering::Acquire)
+            && self.clients.fetch_sub(1, Ordering::AcqRel) == 1
+        {
+            log::info!("runnerd last client disconnected: UI work paused");
+            self.set_polling_enabled(false);
+        }
+    }
+    pub fn set_polling_enabled(&self, enabled: bool) {
+        self.polling_enabled
+            .store(enabled, std::sync::atomic::Ordering::Release);
+        self.wake_scheduler.notify_all();
+    }
+
     pub fn snapshot(&self) -> UsageSnapshot {
         self.state.lock().unwrap().snapshot.clone()
     }
@@ -103,9 +167,32 @@ impl UsageService {
             {
                 thread::sleep(Duration::from_millis(100));
             }
+            while !service
+                .polling_enabled
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                let state = service.state.lock().unwrap();
+                drop(
+                    service
+                        .wake_scheduler
+                        .wait_timeout(state, Duration::from_secs(1))
+                        .unwrap(),
+                );
+            }
             service.request_refresh(core.clone(), RefreshReason::Launch);
             let mut state = service.state.lock().unwrap();
             loop {
+                if !service
+                    .polling_enabled
+                    .load(std::sync::atomic::Ordering::Acquire)
+                {
+                    state = service
+                        .wake_scheduler
+                        .wait_timeout(state, Duration::from_secs(1))
+                        .unwrap()
+                        .0;
+                    continue;
+                }
                 let wait = schedule_wait(state.last_attempt_at, Utc::now());
                 if wait.is_zero() && !state.snapshot.refreshing {
                     drop(state);
@@ -298,6 +385,28 @@ mod tests {
         claude_code::usage::read_claude_credentials_with, codex::usage::fetch_codex_with_timeout,
     };
     use chrono::TimeDelta;
+
+    #[test]
+    fn managed_clients_pause_and_resume_polling_at_zero() {
+        use std::sync::atomic::Ordering;
+        let core = crate::test_support::test_core();
+        // Keep an existing discovery pass in flight so this test starts no probes.
+        core.runtime_discovery.write().unwrap().checking = true;
+        core.usage.discovery_started.store(true, Ordering::Release);
+        core.usage.manage_client_lifetime(false);
+        assert!(!core.usage.polling_enabled.load(Ordering::Acquire));
+        core.usage.client_connected(core.clone());
+        core.usage.client_connected(core.clone());
+        assert!(core.usage.polling_enabled.load(Ordering::Acquire));
+        core.usage.client_disconnected();
+        assert!(core.usage.polling_enabled.load(Ordering::Acquire));
+        core.usage.client_disconnected();
+        assert!(!core.usage.polling_enabled.load(Ordering::Acquire));
+        core.usage.client_connected(core.clone());
+        assert!(core.usage.polling_enabled.load(Ordering::Acquire));
+        core.usage.client_disconnected();
+        assert!(!core.usage.polling_enabled.load(Ordering::Acquire));
+    }
 
     #[test]
     fn http_client_accepts_captured_socks_proxy() {

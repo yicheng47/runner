@@ -253,6 +253,7 @@ pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 /// go through `SessionManager`, which in turn delegates
 /// to a `dyn SessionRuntime` for the per-session PTY work.
 pub trait SessionRuntime: Send + Sync {
+    fn drain_workers(&self) {}
     /// Start a fresh session. Returns the runtime-side ids to
     /// persist on the `sessions` row, plus the output channel the
     /// runtime will write `RuntimeOutput::Stream` into.

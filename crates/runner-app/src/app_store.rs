@@ -271,11 +271,13 @@ pub(crate) struct AppStore {
     pub(crate) revisions: StoreRevisions,
     pub(crate) error: Option<String>,
     collecting_startup_errors: bool,
+    daemon_disconnected: bool,
 }
 
 impl AppStore {
     pub(crate) fn new(
-        host: impl Into<runner_app::bootstrap::ClientHost>,
+        #[cfg(not(test))] host: runner_app::bootstrap::ClientHost,
+        #[cfg(test)] core: runner_backend::AppCore,
         home_dir: Option<PathBuf>,
         command_install_support: Option<CommandInstallSupport>,
         settings_path: PathBuf,
@@ -283,7 +285,11 @@ impl AppStore {
         settings_error: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let host = host.into();
+        #[cfg(test)]
+        let host = runner_app::bootstrap::ClientHost {
+            client: crate::test_support::client(&core),
+            app_data_dir: core.app_data_dir.clone(),
+        };
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
@@ -321,20 +327,38 @@ impl AppStore {
         })
         .detach();
 
-        let (event_tx, mut event_rx) =
-            futures::channel::mpsc::unbounded::<(StoreRefreshKind, EntityRefreshKind)>();
+        let (event_tx, mut event_rx) = futures::channel::mpsc::unbounded::<(
+            StoreRefreshKind,
+            EntityRefreshKind,
+            Option<Option<String>>,
+        )>();
         #[cfg(not(test))]
         let client = host.client.clone();
         #[cfg(test)]
-        let client = crate::test_support::client(host.terminal_core());
+        let client = crate::test_support::client(&core);
         let mut events = client.subscribe();
         cx.background_spawn(async move {
             loop {
                 let refresh = match events.recv().await {
+                    Ok(event) if event.name == "daemon/disconnected" => Some((
+                        StoreRefreshKind::All,
+                        EntityRefreshKind::All,
+                        Some(Some(
+                            event
+                                .payload
+                                .get("message")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("runnerd stopped")
+                                .into(),
+                        )),
+                    )),
+                    Ok(event) if event.name == "daemon/reconnected" => {
+                        Some((StoreRefreshKind::All, EntityRefreshKind::All, Some(None)))
+                    }
                     Ok(event) => StoreRefreshKind::for_event(&event)
-                        .map(|store| (store, EntityRefreshKind::for_event(&event))),
+                        .map(|store| (store, EntityRefreshKind::for_event(&event), None)),
                     Err(runner_core::protocol::EventError::Lagged(_)) => {
-                        Some((StoreRefreshKind::All, EntityRefreshKind::All))
+                        Some((StoreRefreshKind::All, EntityRefreshKind::All, None))
                     }
                     Err(runner_core::protocol::EventError::Closed) => break,
                 };
@@ -345,13 +369,21 @@ impl AppStore {
         })
         .detach();
         cx.spawn(async move |weak, cx| {
-            while let Some((mut refresh, mut entity_refresh)) = event_rx.next().await {
+            while let Some((mut refresh, mut entity_refresh, mut notice)) = event_rx.next().await {
                 while let Ok(next) = event_rx.try_recv() {
                     refresh = refresh.merge(next.0);
                     entity_refresh = entity_refresh.merge(next.1);
+                    if next.2.is_some() {
+                        notice = next.2;
+                    }
                 }
                 if weak
                     .update(cx, |this, cx| {
+                        if let Some(notice) = notice {
+                            this.daemon_disconnected = notice.is_some();
+                            this.error = notice;
+                            this.revisions.error = this.revisions.error.wrapping_add(1);
+                        }
                         this.refresh(refresh, cx);
                         if entity_refresh.roles() {
                             this.revisions.role_surfaces =
@@ -370,13 +402,16 @@ impl AppStore {
         })
         .detach();
 
+        if let Err(error) = bridge.attach_live_sessions() {
+            eprintln!("attach live terminals: {error}");
+        }
         let mut store = Self {
             app_data_dir: host.app_data_dir.clone(),
             client,
             window_entries: Vec::new(),
             bridge,
             #[cfg(test)]
-            test_core: host.terminal_core().clone(),
+            test_core: core.clone(),
             sessions: Vec::new(),
             session_details: BTreeMap::new(),
             roles: Vec::new(),
@@ -399,6 +434,7 @@ impl AppStore {
             revisions: StoreRevisions::default(),
             error: None,
             collecting_startup_errors: true,
+            daemon_disconnected: false,
         };
         if let Some(error) = settings_error {
             store.record_error(error);
@@ -677,6 +713,10 @@ impl AppStore {
     }
 
     fn record_error(&mut self, error: String) {
+        if self.daemon_disconnected {
+            tracing::debug!("refresh while runnerd disconnected: {error}");
+            return;
+        }
         if self.collecting_startup_errors {
             if let Some(current) = &mut self.error {
                 current.push('\n');
@@ -739,6 +779,61 @@ mod tests {
             name: name.to_owned(),
             payload: serde_json::Value::Null,
         }
+    }
+
+    #[test]
+    fn daemon_notice_survives_refresh_errors_and_clears_on_reconnect() {
+        use gpui::{AppContext as _, TestAppContext};
+        use runner_backend::{db, session, shell_path};
+        use std::sync::RwLock;
+        let root = tempfile::tempdir().unwrap();
+        let env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+        let discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+        let core = crate::test_support::core(
+            Arc::new(db::open_pool(&root.path().join("runner.db")).unwrap()),
+            root.path().into(),
+            session::SessionManager::new(
+                env.clone(),
+                discovery.clone(),
+                Arc::new(session::pty_runtime::PtyRuntime::new()),
+            ),
+            env,
+            discovery,
+        );
+        let events = core.events.clone();
+        let mut cx = TestAppContext::single();
+        let store = cx.new(|cx| {
+            AppStore::new(
+                core,
+                None,
+                None,
+                root.path().join("settings.json"),
+                AppSettings::default(),
+                None,
+                cx,
+            )
+        });
+        let before = store.read_with(&cx, |store, _| store.revisions.error);
+        events.emit(
+            "daemon/disconnected",
+            &serde_json::json!({"message":"restart limit reached; see runnerd.log"}),
+        );
+        cx.run_until_parked();
+        store.update(&mut cx, |store, _| {
+            store.record_error("connection closed".into())
+        });
+        store.read_with(&cx, |store, _| {
+            assert_eq!(
+                store.error.as_deref(),
+                Some("restart limit reached; see runnerd.log")
+            );
+            assert!(store.revisions.error > before);
+        });
+        events.emit("daemon/reconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        store.read_with(&cx, |store, _| {
+            assert!(!store.daemon_disconnected && store.error.is_none())
+        });
     }
 
     #[test]

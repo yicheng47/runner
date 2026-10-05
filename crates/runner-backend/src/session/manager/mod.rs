@@ -334,6 +334,9 @@ impl SessionEvents for CoreSessionEvents {
                 session_id: id.to_owned(),
                 mission_id: None,
             });
+        } else {
+            self.events
+                .emit("session/updated", &serde_json::json!({"session_id": id}));
         }
     }
     fn input_error(&self, id: &str, message: &str) {
@@ -578,6 +581,7 @@ struct SessionState {
     output_seq: u64,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
     next_subscriber_id: u64,
     /// Latest grid measurement, including pushes that arrive before a PTY
@@ -648,6 +652,7 @@ pub struct SessionManager {
     /// owns DB + event-buffer state but never reads/writes a PTY
     /// directly.
     runtime: Arc<dyn SessionRuntime>,
+    shutdown: RwLock<bool>,
     resize_settle_ms: AtomicU64,
     resize_generation: AtomicU64,
     terminal_palette: Mutex<runner_terminal::palette::TerminalPalette>,
@@ -775,6 +780,7 @@ impl SessionManager {
             pending_mission_cancels: Mutex::new(HashMap::new()),
             claude_session_key_watcher: Mutex::new(None),
             runtime,
+            shutdown: RwLock::new(false),
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
             resize_generation: AtomicU64::new(0),
             terminal_palette: Mutex::new(runner_terminal::palette::RUNNER),
@@ -1147,7 +1153,7 @@ impl SessionManager {
             self.create_terminal(session_id, cols, rows, pool, events)
                 .expect("create session terminal model")
         });
-        let input =
+        let (input, worker) =
             self.start_terminal_input(session_id, Arc::clone(&terminal), Arc::clone(events));
         {
             let state = self.session_state_or_insert(session_id);
@@ -1163,6 +1169,7 @@ impl SessionManager {
             }
             state.terminal = Some(terminal);
             state.terminal_input = Some(input);
+            state.terminal_input_worker = Some(worker);
         }
         self.install_handle_with_size_persistence(
             session_id,

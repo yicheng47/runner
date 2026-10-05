@@ -533,6 +533,10 @@ impl SessionManager {
     ) -> Result<()> {
         let session_id = spec.session_id.clone();
         let initial_size = spec.initial_size;
+        let spawning = self.shutdown.read().unwrap();
+        if *spawning {
+            return Err(Error::msg("runnerd is stopping"));
+        }
         let (rt_session, output) = self.runtime.spawn(spec)?;
         let stop = output.stop_flag();
         self.install_handle(
@@ -1061,6 +1065,10 @@ impl SessionManager {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
                 _ => None,
             };
+        let spawning = self.shutdown.read().unwrap();
+        if *spawning {
+            return Err(Error::msg("runnerd is stopping"));
+        }
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -1659,6 +1667,10 @@ impl SessionManager {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
                 _ => None,
             };
+        let spawning = self.shutdown.read().unwrap();
+        if *spawning {
+            return Err(Error::msg("runnerd is stopping"));
+        }
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -2075,6 +2087,10 @@ impl SessionManager {
                     None,
                 );
                 let direct_spawn_started_at = Instant::now();
+                let spawning = self.shutdown.read().unwrap();
+                if *spawning {
+                    return Err(Error::msg("runnerd is stopping"));
+                }
                 let (rt_session, output) = match self.runtime.spawn(spec) {
                     Ok(spawned) => spawned,
                     Err(error) => {
@@ -2806,6 +2822,10 @@ impl SessionManager {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
                 _ => None,
             };
+        let spawning = self.shutdown.read().unwrap();
+        if *spawning {
+            return Err(Error::msg("runnerd is stopping"));
+        }
         let (rt_session, output) = match self.runtime.spawn(spec) {
             Ok(p) => p,
             Err(e) => {

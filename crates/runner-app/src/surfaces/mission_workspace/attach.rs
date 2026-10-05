@@ -288,6 +288,7 @@ impl MissionWorkspace {
         )
     }
 
+    #[cfg(not(test))]
     pub(crate) fn drawer_focused(&self, window: &Window, cx: &App) -> bool {
         self.layout.drawer.open() && self.drawer_focus.contains_focused(window, cx)
     }

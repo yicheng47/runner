@@ -36,7 +36,7 @@ struct SessionStartReport {
 /// Watches atomic session-key reports written by Claude Code and pi hooks.
 pub(crate) struct ClaudeSessionKeyWatcher {
     shutdown: Arc<AtomicBool>,
-    _consumer: JoinHandle<()>,
+    consumer: Option<JoinHandle<()>>,
     _watcher: RecommendedWatcher,
 }
 
@@ -100,7 +100,7 @@ impl ClaudeSessionKeyWatcher {
 
         Ok(Self {
             shutdown,
-            _consumer: consumer,
+            consumer: Some(consumer),
             _watcher: watcher,
         })
     }
@@ -109,6 +109,9 @@ impl ClaudeSessionKeyWatcher {
 impl Drop for ClaudeSessionKeyWatcher {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        if let Some(consumer) = self.consumer.take() {
+            let _ = consumer.join();
+        }
     }
 }
 

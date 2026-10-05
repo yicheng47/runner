@@ -5289,6 +5289,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "block2 0.6.2",
  "chrono",
  "futures",
  "gpui-pre",
@@ -5319,6 +5320,7 @@ name = "runner-backend"
 version = "0.12.9"
 dependencies = [
  "alacritty_terminal",
+ "anyhow",
  "base64",
  "block2 0.6.2",
  "chrono",
@@ -5357,9 +5359,11 @@ version = "0.12.9"
 dependencies = [
  "chrono",
  "clap",
+ "libc",
  "rmcp",
  "runner-backend",
  "runner-core",
+ "runner-terminal",
  "serde",
  "serde_json",
  "tempfile",
@@ -5372,14 +5376,22 @@ dependencies = [
 name = "runner-core"
 version = "0.12.9"
 dependencies = [
+ "anyhow",
  "chrono",
  "fs2",
+ "libc",
+ "log",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ulid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

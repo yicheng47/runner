@@ -50,6 +50,7 @@ pub struct TerminalSnapshot {
 
 pub trait TerminalSubscription: Send {
     fn recv(&mut self) -> Result<TerminalFrame, ClientError>;
+    fn cancellation(&self) -> std::sync::Arc<dyn Fn() + Send + Sync>;
 }
 
 pub struct TerminalAttachment {

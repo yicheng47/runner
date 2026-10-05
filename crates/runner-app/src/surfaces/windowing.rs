@@ -58,13 +58,21 @@ impl NativeRoot {
     }
 
     pub(crate) fn start_focus_map_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (focus_tx, mut focus_rx) = futures::channel::mpsc::unbounded::<()>();
+        let (focus_tx, mut focus_rx) = futures::channel::mpsc::unbounded::<bool>();
         let mut events = self.core(cx).subscribe();
         cx.background_spawn(async move {
             loop {
                 match events.recv().await {
-                    Ok(event) if event.name == "window_focus_map" => {
-                        if focus_tx.unbounded_send(()).is_err() {
+                    Ok(event)
+                        if matches!(
+                            event.name.as_str(),
+                            "window_focus_map" | "daemon/reconnected"
+                        ) =>
+                    {
+                        if focus_tx
+                            .unbounded_send(event.name == "daemon/reconnected")
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -75,10 +83,18 @@ impl NativeRoot {
         })
         .detach();
         cx.spawn_in(window, async move |weak, cx| {
-            while focus_rx.next().await.is_some() {
-                while focus_rx.try_recv().is_ok() {}
+            while let Some(mut reconnected) = focus_rx.next().await {
+                while let Ok(next) = focus_rx.try_recv() {
+                    reconnected |= next;
+                }
                 if weak
                     .update_in(cx, |this, window, cx| {
+                        if reconnected && !this.closing {
+                            if let Err(error) = this.core(cx).window_register(&this.window_label) {
+                                this.error = Some(error.to_string());
+                            }
+                            this.sync_window_activation(window, cx);
+                        }
                         this.app_store.update(cx, |store, cx| {
                             store.window_entries =
                                 store.client.window_snapshot().unwrap_or_default();

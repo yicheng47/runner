@@ -2,9 +2,12 @@
 // app binary and the `runner` CLI.
 
 pub mod app_paths;
+pub mod cli_install;
 pub mod command_install;
+pub mod daemon_process;
 pub mod error;
 pub mod event_log;
+pub mod logging;
 pub mod model;
 pub mod runtime;
 pub use runtime::Runtime;
@@ -80,3 +83,5 @@ pub const RUNNER_TOOL_NAMES: &[&str] = &[
 ];
 
 pub mod protocol;
+
+pub mod version;

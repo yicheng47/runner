@@ -73,12 +73,14 @@ const RESIZE_GRACE: Duration = Duration::from_millis(500);
 /// in-memory and the per-session resources tear down with their handles.
 pub struct PtyRuntime {
     sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
+    readers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 impl PtyRuntime {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            readers: Mutex::new(Vec::new()),
         }
     }
 }
@@ -123,6 +125,12 @@ struct SessionHandle {
 const EXIT_UNSET: i32 = i32::MIN;
 
 impl SessionRuntime for PtyRuntime {
+    fn drain_workers(&self) {
+        let workers = std::mem::take(&mut *self.readers.lock().unwrap());
+        for worker in workers {
+            let _ = worker.join();
+        }
+    }
     fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
         // `launch::compose_path` is the canonical place for shim_dir /
         // bundled_bin_dir / shell_path / HOME / inherited PATH
@@ -285,7 +293,7 @@ impl SessionRuntime for PtyRuntime {
         let stop_for_reader = Arc::clone(&stop);
         let handle_for_reader = Arc::clone(&handle);
         let session_id_for_reader = spec.session_id.clone();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
             .spawn(move || {
                 reader_thread(
@@ -298,6 +306,7 @@ impl SessionRuntime for PtyRuntime {
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
+        self.readers.lock().unwrap().push(worker);
 
         let rt_session = RuntimeSession {
             runtime: RUNTIME_LABEL.to_string(),

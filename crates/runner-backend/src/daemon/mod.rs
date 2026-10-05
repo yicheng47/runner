@@ -1,3 +1,5 @@
+pub mod boot;
+pub mod server;
 use crate::AppCore;
 use runner_core::protocol::command;
 use runner_core::protocol::terminal::*;
