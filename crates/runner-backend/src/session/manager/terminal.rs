@@ -53,6 +53,10 @@ impl Drop for Frames {
     }
 }
 impl TerminalSubscription for Frames {
+    fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let queue = self.0.clone();
+        Arc::new(move || queue.close())
+    }
     fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
         let mut state = self.0.state.lock().unwrap();
         loop {
@@ -140,7 +144,7 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) -> Result<()> {
         let model = self.create_terminal(id, size.0, size.1, pool, events)?;
-        let input = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
+        let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
         for (_, queue) in state.subscribers.drain(..) {
@@ -148,6 +152,7 @@ impl SessionManager {
         }
         state.terminal = Some(model);
         state.terminal_input = Some(input);
+        state.terminal_input_worker = Some(worker);
         Ok(())
     }
     pub(super) fn create_terminal(
@@ -230,6 +235,18 @@ impl SessionManager {
             frames: Box::new(Frames(queue)),
         })
     }
+    pub fn detach_terminal(&self, id: &str, subscriber: u64) {
+        if let Some(state) = self.session_state(id) {
+            state.lock().unwrap().subscribers.retain(|(found, queue)| {
+                if *found == subscriber {
+                    queue.close();
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+    }
     pub fn queue_terminal_input(&self, id: &str, bytes: &[u8]) -> Result<()> {
         let state = self
             .session_state(id)
@@ -247,10 +264,10 @@ impl SessionManager {
         id: &str,
         model: Arc<TerminalModel>,
         events: Arc<dyn SessionEvents>,
-    ) -> mpsc::Sender<Vec<u8>> {
+    ) -> (mpsc::Sender<Vec<u8>>, thread::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let id = id.to_owned();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name(format!("native-term-input-{id}"))
             .spawn(move || {
                 while let Ok(bytes) = rx.recv() {
@@ -260,7 +277,7 @@ impl SessionManager {
                 }
             })
             .expect("spawn terminal input thread");
-        tx
+        (tx, worker)
     }
     pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame, except: Option<u64>) {
         state

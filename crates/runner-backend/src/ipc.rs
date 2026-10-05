@@ -37,17 +37,20 @@ impl IpcListener {
         }
         #[cfg(windows)]
         {
-            let listener = ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&endpoint.0)
-                .map_err(|e| {
-                    crate::error::Error::msg(format!("mcp: failed to bind {endpoint}: {e}"))
-                })?;
+            let listener = secure_pipe(endpoint, true).map_err(|e| {
+                crate::error::Error::msg(format!("mcp: failed to bind {endpoint}: {e}"))
+            })?;
             Ok(Self {
                 listener,
                 endpoint: endpoint.clone(),
             })
         }
+    }
+
+    #[cfg(windows)]
+    pub fn duplicate_handle(&self) -> io::Result<std::os::windows::io::OwnedHandle> {
+        use std::os::windows::io::{AsRawHandle, BorrowedHandle};
+        unsafe { BorrowedHandle::borrow_raw(self.listener.as_raw_handle()).try_clone_to_owned() }
     }
 
     pub async fn accept(&mut self) -> io::Result<IpcStream> {
@@ -59,7 +62,7 @@ impl IpcListener {
         #[cfg(windows)]
         {
             self.listener.connect().await?;
-            let next = ServerOptions::new().create(&self.endpoint.0)?;
+            let next = secure_pipe(&self.endpoint, false)?;
             Ok(IpcStream(std::mem::replace(&mut self.listener, next)))
         }
     }
@@ -115,6 +118,8 @@ fn bind_unix_listener(socket_path: &Path) -> crate::error::Result<StdUnixListene
             socket_path.display()
         ))
     })?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true).map_err(|e| {
         crate::error::Error::msg(format!(
             "mcp: failed to set {} nonblocking: {e}",
@@ -122,6 +127,71 @@ fn bind_unix_listener(socket_path: &Path) -> crate::error::Result<StdUnixListene
         ))
     })?;
     Ok(listener)
+}
+
+#[cfg(windows)]
+fn secure_pipe(endpoint: &IpcEndpoint, first: bool) -> io::Result<NamedPipeServer> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut len = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+        let mut user = vec![0usize; (len as usize).div_ceil(std::mem::size_of::<usize>())];
+        let got = GetTokenInformation(token, TokenUser, user.as_mut_ptr().cast(), len, &mut len);
+        CloseHandle(token);
+        if got == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut sid = std::ptr::null_mut();
+        if ConvertSidToStringSidW((*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid, &mut sid) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut sid_len = 0;
+        while *sid.add(sid_len) != 0 {
+            sid_len += 1;
+        }
+        let sid_string = String::from_utf16_lossy(std::slice::from_raw_parts(sid, sid_len));
+        LocalFree(sid.cast());
+        let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid_string})")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mut attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        let result = ServerOptions::new()
+            .first_pipe_instance(first)
+            .reject_remote_clients(true)
+            .create_with_security_attributes_raw(
+                &endpoint.0,
+                (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+            );
+        LocalFree(descriptor);
+        result
+    }
 }
 
 #[cfg(all(test, unix))]

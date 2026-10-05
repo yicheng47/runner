@@ -23,76 +23,8 @@ pub use runner_core::command_install::{
     runner_command_name, RunnerCommandState, RunnerCommandStatus,
 };
 
-/// Source-side agent CLI artifact. Installed into app data as `runner`.
-const AGENT_SOURCE_BIN_NAME: &str = if cfg!(windows) {
-    "runner-agent-cli.exe"
-} else {
-    "runner-agent-cli"
-};
-
-/// Name of the agent CLI we drop into `$APPDATA/runner/bin/`. Must match what
-/// `SessionManager::spawn` puts on PATH — arch §5.3 Layer 2 has the
-/// CLI being invoked as bare `runner` from inside spawned PTYs.
-const AGENT_DEST_BIN_NAME: &str = if cfg!(windows) {
-    "runner.exe"
-} else {
-    "runner"
-};
-
-/// Legacy MCP bridge name, retained only for upgrade cleanup and registration matching.
-pub const MCP_DEST_BIN_NAME: &str = if cfg!(windows) {
-    "runner-mcp.exe"
-} else {
-    "runner-mcp"
-};
-
-// Called from the app's `boot_core` on every launch, before any session can
-// spawn. Mission shims and spawned PATHs consume the destination.
-pub fn install_runner_cli(app_data_dir: &Path) -> Result<()> {
-    install_binary(app_data_dir, AGENT_SOURCE_BIN_NAME, AGENT_DEST_BIN_NAME)
-}
-
-pub fn remove_stale_mcp_cli(app_data_dir: &Path) -> Result<()> {
-    let path = app_data_dir.join("bin").join(MCP_DEST_BIN_NAME);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(Error::msg(format!("remove {}: {error}", path.display()))),
-    }
-}
-
-fn install_binary(app_data_dir: &Path, source_name: &str, dest_name: &str) -> Result<()> {
-    let Some(source) = locate_source(source_name)? else {
-        log::warn!(
-            "bundled CLI sidecar ({source_name}) not found next to current_exe; \
-             skipping install of {dest_name}. Build the CLI sidecars and \
-             relaunch."
-        );
-        return Ok(());
-    };
-    let dest_dir = app_data_dir.join("bin");
-    std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(dest_name);
-
-    if up_to_date(&source, &dest)? {
-        return Ok(());
-    }
-
-    // Copy via tempfile + rename to keep the swap atomic — a half-written
-    // file would crash the next process that runs this sidecar.
-    let tmp = tempfile::NamedTempFile::new_in(&dest_dir)?;
-    std::fs::copy(&source, tmp.path())?;
-    tmp.persist(&dest).map_err(|e| Error::Io(e.error))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&dest)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&dest, perms)?;
-    }
-    Ok(())
-}
+use runner_core::cli_install::AGENT_DEST_BIN_NAME;
+pub use runner_core::cli_install::{install_runner_cli, remove_stale_mcp_cli, MCP_DEST_BIN_NAME};
 
 /// Drop a per-(mission,slot) `runner` shim into
 /// `$APPDATA/missions/<mission_id>/shims/<handle>/bin/runner` that
@@ -220,37 +152,6 @@ fn windows_cmd_shim(
 /// close the quote, emit `'\''`, and reopen.
 fn sh_escape(s: &str) -> String {
     s.replace('\'', "'\\''")
-}
-
-fn locate_source(source_name: &str) -> Result<Option<PathBuf>> {
-    let exe = std::env::current_exe()?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| Error::msg("current_exe has no parent"))?;
-    let candidate = dir.join(source_name);
-    // The app executable is `Runner`, so the equality guard only protects
-    // future renames from copying the running executable over itself; the
-    // candidate must also exist.
-    if candidate.exists() && candidate != exe {
-        return Ok(Some(candidate));
-    }
-    Ok(None)
-}
-
-fn up_to_date(source: &Path, dest: &Path) -> Result<bool> {
-    let Ok(dst_meta) = std::fs::metadata(dest) else {
-        return Ok(false);
-    };
-    let src_meta = std::fs::metadata(source)?;
-    if src_meta.len() != dst_meta.len() {
-        return Ok(false);
-    }
-    let src_mtime = src_meta.modified().ok();
-    let dst_mtime = dst_meta.modified().ok();
-    match (src_mtime, dst_mtime) {
-        (Some(s), Some(d)) => Ok(s <= d),
-        _ => Ok(false),
-    }
 }
 
 pub use runner_core::protocol::command::CommandPlatform;
@@ -841,7 +742,6 @@ mod windows_registry {
 mod tests {
     use super::*;
     use std::fs;
-    use std::io::Write;
 
     #[derive(Default)]
     struct FakeRegistry {
@@ -1137,49 +1037,6 @@ mod tests {
         assert!(force_escalated_setting(true, Some("1")));
         assert!(!force_escalated_setting(false, Some("1")));
         assert!(!force_escalated_setting(true, Some("0")));
-    }
-
-    #[test]
-    fn install_copies_source_to_dest_and_renames() {
-        // Stage a fake source binary next to a fake current_exe and
-        // assert install_runner_cli puts it at $APPDATA/bin/runner with
-        // executable permissions on Unix.
-        let workspace = tempfile::tempdir().unwrap();
-        let exe_dir = workspace.path().join("target/debug");
-        fs::create_dir_all(&exe_dir).unwrap();
-
-        // Fake the CLI artifact next to the (would-be) current_exe.
-        let source = exe_dir.join(AGENT_SOURCE_BIN_NAME);
-        {
-            let mut f = fs::File::create(&source).unwrap();
-            writeln!(f, "#!/bin/sh\necho fake").unwrap();
-        }
-        // Note: this test exercises the copy logic indirectly. We call
-        // through the public install fn against an `app_data_dir` that
-        // is just a tempdir; locate_source uses `current_exe()`, which
-        // for `cargo test` returns the test binary itself, not our
-        // fake — so we'd skip with "not found". To make the test
-        // meaningful, we exercise the up_to_date and copy helpers
-        // directly instead. install_runner_cli's prod path is covered
-        // manually until end-to-end packaging tests land.
-        let app_data = tempfile::tempdir().unwrap();
-        let bin_dir = app_data.path().join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-        let dest = bin_dir.join(AGENT_DEST_BIN_NAME);
-
-        // First copy: dest doesn't exist, must be replaced.
-        assert!(!up_to_date(&source, &dest).unwrap());
-        let tmp = tempfile::NamedTempFile::new_in(&bin_dir).unwrap();
-        std::fs::copy(&source, tmp.path()).unwrap();
-        tmp.persist(&dest).unwrap();
-        assert!(dest.exists());
-        assert_eq!(
-            fs::metadata(&source).unwrap().len(),
-            fs::metadata(&dest).unwrap().len()
-        );
-
-        // Second copy: dest now matches by size+mtime, should skip.
-        assert!(up_to_date(&source, &dest).unwrap());
     }
 
     #[test]

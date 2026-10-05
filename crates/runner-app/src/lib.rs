@@ -23,3 +23,6 @@ pub mod theme;
 pub mod ui;
 pub mod updater;
 pub mod version;
+
+#[cfg(target_os = "macos")]
+mod wake;

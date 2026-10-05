@@ -12,6 +12,7 @@ pub fn print(topic: Option<&str>) {
 
 USAGE
   runner status
+  runner daemon status|stop
   runner project list|show|create|rename|delete
   runner role list|show|create|update|delete
   runner crew list|show|create|update|delete|add|set|remove|lead|order
@@ -40,7 +41,7 @@ RESERVED FOR #562
 #[cfg(test)]
 pub const AGENT_TOP_LEVEL_COMMANDS: &[&str] = &[
     "status", "project", "role", "crew", "mission", "chat", "session", "msg", "signal", "ask",
-    "call", "help",
+    "call", "help", "daemon",
 ];
 
 pub const AGENT_GUIDE: &str = r#"runner — version-matched guide for agents
@@ -53,6 +54,7 @@ DISCOVER
   runner mission --help
   runner chat --help
   runner session --help
+  runner daemon --help
   runner msg --help
   runner signal --help
   runner ask --help

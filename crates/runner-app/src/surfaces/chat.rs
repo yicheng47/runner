@@ -2110,6 +2110,7 @@ impl NativeRoot {
         cx.notify();
     }
 
+    #[cfg(not(test))]
     pub(crate) fn request_close_single_pane_tab(
         &mut self,
         window: &mut Window,

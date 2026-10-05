@@ -76,6 +76,23 @@ pub fn mcp_endpoint(app_data_dir: &Path, debug: bool) -> IpcEndpoint {
     }
 }
 
+pub fn daemon_endpoint(app_data_dir: &Path, debug: bool) -> IpcEndpoint {
+    #[cfg(unix)]
+    {
+        let _ = debug;
+        IpcEndpoint(app_data_dir.join("runnerd.sock"))
+    }
+    #[cfg(windows)]
+    {
+        let _ = app_data_dir;
+        IpcEndpoint(PathBuf::from(if debug {
+            r"\\.\pipe\com.wycstudios.runnerd-dev"
+        } else {
+            r"\\.\pipe\com.wycstudios.runnerd"
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

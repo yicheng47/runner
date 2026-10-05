@@ -1,6 +1,41 @@
 use super::*;
 
 impl SessionManager {
+    pub fn begin_shutdown(&self) {
+        *self.shutdown.write().unwrap() = true;
+    }
+    pub fn cancel_all_pending_spawns(&self) {
+        for flag in self.pending_mission_cancels.lock().unwrap().values() {
+            flag.store(true, Ordering::Release);
+        }
+    }
+    pub fn drain_terminal_workers(&self) {
+        let states: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        let mut workers = Vec::new();
+        let mut model_workers = Vec::new();
+        for state in states {
+            let mut state = state.lock().unwrap();
+            state.terminal_input.take();
+            if let Some(model) = state.terminal.take() {
+                model_workers.extend(model.take_workers());
+            }
+            if let Some(worker) = state.terminal_input_worker.take() {
+                workers.push(worker);
+            }
+            for (_, queue) in state.subscribers.drain(..) {
+                queue.close();
+            }
+        }
+        self.claude_session_key_watcher.lock().unwrap().take();
+        for worker in workers {
+            let _ = worker.join();
+        }
+        for worker in model_workers {
+            let _ = worker.join();
+        }
+        self.runtime.drain_workers();
+    }
+
     fn runtime_session_matches(a: &RuntimeSession, b: &RuntimeSession) -> bool {
         a.runtime == b.runtime && a.session_id == b.session_id
     }
