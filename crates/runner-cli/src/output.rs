@@ -143,7 +143,7 @@ fn render_role(value: &Value) -> Vec<String> {
         .get("runtime")
         .and_then(Value::as_str)
         .is_some_and(|key| {
-            runner_backend::runtimes::for_key(key)
+            runner_daemon::runtimes::for_key(key)
                 .capabilities()
                 .codex_speed
         })
@@ -219,7 +219,7 @@ fn render_crew_show(value: &Value) -> Vec<String> {
                     } else {
                         effective_slot_value(slot, role, "effort_override", "effort")
                     };
-                    let speed = if runner_backend::runtimes::for_key(&runtime)
+                    let speed = if runner_daemon::runtimes::for_key(&runtime)
                         .capabilities()
                         .codex_speed
                     {
@@ -591,7 +591,7 @@ fn render_session_show(value: &Value) -> Vec<String> {
         .get("agent_runtime")
         .and_then(Value::as_str)
         .is_some_and(|key| {
-            runner_backend::runtimes::for_key(key)
+            runner_daemon::runtimes::for_key(key)
                 .capabilities()
                 .codex_speed
         })

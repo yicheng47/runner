@@ -51,12 +51,12 @@ use runner_app::ui::{
     WORKSPACE_HEADER_HEIGHT,
 };
 use runner_app::{theme, Copy, Cut, Paste, Redo, SelectAll, Undo};
-#[cfg(test)]
-use runner_backend::AppCore;
 use runner_core::protocol::model::SessionStatus;
 use runner_core::protocol::session::DirectSessionEntry;
 use runner_core::protocol::session::SessionActivityState;
 use runner_core::protocol::DaemonClient;
+#[cfg(test)]
+use runner_daemon::AppCore;
 use runner_terminal::terminal::{TerminalMirror, TerminalView};
 
 use app_settings::{settings_path, AppSettings};

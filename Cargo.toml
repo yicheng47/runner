@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/runner-backend",
+    "crates/runner-daemon",
     "crates/runner-core",
     "crates/runner-app",
     "crates/runner-terminal",

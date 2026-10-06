@@ -6,7 +6,7 @@ For new agent support, use the [runtime integration checklist](runtime-integrati
 
 ## 1. Overview
 
-Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-backend`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
+Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-daemon`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
 
 ### 1.1 Runtime picture
 
@@ -27,7 +27,7 @@ Runner is a local desktop app for macOS and Windows. A user configures a **crew*
 │          │ AppEvent broadcast  └──────────────────▲──────────────────────┘   │
 │          │ (mission/changed, session/*, …)        │ SessionEvents::output    │
 │  ════════╪════════════════════════════════════════╪══════════════════════    │
-│  Core (crates/runner-backend, AppCore)            │                          │
+│  Core (crates/runner-daemon, AppCore)            │                          │
 │   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
 │   │ EventBus         │  │ Router       │  │ SessionManager             │     │
 │   │  notify tailer   │─►│  handlers    │─►│  PTY runtime (hot path)    │     │
@@ -98,9 +98,9 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | UI framework | **GPUI** (`gpui-pre` 0.3.7, `zed@1a28cff`, Metal / DirectX) | A crates.io snapshot of upstream Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
 | Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
 | Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
-| Application core | **Rust** crate `runner-backend`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
+| Application core | **Rust** crate `runner-daemon`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
 | PTY runtime | **`portable-pty`** (in-process) | One blocking OS thread per session reads the master; writes are serialized per session. |
-| Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-backend/migrations/` (0001–0023). |
+| Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-daemon/migrations/` (0001–0023). |
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`crates/runner-cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
@@ -224,7 +224,7 @@ A session is the only object in the system that actually *executes* code — eve
 How sessions are displayed spans durable organization and ephemeral view state. The concepts must never be blurred in code, docs, or UI copy:
 
 - **Project** — the only durable container in the sidebar: a global, cwd-bound group for missions and direct-chat tabs. Starting work from a project copies its cwd into the new mission/session row and records nullable `project_id`. Deleting a project archives its chats and missions but never touches the directory on disk.
-- **Window** — a real OS window (⇧⌘N, `File → New Window`). The core's per-window subject registry (`crates/runner-backend/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and current focus for viewed-attention semantics. A session shown in two windows has one primary; the secondary window shows a duplicate-chat placeholder rather than a second live grid.
+- **Window** — a real OS window (⇧⌘N, `File → New Window`). The core's per-window subject registry (`crates/runner-daemon/src/windows.rs`) tracks every visible direct-chat subject, focus recency for duplicate-session ownership, and current focus for viewed-attention semantics. A session shown in two windows has one primary; the secondary window shows a duplicate-chat placeholder rather than a second live grid.
 - **Tab** — one stable, ULID-keyed group of panes rendered as exactly one sidebar row. Tabs, projects and mission references are rows of the `nodes` tree (§10.1) with an optional project parent, name, order, JSON layout, pin position and completion/viewed watermarks. Every active direct-chat session belongs to exactly one tab. Per-window active-tab selection is ephemeral.
 - **Pane** — one slot inside a tab, holding one chat or shell session (move-not-copy). `⌘[` / `⌘]` cycle pane focus, `⌘W` closes the focused pane without stopping its session. Every pane carries a split icon — Split Right `⌘D`, Split Down `⇧⌘D` — which turns that pane's leaf into a 50/50 split with a new pane on the chosen side; a single-pane tab shows the icon in its header instead. There is no pane ceiling, only a size floor: an item is disabled once either half would fall under 240 × 160 px at 1× zoom. A terminal tab has at least one session and every filled pane holds a shell; empty panes do not affect its kind. Splitting it immediately spawns and focuses a shell in the split-from shell's live cwd, the last directory it reported through OSC 7, or its stored spawn cwd when it has reported none that still exists ([#575](../features/archive/575-live-cwd.md), §5.3). A tab containing a chat still splits to an empty New chat stub. New terminal on a terminal tab fills an existing empty pane or splits right through the same size gate, starting from the focused shell the same way; terminal tabs keep the drawer icon hidden.
 
@@ -377,7 +377,7 @@ Reader thread (blocking):
   on EOF: wait(child) → emit session/exit { code } → update sessions row
 ```
 
-**Terminal shells report their directory** ([#575](../features/archive/575-live-cwd.md)). The OSC 7 integration is injected only into Runner's own terminal shells: the runtime-only `runtime:shell` role outside a mission, on Unix, when the command is `zsh` or `bash`. `apply_runtime_args` calls `shell_integration::inject`. That writes the scripts embedded from `crates/runner-backend/shell-integration/` to `$APPDATA/shell-integration/`, compared first and replaced through a rename, and adds environment variables. Argv stays as it is.
+**Terminal shells report their directory** ([#575](../features/archive/575-live-cwd.md)). The OSC 7 integration is injected only into Runner's own terminal shells: the runtime-only `runtime:shell` role outside a mission, on Unix, when the command is `zsh` or `bash`. `apply_runtime_args` calls `shell_integration::inject`. That writes the scripts embedded from `crates/runner-daemon/shell-integration/` to `$APPDATA/shell-integration/`, compared first and replaced through a rename, and adds environment variables. Argv stays as it is.
 
 - **zsh:** `ZDOTDIR` points at a wrapper `.zshenv`. It restores the user's `ZDOTDIR` (passed as `RUNNER_ZSH_ZDOTDIR`) or unsets it, then sources the user's `.zshenv`, so zsh reads the rest of the user's startup files itself.
 - **bash:** `PROMPT_COMMAND` carries a bootstrap, `. "$RUNNER_BASH_INTEGRATION"`. At the first prompt, after bash has read its own startup files, the bootstrap swaps itself for the hook and stops exporting `PROMPT_COMMAND`.
@@ -457,7 +457,7 @@ The adapter contract is [#347, hook-based agent status](../features/archive/347-
 
 ## 6. System prompt composition
 
-Every spawned session receives a composed prompt — different shape for workers, the lead, and direct chats. The composition and its split across system-prompt and first-turn channels are mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `crates/runner-backend/src/router/prompt.rs`; delivery mechanics in `runtimes/<name>/`.
+Every spawned session receives a composed prompt — different shape for workers, the lead, and direct chats. The composition and its split across system-prompt and first-turn channels are mechanical: pure functions over slot + crew + mission inputs, no LLM in the loop. Source of truth lives in `crates/runner-daemon/src/router/prompt.rs`; delivery mechanics in `runtimes/<name>/`.
 
 ### 6.1 The three layers
 
@@ -799,7 +799,7 @@ session_attention (
 );
 ```
 
-Migrations live in `crates/runner-backend/migrations/` (`0001_init.sql` … `0023_roles.sql`) and are forward-only: an older Runner cannot open a database a newer one has migrated, which the 0023 table rename accepted deliberately. Two rules from that rename hold for every table. Every SQL statement that names a table lives behind a `repo/` function, so `ops/`, `session/` and `mcp/` speak only in domain terms; the gate is a grep for the table and column names inside SQL strings, which must hit only `repo/` and the migrations. A persisted value whose spelling changes is written in the new form and read in both, with nothing frozen under the old name for compatibility's sake: `role-default` reads `runner-default`, the start-chat mode `role` reads `runner`, the saved route `/roles` reads `/runners`.
+Migrations live in `crates/runner-daemon/migrations/` (`0001_init.sql` … `0023_roles.sql`) and are forward-only: an older Runner cannot open a database a newer one has migrated, which the 0023 table rename accepted deliberately. Two rules from that rename hold for every table. Every SQL statement that names a table lives behind a `repo/` function, so `ops/`, `session/` and `mcp/` speak only in domain terms; the gate is a grep for the table and column names inside SQL strings, which must hit only `repo/` and the migrations. A persisted value whose spelling changes is written in the new form and read in both, with nothing frozen under the old name for compatibility's sake: `role-default` reads `runner-default`, the start-chat mode `role` reads `runner`, the saved route `/roles` reads `/runners`.
 
 ### 10.2 Filesystem
 
@@ -904,7 +904,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 10. **One native process; `alacritty_terminal` as the model, GPUI paints the grid.** Terminal bytes are never serialized, and the terminal outlives its views.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
 12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the continuation point; Resume creates fresh child processes.
-13. **The core is UI-agnostic.** `runner-backend` knows nothing about GPUI; the app is one consumer of `AppCore`, and the MCP server is another.
+13. **The core is UI-agnostic.** `runner-daemon` knows nothing about GPUI; the app is one consumer of `AppCore`, and the MCP server is another.
 
 ## 13. What would break this architecture
 

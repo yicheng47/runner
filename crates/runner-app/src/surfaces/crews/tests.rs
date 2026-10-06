@@ -19,9 +19,9 @@ use super::logic::PictureCell;
 use super::*;
 use crate::surfaces::profile_page::PROFILE_COLUMN_WIDTH;
 use chrono::{TimeZone, Utc};
-use runner_backend::model::{CodexSpeed, Mission, MissionStatus, Role, Runtime, Slot};
-use runner_backend::ops::crew::CrewMemberPreview;
-use runner_backend::ops::mission::MissionSummary;
+use runner_daemon::model::{CodexSpeed, Mission, MissionStatus, Role, Runtime, Slot};
+use runner_daemon::ops::crew::CrewMemberPreview;
+use runner_daemon::ops::mission::MissionSummary;
 
 fn slot_with_role(
     runtime_override: Option<&str>,
@@ -258,7 +258,7 @@ fn the_runtime_select_leads_with_the_roles_default() {
 #[test]
 fn slot_runtime_select_restores_role_and_override_in_selector_order() {
     let page = crew_page_harness("slot-runtime-order");
-    let mut runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core)
+    let mut runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core)
         .unwrap()
         .into_iter()
         .filter(|entry| !matches!(entry.name, Runtime::Codex | Runtime::Pi))
@@ -443,7 +443,7 @@ fn crew_page_harness(label: &str) -> CrewPageHarness {
     use crate::theme_snapshot::ThemeGuard;
     use crate::*;
     use gpui::{px, size, TestAppContext, VisualTestContext};
-    use runner_backend::{db, session, shell_path};
+    use runner_daemon::{db, session, shell_path};
     use std::sync::{Arc, RwLock};
 
     let theme = ThemeGuard::new();
@@ -512,9 +512,9 @@ fn crew_page_harness(label: &str) -> CrewPageHarness {
 
 impl CrewPageHarness {
     fn role(&self, handle: &str, runtime: Runtime) -> Role {
-        runner_backend::ops::role::role_create(
+        runner_daemon::ops::role::role_create(
             &self.core,
-            runner_backend::ops::role::CreateRoleInput {
+            runner_daemon::ops::role::CreateRoleInput {
                 handle: handle.into(),
                 display_name: format!("Role {handle}"),
                 runtime,
@@ -526,7 +526,7 @@ impl CrewPageHarness {
                 model: Some("opus".into()),
                 effort: Some("high".into()),
                 codex_speed: None,
-                permission_mode: runner_backend::router::runtime::PermissionMode::Default,
+                permission_mode: runner_daemon::router::runtime::PermissionMode::Default,
             },
         )
         .unwrap()
@@ -534,20 +534,20 @@ impl CrewPageHarness {
 
     /// A crew whose slots fill in order from `handles`, the first leading.
     fn crew(&self, name: &str, conventions: Option<&str>, handles: &[&str]) -> String {
-        let crew = runner_backend::ops::crew::crew_create(
+        let crew = runner_daemon::ops::crew::crew_create(
             &self.core,
-            runner_backend::ops::crew::CreateCrewInput {
+            runner_daemon::ops::crew::CreateCrewInput {
                 name: name.into(),
                 system_prompt_addendum: conventions.map(str::to_owned),
             },
         )
         .unwrap();
         for handle in handles {
-            let role = runner_backend::ops::role::role_get_by_handle(&self.core, handle)
+            let role = runner_daemon::ops::role::role_get_by_handle(&self.core, handle)
                 .unwrap_or_else(|_| self.role(handle, Runtime::Codex));
-            runner_backend::ops::slot::slot_create(
+            runner_daemon::ops::slot::slot_create(
                 &self.core,
-                runner_backend::ops::slot::CreateSlotInput {
+                runner_daemon::ops::slot::CreateSlotInput {
                     crew_id: crew.id.clone(),
                     role_id: role.id,
                     slot_handle: (*handle).into(),
@@ -596,7 +596,7 @@ impl CrewPageHarness {
     }
 
     fn slots(&self, crew_id: &str) -> Vec<SlotWithRole> {
-        runner_backend::ops::slot::slot_list(&self.core, crew_id).unwrap()
+        runner_daemon::ops::slot::slot_list(&self.core, crew_id).unwrap()
     }
 
     fn popup_slot(&mut self) -> Option<String> {
@@ -738,7 +738,7 @@ fn an_override_saves_to_the_slot_only_and_reset_restores_the_role() {
     assert_eq!(slot.slot.model_override.as_deref(), Some("sonnet"));
     assert_eq!(slot.slot.runtime_override, None);
     assert_eq!(slot.slot.effort_override, None);
-    let role = runner_backend::ops::role::role_get_by_handle(&page.core, "lead").unwrap();
+    let role = runner_daemon::ops::role::role_get_by_handle(&page.core, "lead").unwrap();
     assert_eq!(
         role.model.as_deref(),
         Some("opus"),
@@ -766,7 +766,7 @@ fn an_override_saves_to_the_slot_only_and_reset_restores_the_role() {
         "Reset restores the role's model"
     );
     assert_eq!(
-        runner_backend::ops::role::role_get_by_handle(&page.core, "lead")
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "lead")
             .unwrap()
             .model
             .as_deref(),
@@ -792,7 +792,7 @@ fn codex_slot_speed_edit_shows_credit_note_saves_and_resets() {
     );
     assert!(page.visual.debug_bounds("CREW_SLOT_SPEED_ROW").is_some());
     assert_eq!(
-        runner_backend::ops::role::role_get_by_handle(&page.core, "coder")
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "coder")
             .unwrap()
             .codex_speed,
         None
@@ -949,7 +949,7 @@ fn edit_in_place_saves_name_and_conventions_together_and_cancel_discards() {
         "the unsaved note appears in reserved space; the slots below never move"
     );
     page.click("CREW_EDIT_SAVE");
-    let saved = runner_backend::ops::crew::crew_get(&page.core, &crew).unwrap();
+    let saved = runner_daemon::ops::crew::crew_get(&page.core, &crew).unwrap();
     assert_eq!(saved.name, "Release crew");
     assert_eq!(
         saved.system_prompt_addendum.as_deref(),
@@ -971,7 +971,7 @@ fn edit_in_place_saves_name_and_conventions_together_and_cancel_discards() {
     page.click("CREW_EDIT_CANCEL");
     assert!(page.read(|root| root.crew_surfaces.editor.edit.is_none()));
     assert_eq!(
-        runner_backend::ops::crew::crew_get(&page.core, &crew)
+        runner_daemon::ops::crew::crew_get(&page.core, &crew)
             .unwrap()
             .name,
         "Release crew",
@@ -1051,7 +1051,7 @@ fn crew_list_table_fits_the_minimum_window_and_counts_its_rows() {
             "{width}: header {header:?} and rows {rows:?} end apart"
         );
     }
-    let crews = runner_backend::ops::crew::crew_list(&page.core, 1, 100, "")
+    let crews = runner_daemon::ops::crew::crew_list(&page.core, 1, 100, "")
         .unwrap()
         .total_count as usize;
     assert!(crews >= 9);
@@ -1076,9 +1076,9 @@ fn a_same_runtime_pin_shows_as_an_override_survives_an_edit_and_resets() {
     let mut page = crew_page_harness("crew-slot-pin");
     let crew = page.crew("Solo", None, &[]);
     let role = page.role("pin-coder", Runtime::Codex);
-    runner_backend::ops::slot::slot_create(
+    runner_daemon::ops::slot::slot_create(
         &page.core,
-        runner_backend::ops::slot::CreateSlotInput {
+        runner_daemon::ops::slot::CreateSlotInput {
             crew_id: crew.clone(),
             role_id: role.id,
             slot_handle: "pin-coder".into(),
@@ -1268,7 +1268,7 @@ fn new_crew_entry_points_use_a_page_and_cancel_returns_to_the_list() {
     for entry in ["NEW_CREW", "EMPTY_NEW_CREW"] {
         let mut page = crew_page_harness("new-crew-entry");
         page.update(|root, window, cx| root.open_crews(window, cx));
-        let count = runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+        let count = runner_daemon::ops::crew::crew_list(&page.core, 1, 20, "")
             .unwrap()
             .total_count;
         if entry == "EMPTY_NEW_CREW" {
@@ -1303,7 +1303,7 @@ fn new_crew_entry_points_use_a_page_and_cancel_returns_to_the_list() {
         });
         page.click("CREW_EDIT_SAVE");
         assert_eq!(
-            runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+            runner_daemon::ops::crew::crew_list(&page.core, 1, 20, "")
                 .unwrap()
                 .total_count,
             count
@@ -1327,13 +1327,13 @@ fn new_crew_saves_conventions_opens_view_mode_and_allows_slots() {
         });
     });
     page.click("CREW_EDIT_SAVE");
-    let item = runner_backend::ops::crew::crew_list(&page.core, 1, 20, "")
+    let item = runner_daemon::ops::crew::crew_list(&page.core, 1, 20, "")
         .unwrap()
         .items
         .into_iter()
         .find(|item| item.crew.name == "Pair")
         .unwrap();
-    let crew = runner_backend::ops::crew::crew_get(&page.core, &item.crew.id).unwrap();
+    let crew = runner_daemon::ops::crew::crew_get(&page.core, &item.crew.id).unwrap();
     assert_eq!(
         crew.system_prompt_addendum.as_deref(),
         Some("# Reviews\n\nUse the feed.")

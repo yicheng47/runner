@@ -967,7 +967,7 @@ mod keyboard_tests {
                 .project_create("Project".into(), "/tmp".into())
                 .unwrap();
             project_id = project.id.clone();
-            let project_node = runner_backend::repo::node::ensure_project_node(
+            let project_node = runner_daemon::repo::node::ensure_project_node(
                 &root.app_store.read(cx).test_core.db.get().unwrap(),
                 &project.id,
             )

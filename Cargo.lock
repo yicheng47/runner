@@ -5300,8 +5300,8 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "raw-window-handle",
- "runner-backend",
  "runner-core",
+ "runner-daemon",
  "runner-terminal",
  "serde",
  "serde_json",
@@ -5316,7 +5316,48 @@ dependencies = [
 ]
 
 [[package]]
-name = "runner-backend"
+name = "runner-cli"
+version = "0.12.9"
+dependencies = [
+ "chrono",
+ "clap",
+ "libc",
+ "rmcp",
+ "runner-core",
+ "runner-daemon",
+ "runner-terminal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ulid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "runner-core"
+version = "0.12.9"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs2",
+ "libc",
+ "log",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "runner-daemon"
 version = "0.12.9"
 dependencies = [
  "alacritty_terminal",
@@ -5351,47 +5392,6 @@ dependencies = [
  "vte",
  "windows-sys 0.61.2",
  "zed-reqwest",
-]
-
-[[package]]
-name = "runner-cli"
-version = "0.12.9"
-dependencies = [
- "chrono",
- "clap",
- "libc",
- "rmcp",
- "runner-backend",
- "runner-core",
- "runner-terminal",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "ulid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "runner-core"
-version = "0.12.9"
-dependencies = [
- "anyhow",
- "chrono",
- "fs2",
- "libc",
- "log",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "ulid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

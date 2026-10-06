@@ -1,9 +1,9 @@
-crates/runner-backend/migrations/*.sql text eol=lf
-crates/runner-backend/src/session/manager/tests/expectations/*.json text eol=lf
+crates/runner-daemon/migrations/*.sql text eol=lf
+crates/runner-daemon/src/session/manager/tests/expectations/*.json text eol=lf
 crates/runner-app/src/expectations/*.json text eol=lf
 tests/fixtures/system-prompts/*.md text eol=lf
 crates/runner-terminal/fixtures/*.txt text eol=lf
 make.cmd text eol=crlf
-crates/runner-backend/src/session/fixtures/scenarios/**/*.ndjson text eol=lf
-crates/runner-backend/src/session/fixtures/expectations/**/*.txt text eol=lf
+crates/runner-daemon/src/session/fixtures/scenarios/**/*.ndjson text eol=lf
+crates/runner-daemon/src/session/fixtures/expectations/**/*.txt text eol=lf
 vendor/alacritty_terminal/tests/ref/**/alacritty.recording -text -diff

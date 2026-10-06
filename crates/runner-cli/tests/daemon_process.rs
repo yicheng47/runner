@@ -139,9 +139,9 @@ impl Daemon {
                 Some(24),
             )
             .unwrap();
-        let pool = runner_backend::db::open_pool(&self.launch.paths.app_data_dir.join("runner.db"))
+        let pool = runner_daemon::db::open_pool(&self.launch.paths.app_data_dir.join("runner.db"))
             .unwrap();
-        spawned.pid = runner_backend::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+        spawned.pid = runner_daemon::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
             .unwrap()
             .unwrap()
             .pid
@@ -323,10 +323,10 @@ fn sigterm_stamps_resume_and_replaced_socket_stops_daemon() {
     daemon.stopped();
     assert!(!process_exists(shell.pid.unwrap()));
     let pool =
-        runner_backend::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
+        runner_daemon::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
     let conn = pool.get().unwrap();
     assert!(
-        runner_backend::repo::session::get_row(&conn, &shell.id)
+        runner_daemon::repo::session::get_row(&conn, &shell.id)
             .unwrap()
             .unwrap()
             .resume_on_launch
@@ -560,7 +560,7 @@ fn slow_sqlite_request_does_not_block_another_request() {
     let mut daemon = Daemon::new();
     let socket = daemon.start();
     let pool =
-        runner_backend::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
+        runner_daemon::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
     let conn = pool.get().unwrap();
     conn.execute_batch("BEGIN IMMEDIATE").unwrap();
     let client = socket.client();
@@ -885,7 +885,7 @@ fn stopping_during_startup_preserves_every_resume_claim() {
         resumed.shutdown(true).unwrap();
         daemon.stopped();
         let pool =
-            runner_backend::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db"))
+            runner_daemon::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db"))
                 .unwrap();
         let pending: i64 = pool
             .get()

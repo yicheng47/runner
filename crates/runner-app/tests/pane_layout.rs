@@ -2,7 +2,7 @@ use runner_app::pane_layout::{
     MissionLayout, PaneLayout, PaneLeaf, PaneNode, PaneSplit, SplitOrientation, TabSet,
     DEFAULT_DRAWER_HEIGHT, MAX_DRAWER_HEIGHT, MIN_DRAWER_HEIGHT,
 };
-use runner_backend::repo::node::{NodeRow, NodeType};
+use runner_daemon::repo::node::{NodeRow, NodeType};
 
 fn row(id: &str, position: i64, layout: &PaneLayout) -> NodeRow {
     NodeRow {
@@ -156,7 +156,7 @@ fn a_five_pane_tree_round_trips_with_its_orientations_sizes_and_slot_order() {
     assert!(raw.get("preset").is_none(), "{serialized}");
     assert!(raw.get("sizes").is_none(), "{serialized}");
     assert_eq!(
-        runner_backend::repo::node::session_ids_from_layout(&serialized),
+        runner_daemon::repo::node::session_ids_from_layout(&serialized),
         ["A", "C", "D", "E", "B", "shell"]
     );
 }
@@ -171,7 +171,7 @@ fn empty_panes_persist_as_null_slots_so_the_backend_still_sees_every_session() {
 
     assert_eq!(raw["slots"], serde_json::json!(["A", null]));
     assert_eq!(
-        runner_backend::repo::node::session_ids_from_layout(&serialized),
+        runner_daemon::repo::node::session_ids_from_layout(&serialized),
         ["A"]
     );
 }
@@ -295,7 +295,7 @@ fn slots_win_over_a_stale_tree_because_the_backend_only_edits_slots() {
     let rewritten = restored.serialize().unwrap();
     assert!(!rewritten.contains("\"B\""), "{rewritten}");
     assert_eq!(
-        runner_backend::repo::node::session_ids_from_layout(&rewritten),
+        runner_daemon::repo::node::session_ids_from_layout(&rewritten),
         ["A", "C"]
     );
 

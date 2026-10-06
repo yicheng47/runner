@@ -132,7 +132,7 @@ These examples describe the implementation and recorded evidence through 2026-09
 
 ## Where the implementation lives
 
-Each agent owns its integration in [`crates/runner-backend/src/runtimes/<name>/`](../../crates/runner-backend/src/runtimes/). The [`RuntimeAdapter`](../../crates/runner-backend/src/runtimes/mod.rs) defaults unsupported capabilities to no operation; `NoAgent` supplies those defaults for Shell and unknown keys. Shared modules handle scheduling, process transport, config splicing and application state, and dispatch through the adapter.
+Each agent owns its integration in [`crates/runner-daemon/src/runtimes/<name>/`](../../crates/runner-daemon/src/runtimes/). The [`RuntimeAdapter`](../../crates/runner-daemon/src/runtimes/mod.rs) defaults unsupported capabilities to no operation; `NoAgent` supplies those defaults for Shell and unknown keys. Shared modules handle scheduling, process transport, config splicing and application state, and dispatch through the adapter.
 
 | Concern | Runtime-owned implementation | Shared mechanism |
 | --- | --- | --- |

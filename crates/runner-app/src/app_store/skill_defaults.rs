@@ -132,7 +132,7 @@ mod tests {
     use super::*;
     use crate::app_store::AppStore;
     use gpui::{AppContext as _, TestAppContext};
-    use runner_backend::{db, session, shell_path, AppCore};
+    use runner_daemon::{db, session, shell_path, AppCore};
     use std::fs;
     use std::sync::{Arc, RwLock};
 
@@ -242,7 +242,7 @@ mod tests {
             fs::write(folder.join(agent_skill::SKILL_MARKER), "managed").unwrap();
             fs::write(folder.join("SKILL.md"), "stale canary").unwrap();
         }
-        let config_canaries: Vec<_> = runner_backend::ops::mcp::McpClientId::all()
+        let config_canaries: Vec<_> = runner_daemon::ops::mcp::McpClientId::all()
             .into_iter()
             .map(|client| client.config_path(&home))
             .collect();
@@ -296,7 +296,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         let app_data = temp.path().join("app");
-        runner_backend::agent_skill::install(&home, &app_data, true).unwrap();
+        runner_daemon::agent_skill::install(&home, &app_data, true).unwrap();
         let foreign = home.join(".trae/skills/runner-dev");
         fs::remove_file(foreign.join(agent_skill::SKILL_MARKER)).unwrap();
         let settings = crate::app_settings::AppSettings {

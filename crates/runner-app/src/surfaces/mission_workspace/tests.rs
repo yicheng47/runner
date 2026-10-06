@@ -4,7 +4,7 @@ use chrono::Utc;
 use gpui::prelude::*;
 use gpui::px;
 use runner_app::ui::SessionControlKind;
-use runner_backend::model::{Event, EventKind, MissionStatus, SessionStatus};
+use runner_daemon::model::{Event, EventKind, MissionStatus, SessionStatus};
 
 use super::*;
 use crate::surfaces::*;
@@ -19,7 +19,7 @@ fn signal(signal_type: &str, payload: serde_json::Value) -> Event {
         kind: EventKind::Signal,
         from: "system".into(),
         to: None,
-        signal_type: Some(runner_backend::model::SignalType::new(signal_type)),
+        signal_type: Some(runner_daemon::model::SignalType::new(signal_type)),
         payload,
     }
 }
@@ -53,11 +53,11 @@ fn session_status_projection_reads_legacy_runner_status_rows() {
 
     assert_eq!(
         statuses.get("coder"),
-        Some(&runner_backend::session::manager::SessionActivityState::Idle)
+        Some(&runner_daemon::session::manager::SessionActivityState::Idle)
     );
     assert_eq!(
         statuses.get("reviewer"),
-        Some(&runner_backend::session::manager::SessionActivityState::Idle)
+        Some(&runner_daemon::session::manager::SessionActivityState::Idle)
     );
     assert!(observations.is_empty());
 }
@@ -67,7 +67,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     use crate::theme_snapshot::{assert_fill, ThemeGuard};
     use gpui::{TestAppContext, VisualTestContext};
 
-    use runner_backend::{db, session, shell_path};
+    use runner_daemon::{db, session, shell_path};
     use std::sync::RwLock;
 
     let _theme = ThemeGuard::new();
@@ -124,7 +124,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     });
     let bridge = cx.update(|cx| store.read(cx).bridge.clone());
     for id in ["direct", "slot"] {
-        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+        let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
             Arc::new(core.session_events());
         core.sessions
             .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
@@ -147,8 +147,8 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             workspace.active = true;
             workspace.mission_id = Some("mission".into());
             workspace.mission =
-                Some(runner_backend::ops::mission::mission_get(&core, "mission").unwrap());
-            workspace.crew = Some(runner_backend::ops::crew::crew_get(&core, "crew").unwrap());
+                Some(runner_daemon::ops::mission::mission_get(&core, "mission").unwrap());
+            workspace.crew = Some(runner_daemon::ops::crew::crew_get(&core, "crew").unwrap());
             workspace.composer.draft = "Ready to review".into();
             workspace
                 .composer_input
@@ -198,7 +198,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
 
     let archived_slot = SessionRow {
         live_title: None,
-        session: runner_backend::model::Session {
+        session: runner_daemon::model::Session {
             id: "archived-slot".into(),
             mission_id: Some("mission".into()),
             role_id: "role".into(),
@@ -217,13 +217,8 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
     {
         let conn = core.db.get().unwrap();
         conn.execute("INSERT INTO sessions(id, status, agent_runtime, archived_at) VALUES ('archived-slot', 'stopped', 'codex', '2026-09-14T00:00:00Z')", []).unwrap();
-        runner_backend::repo::session_attention::record_completion(
-            &conn,
-            "archived-slot",
-            false,
-            1,
-        )
-        .unwrap();
+        runner_daemon::repo::session_attention::record_completion(&conn, "archived-slot", false, 1)
+            .unwrap();
     }
     host.update(&mut cx, |root, window, cx| {
         root.mission_workspace.update(cx, |workspace, _| {
@@ -232,8 +227,8 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             workspace.mission.as_mut().unwrap().archived_at = Some(Utc::now());
             workspace.session_observations.insert(
                 "archived".into(),
-                runner_backend::session::status::AgentStatus {
-                    lifecycle: runner_backend::session::status::Lifecycle::Stopped,
+                runner_daemon::session::status::AgentStatus {
+                    lifecycle: runner_daemon::session::status::Lifecycle::Stopped,
                     unread_since: Some(1),
                     ..Default::default()
                 },
@@ -255,7 +250,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         .unwrap();
         cx.run_until_parked();
     }
-    assert!(runner_backend::repo::session_attention::any_unread(
+    assert!(runner_daemon::repo::session_attention::any_unread(
         &core.db.get().unwrap(),
         &["archived-slot".into()]
     )
@@ -278,7 +273,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         root.sync_window_activation(window, cx);
     })
     .unwrap();
-    assert!(!runner_backend::repo::session_attention::any_unread(
+    assert!(!runner_daemon::repo::session_attention::any_unread(
         &core.db.get().unwrap(),
         &["archived-slot".into()]
     )

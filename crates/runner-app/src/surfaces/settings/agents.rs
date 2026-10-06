@@ -1803,7 +1803,7 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::{Arc, RwLock};
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =

@@ -2786,7 +2786,7 @@ mod tests {
     fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_one() {
         use crate::theme_snapshot::{assert_fill, ThemeGuard};
         use gpui::{size, Render, TestAppContext, VisualTestContext};
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::{Arc, RwLock};
 
         struct PaneHost(Entity<NativeRoot>);

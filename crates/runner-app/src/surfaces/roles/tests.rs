@@ -2,7 +2,7 @@ use super::logic::runtime_default_effort_label;
 use super::logic::runtime_model_placeholder;
 use super::logic::validate_role_handle;
 use super::*;
-use runner_backend::model::Runtime;
+use runner_daemon::model::Runtime;
 
 fn runtime_with_defaults(
     default_model: Option<&str>,
@@ -10,11 +10,9 @@ fn runtime_with_defaults(
 ) -> RuntimeCatalogEntry {
     RuntimeCatalogEntry {
         name: Runtime::Codex,
-        capabilities: runner_backend::ops::runtime::RuntimeCatalogEntry::for_runtime(
-            Runtime::Codex,
-        )
-        .map(|entry| entry.capabilities)
-        .unwrap_or_default(),
+        capabilities: runner_daemon::ops::runtime::RuntimeCatalogEntry::for_runtime(Runtime::Codex)
+            .map(|entry| entry.capabilities)
+            .unwrap_or_default(),
         display_name: "Codex".into(),
         command: "codex".into(),
         native_fork: true,
@@ -34,7 +32,7 @@ fn role_edit_restores_disabled_runtimes_in_selector_order() {
     let page = role_page_harness("role-runtime-order");
     let mut role = create_test_role(&page.core, "restored-runtime", None);
     role.runtime = "codex".into();
-    let mut runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core)
+    let mut runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core)
         .unwrap()
         .into_iter()
         .filter(|entry| !matches!(entry.name, Runtime::Codex | Runtime::Pi))
@@ -106,7 +104,7 @@ fn runtime_default_labels_include_known_values() {
 
 #[test]
 fn default_role_model_offers_efforts_and_filters_known_capabilities() {
-    use runner_backend::ops::runtime::RuntimeCatalogOption;
+    use runner_daemon::ops::runtime::RuntimeCatalogOption;
     let mut runtime = runtime_with_defaults(Some("limited-model"), None);
     runtime.efforts = ["", "low", "high"]
         .into_iter()
@@ -179,7 +177,7 @@ fn prompt_preview_clamps_only_long_prompts_at_a_line_boundary() {
 fn list_cells_read_default_dash_and_live_counts() {
     use super::logic::{crews_label, last_active_label, role_setting_label};
     use chrono::{TimeZone, Utc};
-    use runner_backend::ops::role::RoleActivity;
+    use runner_daemon::ops::role::RoleActivity;
 
     assert_eq!(role_setting_label(None), ("default".into(), true));
     assert_eq!(role_setting_label(Some("  ")), ("default".into(), true));
@@ -227,7 +225,7 @@ fn list_cells_read_default_dash_and_live_counts() {
 fn the_crews_heading_counts_crews_not_slots() {
     use super::logic::distinct_crew_count;
     use chrono::Utc;
-    use runner_backend::ops::slot::CrewMembership;
+    use runner_daemon::ops::slot::CrewMembership;
 
     let membership = |crew_id: &str, slot_id: &str| CrewMembership {
         crew_id: crew_id.into(),
@@ -294,7 +292,7 @@ fn role_page_harness(label: &str) -> RolePageHarness {
     use crate::theme_snapshot::ThemeGuard;
     use crate::*;
     use gpui::{TestAppContext, VisualTestContext};
-    use runner_backend::{db, session, shell_path};
+    use runner_daemon::{db, session, shell_path};
     use std::sync::{Arc, RwLock};
 
     let theme = ThemeGuard::new();
@@ -368,9 +366,9 @@ fn create_test_role_with_args(
     system_prompt: Option<String>,
     args: Vec<String>,
 ) -> Role {
-    runner_backend::ops::role::role_create(
+    runner_daemon::ops::role::role_create(
         core,
-        runner_backend::ops::role::CreateRoleInput {
+        runner_daemon::ops::role::CreateRoleInput {
             handle: handle.into(),
             display_name: format!("Role {handle}"),
             runtime: Runtime::ClaudeCode,
@@ -382,7 +380,7 @@ fn create_test_role_with_args(
             model: Some("opus".into()),
             effort: None,
             codex_speed: None,
-            permission_mode: runner_backend::router::runtime::PermissionMode::AcceptEdits,
+            permission_mode: runner_daemon::router::runtime::PermissionMode::AcceptEdits,
         },
     )
     .unwrap()
@@ -391,7 +389,7 @@ fn create_test_role_with_args(
 #[test]
 fn selected_chat_panel_refreshes_after_a_shared_role_edit() {
     use crate::surfaces::AppRoute;
-    use runner_backend::ops::role::{role_list, role_update, UpdateRoleInput};
+    use runner_daemon::ops::role::{role_list, role_update, UpdateRoleInput};
 
     let mut page = role_page_harness("chat-panel-role-edit");
     let role = create_test_role(&page.core, "panel-role", None);
@@ -401,7 +399,7 @@ fn selected_chat_panel_refreshes_after_a_shared_role_edit() {
         [&role.id],
     )
     .unwrap();
-    runner_backend::repo::node::create_tab(
+    runner_daemon::repo::node::create_tab(
         &conn,
         None,
         "",
@@ -411,7 +409,7 @@ fn selected_chat_panel_refreshes_after_a_shared_role_edit() {
             .unwrap(),
     )
     .unwrap();
-    let nodes = runner_backend::repo::node::list(&conn).unwrap();
+    let nodes = runner_daemon::repo::node::list(&conn).unwrap();
     let roles = role_list(&page.core).unwrap();
     page.host
         .update(&mut page.visual, |root, _, cx| {
@@ -666,7 +664,7 @@ fn role_list_table_fits_the_minimum_window_and_counts_its_rows() {
             "{width}: header {header:?} and rows {rows:?} end apart"
         );
     }
-    let roles = runner_backend::ops::role::role_list(&page.core)
+    let roles = runner_daemon::ops::role::role_list(&page.core)
         .unwrap()
         .len();
     let (filtered, total, searching) = page.read(|root| {
@@ -772,7 +770,7 @@ fn edit_edits_in_place_and_cancel_discards_the_draft() {
 
     page.click("ROLE_EDIT_CANCEL");
     assert!(!page.in_place_edit());
-    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, &role.id).unwrap();
     assert_eq!(stored.display_name, "Role page-coder");
 
     // Escape from a field cancels too, as it closes the drawer.
@@ -859,7 +857,7 @@ fn saving_a_rename_keeps_an_arg_that_holds_a_space() {
     page.visual.run_until_parked();
     page.click("ROLE_EDIT_SAVE");
     assert!(!page.in_place_edit());
-    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, &role.id).unwrap();
     assert_eq!(stored.display_name, "Renamed coder");
     assert_eq!(stored.args, role.args, "a rename leaves the command alone");
     assert!(stored.args.iter().any(|arg| arg == "two words"));
@@ -869,9 +867,9 @@ fn saving_a_rename_keeps_an_arg_that_holds_a_space() {
 fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
     let mut page = role_page_harness("role-legacy-shell");
     let timestamp = "2026-09-21T00:00:00Z".parse().unwrap();
-    runner_backend::repo::role::insert(
+    runner_daemon::repo::role::insert(
         &page.core.db.get().unwrap(),
-        &runner_backend::repo::role::RoleRow {
+        &runner_daemon::repo::role::RoleRow {
             id: "legacy-shell".into(),
             handle: "legacy-shell".into(),
             display_name: "Legacy shell".into(),
@@ -889,7 +887,7 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
         },
     )
     .unwrap();
-    let role = runner_backend::ops::role::role_get(&page.core, "legacy-shell").unwrap();
+    let role = runner_daemon::ops::role::role_get(&page.core, "legacy-shell").unwrap();
     let options = super::logic::role_edit_runtime_options(
         &[runtime_with_defaults(None, None)],
         &role,
@@ -935,7 +933,7 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
                 .into()
         )
     );
-    let stored = runner_backend::ops::role::role_get(&page.core, "legacy-shell").unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, "legacy-shell").unwrap();
     assert_eq!(stored.display_name, "Legacy shell");
     assert_eq!(stored.runtime, "shell");
 }
@@ -945,7 +943,7 @@ fn a_search_with_no_matches_keeps_the_count() {
     use crate::surfaces::AppRoute;
 
     let mut page = role_page_harness("role-list-no-matches");
-    let total = runner_backend::ops::role::role_list(&page.core)
+    let total = runner_daemon::ops::role::role_list(&page.core)
         .unwrap()
         .len();
     page.visual.run_until_parked();
@@ -1036,7 +1034,7 @@ fn save_in_place_goes_through_the_shared_submit() {
 
     page.click("ROLE_EDIT_SAVE");
     assert!(!page.in_place_edit(), "a clean save leaves edit mode");
-    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, &role.id).unwrap();
     assert_eq!(stored.display_name, "Renamed coder");
     assert_eq!(
         stored.system_prompt.as_deref(),
@@ -1053,9 +1051,9 @@ fn save_in_place_goes_through_the_shared_submit() {
 
 #[test]
 fn codex_speed_edit_reloads_and_runtime_switch_clears_it() {
-    use runner_backend::model::CodexSpeed;
+    use runner_daemon::model::CodexSpeed;
     let mut page = role_page_harness("role-codex-speed");
-    let role = runner_backend::ops::role::role_create(
+    let role = runner_daemon::ops::role::role_create(
         &page.core,
         serde_json::from_value(serde_json::json!({
             "handle": "speed-coder",
@@ -1090,7 +1088,7 @@ fn codex_speed_edit_reloads_and_runtime_switch_clears_it() {
         })
         .unwrap();
     page.click("ROLE_EDIT_SAVE");
-    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, &role.id).unwrap();
     assert_eq!(stored.codex_speed, Some(CodexSpeed::Standard));
     page.host
         .update(&mut page.visual, |root, window, cx| {
@@ -1104,7 +1102,7 @@ fn codex_speed_edit_reloads_and_runtime_switch_clears_it() {
         "inherit"
     );
     page.click("ROLE_EDIT_SAVE");
-    let stored = runner_backend::ops::role::role_get(&page.core, &role.id).unwrap();
+    let stored = runner_daemon::ops::role::role_get(&page.core, &role.id).unwrap();
     assert_eq!(stored.runtime, "claude-code");
     assert_eq!(stored.codex_speed, None);
 }
@@ -1491,14 +1489,14 @@ fn role_edit_saves_effort_with_default_model_and_resets_it_on_runtime_change() {
         .unwrap();
     page.click("ROLE_EDIT_SAVE");
     let saved =
-        runner_backend::ops::role::role_get_by_handle(&page.core, "default-effort-role").unwrap();
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "default-effort-role").unwrap();
     assert_eq!(saved.model, None);
     assert_eq!(saved.effort.as_deref(), Some("high"));
     page.host
         .update(&mut page.visual, |root, window, cx| {
             root.open_role_edit(saved, window, cx);
             root.role_surfaces.edit.as_mut().unwrap().runtimes =
-                runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+                runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
             root.select_role_edit_runtime("codex".into(), cx);
             assert!(root.role_surfaces.edit.as_ref().unwrap().effort.is_empty());
         })
@@ -1519,7 +1517,7 @@ fn new_role_saves_effort_speed_and_prompt_then_opens_view_mode() {
         page.host
             .update(&mut page.visual, |root, _, cx| {
                 let form = root.role_surfaces.create.as_mut().unwrap();
-                form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+                form.runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
                 root.select_create_role_runtime("codex".into(), cx);
                 let form = root.role_surfaces.create.as_mut().unwrap();
                 form.handle
@@ -1554,12 +1552,12 @@ fn new_role_saves_effort_speed_and_prompt_then_opens_view_mode() {
             root.role_surfaces.create.as_ref().unwrap()
         )));
         page.click("ROLE_EDIT_SAVE");
-        let role = runner_backend::ops::role::role_get_by_handle(&page.core, "new-coder").unwrap();
+        let role = runner_daemon::ops::role::role_get_by_handle(&page.core, "new-coder").unwrap();
         assert_eq!(role.effort.as_deref(), Some("high"));
         assert_eq!(role.model.as_deref(), model_override);
         assert_eq!(
             role.codex_speed,
-            Some(runner_backend::model::CodexSpeed::Fast)
+            Some(runner_daemon::model::CodexSpeed::Fast)
         );
         assert_eq!(role.system_prompt.as_deref(), Some("# Build\n\nShip it."));
         assert_eq!(
@@ -1583,7 +1581,7 @@ fn new_role_validation_and_runtime_changes_keep_creation_safe() {
     page.host
         .update(&mut page.visual, |root, _, cx| {
             let form = root.role_surfaces.create.as_mut().unwrap();
-            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            form.runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
             form.handle
                 .update(cx, |input, cx| input.set_text("bad!", cx));
             form.display_name
@@ -1608,7 +1606,7 @@ fn new_role_validation_and_runtime_changes_keep_creation_safe() {
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(runner_backend::ops::role::role_get_by_handle(&page.core, "bad!").is_err());
+    assert!(runner_daemon::ops::role::role_get_by_handle(&page.core, "bad!").is_err());
     page.host
         .update(&mut page.visual, |root, _, cx| {
             root.select_create_role_runtime("codex".into(), cx);
@@ -1717,7 +1715,7 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             ],
         )
         .unwrap();
-        runner_backend::repo::node::create_tab(
+        runner_daemon::repo::node::create_tab(
             &conn,
             None,
             "",
@@ -1735,8 +1733,8 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         )
         .unwrap();
     }
-    let nodes = runner_backend::repo::node::list(&conn).unwrap();
-    let roles = runner_backend::ops::role::role_list(&page.core).unwrap();
+    let nodes = runner_daemon::repo::node::list(&conn).unwrap();
+    let roles = runner_daemon::ops::role::role_list(&page.core).unwrap();
     page.host
         .update(&mut page.visual, |root, _, cx| {
             root.app_store.update(cx, |store, cx| {
@@ -1789,7 +1787,7 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
     assert!(!page.read(|root| root.chat_panel_prompt_expanded));
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
     for id in ["first-archived-panel-chat", "second-archived-panel-chat"] {
-        let archived = runner_backend::ops::session::session_get(&page.core, id)
+        let archived = runner_daemon::ops::session::session_get(&page.core, id)
             .unwrap()
             .unwrap();
         page.host
@@ -1888,14 +1886,14 @@ fn new_role_enter_is_ime_safe_and_tabs_start_with_name_then_handle() {
             });
             form.display_name
                 .update(cx, |input, cx| input.set_text("Keyboard coder", cx));
-            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            form.runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
             root.select_create_role_runtime("codex".into(), cx);
         })
         .unwrap();
     page.visual.run_until_parked();
     page.visual.simulate_keystrokes("enter");
     page.visual.run_until_parked();
-    assert!(runner_backend::ops::role::role_get_by_handle(&page.core, "keyboard-coder").is_ok());
+    assert!(runner_daemon::ops::role::role_get_by_handle(&page.core, "keyboard-coder").is_ok());
 }
 
 #[test]
@@ -1987,7 +1985,7 @@ fn new_role_backend_error_keeps_the_draft_on_the_creating_page() {
     page.host
         .update(&mut page.visual, |root, _, cx| {
             let form = root.role_surfaces.create.as_mut().unwrap();
-            form.runtimes = runner_backend::ops::runtime::runtime_catalog(&page.core).unwrap();
+            form.runtimes = runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
             form.handle
                 .update(cx, |input, cx| input.set_text("duplicate-page-role", cx));
             form.display_name

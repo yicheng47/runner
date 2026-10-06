@@ -3322,7 +3322,7 @@ mod tests {
         let pool = crate::db::open_pool(&dir.path().join("runner.db")).unwrap();
         let pid = std::process::id();
         pool.get().unwrap().execute(
-            "INSERT INTO sessions (id, status, pid, agent_runtime, agent_command) VALUES ('stale', 'running', ?1, 'test', 'runner-backend.exe')",
+            "INSERT INTO sessions (id, status, pid, agent_runtime, agent_command) VALUES ('stale', 'running', ?1, 'test', 'runner-daemon.exe')",
             [pid],
         ).unwrap();
         assert_eq!(cleanup_stale_running_rows_on_startup(&pool).unwrap(), 1);

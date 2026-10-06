@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::{Arc, RwLock};
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
@@ -1462,7 +1462,7 @@ mod tests {
         assert!(caption.contains("~/.gemini/antigravity-cli/skills"));
         assert!(caption.contains("~/.gemini/skills"));
         assert_eq!(
-            runner_backend::runtimes::adapter(Runtime::Antigravity)
+            runner_daemon::runtimes::adapter(Runtime::Antigravity)
                 .catalog()
                 .unwrap()
                 .skills_dirs,
@@ -1678,8 +1678,7 @@ mod tests {
             ),
             (Runtime::Codex, vec!["symlink", "problem"]),
         ] {
-            let catalog =
-                runner_backend::skills::skill_catalog(runtime, home.path(), None).unwrap();
+            let catalog = runner_daemon::skills::skill_catalog(runtime, home.path(), None).unwrap();
             let badges = skill_badges(&catalog.entries[0]);
             assert_eq!(
                 badges
@@ -1695,7 +1694,7 @@ mod tests {
         )
         .unwrap();
         let catalog =
-            runner_backend::skills::skill_catalog(Runtime::Codex, home.path(), None).unwrap();
+            runner_daemon::skills::skill_catalog(Runtime::Codex, home.path(), None).unwrap();
         let badges = skill_badges(&catalog.entries[0]);
         assert_eq!(
             badges

@@ -20,7 +20,7 @@ runner CLI process (a new PID per command) ── connects to the app over mcp.s
 
 The app is one process. Every thread in it sees the same memory, so GPUI code, tokio code and plain threads share state directly through `Arc<AppCore>`. They coordinate with ordinary thread-safety tools (`Arc`, `Mutex`, channels), never with IPC.
 
-The `runner` CLI is the only other process, and the socket exists only for it. Each command starts a process, connects to `mcp.sock` in app data (a Unix domain socket on macOS and Linux, a named pipe on Windows, both in `runner-backend/src/ipc.rs`), speaks MCP to call one tool, prints the result and exits. The CLI runs that call on a single-threaded tokio runtime (`new_current_thread` in `runner-cli/src/command.rs`). Because live sessions, missions and the UI exist only inside the app, the CLI needs the app to be running.
+The `runner` CLI is the only other process, and the socket exists only for it. Each command starts a process, connects to `mcp.sock` in app data (a Unix domain socket on macOS and Linux, a named pipe on Windows, both in `runner-daemon/src/ipc.rs`), speaks MCP to call one tool, prints the result and exits. The CLI runs that call on a single-threaded tokio runtime (`new_current_thread` in `runner-cli/src/command.rs`). Because live sessions, missions and the UI exist only inside the app, the CLI needs the app to be running.
 
 ## Threads inside the app
 

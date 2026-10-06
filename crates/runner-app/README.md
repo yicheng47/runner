@@ -1,6 +1,6 @@
 # runner-app
 
-The Runner application: GPUI UI, terminal renderer, Sparkle updater, packaging. The Cargo package is `runner-app`; the binary it builds is `Runner` (`[[bin]]`), which `script/bundle-mac` wraps into `Runner.app`. Everything UI-agnostic — sessions, router, event log, SQLite, MCP — lives in `runner-backend`; the terminal model, input encoding, and the fixture corpus live in `runner-terminal`. How it fits together: [`docs/arch/arch.md`](../../docs/arch/arch.md); how it got here: [`docs/impls/gpui-rewrite/README.md`](../../docs/impls/gpui-rewrite/README.md).
+The Runner application: GPUI UI, terminal renderer, Sparkle updater, packaging. The Cargo package is `runner-app`; the binary it builds is `Runner` (`[[bin]]`), which `script/bundle-mac` wraps into `Runner.app`. Everything UI-agnostic — sessions, router, event log, SQLite, MCP — lives in `runner-daemon`; the terminal model, input encoding, and the fixture corpus live in `runner-terminal`. How it fits together: [`docs/arch/arch.md`](../../docs/arch/arch.md); how it got here: [`docs/impls/gpui-rewrite/README.md`](../../docs/impls/gpui-rewrite/README.md).
 
 ## Run
 

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
-use runner_backend::{db, event_bus, events, mcp, router, session, shell_path, windows, AppCore};
 use runner_core::protocol::DaemonClient;
+use runner_daemon::{db, event_bus, events, mcp, router, session, shell_path, windows, AppCore};
 
 pub(crate) fn core(
     db: Arc<db::DbPool>,
@@ -17,7 +17,7 @@ pub(crate) fn core(
         sessions,
         runtime_shell_env,
         runtime_discovery,
-        usage: Arc::new(runner_backend::usage::UsageService::default()),
+        usage: Arc::new(runner_daemon::usage::UsageService::default()),
         buses: event_bus::BusRegistry::new(),
         routers: router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
@@ -31,7 +31,7 @@ pub(crate) fn core(
 
 #[allow(dead_code)]
 pub(crate) fn client(core: &AppCore) -> DaemonClient {
-    runner_backend::daemon::InProcessTransport::client(core.clone())
+    runner_daemon::daemon::InProcessTransport::client(core.clone())
 }
 
 #[allow(dead_code)]

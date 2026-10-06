@@ -1,6 +1,6 @@
 // Error types shared between the GPUI binary and the `runner` CLI.
 //
-// Narrower than the backend error in `runner-backend/src/error.rs` — no
+// Narrower than the backend error in `runner-daemon/src/error.rs` — no
 // rusqlite dependency leaks in here. Backend code wraps this via
 // `From<runner_core::Error>`.
 

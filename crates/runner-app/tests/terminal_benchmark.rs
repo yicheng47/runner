@@ -5,8 +5,8 @@ use std::io::Write as _;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use runner_backend::daemon::boot::{boot_core, NativePaths};
-use runner_backend::model::Role;
+use runner_daemon::daemon::boot::{boot_core, NativePaths};
+use runner_daemon::model::Role;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
@@ -49,7 +49,7 @@ fn contains(terminal: &TerminalMirror, text: &str) -> bool {
 }
 
 fn spawn_cat(
-    core: &runner_backend::AppCore,
+    core: &runner_daemon::AppCore,
     bridge: &TerminalBridge,
     wake: &Wake,
     script: &str,
@@ -104,7 +104,7 @@ fn terminal_benchmark() {
     let wake = Arc::new(Wake::default());
     let notify = Arc::clone(&wake);
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(move || notify.notify()),
     )
     .unwrap();
