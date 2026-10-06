@@ -2482,8 +2482,8 @@ mod tests {
             root.start_chat_modal = None;
         });
         let core = core.unwrap();
-        let client = runner_backend::daemon::InProcessTransport::client(core.clone());
-        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+        let client = runner_daemon::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
             Arc::new(core.session_events());
         for id in ["other-session", "missing-session"] {
             core.sessions

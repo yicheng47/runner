@@ -51,8 +51,8 @@ impl Render for SidebarRenameTest {
 fn seeded_store(
     cx: &mut TestAppContext,
     temp: &std::path::Path,
-) -> (Arc<runner_backend::db::DbPool>, Entity<AppStore>) {
-    use runner_backend::{db, session, shell_path};
+) -> (Arc<runner_daemon::db::DbPool>, Entity<AppStore>) {
+    use runner_daemon::{db, session, shell_path};
     use std::sync::RwLock;
 
     let pool = Arc::new(db::open_pool(&temp.join("runner.db")).unwrap());
@@ -64,7 +64,7 @@ fn seeded_store(
              VALUES ('mission', 'crew', 'Original mission', 'completed', '2026-09-06T00:00:00Z');",
     )
     .unwrap();
-    runner_backend::repo::node::ensure_mission_node(&conn, "mission", None).unwrap();
+    runner_daemon::repo::node::ensure_mission_node(&conn, "mission", None).unwrap();
     drop(conn);
     let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
@@ -111,7 +111,7 @@ fn close_neighbours_skip_invisible_tabs_but_use_the_closing_empty_tab_as_an_anch
                 conn.execute("INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')", [name]).unwrap();
                 layout.assign_session("p1", name).unwrap();
             }
-            runner_backend::repo::node::create_tab(
+            runner_daemon::repo::node::create_tab(
                 &conn, None, name, position as i64, &layout.serialize().unwrap(),
             ).unwrap()
         })

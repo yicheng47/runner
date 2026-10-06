@@ -6,9 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use runner_app::terminal_ime::TerminalInput;
-use runner_backend::daemon::boot::{boot_core, NativePaths};
-use runner_backend::ops::role::CreateRoleInput;
-use runner_backend::router::runtime::PermissionMode;
+use runner_daemon::daemon::boot::{boot_core, NativePaths};
+use runner_daemon::ops::role::CreateRoleInput;
+use runner_daemon::router::runtime::PermissionMode;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
@@ -33,16 +33,16 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
-    let role = runner_backend::ops::role::role_create(
+    let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
             handle: "phase3-seam".into(),
             display_name: "Phase 3 seam".into(),
-            runtime: runner_backend::model::Runtime::Trae,
+            runtime: runner_daemon::model::Runtime::Trae,
             command: "/bin/cat".into(),
             args: Vec::new(),
             working_dir: Some(temp.path().to_string_lossy().into_owned()),
@@ -55,13 +55,13 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
         },
     )
     .unwrap();
-    let spawned = runner_backend::ops::session::session_start_direct(
+    let spawned = runner_daemon::ops::session::session_start_direct(
         &core,
         role.id,
         None,
         None,
         None,
-        runner_backend::ops::project::ProjectScope::Root,
+        runner_daemon::ops::project::ProjectScope::Root,
         None,
         Some(80),
         Some(24),
@@ -75,7 +75,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     terminal.submit_text("manager-owned-pty").unwrap();
     let rendered = wait_for_text(&terminal, "manager-owned-pty");
 
-    runner_backend::ops::session::session_kill(&core, &spawned.id).unwrap();
+    runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert_eq!(bridge.live_session_count(), 0);
     assert!(
         rendered,
@@ -89,16 +89,16 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
-    let role = runner_backend::ops::role::role_create(
+    let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
             handle: "terminal-ime".into(),
             display_name: "Terminal IME".into(),
-            runtime: runner_backend::model::Runtime::Trae,
+            runtime: runner_daemon::model::Runtime::Trae,
             command: "/bin/cat".into(),
             args: Vec::new(),
             working_dir: Some(temp.path().to_string_lossy().into_owned()),
@@ -111,13 +111,13 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
         },
     )
     .unwrap();
-    let spawned = runner_backend::ops::session::session_start_direct(
+    let spawned = runner_daemon::ops::session::session_start_direct(
         &core,
         role.id,
         None,
         None,
         None,
-        runner_backend::ops::project::ProjectScope::Root,
+        runner_daemon::ops::project::ProjectScope::Root,
         None,
         Some(80),
         Some(24),
@@ -135,7 +135,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
         visible_lines(&*term).join("\n")
     };
 
-    runner_backend::ops::session::session_kill(&core, &spawned.id).unwrap();
+    runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert_eq!(bridge.live_session_count(), 0);
     assert!(rendered, "committed UTF-8 did not reach the terminal grid");
     assert!(!visible.contains("pinyin"), "marked text reached the PTY");
@@ -147,16 +147,16 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
-    let role = runner_backend::ops::role::role_create(
+    let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
             handle: "phase4-tabs".into(),
             display_name: "Phase 4 tabs".into(),
-            runtime: runner_backend::model::Runtime::Trae,
+            runtime: runner_daemon::model::Runtime::Trae,
             command: "/bin/cat".into(),
             args: Vec::new(),
             working_dir: Some(temp.path().to_string_lossy().into_owned()),
@@ -169,25 +169,25 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
         },
     )
     .unwrap();
-    let first = runner_backend::ops::session::session_start_direct(
+    let first = runner_daemon::ops::session::session_start_direct(
         &core,
         role.id.clone(),
         None,
         None,
         None,
-        runner_backend::ops::project::ProjectScope::Root,
+        runner_daemon::ops::project::ProjectScope::Root,
         None,
         Some(80),
         Some(24),
     )
     .unwrap();
-    let second = runner_backend::ops::session::session_start_direct(
+    let second = runner_daemon::ops::session::session_start_direct(
         &core,
         role.id,
         None,
         None,
         None,
-        runner_backend::ops::project::ProjectScope::Root,
+        runner_daemon::ops::project::ProjectScope::Root,
         None,
         Some(120),
         Some(40),
@@ -205,8 +205,8 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     assert_eq!(first_terminal.size(), (80, 24));
     assert_eq!(second_terminal.size(), (120, 40));
 
-    runner_backend::ops::session::session_kill(&core, &first.id).unwrap();
-    runner_backend::ops::session::session_kill(&core, &second.id).unwrap();
+    runner_daemon::ops::session::session_kill(&core, &first.id).unwrap();
+    runner_daemon::ops::session::session_kill(&core, &second.id).unwrap();
     assert_eq!(bridge.live_session_count(), 0);
 }
 
@@ -216,16 +216,16 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     let paths = NativePaths::new(temp.path().join("app-data"), temp.path().join("logs"));
     let core = boot_core(&paths, Vec::new()).unwrap();
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
-    let role = runner_backend::ops::role::role_create(
+    let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
             handle: "terminal-release".into(),
             display_name: "Terminal release".into(),
-            runtime: runner_backend::model::Runtime::Trae,
+            runtime: runner_daemon::model::Runtime::Trae,
             command: "/bin/cat".into(),
             args: Vec::new(),
             working_dir: Some(temp.path().to_string_lossy().into_owned()),
@@ -240,13 +240,13 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     .unwrap();
 
     for _ in 0..20 {
-        let spawned = runner_backend::ops::session::session_start_direct(
+        let spawned = runner_daemon::ops::session::session_start_direct(
             &core,
             role.id.clone(),
             None,
             None,
             None,
-            runner_backend::ops::project::ProjectScope::Root,
+            runner_daemon::ops::project::ProjectScope::Root,
             None,
             Some(80),
             Some(24),
@@ -254,7 +254,7 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
         .unwrap();
         assert!(bridge.session(&spawned.id).is_some());
         assert_eq!(bridge.live_session_count(), 1);
-        runner_backend::ops::session::session_kill(&core, &spawned.id).unwrap();
+        runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();
         assert_eq!(bridge.live_session_count(), 0);
     }
 }

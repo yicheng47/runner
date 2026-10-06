@@ -50,10 +50,10 @@ pub fn install_wake(client: DaemonClient) {
 mod tests {
     use super::*;
     #[cfg(unix)]
-    use runner_backend::daemon::boot::NativeMcpServer;
-    use runner_backend::daemon::boot::{boot_core, stop_running_sessions_on_quit};
-    use runner_backend::daemon::resume::consume_launch_claims;
-    use runner_backend::{db, repo, session, shell_path};
+    use runner_daemon::daemon::boot::NativeMcpServer;
+    use runner_daemon::daemon::boot::{boot_core, stop_running_sessions_on_quit};
+    use runner_daemon::daemon::resume::consume_launch_claims;
+    use runner_daemon::{db, repo, session, shell_path};
     use std::path::Path;
     use std::sync::{Arc, RwLock};
     fn paths_for_home(home: &Path, debug: bool) -> NativePaths {
@@ -135,7 +135,7 @@ mod tests {
         let bridge = first
             .app_data_dir
             .join("bin")
-            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME);
+            .join(runner_daemon::cli_install::MCP_DEST_BIN_NAME);
         std::fs::create_dir_all(bridge.parent().unwrap()).unwrap();
         std::fs::write(&bridge, "stale bridge").unwrap();
         let _core = boot_core(&first, Vec::new()).unwrap();
@@ -146,7 +146,7 @@ mod tests {
         assert!(!second
             .app_data_dir
             .join("bin")
-            .join(runner_backend::cli_install::MCP_DEST_BIN_NAME)
+            .join(runner_daemon::cli_install::MCP_DEST_BIN_NAME)
             .exists());
     }
 
@@ -161,7 +161,7 @@ mod tests {
         let server = NativeMcpServer::start(&core).unwrap();
         assert_eq!(
             core.mcp.endpoint(),
-            Some(runner_backend::app_paths::IpcEndpoint(socket_path.clone()))
+            Some(runner_daemon::app_paths::IpcEndpoint(socket_path.clone()))
         );
         assert!(socket_path.exists());
         std::thread::sleep(Duration::from_millis(1));
@@ -177,9 +177,9 @@ mod tests {
         {
             let conn = pool.get().unwrap();
             let timestamp = "2026-08-18T00:00:00Z".parse().unwrap();
-            runner_backend::repo::role::insert(
+            runner_daemon::repo::role::insert(
                 &conn,
-                &runner_backend::repo::role::RoleRow {
+                &runner_daemon::repo::role::RoleRow {
                     id: "r1".into(),
                     handle: "alpha".into(),
                     display_name: "Alpha".into(),
@@ -197,18 +197,18 @@ mod tests {
                 },
             )
             .unwrap();
-            let mut running = runner_backend::repo::session::SessionRowDb::new_running("s1".into());
+            let mut running = runner_daemon::repo::session::SessionRowDb::new_running("s1".into());
             running.role_id = Some("r1".into());
             running.started_at = Some(timestamp);
-            runner_backend::repo::session::insert(&conn, &running).unwrap();
+            runner_daemon::repo::session::insert(&conn, &running).unwrap();
             let mut claimed =
-                runner_backend::repo::session::SessionRowDb::new_running("claimed".into());
+                runner_daemon::repo::session::SessionRowDb::new_running("claimed".into());
             claimed.role_id = Some("r1".into());
-            claimed.status = runner_backend::model::SessionStatus::Stopped;
+            claimed.status = runner_daemon::model::SessionStatus::Stopped;
             claimed.started_at = Some("2026-08-18T00:00:01Z".parse().unwrap());
             claimed.resume_on_launch = true;
-            runner_backend::repo::session::insert(&conn, &claimed).unwrap();
-            runner_backend::repo::session::mark_resume_on_launch_claimed(&conn, "claimed").unwrap();
+            runner_daemon::repo::session::insert(&conn, &claimed).unwrap();
+            runner_daemon::repo::session::mark_resume_on_launch_claimed(&conn, "claimed").unwrap();
         }
         let runtime: Arc<dyn session::runtime::SessionRuntime> =
             Arc::new(session::pty_runtime::PtyRuntime::new());

@@ -5,12 +5,12 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use runner_backend::model::{Mission, MissionStatus, Runtime};
-use runner_backend::ops::{crew, role, slot};
-use runner_backend::router::runtime::{MissionPermissionMode, PermissionMode};
-use runner_backend::session::pty_runtime::PtyRuntime;
-use runner_backend::session::SessionManager;
-use runner_backend::AppCore;
+use runner_daemon::model::{Mission, MissionStatus, Runtime};
+use runner_daemon::ops::{crew, role, slot};
+use runner_daemon::router::runtime::{MissionPermissionMode, PermissionMode};
+use runner_daemon::session::pty_runtime::PtyRuntime;
+use runner_daemon::session::SessionManager;
+use runner_daemon::AppCore;
 use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
@@ -27,10 +27,10 @@ impl Drop for StopSessions {
     }
 }
 
-fn core_at(app_data_dir: PathBuf, db: Arc<runner_backend::db::DbPool>) -> AppCore {
+fn core_at(app_data_dir: PathBuf, db: Arc<runner_daemon::db::DbPool>) -> AppCore {
     let runtime_shell_env = Arc::new(RwLock::new(Default::default()));
     let runtime_discovery = Arc::new(RwLock::new(
-        runner_backend::shell_path::DiscoveryState::startup(None, None),
+        runner_daemon::shell_path::DiscoveryState::startup(None, None),
     ));
     AppCore {
         sessions: SessionManager::new(
@@ -42,13 +42,13 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_backend::db::DbPool>) -> AppCor
         app_data_dir,
         runtime_shell_env,
         runtime_discovery,
-        usage: Arc::new(runner_backend::usage::UsageService::default()),
-        buses: runner_backend::event_bus::BusRegistry::new(),
-        routers: runner_backend::router::RouterRegistry::new(),
+        usage: Arc::new(runner_daemon::usage::UsageService::default()),
+        buses: runner_daemon::event_bus::BusRegistry::new(),
+        routers: runner_daemon::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
-        mcp: Arc::new(runner_backend::mcp::McpHandle::new()),
-        windows: Arc::new(runner_backend::windows::WindowRegistry::new()),
-        events: runner_backend::events::EventChannel::new(),
+        mcp: Arc::new(runner_daemon::mcp::McpHandle::new()),
+        windows: Arc::new(runner_daemon::windows::WindowRegistry::new()),
+        events: runner_daemon::events::EventChannel::new(),
         session_event_observer: Default::default(),
         app_version: "pi-smoke".into(),
     }
@@ -168,7 +168,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     let cwd = root.join("never-trusted-project");
     std::fs::create_dir_all(&cwd).unwrap();
     copy_auth(&agent_dir);
-    let db = Arc::new(runner_backend::db::open_pool(&root.join("smoke.db")).unwrap());
+    let db = Arc::new(runner_daemon::db::open_pool(&root.join("smoke.db")).unwrap());
     let core = core_at(root.join("app"), db.clone());
     let mut cleanup = StopSessions::default();
     let role = role::create(
@@ -193,13 +193,13 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     )
     .unwrap();
     let bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(core.clone()),
+        runner_daemon::daemon::InProcessTransport::client(core.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
     let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("When the user asks for the smoke result, reply with exactly RUNNER_PI_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
-    let direct_row = runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
+    let direct_row = runner_daemon::repo::session::get_row(&db.get().unwrap(), &direct.id)
         .unwrap()
         .unwrap();
     let key = direct_row.agent_session_key.unwrap();
@@ -218,7 +218,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
 
     let relaunched = core_at(core.app_data_dir.clone(), db.clone());
     let resumed_bridge = TerminalBridge::new(
-        runner_backend::daemon::InProcessTransport::client(relaunched.clone()),
+        runner_daemon::daemon::InProcessTransport::client(relaunched.clone()),
         Arc::new(|| {}),
     )
     .unwrap();
@@ -251,7 +251,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(
-        runner_backend::repo::session::get_row(&db.get().unwrap(), &direct.id)
+        runner_daemon::repo::session::get_row(&db.get().unwrap(), &direct.id)
             .unwrap()
             .unwrap()
             .agent_session_key
@@ -298,7 +298,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
         pinned_at: None,
         archived_at: None,
     };
-    runner_backend::repo::mission::insert(&db.get().unwrap(), &(&mission).into()).unwrap();
+    runner_daemon::repo::mission::insert(&db.get().unwrap(), &(&mission).into()).unwrap();
     relaunched
         .sessions
         .set_mission_permission_mode(MissionPermissionMode::Bypass);
@@ -337,7 +337,7 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     cleanup
         .0
         .push((relaunched.sessions.clone(), spawned_id.clone()));
-    let mission_key = runner_backend::repo::session::get_row(&db.get().unwrap(), &spawned_id)
+    let mission_key = runner_daemon::repo::session::get_row(&db.get().unwrap(), &spawned_id)
         .unwrap()
         .unwrap()
         .agent_session_key

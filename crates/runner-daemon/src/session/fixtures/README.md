@@ -52,7 +52,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 ## Running
 
 ```sh
-cargo test --locked -p runner-backend --profile ci session_scenario_goldens
+cargo test --locked -p runner-daemon --profile ci session_scenario_goldens
 cargo test --locked -p runner-terminal --profile ci
 ```
 
@@ -66,11 +66,29 @@ Each step begins with its `ms` timestamp. The first step shows all state fields;
 
 Status is `lifecycle/activity/source`, followed by non-null outcome, detail, interaction and attention/exit fields. Empty interactions and null extras have their normal empty/null defaults. Known field presence and types are validated before rendering; only the exact documented defaults can disappear, and missing or mistyped known fields fail the test. A printed status replaces the whole preceding status, so omitted extras clear rather than inherit. Published rows require session ID and status fields. Mission rows may omit them; a missing mission-row status is `[<absent>]`, distinct from `[null]`, and any supplied mission ID is printed even when it equals the published default. Unknown header, step, status, observation and row fields are rendered as compact JSON; unknown status/observation fields retain their prefixes, and a removed unknown step field is `<absent>`. JSON quoting preserves whitespace and newlines within values.
 
-With the local checkpoint object available, this command uses the same Rust renderer on every original JSON golden and asserts both full-timeline equality and byte-identical compact files, without updating files:
+With the local checkpoint object available, this command uses the same Rust renderer on every original JSON golden and asserts both full-timeline equality and byte-identical compact files, without updating files. The historical JSON paths remain under `runner-backend` inside that Git object. Later behavior fixes can legitimately differ from this older checkpoint: #785 (`79ce9756`) changes `alias-resume`, so this historical comparison now reports that timeline drift. Normal replay compares against the current text goldens.
 
 ```sh
-RUNNER_SESSION_GOLDEN_CHECKPOINT=022080e3 cargo test --locked -p runner-backend --profile ci session_scenario_goldens -- --nocapture
-git diff 022080e3 --exit-code -- crates/runner-backend/src/session/fixtures/scenarios
+RUNNER_SESSION_GOLDEN_CHECKPOINT=022080e3 cargo test --locked -p runner-daemon --profile ci session_scenario_goldens -- --nocapture
 ```
 
-Both commands exited 0 for the authorized format change. Normal replay/CI compares the full timeline's compact rendering with the text golden and does not require the local checkpoint Git object.
+To check that the crate rename preserves the current scenarios and goldens, compare their moved paths with the pre-rename umbrella:
+
+```sh
+python3 - <<'PYTHON'
+from pathlib import Path
+import subprocess
+for corpus in ['scenarios', 'expectations']:
+    old_root = f'crates/runner-backend/src/session/fixtures/{corpus}'
+    new_root = Path(f'crates/runner-daemon/src/session/fixtures/{corpus}')
+    paths = subprocess.check_output(['git', 'ls-tree', '-r', '--name-only', 'dc3cc07a', old_root], text=True).splitlines()
+    assert paths, f'{corpus} missing'
+    assert {str(p.relative_to(new_root)) for p in new_root.rglob('*') if p.is_file()} == {p[len(old_root) + 1:] for p in paths}
+    for path in paths:
+        original = subprocess.check_output(['git', 'show', f'dc3cc07a:{path}'])
+        assert original == (new_root / path[len(old_root) + 1:]).read_bytes(), path
+    print(f'{len(paths)} {corpus} unchanged across the crate rename')
+PYTHON
+```
+
+The original format-change validation used `runner-backend` as the package and directory name; the timeline and unchanged-scenario checks both exited 0 then. Normal replay/CI does not require the local checkpoint Git object.

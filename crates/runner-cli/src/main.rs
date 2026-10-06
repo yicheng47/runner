@@ -52,7 +52,7 @@ fn daemon(args: DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("XDG_CONFIG_HOME", home.join(".config"));
         std::env::set_var("CODEX_HOME", home.join(".codex"));
     }
-    let config = runner_backend::daemon::server::Config {
+    let config = runner_daemon::daemon::server::Config {
         endpoint: args
             .endpoint
             .map(app_paths::IpcEndpoint)
@@ -68,7 +68,7 @@ fn daemon(args: DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
         paths,
         isolated: args.isolated,
     };
-    runner_backend::daemon::server::run(config)?;
+    runner_daemon::daemon::server::run(config)?;
     Ok(())
 }
 

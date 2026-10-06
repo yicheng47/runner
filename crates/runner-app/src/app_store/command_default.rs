@@ -2,12 +2,12 @@ use std::path::PathBuf;
 
 use super::AppStore;
 use crate::app_settings::AppSettings;
-#[cfg(test)]
-use runner_backend::cli_install::{CommandEscalation, UserPathRegistry};
 use runner_core::protocol::agent_skill;
 use runner_core::protocol::command::{
     CommandActionOutcome, CommandInstallInputs, CommandPlatform, RunnerCommandStatus,
 };
+#[cfg(test)]
+use runner_daemon::cli_install::{CommandEscalation, UserPathRegistry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UserCommandAction {
@@ -206,7 +206,7 @@ fn initialize_command_default_with(
     inputs: Option<&CommandInstallInputs>,
     registry: &mut dyn UserPathRegistry,
     escalation: &mut dyn CommandEscalation,
-) -> runner_backend::error::Result<bool> {
+) -> runner_daemon::error::Result<bool> {
     if settings.initialized_command_install {
         return Ok(false);
     }
@@ -214,7 +214,7 @@ fn initialize_command_default_with(
         return Ok(false);
     };
     let outcome =
-        runner_backend::cli_install::install_command_default(inputs, registry, escalation)?;
+        runner_daemon::cli_install::install_command_default(inputs, registry, escalation)?;
     if matches!(
         outcome,
         CommandActionOutcome::Installed(_)
@@ -235,10 +235,10 @@ mod tests {
     use crate::app_store::AppStore;
     #[cfg(unix)]
     use gpui::{AppContext as _, TestAppContext};
-    use runner_backend::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
-    use runner_backend::{db, session, shell_path, AppCore};
     #[cfg(unix)]
     use runner_core::protocol::discovery::DiscoveryOutcome;
+    use runner_daemon::cli_install::{EscalationOutcome, RegistryPathValue, RegistryValueKind};
+    use runner_daemon::{db, session, shell_path, AppCore};
     use std::path::Path;
     use std::sync::{Arc, RwLock};
 
@@ -267,21 +267,21 @@ mod tests {
     }
 
     impl UserPathRegistry for FakeRegistry {
-        fn read_path(&self) -> runner_backend::error::Result<Option<RegistryPathValue>> {
+        fn read_path(&self) -> runner_daemon::error::Result<Option<RegistryPathValue>> {
             Ok(self.value.clone())
         }
 
-        fn read_machine_path(&self) -> runner_backend::error::Result<Option<RegistryPathValue>> {
+        fn read_machine_path(&self) -> runner_daemon::error::Result<Option<RegistryPathValue>> {
             Ok(None)
         }
 
-        fn write_path(&mut self, value: &RegistryPathValue) -> runner_backend::error::Result<()> {
+        fn write_path(&mut self, value: &RegistryPathValue) -> runner_daemon::error::Result<()> {
             self.value = Some(value.clone());
             self.writes += 1;
             Ok(())
         }
 
-        fn broadcast_environment_change(&mut self) -> runner_backend::error::Result<()> {
+        fn broadcast_environment_change(&mut self) -> runner_daemon::error::Result<()> {
             Ok(())
         }
     }
@@ -292,7 +292,7 @@ mod tests {
     }
 
     impl CommandEscalation for FakeEscalation {
-        fn run(&mut self, _apple_script: &str) -> runner_backend::error::Result<EscalationOutcome> {
+        fn run(&mut self, _apple_script: &str) -> runner_daemon::error::Result<EscalationOutcome> {
             self.calls += 1;
             Ok(EscalationOutcome::Completed)
         }
@@ -431,7 +431,7 @@ mod tests {
             store.read_with(&cx, |store, _| store
                 .runner_command_status()
                 .map(|status| status.state.clone())),
-            Some(runner_backend::cli_install::RunnerCommandState::Installed)
+            Some(runner_daemon::cli_install::RunnerCommandState::Installed)
         );
         assert_eq!(
             std::fs::read_link(local_bin.join("runner-dev")).unwrap(),
@@ -510,7 +510,7 @@ mod tests {
         let mut escalation = FakeEscalation::default();
 
         assert!(matches!(
-            runner_backend::cli_install::uninstall_command(&inputs, &mut registry, &mut escalation)
+            runner_daemon::cli_install::uninstall_command(&inputs, &mut registry, &mut escalation)
                 .unwrap(),
             CommandActionOutcome::Removed(_)
         ));

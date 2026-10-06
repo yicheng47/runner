@@ -28,7 +28,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 ## Stack
 
 - Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
-- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-backend`.
+- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-daemon`.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
 - Bundled CLI: `runner`, built from the `crates/runner-cli/` workspace member.
@@ -36,7 +36,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 ## Project Map
 
 - `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
-- `crates/runner-backend/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
+- `crates/runner-daemon/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
 - `crates/runner-cli/`: the bundled `runner` CLI, used by spawned agents inside a mission and by people, scripts and agents outside one.
 - `crates/runner-core/`: shared event-log primitives.
 - `design/`: Pencil source files.

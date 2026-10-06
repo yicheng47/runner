@@ -58,5 +58,5 @@ font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }
 gpui = { package = "gpui-pre", version = "=0.3.7", features = ["test-support"] }
 
 [dev-dependencies]
-runner-backend = { path = "../runner-backend" }
+runner-daemon = { path = "../runner-daemon" }
 runner-terminal = { path = "../runner-terminal", features = ["test-support"] }

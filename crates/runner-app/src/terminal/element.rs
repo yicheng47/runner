@@ -1511,11 +1511,11 @@ mod tests {
         div, point, px, Bounds, Context, Entity, FocusHandle, Render, TestAppContext,
         VisualTestContext, Window,
     };
-    use runner_backend::session::runtime::{
+    use runner_daemon::session::runtime::{
         OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
         SpawnSpec,
     };
-    use runner_backend::{db, session, shell_path, AppCore};
+    use runner_daemon::{db, session, shell_path, AppCore};
     use runner_terminal::terminal::TerminalMirror;
 
     use super::{
@@ -1616,7 +1616,7 @@ mod tests {
 
     fn spawn_terminal(
         core: &AppCore,
-        role: &runner_backend::model::Role,
+        role: &runner_daemon::model::Role,
         root: &std::path::Path,
     ) -> Arc<TerminalMirror> {
         let spawned = core
@@ -1727,12 +1727,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let runtime = Arc::new(RecordingRuntime::default());
         let core = test_core(temp.path(), Arc::clone(&runtime));
-        let role = runner_backend::ops::role::create(
+        let role = runner_daemon::ops::role::create(
             &core.db.get().unwrap(),
-            runner_backend::ops::role::CreateRoleInput {
+            runner_daemon::ops::role::CreateRoleInput {
                 handle: "wheel-probe".into(),
                 display_name: "Wheel probe".into(),
-                runtime: runner_backend::model::Runtime::Trae,
+                runtime: runner_daemon::model::Runtime::Trae,
                 command: "probe".into(),
                 args: Vec::new(),
                 working_dir: None,
@@ -1741,7 +1741,7 @@ mod tests {
                 model: None,
                 effort: None,
                 codex_speed: None,
-                permission_mode: runner_backend::router::runtime::PermissionMode::Auto,
+                permission_mode: runner_daemon::router::runtime::PermissionMode::Auto,
             },
         )
         .unwrap();

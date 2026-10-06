@@ -237,7 +237,7 @@ class NightlyTests(unittest.TestCase):
         version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
         for name, path in [
             ('runner-app', 'crates/runner-app'),
-            ('runner-backend', 'crates/runner-backend'),
+            ('runner-daemon', 'crates/runner-daemon'),
             ('runner-terminal', 'crates/runner-terminal'),
             ('runner-core', 'crates/runner-core'),
             ('runner-cli', 'crates/runner-cli'),

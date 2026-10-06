@@ -3180,7 +3180,7 @@ pub(super) mod tests {
     }
 
     use gpui::{size, Render, TestAppContext, VisualTestContext, WindowHandle};
-    use runner_backend::{db, session, shell_path};
+    use runner_daemon::{db, session, shell_path};
     use std::sync::RwLock;
 
     fn test_role(handle: &str, runtime: &str) -> Role {
@@ -4277,7 +4277,7 @@ pub(super) mod tests {
                 .project_create("Terminal project".into(), cwd.clone())
                 .unwrap();
             project_id = project.id.clone();
-            let node = runner_backend::repo::node::ensure_project_node(
+            let node = runner_daemon::repo::node::ensure_project_node(
                 &root.app_store.read(cx).test_core.db.get().unwrap(),
                 &project.id,
             )

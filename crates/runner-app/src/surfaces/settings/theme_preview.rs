@@ -159,8 +159,8 @@ fn main_area(
     font_family: &'static str,
 ) -> Div {
     let lines = [
-        ("❯ cargo test -p runner-backend", palette.foreground),
-        ("   Compiling runner-backend v0.8.6", palette.ansi[8]),
+        ("❯ cargo test -p runner-daemon", palette.foreground),
+        ("   Compiling runner-daemon v0.8.6", palette.ansi[8]),
         ("test result: ok. 587 passed; 0 failed", palette.ansi[2]),
         ("warning: unused variable `slot`", palette.ansi[3]),
         ("error[E0308]: mismatched types", palette.ansi[1]),

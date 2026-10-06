@@ -372,7 +372,7 @@ mod tests {
         assert!(second.completed);
         assert!(settings.mcp_registrations_removed);
         assert!(
-            !runner_backend::ops::mcp::codex_status_at(&trae, &bridge_text)
+            !runner_daemon::ops::mcp::codex_status_at(&trae, &bridge_text)
                 .unwrap()
                 .registered
         );

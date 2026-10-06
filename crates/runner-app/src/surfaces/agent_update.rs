@@ -888,7 +888,7 @@ mod tests {
     }
 
     fn test_store(path: &std::path::Path, cx: &mut gpui::TestAppContext) -> Entity<AppStore> {
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::RwLock;
         let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
         let runtime_discovery =
@@ -923,8 +923,8 @@ mod tests {
         let mut cx = gpui::TestAppContext::single();
         let store = test_store(temp.path(), &mut cx);
         let core = cx.update(|cx| store.read(cx).test_core.clone());
-        let client = runner_backend::daemon::InProcessTransport::client(core.clone());
-        let events: Arc<dyn runner_backend::session::manager::SessionEvents> =
+        let client = runner_daemon::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
             Arc::new(core.session_events());
         core.sessions
             .prepare_unlisted_terminal("update", (80, 24), &core.db, &events)

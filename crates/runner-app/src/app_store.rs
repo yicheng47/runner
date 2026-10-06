@@ -248,7 +248,7 @@ pub(crate) struct AppStore {
     pub(crate) window_entries: Vec<runner_core::protocol::WindowEntry>,
     pub(crate) bridge: Arc<TerminalBridge>,
     #[cfg(test)]
-    pub(crate) test_core: runner_backend::AppCore,
+    pub(crate) test_core: runner_daemon::AppCore,
     pub(crate) sessions: Vec<DirectSessionEntry>,
     pub(crate) session_details: BTreeMap<String, DirectSessionEntry>,
     pub(crate) roles: Vec<Role>,
@@ -277,7 +277,7 @@ pub(crate) struct AppStore {
 impl AppStore {
     pub(crate) fn new(
         #[cfg(not(test))] host: runner_app::bootstrap::ClientHost,
-        #[cfg(test)] core: runner_backend::AppCore,
+        #[cfg(test)] core: runner_daemon::AppCore,
         home_dir: Option<PathBuf>,
         command_install_support: Option<CommandInstallSupport>,
         settings_path: PathBuf,
@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn daemon_notice_survives_refresh_errors_and_clears_on_reconnect() {
         use gpui::{AppContext as _, TestAppContext};
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::RwLock;
         let root = tempfile::tempdir().unwrap();
         let env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));

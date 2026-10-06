@@ -2170,7 +2170,7 @@ mod tests {
     fn sidebar_resize_bar_rides_the_divider() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{px, size, TestAppContext, VisualTestContext};
-        use runner_backend::{db, session, shell_path};
+        use runner_daemon::{db, session, shell_path};
         use std::sync::{Arc, RwLock};
 
         let _theme = ThemeGuard::new();
