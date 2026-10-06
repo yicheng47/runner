@@ -42,7 +42,7 @@ jobs:
         with:
           key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/645-runnerd' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -93,7 +93,7 @@ jobs:
         with:
           key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/645-runnerd' }}
 
       - name: Verify Windows installer behavior
         run: ./script/windows/test-installer.ps1
