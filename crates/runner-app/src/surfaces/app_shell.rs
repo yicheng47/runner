@@ -708,6 +708,18 @@ impl NativeRoot {
                     .flex()
                     .flex_col()
                     .children(self.render_main_titlebar_drag_area(cx))
+                    .children(
+                        (!matches!(
+                            self.route,
+                            AppRoute::Chat
+                                | AppRoute::ArchivedChat
+                                | AppRoute::Mission(_)
+                                | AppRoute::Settings
+                        ))
+                        .then(|| self.render_daemon_banner(cx))
+                        .flatten()
+                        .map(|banner| div().flex_none().pt(rems(44. / 16.)).child(banner)),
+                    )
                     .child(workspace)
                     .children(self.render_entity_sidebar_toggle(window, cx)),
             )
@@ -747,6 +759,11 @@ impl NativeRoot {
             .children(settings_confirm)
             .child(command_palette)
             .children(toast)
+            .children(
+                self.quit_dialog
+                    .clone()
+                    .map(|dialog| deferred(dialog).with_priority(200)),
+            )
             .children(
                 self.agent_update
                     .clone()
@@ -1310,13 +1327,64 @@ impl NativeRoot {
         area
     }
 
+    pub(crate) fn render_daemon_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let store = self.app_store.read(cx);
+        if !store.daemon_disconnected
+            || store.daemon_notice != Some(runner_app::lifecycle::DaemonNotice::Repeated)
+        {
+            return None;
+        }
+        let root = cx.weak_entity();
+        let log_path = self.log_dir.join("runnerd.log");
+        Some(
+            runner_app::ui::notice_banner(
+                div()
+                    .debug_selector(|| "DAEMON_CRASH_MESSAGE".into())
+                    .truncate()
+                    .child(runner_core::protocol::managed::RESTART_LIMIT_NOTICE),
+                runner_app::ui::Tone::Danger,
+            )
+            .id("daemon-crash-banner")
+            .debug_selector(|| "DAEMON_CRASH_BANNER".into())
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "DAEMON_OPEN_LOG".into())
+                    .child(
+                        Button::new("daemon-open-log", "Open log")
+                            .size(ButtonSize::Sm)
+                            .variant(runner_app::ui::ButtonVariant::Ghost)
+                            .on_press(move |_, cx| cx.reveal_path(&log_path)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "DAEMON_TRY_AGAIN".into())
+                    .child(
+                        Button::new("daemon-try-again", "Try again")
+                            .size(ButtonSize::Sm)
+                            .radius(8.)
+                            .variant(runner_app::ui::ButtonVariant::Secondary)
+                            .disabled(self.daemon_retrying)
+                            .loading(self.daemon_retrying)
+                            .on_press(move |window, cx| {
+                                let _ = root.update(cx, |this, cx| this.retry_daemon(window, cx));
+                            }),
+                    ),
+            )
+            .into_any_element(),
+        )
+    }
+
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.toasts.active().map(|toast| {
             let zoom = self.settings(cx).app_zoom;
-            let (icon, icon_color) = match toast.tone {
-                ToastTone::Info => ("info.svg", theme::muted()),
-                ToastTone::Success => ("circle-check.svg", theme::accent()),
-                ToastTone::Error => ("circle-x.svg", theme::danger()),
+            let icon = toast.tone.icon();
+            let icon_color = match toast.tone {
+                ToastTone::Info => theme::muted(),
+                ToastTone::Success | ToastTone::Restart => theme::accent(),
+                ToastTone::Error => theme::danger(),
             };
             div()
                 .absolute()
@@ -1328,7 +1396,8 @@ impl NativeRoot {
                 .child(
                     div()
                         .id("global-toast")
-                        .max_w(px(420. * zoom))
+                        .debug_selector(|| "GLOBAL_TOAST".into())
+                        .max_w(px(if toast.single_line { 600. } else { 420. } * zoom))
                         .pl(px(14. * zoom))
                         .pr(px(12. * zoom))
                         .py(px(10. * zoom))
@@ -1349,7 +1418,7 @@ impl NativeRoot {
                         .cursor_pointer()
                         .occlude()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.toasts.dismiss();
                             cx.notify();
@@ -1364,8 +1433,10 @@ impl NativeRoot {
                         )
                         .child(
                             div()
+                                .debug_selector(|| "GLOBAL_TOAST_MESSAGE".into())
                                 .min_w(px(0.))
                                 .whitespace_normal()
+                                .when(toast.single_line, |message| message.truncate())
                                 .text_size(theme::text_body())
                                 .text_color(theme::text())
                                 .line_height(px(18. * zoom))
@@ -1373,6 +1444,7 @@ impl NativeRoot {
                         )
                         .child(
                             svg()
+                                .debug_selector(|| "GLOBAL_TOAST_CLOSE".into())
                                 .flex_none()
                                 .ml(px(6. * zoom))
                                 .path("close.svg")
@@ -1392,6 +1464,9 @@ impl NativeRoot {
         tone: ToastTone,
         cx: &mut Context<Self>,
     ) {
+        if self.app_store.read(cx).daemon_disconnected {
+            return;
+        }
         let id = self.toasts.show(message, tone);
         let duration_ms = self.toasts.active().and_then(|toast| toast.duration_ms);
         cx.notify();
@@ -1409,6 +1484,29 @@ impl NativeRoot {
             });
         })
         .detach();
+    }
+
+    fn retry_daemon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.daemon_retrying {
+            return;
+        }
+        self.daemon_retrying = true;
+        self.mission_workspace.update(cx, |_, cx| cx.notify());
+        let client = self.core(cx).clone();
+        let recovery = cx.background_spawn(async move { client.reconnect() });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = recovery.await;
+            let _ = weak.update_in(cx, |this, _, cx| {
+                this.daemon_retrying = false;
+                this.mission_workspace.update(cx, |_, cx| cx.notify());
+                if let Err(error) = result {
+                    tracing::warn!("runnerd manual recovery failed: {error}");
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
@@ -1794,6 +1892,482 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RetryService {
+        core: runner_daemon::daemon::InProcessTransport,
+        down: std::sync::atomic::AtomicBool,
+        error: &'static str,
+        fail_once: std::sync::atomic::AtomicBool,
+        attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl runner_core::protocol::Transport for RetryService {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> Result<runner_core::protocol::Response, runner_core::protocol::ClientError> {
+            if self.down.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(runner_core::protocol::ClientError::msg(self.error));
+            }
+            self.core.call(request)
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            self.core.subscribe()
+        }
+        fn reconnect(&self) -> Result<(), runner_core::protocol::ClientError> {
+            use std::sync::atomic::Ordering;
+            self.attempts.fetch_add(1, Ordering::AcqRel);
+            if self.fail_once.swap(false, Ordering::AcqRel) {
+                return Err(runner_core::protocol::ClientError::msg("test start failed"));
+            }
+            self.down.store(false, Ordering::Release);
+            self.core
+                .0
+                .events
+                .emit("daemon/reconnected", &serde_json::Value::Null);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn capped_banner_survives_failed_requests_and_try_again_until_reconnect() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{Modifiers, TestAppContext, VisualTestContext};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let events = store.read_with(&cx, |store, _| store.test_core.events.clone());
+        let window = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "retry-notice".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        store.update(&mut cx, |store, _| {
+            store.client = runner_core::protocol::DaemonClient::new(Arc::new(RetryService {
+                core: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                down: AtomicBool::new(true),
+                error: "runnerd connection closed",
+                fail_once: AtomicBool::new(true),
+                attempts: attempts.clone(),
+            }));
+            store.live_session_count = 6;
+            store.stopped_session_count = 6;
+        });
+        events.emit(
+            "daemon/disconnected",
+            &serde_json::json!({"restart_limit":true}),
+        );
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        store.read_with(&cx, |store, _| {
+            assert_eq!(store.live_session_count, 0);
+            assert_eq!(store.stopped_session_count, 6);
+        });
+        let notice = visual.debug_bounds("DAEMON_CRASH_BANNER").unwrap();
+        visual.simulate_click(
+            point(notice.left() + px(2.), notice.top() + px(2.)),
+            Modifiers::default(),
+        );
+        cx.run_until_parked();
+        assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+        window
+            .update(&mut cx, |root, _, cx| {
+                let error = root.core(cx).role_list().unwrap_err().to_string();
+                root.error = Some(error.clone());
+                root.chat_error = Some(error);
+                root.show_toast("Saved", ToastTone::Success, cx);
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(&cx, |root, _| assert!(root.toasts.active().is_none()))
+            .unwrap();
+        for attempt in 1..=2 {
+            assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_some());
+            assert!(visual.debug_bounds("DAEMON_CRASH_MESSAGE").is_some());
+            assert!(visual.debug_bounds("DAEMON_OPEN_LOG").is_some());
+            assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+            let retry = visual.debug_bounds("DAEMON_TRY_AGAIN").unwrap();
+            visual.simulate_click(retry.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(attempts.load(Ordering::Acquire), attempt);
+        }
+        assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        store.read_with(&cx, |store, _| {
+            assert!(!store.daemon_disconnected && store.daemon_notice.is_none())
+        });
+        window
+            .read_with(&cx, |root, _| {
+                assert!(root.chat_error.is_none() && !root.daemon_retrying)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_automatic_restart_offers_persistent_banner_until_reconnect() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{Modifiers, TestAppContext, VisualTestContext};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let events = store.read_with(&cx, |store, _| store.test_core.events.clone());
+        let window = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "failed-automatic-restart".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        store.update(&mut cx, |store, _| {
+            store.client = runner_core::protocol::DaemonClient::new(Arc::new(RetryService {
+                core: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                down: AtomicBool::new(true),
+                error: "runnerd connection closed",
+                fail_once: AtomicBool::new(true),
+                attempts: attempts.clone(),
+            }));
+        });
+        events.emit("daemon/disconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        events.emit(
+            "daemon/disconnected",
+            &serde_json::json!({"restart_limit":true}),
+        );
+        cx.run_until_parked();
+        store.update(&mut cx, |store, cx| {
+            assert!(store.client.role_list().is_err());
+            store.refresh_sessions(cx);
+        });
+        cx.run_until_parked();
+        for attempt in 1..=2 {
+            assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_some());
+            assert!(visual.debug_bounds("DAEMON_OPEN_LOG").is_some());
+            assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+            let retry = visual.debug_bounds("DAEMON_TRY_AGAIN").unwrap();
+            visual.simulate_click(retry.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(attempts.load(Ordering::Acquire), attempt);
+        }
+        assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+        store.read_with(&cx, |store, _| {
+            assert!(!store.daemon_disconnected);
+            assert!(store.daemon_notice.is_none() && store.error.is_none());
+        });
+    }
+
+    #[test]
+    fn capped_service_has_one_notice_on_cached_and_unloaded_entity_lists() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{Modifiers, TestAppContext, VisualTestContext};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let events = store.read_with(&cx, |store, _| store.test_core.events.clone());
+        let mut windows = Vec::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        for cached in [true, false] {
+            if !cached {
+                store.update(&mut cx, |store, _| {
+                    store.client =
+                        runner_core::protocol::DaemonClient::new(Arc::new(RetryService {
+                            core: runner_daemon::daemon::InProcessTransport(
+                                store.test_core.clone(),
+                            ),
+                            down: AtomicBool::new(true),
+                            error: runner_core::protocol::managed::RESTART_LIMIT_NOTICE,
+                            fail_once: AtomicBool::new(true),
+                            attempts: attempts.clone(),
+                        }));
+                });
+                events.emit(
+                    "daemon/disconnected",
+                    &serde_json::json!({"restart_limit":true}),
+                );
+                cx.run_until_parked();
+            }
+            for path in ["/roles", "/crews"] {
+                windows.push(cx.add_window(|window, cx| {
+                    NativeRoot::new(
+                        format!("list-notice-{cached}-{path}").replace('/', ""),
+                        temp.path().join("logs"),
+                        Some(path.into()),
+                        None,
+                        store.clone(),
+                        window,
+                        cx,
+                    )
+                }));
+            }
+            cx.run_until_parked();
+        }
+        for window in &windows {
+            window
+                .update(&mut cx, |root, _, cx| {
+                    if root.route == AppRoute::Roles {
+                        root.load_role_page(cx);
+                    } else {
+                        root.load_crew_page(cx);
+                    }
+                })
+                .unwrap();
+        }
+        cx.run_until_parked();
+        let mut visuals = windows
+            .iter()
+            .map(|window| VisualTestContext::from_window((*window).into(), &cx))
+            .collect::<Vec<_>>();
+        for attempt in 1..=2 {
+            for visual in &mut visuals {
+                assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_some());
+                assert!(visual.debug_bounds("DAEMON_OPEN_LOG").is_some());
+                assert!(visual.debug_bounds("PAGINATED_LIST_ERROR").is_none());
+                assert!(visual.debug_bounds("PAGINATED_LIST_LOAD_ERROR").is_none());
+                assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+            }
+            let retry = visuals[0].debug_bounds("DAEMON_TRY_AGAIN").unwrap();
+            visuals[0].simulate_click(retry.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(attempts.load(Ordering::Acquire), attempt);
+        }
+        for visual in &mut visuals {
+            assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+            assert!(visual.debug_bounds("PAGINATED_LIST_ERROR").is_none());
+            assert!(visual.debug_bounds("PAGINATED_LIST_LOAD_ERROR").is_none());
+        }
+        store.update(&mut cx, |store, _| {
+            store.client = runner_core::protocol::DaemonClient::new(Arc::new(RetryService {
+                core: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                down: AtomicBool::new(true),
+                error: "Example page error",
+                fail_once: AtomicBool::new(false),
+                attempts,
+            }));
+        });
+        for window in &windows {
+            window
+                .update(&mut cx, |root, _, cx| {
+                    if root.route == AppRoute::Roles {
+                        root.load_role_page(cx);
+                    } else {
+                        root.load_crew_page(cx);
+                    }
+                })
+                .unwrap();
+        }
+        cx.run_until_parked();
+        for visual in &mut visuals {
+            let banner = visual.debug_bounds("PAGINATED_LIST_ERROR").unwrap();
+            let content = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+            assert_eq!(banner.size.height, px(41.));
+            assert_eq!(banner.left(), content.left());
+            assert_eq!(banner.right(), content.right());
+            assert_eq!(banner.top(), content.top() + px(44.));
+            assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        }
+    }
+
+    #[test]
+    fn capped_banner_stays_in_each_windows_main_content() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{size, TestAppContext, VisualTestContext};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let conn = store.test_core.db.get().unwrap();
+            runner_daemon::repo::node::create_tab(
+                &conn,
+                None,
+                "",
+                0,
+                &runner_app::pane_layout::PaneLayout::single(
+                    Some("direct-agent"),
+                    &["direct-agent".into()],
+                )
+                .serialize()
+                .unwrap(),
+            )
+            .unwrap();
+            let nodes = runner_daemon::repo::node::list(&conn).unwrap();
+            store.replace_nodes(nodes, cx);
+        });
+        let events = store.read_with(&cx, |store, _| store.test_core.events.clone());
+        let chat = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "main".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session("direct-agent"));
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root
+        });
+        let other = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "banner-other".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.route = AppRoute::Roles;
+            root
+        });
+        let mut chat_visual = VisualTestContext::from_window(chat.into(), &cx);
+        let mut other_visual = VisualTestContext::from_window(other.into(), &cx);
+        chat_visual.simulate_resize(size(px(1440.), px(900.)));
+        other_visual.simulate_resize(size(px(1440.), px(900.)));
+        events.emit(
+            "daemon/disconnected",
+            &serde_json::json!({"restart_limit":true}),
+        );
+        cx.run_until_parked();
+        let banner = chat_visual.debug_bounds("DAEMON_CRASH_BANNER").unwrap();
+        let header = chat_visual.debug_bounds("CHAT_TAB_HEADER").unwrap();
+        let sidebar = chat_visual.debug_bounds("APP_SIDEBAR").unwrap();
+        let panel = chat_visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        assert_eq!(banner.top(), header.bottom());
+        assert_eq!(banner.left(), sidebar.right());
+        assert_eq!(banner.right(), panel.left());
+        assert_eq!(banner.size.height, px(41.));
+        let text = chat_visual.debug_bounds("DAEMON_CRASH_MESSAGE").unwrap();
+        let log = chat_visual.debug_bounds("DAEMON_OPEN_LOG").unwrap();
+        let retry = chat_visual.debug_bounds("DAEMON_TRY_AGAIN").unwrap();
+        assert!(text.size.height < banner.size.height);
+        assert!(text.right() <= log.left() && log.right() <= retry.left());
+        assert!(retry.right() <= banner.right());
+        assert!(chat_visual.debug_bounds("NOTICE_BANNER_ICON").is_some());
+        assert!(chat_visual.debug_bounds("GLOBAL_TOAST").is_none());
+        let content = other_visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+        let other_banner = other_visual.debug_bounds("DAEMON_CRASH_BANNER").unwrap();
+        assert_eq!(other_banner.left(), content.left());
+        assert_eq!(other_banner.right(), content.right());
+        for route in [
+            AppRoute::Mission("test-mission".into()),
+            AppRoute::Settings,
+            AppRoute::ArchivedChat,
+        ] {
+            other
+                .update(&mut cx, |root, _, cx| {
+                    root.route = route.clone();
+                    cx.notify();
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let banner = other_visual.debug_bounds("DAEMON_CRASH_BANNER").unwrap();
+            if matches!(route, AppRoute::Mission(_)) {
+                let center = other_visual.debug_bounds("MISSION_CONTENT_COLUMN").unwrap();
+                let header = other_visual.debug_bounds("MISSION_HEADER").unwrap();
+                assert_eq!(banner.top(), header.bottom());
+                assert_eq!(banner.left(), center.left());
+                assert_eq!(banner.right(), center.right());
+            } else {
+                assert_eq!(banner.left(), content.left());
+                assert_eq!(banner.right(), content.right());
+                if route == AppRoute::Settings {
+                    let track = other_visual
+                        .debug_bounds("SETTINGS_CONTENT_SCROLLBAR_TRACK")
+                        .unwrap();
+                    assert!(track.top() >= banner.bottom());
+                    assert!(track.bottom() <= px(900.));
+                }
+            }
+        }
+        events.emit("daemon/reconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        assert!(chat_visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        assert!(other_visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+    }
+
+    #[test]
+    fn automatic_crash_recovery_shows_a_short_error_toast_without_actions() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{TestAppContext, VisualTestContext};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let events = store.read_with(&cx, |store, _| store.test_core.events.clone());
+        let window = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "crash-toast".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        store.update(&mut cx, |store, _| {
+            store.live_session_count = 6;
+            store.stopped_session_count = 6;
+        });
+        events.emit("daemon/disconnected", &serde_json::Value::Null);
+        events.emit("daemon/reconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("GLOBAL_TOAST").is_some());
+        assert!(
+            visual
+                .debug_bounds("GLOBAL_TOAST_MESSAGE")
+                .unwrap()
+                .size
+                .height
+                <= px(22.)
+        );
+        assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
+        assert!(visual.debug_bounds("DAEMON_OPEN_LOG").is_none());
+        assert!(visual.debug_bounds("DAEMON_TRY_AGAIN").is_none());
+        window
+            .read_with(&cx, |root, _| {
+                let toast = root.toasts.active().unwrap();
+                assert_eq!(
+                    toast.message,
+                    "Background service restarted · 6 sessions stopped"
+                );
+                assert_eq!(toast.tone, ToastTone::Error);
+                assert_eq!(
+                    toast.duration_ms,
+                    Some(crate::toast::DEFAULT_TOAST_DURATION_MS)
+                );
+            })
+            .unwrap();
+    }
 
     struct UsagePillProbe {
         zoom: f32,

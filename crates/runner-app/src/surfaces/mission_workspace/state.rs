@@ -16,6 +16,11 @@ use crate::surfaces::mission_feed::{group_feed_blocks, is_human_authored, projec
 use crate::*;
 
 impl MissionWorkspace {
+    pub(crate) fn clear_connection_error(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        cx.notify();
+    }
+
     pub(crate) fn new(
         window_label: String,
         shell: WeakEntity<NativeRoot>,

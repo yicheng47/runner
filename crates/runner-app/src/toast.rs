@@ -6,6 +6,18 @@ pub enum ToastTone {
     Info,
     Success,
     Error,
+    Restart,
+}
+
+impl ToastTone {
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Info => "info.svg",
+            Self::Success => "circle-check.svg",
+            Self::Error => "circle-x.svg",
+            Self::Restart => "rotate-cw.svg",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,6 +26,7 @@ pub struct Toast {
     pub message: String,
     pub tone: ToastTone,
     pub duration_ms: Option<u64>,
+    pub single_line: bool,
 }
 
 #[derive(Debug, Default)]
@@ -44,8 +57,15 @@ impl ToastHost {
             message: message.into(),
             tone,
             duration_ms,
+            single_line: false,
         });
         id
+    }
+
+    pub fn make_single_line(&mut self) {
+        if let Some(toast) = &mut self.active {
+            toast.single_line = true;
+        }
     }
 
     pub fn dismiss(&mut self) {
@@ -97,5 +117,22 @@ mod tests {
         host.show_with_duration("Persistent", ToastTone::Error, None);
         host.dismiss();
         assert!(host.active().is_none());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn restart_icon_preserves_other_tones() {
+        let mut host = ToastHost::default();
+        let message = runner_app::lifecycle::restart_message(3, "0.13.1").unwrap();
+        host.show(message, ToastTone::Restart);
+        let toast = host.active().unwrap();
+        assert_eq!(toast.tone.icon(), "rotate-cw.svg");
+        assert_eq!(toast.message, "Restarted 3 sessions in Runner 0.13.1");
+        assert_eq!(ToastTone::Info.icon(), "info.svg");
+        assert_eq!(ToastTone::Success.icon(), "circle-check.svg");
+        assert_eq!(ToastTone::Error.icon(), "circle-x.svg");
     }
 }

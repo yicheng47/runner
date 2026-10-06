@@ -334,9 +334,14 @@ impl NativeRoot {
             self.role_surfaces.list.searching(),
         )
         .load_state(
-            self.role_surfaces.list.loading,
+            self.role_surfaces.list.loading || self.app_store.read(cx).daemon_disconnected,
             self.role_surfaces.list.loaded,
-            self.role_surfaces.list.error.clone().map(Into::into),
+            self.role_surfaces
+                .list
+                .error
+                .clone()
+                .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                .map(Into::into),
         )
         .into_any_element()
     }

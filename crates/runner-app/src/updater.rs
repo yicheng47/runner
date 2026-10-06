@@ -309,6 +309,11 @@ mod native {
                 }
             }
 
+            #[unsafe(method(updaterWillRelaunchApplication:))]
+            fn will_relaunch_application(&self, _updater: &SPUUpdater) {
+                crate::lifecycle::mark_update_quit();
+            }
+
             #[unsafe(method(updater:didAbortWithError:))]
             fn did_abort_with_error(&self, _updater: &SPUUpdater, error: &NSError) {
                 if let Some(transition) = transition_for_abort(&error.domain().to_string()) {

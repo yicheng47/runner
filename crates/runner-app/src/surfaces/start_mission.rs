@@ -417,7 +417,7 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_5()
-            .children(modal.error.clone().map(error_banner))
+            .children(modal.error.clone().filter(|_| !self.app_store.read(cx).daemon_disconnected).map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)))
             .child(
                 Field::new(
                     "start-mission-crew-field",
@@ -709,20 +709,6 @@ fn summarize_crew(crew: &CrewListItem, roster: &[SlotWithRole]) -> String {
 fn nonempty(value: &str) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
-}
-
-fn error_banner(error: String) -> AnyElement {
-    div()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::with_alpha(theme::danger(), 0.4))
-        .bg(theme::with_alpha(theme::danger(), 0.1))
-        .px_3()
-        .py_2()
-        .text_size(theme::text_ui())
-        .text_color(theme::danger())
-        .child(error)
-        .into_any_element()
 }
 
 #[cfg(test)]

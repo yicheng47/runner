@@ -97,6 +97,7 @@ actions!(
         NewWindow,
         OpenSettings,
         Quit,
+        QuitAndStopSessions,
         SelectTab1,
         SelectTab2,
         SelectTab3,
@@ -326,6 +327,11 @@ fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<Native
 
 #[cfg(not(test))]
 fn close_window(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    #[cfg(windows)]
+    if cx.windows().len() == 1 {
+        this.request_quit(window, cx);
+        return;
+    }
     this.prepare_window_close(window, cx);
     window.remove_window();
 }
@@ -519,6 +525,7 @@ struct NativeRoot {
     next_chat_transition_generation: u64,
     session_exit_codes: HashMap<String, Option<i32>>,
     chat_error: Option<String>,
+    daemon_retrying: bool,
     chat_warning: Option<String>,
     active_chat_detail: Option<DirectSessionEntry>,
     archived_chat_detail: Option<DirectSessionEntry>,
@@ -537,6 +544,7 @@ struct NativeRoot {
     pending_tab_close: Option<PendingTabClose>,
     #[cfg(windows)]
     update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
+    quit_dialog: Option<Entity<surfaces::quit_dialog::QuitDialog>>,
     agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     fork_confirm: Option<ForkConfirm>,
     forking_sessions: HashMap<String, String>,
@@ -901,6 +909,7 @@ impl NativeRoot {
             next_chat_transition_generation: 0,
             session_exit_codes: HashMap::new(),
             chat_error: None,
+            daemon_retrying: false,
             chat_warning: None,
             active_chat_detail,
             archived_chat_detail: None,
@@ -919,6 +928,7 @@ impl NativeRoot {
             pending_tab_close: None,
             #[cfg(windows)]
             update_dialog: None,
+            quit_dialog: None,
             agent_update: None,
             fork_confirm: None,
             forking_sessions: HashMap::new(),
@@ -1092,8 +1102,49 @@ impl NativeRoot {
         self.store_revisions = revisions;
         let reactions = revisions.reactions_since(previous);
 
+        if revisions.settings != previous.settings {
+            let value = self.settings(cx).quit_behavior.key();
+            self.settings_page
+                .quit_behavior
+                .update(cx, |select, cx| select.set_value(value, cx));
+        }
+        let mut recovery_toast = None;
         if reactions.sync_error {
-            self.error = self.app_store.read(cx).error.clone();
+            let store = self.app_store.read(cx);
+            self.error = (!store.daemon_disconnected)
+                .then(|| store.error.clone())
+                .flatten();
+            if !store.daemon_disconnected
+                && store.daemon_notice == Some(runner_app::lifecycle::DaemonNotice::Stopped)
+            {
+                recovery_toast = self.error.take();
+            }
+            if store.daemon_disconnected {
+                self.toasts.dismiss();
+            } else if store.daemon_notice.is_some() || store.error.is_none() {
+                self.chat_error = None;
+                self.mission_workspace
+                    .update(cx, |workspace, cx| workspace.clear_connection_error(cx));
+            }
+        }
+        if let Some(message) = recovery_toast {
+            self.show_toast(message, toast::ToastTone::Error, cx);
+            self.toasts.make_single_line();
+        }
+        if revisions.restart != previous.restart {
+            if let Some(message) = self
+                .app_store
+                .read(cx)
+                .restarted_sessions
+                .and_then(|count| {
+                    runner_app::lifecycle::restart_message(
+                        count,
+                        &runner_app::version::display_version_label(),
+                    )
+                })
+            {
+                self.show_toast(message, toast::ToastTone::Restart, cx);
+            }
         }
         if reactions.reload_tabs {
             self.apply_tab_rows(cx);
@@ -1333,7 +1384,6 @@ fn run() -> Result<()> {
     );
     let (core, connection) = runner_app::bootstrap::connect(&paths)?;
     print_startup_paths(&paths);
-    let shutdown_connection = connection.clone();
     let ui_settings_path = settings_path(&paths.app_data_dir);
 
     #[cfg(target_os = "macos")]
@@ -1414,6 +1464,7 @@ fn run() -> Result<()> {
         cx.set_global(GlobalUpdater(updater.clone()));
         updater.read(cx).start();
         cx.set_global(WindowLayoutCheckpoint::default());
+        cx.set_global(runner_app::lifecycle::QuitState::default());
 
         // App::shutdown clears its windows before polling the returned future, so the
         // checkpoint must run in this callback body rather than inside the future.
@@ -1421,14 +1472,54 @@ fn run() -> Result<()> {
         cx.on_app_quit(move |cx| {
             save_window_settings(cx);
             checkpoint_window_layout_on_quit(cx);
-            if let Err(error) = quit_connection.shutdown() {
-                eprintln!("Runner quit session teardown failed: {error:#}");
+            let stop = cx
+                .global::<runner_app::lifecycle::QuitState>()
+                .stop_sessions(runner_app::lifecycle::update_quit_pending());
+            if stop {
+                if let Err(error) = quit_connection.shutdown() {
+                    eprintln!("Runner quit session teardown failed: {error:#}");
+                }
+            } else {
+                quit_connection.disconnect();
             }
             std::future::ready(())
         })
         .detach();
 
-        cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Quit, cx| {
+            cx.defer(|cx| {
+                if let Some(window) = cx
+                    .active_window()
+                    .and_then(|window| window.downcast::<NativeRoot>())
+                {
+                    let _ = window.update(cx, |this, window, cx| this.request_quit(window, cx));
+                } else {
+                    let store = global_app_store(cx);
+                    let state = store.read(cx);
+                    let choice = runner_app::lifecycle::quit_choice(
+                        runner_app::lifecycle::QuitRequest::User,
+                        state.settings.quit_behavior,
+                        state.live_session_count,
+                    );
+                    if let Some(choice) = choice {
+                        surfaces::quit_dialog::finish_quit(choice, cx);
+                    } else {
+                        handle_reopen(cx);
+                        if let Some(window) = cx
+                            .active_window()
+                            .and_then(|window| window.downcast::<NativeRoot>())
+                        {
+                            let _ =
+                                window.update(cx, |this, window, cx| this.request_quit(window, cx));
+                        }
+                    }
+                }
+            });
+        });
+        #[cfg(target_os = "macos")]
+        cx.on_action(|_: &QuitAndStopSessions, cx| {
+            surfaces::quit_dialog::finish_quit(runner_app::lifecycle::QuitChoice::Stop, cx);
+        });
         cx.on_action(|_: &Hide, cx| cx.hide());
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -1531,7 +1622,7 @@ fn run() -> Result<()> {
         cx.activate(true);
     });
 
-    shutdown_connection.shutdown().map_err(Into::into)
+    Ok(())
 }
 
 /// Rebuilt whenever key bindings change: the macOS menu bar reads its
@@ -1551,6 +1642,8 @@ pub(crate) fn app_menus() -> Vec<Menu> {
                 MenuItem::action("Show All", ShowAll),
                 MenuItem::separator(),
                 MenuItem::action("Quit Runner", Quit),
+                #[cfg(target_os = "macos")]
+                MenuItem::action("Quit and Stop Sessions", QuitAndStopSessions),
             ],
         },
         Menu {
@@ -1703,6 +1796,11 @@ fn open_runner_window(
             });
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
+                #[cfg(windows)]
+                if cx.windows().len() == 1 {
+                    let _ = weak.update(cx, |this, cx| this.request_quit(window, cx));
+                    return false;
+                }
                 let _ = weak.update(cx, |this, cx| {
                     this.prepare_window_close(window, cx);
                 });

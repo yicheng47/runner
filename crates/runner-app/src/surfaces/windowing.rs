@@ -210,6 +210,14 @@ impl NativeRoot {
     }
 
     pub(crate) fn prepare_window_close(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if cx
+            .try_global::<runner_app::lifecycle::QuitState>()
+            .is_some()
+        {
+            cx.global_mut::<runner_app::lifecycle::QuitState>()
+                .cancel(window.window_handle().window_id());
+        }
+        self.quit_dialog = None;
         if self.closing {
             return;
         }

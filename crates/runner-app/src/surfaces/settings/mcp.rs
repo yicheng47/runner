@@ -426,12 +426,15 @@ impl Render for McpPane {
                             .child(CAPTION),
                     )
             }))
-            .children(state.error.clone().map(|error| {
-                div()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                state
+                    .error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(SettingsCard::new(if rows.is_empty() {
                 vec![div()
                     .p_4()
@@ -1126,43 +1129,41 @@ impl McpDetail {
         let error = (!self.editing)
             .then(|| self.error.clone())
             .flatten()
-            .or_else(|| entry.clients[&client].error.clone());
-        let body = div()
-            .debug_selector(|| "MCP_MODAL_BODY".into())
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .min_w_0()
-            .gap_3()
-            .child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_none()
-                    .min_w_0()
-                    .max_h(gpui::relative(0.45))
-                    .child(overview),
-            )
-            .children(error.map(|error| {
-                div()
-                    .flex_none()
-                    .text_size(theme::text_caption())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
-            .child(
-                div()
-                    .debug_selector(|| "MCP_DOCUMENT_PANEL".into())
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(bar)
-                    .child(document),
-            );
+            .or_else(|| entry.clients[&client].error.clone())
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected);
+        let body =
+            div()
+                .debug_selector(|| "MCP_MODAL_BODY".into())
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .gap_3()
+                .child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .min_w_0()
+                        .max_h(gpui::relative(0.45))
+                        .child(overview),
+                )
+                .children(error.map(|error| {
+                    runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                }))
+                .child(
+                    div()
+                        .debug_selector(|| "MCP_DOCUMENT_PANEL".into())
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(bar)
+                        .child(document),
+                );
         let mut modal = Modal::new(
             title,
             body,

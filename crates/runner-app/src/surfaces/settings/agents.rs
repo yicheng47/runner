@@ -1097,21 +1097,8 @@ impl Render for AgentsPane {
                     .text_color(theme::faint())
                     .child("Disabled agents stay configured but are hidden from agent pickers. Overrides apply to new sessions that use the agent's default command; roles with a custom command keep it."),
             )
-            .children(self.error.clone().map(|error| {
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_3()
-                    .rounded(rems(12. / 16.))
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.3))
-                    .bg(theme::with_alpha(theme::danger(), 0.1))
-                    .px_4()
-                    .py_3()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(div().min_w(px(0.)).child(error))
+            .children(self.error.clone().filter(|_| !self.app_store.read(cx).daemon_disconnected).map(|error| {
+                runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
                     .child(
                         Button::new("agents-retry", "Retry")
                             .size(ButtonSize::Sm)

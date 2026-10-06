@@ -28,7 +28,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 ## Stack
 
 - Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
-- Application core: Rust, SQLite via `rusqlite`, exposed by `crates/runner-daemon`.
+- Background daemon: `runnerd` runs the Rust application core and SQLite via `rusqlite`, exposed by `crates/runner-daemon`; the app and CLI are clients.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
 - Bundled CLI: `runner`, built from the `crates/runner-cli/` workspace member.
@@ -36,9 +36,9 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 ## Project Map
 
 - `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
-- `crates/runner-daemon/`: UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
+- `crates/runner-daemon/`: `runnerd` and its UI-agnostic application core, including SQLite, session manager, event bus, router, and MCP server.
 - `crates/runner-cli/`: the bundled `runner` CLI, used by spawned agents inside a mission and by people, scripts and agents outside one.
-- `crates/runner-core/`: shared event-log primitives.
+- `crates/runner-core/`: shared types, event-log primitives, client protocol and daemon launch/connection.
 - `design/`: Pencil source files.
 - `docs/arch/`: architecture references (how it works).
 - `docs/product/`: product vision and direction (why we're building this, what surfaces matter).
@@ -50,7 +50,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Development Commands
 
-- Start the native app against the development database: `make run`.
+- Start the native app against the development database: `make run`. It stops the development daemon before launching, so the rebuilt sidecar owns the sessions. `runner-dev daemon stop` stops that daemon explicitly.
 - Format: `make fmt`.
 - Clippy: `make clippy`.
 - Workspace tests: `make test`.

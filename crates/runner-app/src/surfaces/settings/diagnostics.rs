@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::prelude::*;
-use gpui::{div, rems, Context, Render, Window};
+use gpui::{div, Context, Render, Window};
 use runner_app::ui::{Button, ButtonSize, PaneHeader, SettingsCard, SettingsRow};
-
-use crate::theme;
 
 pub(crate) struct DiagnosticsPane {
     log_dir: PathBuf,
@@ -68,17 +66,10 @@ impl Render for DiagnosticsPane {
             )
             .subtitle(logs_description)
             .into_any_element()]))
-            .children(self.error.clone().map(|error| {
-                div()
-                    .rounded(rems(8. / 16.))
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.4))
-                    .bg(theme::with_alpha(theme::danger(), 0.08))
-                    .px_3()
-                    .py_2()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                self.error.clone().map(|error| {
+                    runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                }),
+            )
     }
 }

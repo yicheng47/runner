@@ -438,12 +438,14 @@ impl Render for SkillsPane {
                         ),
                 )
             })
-            .children(self.error.clone().map(|error| {
-                div()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                self.error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(SettingsCard::new(if rows.is_empty() {
                 vec![div()
                     .px_4()
@@ -1139,13 +1141,14 @@ impl SkillDetail {
             .min_h_0()
             .gap_3()
             .child(overview)
-            .children(self.error.clone().map(|error| {
-                div()
-                    .flex_none()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                self.error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(
                 div()
                     .flex()

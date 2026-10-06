@@ -1,6 +1,5 @@
 use super::logic::crew_picture;
 use super::logic::crew_summary;
-use super::logic::error_panel;
 use super::logic::selected_add_slot_role;
 use super::logic::short_date;
 use super::logic::slot_handle_error;
@@ -175,14 +174,15 @@ impl NativeRoot {
         let (loading, loaded) = (editor.loading, editor.loaded);
         let crew = editor.crew.clone();
         let slots = editor.slots.clone();
-        let editor_error = if creating {
+        let editor_error = (if creating {
             self.crew_surfaces
                 .create
                 .as_ref()
                 .and_then(|form| form.error.clone())
         } else {
             editor.error.clone()
-        };
+        })
+        .filter(|_| !self.app_store.read(cx).daemon_disconnected);
         let back_root = cx.entity();
         let on_back: ClickHandler = Rc::new(move |window, cx| {
             back_root.update(cx, |this, cx| this.open_crews(window, cx));
@@ -196,18 +196,20 @@ impl NativeRoot {
         };
         let body = if creating {
             self.render_crew_page_body(None, Vec::new(), column, cx)
-        } else if loading && !loaded {
+        } else if (loading || self.app_store.read(cx).daemon_disconnected) && !loaded {
             div()
                 .text_size(theme::text_title())
                 .text_color(theme::muted())
                 .child("Loading…")
                 .into_any_element()
         } else if !loaded {
-            error_panel(
+            runner_app::ui::notice_banner(
                 editor_error
                     .clone()
                     .unwrap_or_else(|| "Failed to load crew.".into()),
+                runner_app::ui::Tone::Danger,
             )
+            .into_any_element()
         } else if let Some(crew) = crew {
             self.render_crew_page_body(Some(crew), slots, column, cx)
         } else {
@@ -261,7 +263,9 @@ impl NativeRoot {
                             })
                         })),
                     )
-                    .children(error.map(error_panel))
+                    .children(error.map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }))
                     .child(body),
             )
             .into_any_element()

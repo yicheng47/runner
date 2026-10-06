@@ -30,6 +30,7 @@ verify: check test clippy fmt-check
 
 run:
 	cargo build -p runner-cli
+	@target/debug/runner-agent-cli daemon stop || [ $$? -eq 3 ]
 	cargo run -p runner-app
 
 clean:

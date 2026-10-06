@@ -398,13 +398,18 @@ impl NativeRoot {
                 },
             )
             .children((!own_runtime).then(runtime_note))
-            .children(form.error.clone().map(|error| {
-                div()
-                    .pt_2()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                form.error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        div()
+                            .pt_2()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::danger())
+                            .child(error)
+                    }),
+            )
             .into_any_element()
     }
 

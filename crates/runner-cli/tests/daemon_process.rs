@@ -501,10 +501,11 @@ fn mismatch_restart_waits_for_lock_and_installs_new_sidecar() {
 }
 
 #[test]
-fn managed_connection_restarts_three_times_then_stops() {
+fn managed_connection_caps_automatic_restarts_and_allows_explicit_retry() {
     use runner_core::protocol::managed::ManagedTransport;
     let daemon = Daemon::new();
     let managed = ManagedTransport::connect(daemon.launch.clone(), daemon.hash.clone()).unwrap();
+    let session = daemon.shell(&managed.client());
     for restart in 0..4 {
         let old = daemon.connect();
         let pid = old.welcome.pid;
@@ -524,7 +525,7 @@ fn managed_connection_restarts_three_times_then_stops() {
             CloseHandle(process);
         }
         let deadline = Instant::now() + Duration::from_secs(10);
-        if restart < 3 {
+        if restart < 2 {
             loop {
                 if let Ok(new) = SocketTransport::connect(
                     &daemon.launch.daemon_endpoint,
@@ -542,8 +543,19 @@ fn managed_connection_restarts_three_times_then_stops() {
                 assert!(Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(20));
             }
-            std::thread::sleep(Duration::from_millis(300));
-            assert!(managed.client().role_list().is_err());
+            loop {
+                if managed.client().role_list().is_err_and(|error| {
+                    error.message == runner_core::protocol::managed::RESTART_LIMIT_NOTICE
+                }) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "managed cap timed out");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(managed
+                .client()
+                .session_resume(&session.id, None, None)
+                .is_err());
             assert!(matches!(
                 SocketTransport::connect(
                     &daemon.launch.daemon_endpoint,
@@ -551,8 +563,105 @@ fn managed_connection_restarts_three_times_then_stops() {
                 ),
                 Err(ConnectError::NotRunning)
             ));
+            managed.client().reconnect().unwrap();
+            assert!(managed.client().role_list().is_ok());
+            assert!(
+                managed.client().session_live_ids().unwrap().is_empty(),
+                "Try again must not resume sessions"
+            );
+            let resumed = managed
+                .client()
+                .session_resume(&session.id, Some(80), Some(24))
+                .unwrap();
+            assert_eq!(resumed.id, session.id);
+            assert_eq!(
+                managed.client().session_live_ids().unwrap().as_slice(),
+                std::slice::from_ref(&session.id)
+            );
         }
     }
+    managed.shutdown().unwrap();
+}
+
+#[test]
+fn failed_automatic_replacement_waits_for_explicit_retry() {
+    use runner_core::protocol::managed::{ManagedTransport, RESTART_LIMIT_NOTICE};
+    let daemon = Daemon::new();
+    let managed = ManagedTransport::connect(daemon.launch.clone(), daemon.hash.clone()).unwrap();
+    let session = daemon.shell(&managed.client());
+    let mut events = managed.client().subscribe();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let unavailable = daemon.root.path().join("unavailable-cli");
+    std::fs::rename(&daemon.launch.source, &unavailable).unwrap();
+    let old = daemon.connect();
+    #[cfg(unix)]
+    unsafe {
+        assert_eq!(libc::kill(old.welcome.pid as i32, libc::SIGKILL), 0);
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+        };
+        let process = OpenProcess(PROCESS_TERMINATE, 0, old.welcome.pid);
+        assert!(!process.is_null());
+        assert_ne!(TerminateProcess(process, 1), 0);
+        CloseHandle(process);
+    }
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                assert_ne!(event.name, "daemon/reconnected");
+                if event.name == "daemon/disconnected" && event.payload["restart_limit"] == true {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("failed automatic replacement must offer deliberate recovery");
+    });
+    assert_eq!(
+        managed.client().role_list().unwrap_err().message,
+        RESTART_LIMIT_NOTICE
+    );
+    assert!(managed
+        .client()
+        .session_resume(&session.id, None, None)
+        .is_err());
+    assert!(matches!(
+        SocketTransport::connect(&daemon.launch.daemon_endpoint, daemon.hello(&daemon.hash)),
+        Err(ConnectError::NotRunning)
+    ));
+    assert!(managed.client().reconnect().is_err());
+    assert_eq!(
+        managed.client().role_list().unwrap_err().message,
+        RESTART_LIMIT_NOTICE
+    );
+    std::fs::rename(&unavailable, &daemon.launch.source).unwrap();
+    managed.client().reconnect().unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while events.recv().await.unwrap().name != "daemon/reconnected" {}
+        })
+        .await
+        .unwrap();
+    });
+    assert!(managed.client().role_list().is_ok());
+    assert!(managed.client().session_live_ids().unwrap().is_empty());
+    assert_eq!(
+        managed
+            .client()
+            .session_resume(&session.id, Some(80), Some(24))
+            .unwrap()
+            .id,
+        session.id
+    );
+    managed.shutdown().unwrap();
 }
 
 #[test]
@@ -948,5 +1057,85 @@ fn disconnect_removes_owned_windows_and_preserves_other_clients() {
         std::thread::sleep(Duration::from_millis(10));
     }
     survivor.shutdown(true).unwrap();
+    daemon.stopped();
+}
+
+#[test]
+fn managed_disconnect_keeps_sessions_and_stop_stamps_them() {
+    use runner_core::protocol::managed::ManagedTransport;
+    let daemon = Daemon::new();
+    let managed = ManagedTransport::connect(daemon.launch.clone(), daemon.hash.clone()).unwrap();
+    let session = daemon.shell(&managed.client());
+    managed.disconnect();
+    drop(managed);
+    let reattached = daemon.connect();
+    let client = reattached.client();
+    assert!(client.session_live_ids().unwrap().contains(&session.id));
+    assert!(client.attach(&session.id).is_ok());
+    drop(reattached);
+    let managed = ManagedTransport::connect(daemon.launch.clone(), daemon.hash.clone()).unwrap();
+    managed.shutdown().unwrap();
+    let pool =
+        runner_daemon::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
+    let row = runner_daemon::repo::session::get_row(&pool.get().unwrap(), &session.id)
+        .unwrap()
+        .unwrap();
+    assert!(row.resume_on_launch);
+    assert_eq!(row.status, runner_daemon::model::SessionStatus::Stopped);
+}
+
+#[test]
+fn mismatch_restart_reports_successful_resumes_even_to_late_subscribers() {
+    use runner_core::protocol::managed::ManagedTransport;
+    use std::io::Write;
+    let mut daemon = Daemon::new();
+    let old = daemon.start();
+    let session = daemon.shell(&old.client());
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&daemon.launch.source)
+        .unwrap()
+        .write_all(b"runner-lifecycle-test-build")
+        .unwrap();
+    let new_hash = daemon_process::executable_hash(&daemon.launch.source).unwrap();
+    assert_ne!(new_hash, daemon.hash);
+    let mut launch = daemon.launch.clone();
+    launch.app = true;
+    let managed = ManagedTransport::connect(launch, new_hash.clone()).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut events = managed.client().subscribe();
+    let count = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.name == "daemon/restarted" {
+                    break event.payload["count"].as_u64().unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap()
+    });
+    assert_eq!(count, 1);
+    assert!(managed
+        .client()
+        .session_live_ids()
+        .unwrap()
+        .contains(&session.id));
+    assert_eq!(
+        SocketTransport::connect(&daemon.launch.daemon_endpoint, daemon.hello(&new_hash))
+            .unwrap()
+            .welcome
+            .exe_sha256,
+        new_hash
+    );
+    let mut late = managed.client().subscribe();
+    let cached = runtime.block_on(late.recv()).unwrap();
+    assert_eq!(cached.name, "daemon/restarted");
+    assert_eq!(cached.payload["count"], 1);
+    managed.shutdown().unwrap();
     daemon.stopped();
 }

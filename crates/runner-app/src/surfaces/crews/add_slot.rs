@@ -3,7 +3,6 @@ use super::logic::add_slot_focus_order;
 use super::logic::add_slot_form_is_composing;
 use super::logic::add_slot_runtime_options;
 use super::logic::crew_usage_label;
-use super::logic::error_banner;
 use super::logic::role_activity_label;
 use super::logic::role_matches;
 use super::logic::runtime_models;
@@ -564,7 +563,7 @@ impl NativeRoot {
             .flex_col()
             .gap_5()
             .on_key_down(cx.listener(Self::on_add_slot_key_down))
-            .children(form.error.clone().map(error_banner))
+            .children(form.error.clone().filter(|_| !self.app_store.read(cx).daemon_disconnected).map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)))
             .child(
                 div()
                     .flex()

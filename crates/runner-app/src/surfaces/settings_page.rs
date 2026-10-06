@@ -285,6 +285,7 @@ enum SettingsSelection {
     TerminalFont,
     TerminalCursor,
     FileLinkEditor,
+    QuitBehavior,
 }
 
 pub(crate) struct SettingsState {
@@ -307,6 +308,7 @@ pub(crate) struct SettingsState {
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
     file_link_editor: Entity<StyledSelect>,
+    pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
     skills: Option<Entity<settings::skills::SkillsPane>>,
     mcp: Option<Entity<settings::mcp::McpPane>>,
@@ -436,6 +438,19 @@ impl SettingsState {
             SettingsSelection::FileLinkEditor,
             cx,
         );
+        let quit_behavior = settings_select(
+            &root,
+            "settings-quit-behavior",
+            settings.quit_behavior.key(),
+            runner_app::lifecycle::QuitBehavior::ALL
+                .into_iter()
+                .map(|value| {
+                    SelectOption::new(value.key(), value.label()).description(value.description())
+                })
+                .collect(),
+            SettingsSelection::QuitBehavior,
+            cx,
+        );
         let owner = cx.entity_id();
         let nav_scroll = ScrollHandle::new();
         let nav_scrollbar = cx.new(|_| Scrollbar::app(nav_scroll.clone(), owner));
@@ -486,6 +501,7 @@ impl SettingsState {
             terminal_font,
             terminal_cursor,
             file_link_editor,
+            quit_behavior,
             agents: None,
             skills: None,
             mcp: None,
@@ -530,6 +546,7 @@ fn settings_content_column(
     div()
         .relative()
         .min_w(px(0.))
+        .min_h(px(0.))
         .h_full()
         .flex_1()
         .bg(theme::bg())
@@ -729,7 +746,8 @@ fn settings_select(
         SettingsSelection::DefaultCrew
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
-        | SettingsSelection::FileLinkEditor => None,
+        | SettingsSelection::FileLinkEditor
+        | SettingsSelection::QuitBehavior => None,
     };
     cx.new(|select_cx| {
         let select = StyledSelect::new(
@@ -740,6 +758,11 @@ fn settings_select(
             handler,
             select_cx,
         );
+        let select = if matches!(selection, SettingsSelection::QuitBehavior) {
+            select.min_menu_width(px(300.))
+        } else {
+            select
+        };
         match width {
             Some(width) => select.width(width),
             None => select,
@@ -970,6 +993,10 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
+            SettingsSelection::QuitBehavior => runner_app::lifecycle::QuitBehavior::ALL
+                .into_iter()
+                .find(|pick| pick.key() == value)
+                .is_some_and(|value| update_if_changed(&mut settings.quit_behavior, value)),
             SettingsSelection::FileLinkEditor => FileLinkEditor::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.file_link_editor, value)),
         });
@@ -1225,22 +1252,36 @@ impl NativeRoot {
                             .child(self.settings_page.nav_scrollbar.clone()),
                     ),
             )
-            .child(settings_content_column(
-                self.render_titlebar_drag_area(
-                    "settings-content-titlebar-drag",
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(TITLEBAR_DRAG_HEIGHT * zoom)),
-                    cx,
-                ),
-                content,
-                &self.settings_page.content_scroll,
-                self.settings_page.content_scrollbar.clone(),
-                zoom,
-            ))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .children(self.render_daemon_banner(cx).map(|banner| {
+                        div()
+                            .flex_none()
+                            .pt(rems(TITLEBAR_DRAG_HEIGHT / 16.))
+                            .child(banner)
+                    }))
+                    .child(settings_content_column(
+                        self.render_titlebar_drag_area(
+                            "settings-content-titlebar-drag",
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .right_0()
+                                .h(px(TITLEBAR_DRAG_HEIGHT * zoom)),
+                            cx,
+                        ),
+                        content,
+                        &self.settings_page.content_scroll,
+                        self.settings_page.content_scrollbar.clone(),
+                        zoom,
+                    )),
+            )
             .child(self.render_sidebar_resize_handle(width - 0.5, cx))
             .when(active == SettingsPane::Skills, |takeover| {
                 takeover.children(
@@ -1977,6 +2018,16 @@ impl NativeRoot {
                     )
                     .into_any_element(),
             ]))
+            .child(
+                div().flex().flex_col().gap_2()
+                    .child(settings_section_heading("Sessions"))
+                    .child(SettingsCard::new(vec![SettingsRow::new(
+                        "When Runner quits", self.settings_page.quit_behavior.clone(),
+                    ).subtitle(format!("Keep sessions running in the background, or stop them until you next open Runner. Now: {} live session{}.",
+                        self.app_store.read(cx).live_session_count,
+                        if self.app_store.read(cx).live_session_count == 1 { "" } else { "s" },
+                    )).into_any_element()])),
+            )
             .child(
                 div()
                     .flex()
@@ -2780,6 +2831,68 @@ mod tests {
         assert_eq!(parse_light_theme("codex"), None);
         assert_eq!(LightTerminalTheme::parse("match-app"), None);
         assert_eq!(DarkTerminalTheme::parse("runner-dark"), None);
+    }
+
+    #[test]
+    fn general_quit_menu_renders_a_right_hand_tick_for_each_choice() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{Modifiers, TestAppContext, VisualTestContext};
+        use runner_app::lifecycle::QuitBehavior;
+        struct QuitSelectHost(Entity<NativeRoot>);
+        impl Render for QuitSelectHost {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .p_6()
+                    .child(self.0.read(cx).settings_page.quit_behavior.clone())
+            }
+        }
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let host = cx.add_window(|window, cx| {
+            QuitSelectHost(cx.new(|cx| {
+                NativeRoot::new(
+                    "quit-select".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                )
+            }))
+        });
+        cx.run_until_parked();
+        let select = host
+            .read_with(&cx, |host, cx| {
+                host.0.read(cx).settings_page.quit_behavior.clone()
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        for (index, choice) in QuitBehavior::ALL.into_iter().enumerate() {
+            select.update(&mut cx, |select, cx| select.set_value(choice.key(), cx));
+            cx.run_until_parked();
+            let trigger = visual.debug_bounds("STYLED_SELECT_TRIGGER").unwrap();
+            visual.simulate_click(trigger.center(), Modifiers::default());
+            cx.run_until_parked();
+            let row = visual
+                .debug_bounds(Box::leak(
+                    format!("STYLED_SELECT_OPTION_{index}").into_boxed_str(),
+                ))
+                .unwrap();
+            let check = visual.debug_bounds("STYLED_SELECT_CHECK").unwrap();
+            assert!(check.center().x > row.center().x);
+            assert!(check.left() >= row.left() && check.right() <= row.right());
+            assert!((check.center().y - row.center().y).abs() <= px(1.));
+            visual.simulate_click(row.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
+                store.read_with(&cx, |store, _| store.settings.quit_behavior),
+                choice
+            );
+        }
     }
 
     #[test]

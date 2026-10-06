@@ -31,6 +31,7 @@ pub(crate) struct UpdateDialog {
     close: CloseHandler,
     installing: bool,
     _subscription: Subscription,
+    _store_subscription: Option<Subscription>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,7 +101,7 @@ fn dialog_content(
                 format!("{installed} · downloaded and verified")
             };
             content.body = Some(
-                "Runner closes, the installer runs, and Runner reopens on the new version.".into(),
+                "Runner closes, the installer runs, and Runner reopens on the new version. Your sessions restart with it.".into(),
             );
             content.secondary = Some("Later");
             content.primary = Some(("Install and restart", DialogAction::Install));
@@ -175,6 +176,10 @@ impl UpdateDialog {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let subscription = cx.observe(&updater, |_, _, cx| cx.notify());
+        let store_subscription = cx
+            .try_global::<crate::app_store::GlobalAppStore>()
+            .map(|store| store.0.clone())
+            .map(|store| cx.observe(&store, |_, _, cx| cx.notify()));
         Self {
             updater,
             log_dir,
@@ -183,6 +188,7 @@ impl UpdateDialog {
             close,
             installing: false,
             _subscription: subscription,
+            _store_subscription: store_subscription,
         }
     }
 
@@ -227,7 +233,10 @@ impl UpdateDialog {
                             .context("Could not start the Windows installer")
                     });
                 match result {
-                    Ok(_) => cx.quit(),
+                    Ok(_) => {
+                        runner_app::lifecycle::mark_update_quit();
+                        cx.quit();
+                    }
                     Err(error) => {
                         self.installing = false;
                         self.updater
@@ -250,7 +259,10 @@ impl Render for UpdateDialog {
             return div().into_any_element();
         };
         let checking = updater.is_checking();
-        self.render_content(content, checking, cx)
+        let working = crate::app_store::global_app_store(cx)
+            .read(cx)
+            .working_agent_count();
+        self.render_content(content, checking, working, cx)
     }
 }
 
@@ -259,6 +271,7 @@ impl UpdateDialog {
         &mut self,
         content: DialogContent,
         checking: bool,
+        working: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let close_backdrop = self.close.clone();
@@ -287,7 +300,7 @@ impl UpdateDialog {
             .child(
                 div()
                     .w_full()
-                    .max_w(rems(420. / 16.))
+                    .max_w(rems(440. / 16.))
                     .flex()
                     .flex_col()
                     .gap(rems(14. / 16.))
@@ -313,7 +326,7 @@ impl UpdateDialog {
                             )
                             .child(
                                 div()
-                                    .w(rems(328. / 16.))
+                                    .w(rems(348. / 16.))
                                     .flex()
                                     .flex_col()
                                     .gap(rems(2. / 16.))
@@ -337,7 +350,7 @@ impl UpdateDialog {
                     )
                     .children(content.body.map(|body| {
                         div()
-                            .w(rems(376. / 16.))
+                            .w(rems(396. / 16.))
                             .whitespace_normal()
                             .text_size(theme::text_ui())
                             .line_height(rems(18. / 16.))
@@ -347,7 +360,7 @@ impl UpdateDialog {
                     }))
                     .children(content.progress.map(|(received, total)| {
                         div()
-                            .w(rems(376. / 16.))
+                            .w(rems(396. / 16.))
                             .flex()
                             .flex_col()
                             .gap(rems(6. / 16.))
@@ -381,9 +394,39 @@ impl UpdateDialog {
                         div()
                             .flex()
                             .items_center()
-                            .justify_end()
                             .gap_2()
                             .debug_selector(|| "UPDATE_DIALOG_FOOTER".into())
+                            .children(
+                                (content
+                                    .primary
+                                    .is_some_and(|(_, action)| action == DialogAction::Install))
+                                .then_some(working)
+                                .and_then(runner_app::lifecycle::working_caption)
+                                .map(|caption| {
+                                    div()
+                                        .debug_selector(|| "UPDATE_WORKING_NOTE".into())
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .debug_selector(|| "UPDATE_WORKING_DOT".into())
+                                                .size(rems(6. / 16.))
+                                                .rounded_full()
+                                                .bg(theme::warning()),
+                                        )
+                                        .child(
+                                            div()
+                                                .debug_selector(move || {
+                                                    format!("UPDATE_WORKING_COUNT_{working}")
+                                                })
+                                                .text_size(theme::text_meta())
+                                                .text_color(theme::muted())
+                                                .child(caption),
+                                        )
+                                }),
+                            )
+                            .child(div().flex_1())
                             .children(content.secondary.map(|label| {
                                 Button::new("update-secondary", label)
                                     .size(ButtonSize::Sm)
@@ -402,6 +445,9 @@ impl UpdateDialog {
                                         ButtonVariant::Secondary
                                     } else {
                                         ButtonVariant::Primary
+                                    })
+                                    .when(action == DialogAction::Install, |button| {
+                                        button.icon("rotate-cw.svg")
                                     })
                                     .loading(
                                         self.installing
@@ -469,10 +515,14 @@ mod tests {
                 Some(&info),
                 41_200_000,
             ).unwrap();
-            div().size_full().child(
-                self.dialog
-                    .update(cx, |dialog, cx| dialog.render_content(content, false, cx)),
-            )
+            div()
+                .size_full()
+                .child(self.dialog.update(cx, |dialog, cx| {
+                    let working = cx
+                        .try_global::<crate::app_store::GlobalAppStore>()
+                        .map_or(1, |store| store.0.read(cx).working_agent_count());
+                    dialog.render_content(content, false, working, cx)
+                }))
         }
     }
 
@@ -501,14 +551,47 @@ mod tests {
                 let panel = window.debug_bounds("UPDATE_DIALOG_PANEL").unwrap();
                 let body = window.debug_bounds("UPDATE_DIALOG_BODY").unwrap();
                 let footer = window.debug_bounds("UPDATE_DIALOG_FOOTER").unwrap();
+                let note = window.debug_bounds("UPDATE_WORKING_NOTE").unwrap();
+                assert!(note.left() < footer.center().x);
+                assert!(window.debug_bounds("UPDATE_WORKING_DOT").is_some());
                 assert!(body.size.height >= px(rem * 18. / 16. * 2.));
                 assert!(footer.top() >= body.bottom() && footer.bottom() <= panel.bottom());
-                assert!(panel.size.width <= px(rem * 420. / 16. + 1.));
+                assert!(panel.size.width <= px(rem * 440. / 16. + 1.));
                 assert!(panel.size.height < size.height);
                 assert!((panel.center().x - size.width / 2.).abs() <= px(1.));
                 assert!((panel.center().y - size.height / 2.).abs() <= px(1.));
             }
         }
+    }
+
+    #[test]
+    fn working_note_renders_only_direct_and_mission_agents_in_a_mixed_set() {
+        use gpui::{TestAppContext, VisualTestContext};
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            crate::app_store::seed_mixed_working_sessions(store)
+        });
+        let window = cx.add_window(|window, cx| {
+            let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
+            DialogTestView {
+                dialog: cx.new(|cx| {
+                    UpdateDialog::new(
+                        updater,
+                        temp.path().join("logs"),
+                        Rc::new(|_, _| {}),
+                        window,
+                        cx,
+                    )
+                }),
+            }
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("UPDATE_WORKING_COUNT_2").is_some());
+        assert!(visual.debug_bounds("UPDATE_WORKING_COUNT_4").is_none());
+        assert!(visual.debug_bounds("UPDATE_WORKING_DOT").is_some());
     }
 
     #[test]

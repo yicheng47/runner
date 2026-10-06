@@ -4,7 +4,7 @@ use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(not(windows))]
-use crate::{Hide, HideOthers, Quit};
+use crate::{Hide, HideOthers, Quit, QuitAndStopSessions};
 
 use crate::{
     CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, ConfirmStartMission, Copy,
@@ -418,6 +418,15 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 description: "",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-q", None, false),
+                fixed: true,
+            },
+            #[cfg(not(windows))]
+            KeymapEntry {
+                id: "system-quit-stop",
+                title: "Quit and Stop Sessions",
+                description: "",
+                scope: KeymapScope::Global,
+                default: default_combo("alt-cmd-q", None, false),
                 fixed: true,
             },
             #[cfg(not(windows))]
@@ -966,6 +975,8 @@ pub(crate) fn install_bindings(
     cx.bind_keys([
         #[cfg(not(windows))]
         KeyBinding::new(&platform_default("cmd-q"), Quit, None),
+        #[cfg(not(windows))]
+        KeyBinding::new("alt-cmd-q", QuitAndStopSessions, None),
         #[cfg(not(windows))]
         KeyBinding::new(&platform_default("cmd-h"), Hide, None),
         #[cfg(not(windows))]
@@ -1791,6 +1802,10 @@ mod tests {
                 key_combo("KeyQ", true, false, false, false, None, false),
             ),
             (
+                "system-quit-stop",
+                key_combo("KeyQ", true, false, true, false, None, false),
+            ),
+            (
                 "system-hide",
                 key_combo("KeyH", true, false, false, false, None, false),
             ),
@@ -1889,7 +1904,7 @@ mod tests {
             .filter(|entry| {
                 !matches!(
                     entry.id,
-                    "system-quit" | "system-hide" | "system-hide-others"
+                    "system-quit" | "system-quit-stop" | "system-hide" | "system-hide-others"
                 )
             })
             .map(|entry| {
@@ -1943,7 +1958,7 @@ mod tests {
             assert!(!entry.default.meta, "{}", entry.id);
             assert!(!matches!(
                 entry.id,
-                "system-quit" | "system-hide" | "system-hide-others"
+                "system-quit" | "system-quit-stop" | "system-hide" | "system-hide-others"
             ));
             for binding in binding_strings(&entry.default) {
                 assert!(!binding.contains("cmd-"), "{}: {binding}", entry.id);

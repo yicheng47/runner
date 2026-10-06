@@ -60,7 +60,7 @@ The user-facing surfaces, described by the value they deliver, not by their impl
 - Concurrent missions on the same crew are allowed; each one is fully namespaced (its own session set, event log, router state).
 - **Stop Mission** kills the live PTYs but keeps the mission row running and resumable. Resume respawns stopped/crashed slots from their persisted session rows.
 - **Archive Mission** is the terminal end state: it appends `mission_stopped`, marks the mission completed, sets `archived_at`, hides it from active lists, and leaves the workspace read-only by direct URL.
-- **Sessions outlive the UI window, not the app process.** Closing or navigating away from the mission workspace does not kill sessions. Quitting Runner kills the in-process PTYs; on next launch, stale running rows are demoted to stopped and the user resumes them explicitly.
+- **Sessions outlive the app.** `runnerd` owns the PTYs, mission routers and state. Quitting offers Keep running or Stop sessions, with an Ask/Keep/Stop setting. Kept sessions continue coordinating while the app is closed; relaunch reattaches them. Stop sessions stamps them for launch resume. Updates restart the sessions into the new build and restore their conversations.
 
 ### 4.3 Live session terminals (with human takeover)
 

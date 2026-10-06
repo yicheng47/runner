@@ -1,8 +1,7 @@
 use runner_core::protocol::model::{CodexSpeed, Runtime};
 
 use chrono::{DateTime, TimeZone};
-use gpui::prelude::*;
-use gpui::{div, AnyElement, Context};
+use gpui::Context;
 use runner_app::ui::SelectOption;
 use runner_core::protocol::model::Role;
 use runner_core::protocol::permissions::PermissionMode;
@@ -347,20 +346,6 @@ pub(super) fn role_edit_form_is_composing(form: &RoleEditForm, cx: &Context<Nati
         || form.model.read(cx).is_composing()
         || form.working_dir.read(cx).is_composing()
         || form.system_prompt.read(cx).is_composing()
-}
-
-pub(super) fn error_banner(error: String) -> AnyElement {
-    div()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::with_alpha(theme::danger(), 0.4))
-        .bg(theme::with_alpha(theme::danger(), 0.1))
-        .px_3()
-        .py_2()
-        .text_size(theme::text_title())
-        .text_color(theme::danger())
-        .child(error)
-        .into_any_element()
 }
 
 /// A model or effort cell: the value, or `default` (dimmed) when unset.
