@@ -2012,8 +2012,12 @@ mod tests {
                 .output()
                 .is_ok_and(|output| output.status.success())
         };
-        if probe(Path::new("sh")) {
-            return Some("sh".into());
+        if let Some(sh) =
+            crate::runtime_status::find_executable("sh", &std::env::var("PATH").unwrap_or_default())
+        {
+            if probe(&sh) {
+                return Some(sh);
+            }
         }
         let exec_path = std::process::Command::new("git")
             .arg("--exec-path")
@@ -2022,6 +2026,46 @@ mod tests {
         let exec_path = PathBuf::from(String::from_utf8(exec_path.stdout).ok()?.trim());
         let sh = exec_path.ancestors().nth(3)?.join("usr/bin/sh.exe");
         probe(&sh).then_some(sh)
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn git_sh_hooks_consume_large_payloads_without_git_tools_on_inherited_path() {
+        let Some(sh) = git_sh() else {
+            eprintln!("skipping: Git for Windows sh is not on PATH or beside git");
+            return;
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = status_path(root.path(), "no-git-path");
+        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "tool_response": format!("你好 {}", "x".repeat(256 * 1024)),
+        }))
+        .unwrap();
+        let child_path = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
+        let run = || {
+            let mut child = std::process::Command::new(&sh)
+                .args(["-c", &hook_command(&path, "Stop")])
+                .env("PATH", &child_path)
+                .env(GENERATION_ENV, "current")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(&payload).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+        };
+        run();
+        let mut states = Vec::new();
+        watcher.drain(|state, _| states.push(state)).unwrap();
+        assert_eq!(states, [SessionActivityState::Idle]);
+        drop(watcher);
+        run();
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
     }
 
     #[test]

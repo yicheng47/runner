@@ -75,9 +75,14 @@ pub(crate) fn clear_leftovers(app_data_dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn hook_command(path: &Path, event: &str) -> String {
+    let shell_path = if cfg!(windows) {
+        "PATH=/usr/bin:/bin:$PATH; export PATH; "
+    } else {
+        ""
+    };
     // A bounded append names the payload so parallel, large hooks cannot interleave JSON.
     format!(
-        "(sh {} {} {} || cat >/dev/null) 2>/dev/null; exit 0",
+        "({shell_path}sh {} {} {} || cat >/dev/null) 2>/dev/null; exit 0",
         shell_quote(&hook_path(&script_path(path))),
         shell_quote(&hook_path(path)),
         shell_quote(event),
@@ -479,7 +484,7 @@ mod tests {
         );
         assert_eq!(
             hook_command(path, "Stop"),
-            r"(sh 'C:/Users/Jason Wang/it'\''s app data/session-status/s.sh' 'C:/Users/Jason Wang/it'\''s app data/session-status/s.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0"
+            r"(PATH=/usr/bin:/bin:$PATH; export PATH; sh 'C:/Users/Jason Wang/it'\''s app data/session-status/s.sh' 'C:/Users/Jason Wang/it'\''s app data/session-status/s.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0"
         );
     }
 

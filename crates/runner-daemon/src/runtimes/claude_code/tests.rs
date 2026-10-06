@@ -35,7 +35,7 @@ fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
         assert_eq!(
             status,
             format!(
-                "(sh 'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.sh' \
+                "(PATH=/usr/bin:/bin:$PATH; export PATH; sh 'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.sh' \
                      'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.ndjson' \
                      '{event}' || cat >/dev/null) 2>/dev/null; exit 0"
             ),

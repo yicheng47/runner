@@ -883,18 +883,14 @@ fn idle_monitor_thread(
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
-        if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire) {
-            break;
-        }
+        let stopped = stop.load(Ordering::Acquire) || done.load(Ordering::Acquire);
         #[cfg(windows)]
-        if handle
-            .process_tree
-            .as_ref()
-            .is_some_and(|tree| tree.root_has_exited().unwrap_or(false))
-        {
-            // ConPTY retains its output pipe until the master closes; the reader must keep draining.
-            let master = handle.master.lock().expect("master poisoned").take();
-            drop(master);
+        let stopped = stopped
+            || handle
+                .process_tree
+                .as_ref()
+                .is_some_and(|tree| tree.root_has_exited().unwrap_or(false));
+        if stopped {
             break;
         }
         if let Some(watcher) = hook_status.as_mut() {
@@ -968,6 +964,12 @@ fn idle_monitor_thread(
         }
         thread::sleep(IDLE_MONITOR_POLL);
     }
+    #[cfg(windows)]
+    {
+        // ConPTY retains its output pipe until the master closes; the reader must keep draining.
+        let master = handle.master.lock().expect("master poisoned").take();
+        drop(master);
+    }
 }
 
 fn reader_thread(
@@ -1011,6 +1013,7 @@ fn reader_thread(
 
     let mut buf = vec![0u8; READ_BUF];
     loop {
+        #[cfg(not(windows))]
         if stop.load(Ordering::Acquire) {
             break;
         }
@@ -1027,11 +1030,11 @@ fn reader_thread(
                     detector.on_output(&buf[..n], in_resize_grace)
                 };
                 if let Some(state) = transition {
-                    if tx.send(RuntimeOutput::TerminalEvent(state)).is_err() {
+                    if tx.send(RuntimeOutput::TerminalEvent(state)).is_err() && !cfg!(windows) {
                         break;
                     }
                 }
-                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() {
+                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() && !cfg!(windows) {
                     // Receiver dropped (manager's forwarder gone).
                     break;
                 }
@@ -3301,6 +3304,42 @@ mod tests {
         .unwrap()
         .is_some());
         rt.stop(&session).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dropped_output_stops_conpty_and_drains_reader_windows() {
+        let rt = PtyRuntime::new();
+        let (session, stream) = rt
+            .spawn(spec("dropped-output", "cmd", &["/d", "/q"]))
+            .unwrap();
+        let mut handshake = HostHandshake::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !handshake.answered && Instant::now() < deadline {
+            if let Ok(super::super::runtime::TestOutput::Stream(bytes)) =
+                stream.recv_status_timeout(Duration::from_millis(100))
+            {
+                handshake.observe(&rt, &session, &bytes);
+            }
+        }
+        assert!(
+            handshake.answered,
+            "host never asked for the cursor position"
+        );
+        while stream.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        let pid = rt.status(&session).unwrap().unwrap().pid.unwrap();
+        drop(stream);
+        let (done, completed) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            rt.stop(&session).unwrap();
+            rt.drain_workers();
+            done.send(()).unwrap();
+        });
+        completed
+            .recv_timeout(Duration::from_secs(3))
+            .expect("ConPTY reader did not finish after output was dropped");
+        worker.join().unwrap();
+        assert!(!process_exists(pid));
     }
 
     #[cfg(windows)]

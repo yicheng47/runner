@@ -295,14 +295,26 @@ fn deferred_nudges_coalesce_while_relays_preserve_order() {
     assert!(injector.pushes_for("S-IMPL").is_empty());
 
     injector.clear_pending("S-IMPL");
+    // Three Enters and the two intervening cooldowns must finish before the assertion.
     wait_until(
-        super::INPUT_CLEAR_FLUSH_GRACE + 3 * super::SUBMIT_DELAY + Duration::from_millis(300),
-        || injector.submitted_bodies_for("S-IMPL").len() == 3,
+        super::INPUT_CLEAR_FLUSH_GRACE + 5 * super::SUBMIT_DELAY + Duration::from_millis(300),
+        || injector.pushes_for("S-IMPL").len() == 6,
     );
     let bodies = injector.submitted_bodies_for("S-IMPL");
     assert!(bodies[0].contains("2 new messages"));
     assert_eq!(bodies[1], "relay one");
     assert_eq!(bodies[2], "relay two");
+    assert_eq!(
+        injector.pushes_for("S-IMPL"),
+        [
+            bodies[0].as_str(),
+            "\r",
+            "relay one",
+            "\r",
+            "relay two",
+            "\r"
+        ]
+    );
 }
 
 #[test]

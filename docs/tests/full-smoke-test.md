@@ -13,6 +13,12 @@ The first run is recorded in [#777 runtime adapter smoke](archive/777-runtime-ad
 5. Create a new scratch root and an evidence directory outside the repository. Use a different child directory for each runtime and each startup mission. Resolve paths before passing `--cwd`: on macOS `/tmp` resolves to `/private/tmp`, and different spellings can break conversation lookup. Keep a ledger of every test session, mission, role and crew ID.
 6. Discover supported commands and model/effort choices through the version-matched CLI guide and `--help`. Choose an inexpensive available model and explicit effort where supported. Record existing permission mode and user extensions as test conditions; do not silently disable them.
 
+### Agent configuration isolation
+
+Private Runner app data and conversation directories do not isolate an agent's configuration. Audit the installed runtime's complete startup path, including migrations, changelog bookkeeping, settings saves, trust decisions and extensions, before reusing an account directory. Hash-only canaries detect a write after it happens; they cannot make a writable global directory safe. If supported account reuse cannot preserve real configuration, record the affected runtime as Blocked and request the exact private-account prerequisite.
+
+For pi, set child-only `PI_CODING_AGENT_DIR` to a canonical private directory beneath the smoke scratch root, and keep `PI_CODING_AGENT_SESSION_DIR` private as well. Verify both resolved paths before launch and on resume. Never point `PI_CODING_AGENT_DIR` at the real `~/.pi/agent` merely to reuse authentication: pi 0.87.1 can save `lastChangelogVersion` in that directory's `settings.json` during interactive startup, and migrations can write before the first-time setup guard. An explicit model/thinking choice, `--approve`, a private session directory or suppressing setup does not prevent those writes. Do not copy credentials or change global authentication to bypass this prerequisite; use an already authorized private account or leave account-backed pi checks Blocked. Keep native startup results separate from configuration-preservation results. See the [2026-10-06 Windows regression record](2026-10-06-pc-full-regression.md) for the failed global-state canary that established this boundary.
+
 Example macOS setup, after verifying the development app:
 
 ```sh
