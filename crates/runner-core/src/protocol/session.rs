@@ -147,3 +147,29 @@ pub struct AutoResumeReport {
     pub resumed: Vec<String>,
     pub errors: Vec<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StartDirectSessionArgs {
+    /// Optional role ID. Omit it for a role-free runtime chat.
+    #[serde(default)]
+    pub role_id: Option<String>,
+    /// Optional runtime registry name. With a role, this overrides the
+    /// role's runtime; without a role, it starts a role-free chat.
+    #[serde(default)]
+    pub runtime: Option<super::model::Runtime>,
+    /// Optional model for the selected role or runtime.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional reasoning effort for the selected role or runtime.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// Optional per-chat Codex Speed. Omit or null to inherit.
+    #[serde(default)]
+    pub speed: Option<super::model::CodexSpeed>,
+    /// Optional project membership. Its cwd is used when cwd is omitted.
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Optional working-directory override.
+    #[serde(default)]
+    pub cwd: Option<String>,
+}

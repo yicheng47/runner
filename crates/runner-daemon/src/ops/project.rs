@@ -203,6 +203,33 @@ pub async fn project_delete(state: &AppCore, id: String) -> Result<ProjectDelete
     Ok(outcome)
 }
 
+pub fn project_create_checked(state: &AppCore, name: String, cwd: String) -> Result<ProjectRow> {
+    let cwd = cwd.trim();
+    if !std::path::Path::new(cwd).is_absolute()
+        || !std::fs::metadata(cwd).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return Err(Error::msg(
+            "cwd must be an absolute path to an existing directory",
+        ));
+    }
+    project_create(state, name, cwd.to_owned())
+}
+
+pub async fn project_delete_checked(
+    state: &AppCore,
+    id: String,
+    force: bool,
+) -> Result<ProjectDeleteOutcome> {
+    if !force {
+        let conn = state.db.get()?;
+        let live = live_members(&conn, &id)?;
+        if !live.session_ids.is_empty() || !live.mission_ids.is_empty() {
+            return Err(Error::msg("project has running members"));
+        }
+    }
+    project_delete(state, id).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clean_value, resolve_cwd};
@@ -427,5 +454,265 @@ mod tests {
         let error = resolve_cwd(&conn, Some("missing"), None).unwrap_err();
 
         assert_eq!(error.to_string(), "project not found: missing");
+    }
+}
+
+#[cfg(test)]
+mod client_tests {
+    use crate::ops::project;
+    use crate::repo::node::NodeType;
+    use crate::repo::project::ProjectRow;
+    use crate::test_support::test_core;
+    use crate::{db, repo, AppCore};
+    fn result_json(result: impl serde::Serialize) -> serde_json::Value {
+        serde_json::to_value(result).unwrap()
+    }
+    fn seed_members(state: &AppCore, session_status: &str, mission_status: &str) -> ProjectRow {
+        let conn = state.db.get().unwrap();
+        let project = repo::project::create(&conn, "Project", "/project").unwrap();
+        let node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, status, project_id) VALUES ('chat', ?1, ?2)",
+            rusqlite::params![session_status, project.id],
+        )
+        .unwrap();
+        repo::node::create_tab(
+            &conn,
+            Some(&node.id),
+            "Chat",
+            0,
+            r#"{"preset":"single","slots":["chat"],"sizes":{}}"#,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew', 'Crew', '2026-09-10T00:00:00Z', '2026-09-10T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, crew_id, title, status, started_at, project_id)
+             VALUES ('mission', 'crew', 'Mission', ?1, '2026-09-10T00:00:00Z', ?2)",
+            rusqlite::params![mission_status, project.id],
+        )
+        .unwrap();
+        repo::node::ensure_mission_node(&conn, "mission", Some(&project.id)).unwrap();
+        project
+    }
+
+    #[tokio::test]
+    async fn project_create_validates_cwd_and_appends_project_and_node() {
+        let handler = test_core();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "file").unwrap();
+        for cwd in [
+            "relative".to_owned(),
+            dir.path().join("missing").to_string_lossy().into_owned(),
+            file.to_string_lossy().into_owned(),
+            "  ".to_owned(),
+        ] {
+            let error =
+                project::project_create_checked(&handler, "Project".into(), cwd).unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "cwd must be an absolute path to an existing directory"
+            );
+        }
+        let previous = {
+            let conn = handler.db.get().unwrap();
+            assert!(repo::project::list(&conn).unwrap().is_empty());
+            assert!(repo::node::list(&conn).unwrap().is_empty());
+            let project = repo::project::create(&conn, "Previous", "/previous").unwrap();
+            conn.execute(
+                "UPDATE projects SET position = 7 WHERE id = ?1",
+                [&project.id],
+            )
+            .unwrap();
+            repo::node::ensure_project_node(&conn, &project.id).unwrap()
+        };
+        let error = project::project_create_checked(
+            &handler,
+            "  ".into(),
+            dir.path().to_string_lossy().into_owned(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "project name cannot be empty");
+
+        let mut events = handler.events.subscribe();
+        let created = result_json(
+            project::project_create_checked(
+                &handler,
+                "  New project  ".into(),
+                format!("  {}  ", dir.path().display()),
+            )
+            .unwrap(),
+        );
+        let conn = handler.db.get().unwrap();
+        let row = repo::project::get(&conn, created["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(created, serde_json::json!(row));
+        assert_eq!(row.name, "New project");
+        assert_eq!(row.cwd, dir.path().to_string_lossy());
+        assert_eq!(row.position, 8);
+        let node = repo::node::find_by_ref(&conn, NodeType::Project, &row.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.position, previous.position + 1);
+        assert_eq!(events.try_recv().unwrap().name, "project/changed");
+        assert_eq!(events.try_recv().unwrap().name, "chat/layout-changed");
+    }
+
+    #[tokio::test]
+    async fn project_rename_rejects_unknown_and_returns_updated_name() {
+        let handler = test_core();
+        let error =
+            project::project_rename(&handler, "missing".into(), "Renamed".into()).unwrap_err();
+
+        assert_eq!(error.to_string(), "project not found: missing");
+        let row = project::project_create(&handler, "Old".into(), "/project".into()).unwrap();
+        let mut events = handler.events.subscribe();
+        let renamed = result_json(
+            project::project_rename(&handler, row.id.clone(), "  Renamed  ".into()).unwrap(),
+        );
+        assert_eq!(renamed["id"], row.id);
+        assert_eq!(renamed["name"], "Renamed");
+        assert_eq!(events.try_recv().unwrap().name, "project/changed");
+    }
+
+    #[tokio::test]
+    async fn project_delete_refuses_running_members_without_mutations() {
+        for (session_status, mission_status) in [
+            ("running", "aborted"),
+            ("stopped", "running"),
+            ("running", "running"),
+        ] {
+            let handler = test_core();
+            let project = seed_members(&handler, session_status, mission_status);
+            let mut events = handler.events.subscribe();
+            let error = project::project_delete_checked(&handler, project.id.clone(), false)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.to_string(), "project has running members");
+            assert_eq!(
+                serde_json::to_value(
+                    project::live_members(&handler.db.get().unwrap(), &project.id).unwrap()
+                )
+                .unwrap(),
+                serde_json::json!({
+                    "session_ids": if session_status == "running" { vec!["chat"] } else { vec![] },
+                    "mission_ids": if mission_status == "running" { vec!["mission"] } else { vec![] },
+                })
+            );
+            let conn = handler.db.get().unwrap();
+            assert!(repo::project::get(&conn, &project.id).unwrap().is_some());
+            assert_eq!(repo::node::list(&conn).unwrap().len(), 3);
+            let session = repo::session::get_row(&conn, "chat").unwrap().unwrap();
+            assert!(session.archived_at.is_none());
+            assert_eq!(
+                session.status,
+                if session_status == "running" {
+                    crate::model::SessionStatus::Running
+                } else {
+                    crate::model::SessionStatus::Stopped
+                }
+            );
+            let mission = repo::mission::get(&conn, "mission").unwrap().unwrap();
+            assert!(mission.archived_at.is_none());
+            assert_eq!(
+                mission.status,
+                if mission_status == "running" {
+                    crate::model::MissionStatus::Running
+                } else {
+                    crate::model::MissionStatus::Aborted
+                }
+            );
+            assert!(events.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn project_delete_archives_stopped_members_and_returns_both_lists() {
+        let handler = test_core();
+        let project = seed_members(&handler, "stopped", "aborted");
+        let mut events = handler.events.subscribe();
+        let outcome = result_json(
+            project::project_delete_checked(&handler, project.id.clone(), false)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            outcome,
+            serde_json::json!({
+                "archived_session_ids": ["chat"], "archived_mission_ids": ["mission"],
+            })
+        );
+        let conn = handler.db.get().unwrap();
+        assert!(repo::project::get(&conn, &project.id).unwrap().is_none());
+        assert!(repo::node::list(&conn).unwrap().is_empty());
+        let session = repo::session::get_row(&conn, "chat").unwrap().unwrap();
+        assert!(session.archived_at.is_some());
+        assert!(session.project_id.is_none());
+        let mission = repo::mission::get(&conn, "mission").unwrap().unwrap();
+        assert!(mission.archived_at.is_some());
+        assert!(mission.project_id.is_none());
+        let mut names = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            names.push(event.name);
+        }
+        for expected in [
+            "project/changed",
+            "mission/changed",
+            "session/updated",
+            "chat/layout-changed",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}");
+        }
+    }
+
+    #[tokio::test]
+    async fn project_delete_force_bypasses_guard_and_reaches_running_row_check() {
+        let handler = test_core();
+        let project = seed_members(&handler, "running", "aborted");
+        let error = project::project_delete_checked(&handler, project.id.clone(), true)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("session chat is missing or still running"),
+            "{error}"
+        );
+        let conn = handler.db.get().unwrap();
+        assert!(repo::project::get(&conn, &project.id).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn project_delete_rejects_unknown_id_with_or_without_force() {
+        let handler = test_core();
+        for force in [false, true] {
+            let error = project::project_delete_checked(&handler, "missing".into(), force)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.to_string(), "project not found: missing");
+        }
+    }
+
+    #[test]
+    fn project_discovery_lists_and_gets_bound_cwd() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        let created = repo::project::create(&conn, "Runner", "/runner").unwrap();
+
+        let listed = project::list(&conn).unwrap();
+        let fetched = project::get(&conn, &created.id).unwrap();
+
+        assert_eq!(listed, vec![created.clone()]);
+        assert_eq!(fetched, created);
     }
 }

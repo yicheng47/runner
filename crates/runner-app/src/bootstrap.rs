@@ -49,8 +49,6 @@ pub fn install_wake(client: DaemonClient) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
-    use runner_daemon::daemon::boot::NativeMcpServer;
     use runner_daemon::daemon::boot::{boot_core, stop_running_sessions_on_quit};
     use runner_daemon::daemon::resume::consume_launch_claims;
     use runner_daemon::{db, repo, session, shell_path};
@@ -62,8 +60,6 @@ mod tests {
 
     use std::cell::{Cell, RefCell};
     use std::collections::HashSet;
-    #[cfg(unix)]
-    use std::time::Duration;
 
     fn launch_claim(session_id: &str, shell: bool) -> repo::session::ResumeOnLaunchClaim {
         repo::session::ResumeOnLaunchClaim {
@@ -148,26 +144,6 @@ mod tests {
             .join("bin")
             .join(runner_daemon::cli_install::MCP_DEST_BIN_NAME)
             .exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn native_mcp_server_binds_and_removes_the_app_data_socket() {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = NativePaths::new(temp.path().join("data"), temp.path().join("logs"));
-        let core = boot_core(&paths, Vec::new()).unwrap();
-        let socket_path = paths.app_data_dir.join("mcp.sock");
-
-        let server = NativeMcpServer::start(&core).unwrap();
-        assert_eq!(
-            core.mcp.endpoint(),
-            Some(runner_daemon::app_paths::IpcEndpoint(socket_path.clone()))
-        );
-        assert!(socket_path.exists());
-        std::thread::sleep(Duration::from_millis(1));
-
-        drop(server);
-        assert!(!socket_path.exists());
     }
 
     #[test]

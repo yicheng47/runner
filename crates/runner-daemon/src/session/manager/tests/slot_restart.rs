@@ -297,7 +297,6 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
         buses: crate::event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
-        mcp: Arc::new(crate::mcp::McpHandle::new()),
         windows: Arc::new(crate::windows::WindowRegistry::new()),
         events: crate::events::EventChannel::new(),
         session_event_observer: Default::default(),

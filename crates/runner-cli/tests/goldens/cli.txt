@@ -1,0 +1,1772 @@
+# Built runner CLI, isolated runnerd, fixed SQLite and event-log fixtures.
+# Each block records argv, exit status, stdout, then non-empty stderr after [stderr].
+# Only unfixed values are normalized: temporary paths (<ROOT>, <HOME>, <APP_DATA>,
+# <SIDECAR>, including platform-native and truncated paths), generated ULIDs (<ULID_n>),
+# generated RFC3339 times (<TIMESTAMP>), daemon PID (<PID>) and build hash (<EXE_SHA256>).
+# Fixture IDs, timestamps, event offsets, whitespace and JSON ordering stay verbatim.
+# Start and resume use a missing executable or unusable cwd. No agents run.
+# Windows status has its own block because command installation is unsupported in debug.
+
+# platform unix
+$ runner status
+exit 0
+CLI VERSION      0.13.0
+APP VERSION      0.13.0 (dev)
+SOCKET           <APP_DATA>/runnerd.sock
+SIDECAR          <SIDECAR>
+SIDECAR PRESENT  true
+MODE             outside a mission
+
+COMMAND
+not_install…  -
+
+SKILLS
+missing  <HOME>/.claude/skills/runner-dev
+missing  <HOME>/.agents/skills/runner-dev
+missing  <HOME>/.trae/skills/runner-dev
+missing  <HOME>/.gemini/antigravity-cli/skills/runner-dev
+
+$ runner status --json
+exit 0
+{"cli_version":"0.13.0","app_version":"0.13.0 (dev)","socket":"<APP_DATA>/runnerd.sock","sidecar":"<SIDECAR>","sidecar_present":true,"mode":"outside a mission","command":{"state":"not_installed"},"skills":[{"root":"<HOME>/.claude/skills","folder":"<HOME>/.claude/skills/runner-dev","state":"missing"},{"root":"<HOME>/.agents/skills","folder":"<HOME>/.agents/skills/runner-dev","state":"missing"},{"root":"<HOME>/.trae/skills","folder":"<HOME>/.trae/skills/runner-dev","state":"missing"},{"root":"<HOME>/.gemini/antigravity-cli/skills","folder":"<HOME>/.gemini/antigravity-cli/skills/runner-dev","state":"missing"}]}
+
+# platform windows
+$ runner status
+exit 0
+CLI VERSION      0.13.0
+APP VERSION      0.13.0 (dev)
+SOCKET           <APP_DATA>/runnerd.sock
+SIDECAR          <SIDECAR>
+SIDECAR PRESENT  true
+MODE             outside a mission
+
+COMMAND
+unsupported  -
+
+SKILLS
+missing  <HOME>/.claude/skills/runner-dev
+missing  <HOME>/.agents/skills/runner-dev
+missing  <HOME>/.trae/skills/runner-dev
+missing  <HOME>/.gemini/antigravity-cli/skills/runner-dev
+
+$ runner status --json
+exit 0
+{"cli_version":"0.13.0","app_version":"0.13.0 (dev)","socket":"<APP_DATA>/runnerd.sock","sidecar":"<SIDECAR>","sidecar_present":true,"mode":"outside a mission","command":{"state":"unsupported"},"skills":[{"root":"<HOME>/.claude/skills","folder":"<HOME>/.claude/skills/runner-dev","state":"missing"},{"root":"<HOME>/.agents/skills","folder":"<HOME>/.agents/skills/runner-dev","state":"missing"},{"root":"<HOME>/.trae/skills","folder":"<HOME>/.trae/skills/runner-dev","state":"missing"},{"root":"<HOME>/.gemini/antigravity-cli/skills","folder":"<HOME>/.gemini/antigravity-cli/skills/runner-dev","state":"missing"}]}
+
+# platform all
+$ runner daemon status
+exit 0
+running     true
+pid         <PID>
+started_at  <TIMESTAMP>
+exe_sha256  <EXE_SHA256>
+
+$ runner daemon status --json
+exit 0
+{"running":true,"pid":<PID>,"started_at":"<TIMESTAMP>","exe_sha256":"<EXE_SHA256>"}
+
+$ runner daemon stop
+exit 0
+stopped  true
+
+$ runner daemon stop --json
+exit 0
+{"stopped":true}
+
+$ runner project list
+exit 0
+NAME    ID               PATH
+Runner  project-fixture  <ROOT>
+
+$ runner project list --json
+exit 0
+[{"id":"project-fixture","name":"Runner","cwd":"<ROOT>","position":0,"created_at":"2026-09-18T10:20:30Z"}]
+
+$ runner project show Runner
+exit 0
+NAME  Runner
+ID    project-fixture
+PATH  <ROOT>
+
+$ runner project show Runner --json
+exit 0
+{"id":"project-fixture","name":"Runner","cwd":"<ROOT>","position":0,"created_at":"2026-09-18T10:20:30Z"}
+
+$ runner project create New --path .
+exit 0
+NAME  New
+ID    <ULID_1>
+PATH  <ROOT>
+
+$ runner project create New --path . --json
+exit 0
+{"id":"<ULID_1>","name":"New","cwd":"<ROOT>","position":1,"created_at":"<TIMESTAMP>"}
+
+$ runner project rename Runner Renamed
+exit 0
+NAME  Renamed
+ID    project-fixture
+PATH  <ROOT>
+
+$ runner project rename Runner Renamed --json
+exit 0
+{"id":"project-fixture","name":"Renamed","cwd":"<ROOT>","position":0,"created_at":"2026-09-18T10:20:30Z"}
+
+$ runner project delete Runner --force
+exit 0
+Deleted project project-fixture
+
+$ runner project delete Runner --force --json
+exit 0
+{"archived_mission_ids":["mission-fixture"],"archived_session_ids":["session-fixture"]}
+
+$ runner role list
+exit 0
+HANDLE    NAME      RUNTIME  MODEL          EFFORT  ID
+coder     Coder     codex    fixture-model  high    role-coder
+reviewer  Reviewer  codex    fixture-model  high    role-reviewer
+unused    Unused    codex    fixture-model  high    role-unused
+
+$ runner role list --json
+exit 0
+[{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},{"id":"role-unused","handle":"unused","display_name":"Unused","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}]
+
+$ runner role show coder
+exit 0
+HANDLE   coder
+NAME     Coder
+RUNTIME  codex
+MODEL    fixture-model
+EFFORT   high
+SPEED    fast
+ID       role-coder
+
+PROMPT
+Fixture prompt
+
+$ runner role show coder --json
+exit 0
+{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}
+
+$ runner role create new --runtime codex
+exit 0
+HANDLE   new
+NAME     new
+RUNTIME  codex
+MODEL    -
+EFFORT   -
+SPEED    inherit (Codex config)
+ID       <ULID_1>
+
+PROMPT
+-
+
+$ runner role create new --runtime codex --json
+exit 0
+{"id":"<ULID_1>","handle":"new","display_name":"new","runtime":"codex","command":"codex","args":["--ask-for-approval","on-request","--sandbox","workspace-write"],"working_dir":null,"system_prompt":null,"env":{},"model":null,"effort":null,"codex_speed":null,"created_at":"<TIMESTAMP>","updated_at":"<TIMESTAMP>"}
+
+$ runner role update coder --model updated --speed standard
+exit 0
+HANDLE   coder
+NAME     Coder
+RUNTIME  codex
+MODEL    updated
+EFFORT   high
+SPEED    standard
+ID       role-coder
+
+PROMPT
+Fixture prompt
+
+$ runner role update coder --model updated --speed standard --json
+exit 0
+{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"updated","effort":"high","codex_speed":"standard","created_at":"2026-09-18T10:20:30Z","updated_at":"<TIMESTAMP>"}
+
+$ runner role delete unused
+exit 0
+Deleted role role-unused
+
+$ runner role delete unused --json
+exit 0
+{"deleted":true,"id":"role-unused"}
+
+$ runner crew list
+exit 0
+NAME   ID            SLOTS
+Empty  crew-empty    -
+Peer   crew-fixture  coder* (codex), reviewer (codex)
+
+$ runner crew list --json
+exit 0
+[{"id":"crew-empty","name":"Empty","system_prompt_addendum":null,"created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z","role_count":0,"members":[]},{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z","role_count":2,"members":[{"slot_handle":"coder","role_handle":"coder","runtime":"codex","lead":true},{"slot_handle":"reviewer","role_handle":"reviewer","runtime":"codex","lead":false}]}]
+
+$ runner crew show Peer
+exit 0
+NAME  Peer
+ID    crew-fixture
+
+HANDLE    LEAD  ROLE      RUNTIME  MODEL          EFFORT  SPEED
+coder     yes   coder     codex    fixture-model  high    fast (role)
+reviewer  no    reviewer  codex    fixture-model  high    fast (role)
+
+$ runner crew show Peer --json
+exit 0
+{"crew":{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},"slots":[{"id":"slot-coder","crew_id":"crew-fixture","role_id":"role-coder","slot_handle":"coder","position":0,"lead":true,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}},{"id":"slot-reviewer","crew_id":"crew-fixture","role_id":"role-reviewer","slot_handle":"reviewer","position":1,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}]}
+
+$ runner crew create New
+exit 0
+NAME  New
+ID    <ULID_1>
+
+$ runner crew create New --json
+exit 0
+{"id":"<ULID_1>","name":"New","system_prompt_addendum":null,"created_at":"<TIMESTAMP>","updated_at":"<TIMESTAMP>"}
+
+$ runner crew update Peer --name Renamed
+exit 0
+NAME  Renamed
+ID    crew-fixture
+
+$ runner crew update Peer --name Renamed --json
+exit 0
+{"id":"crew-fixture","name":"Renamed","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"<TIMESTAMP>"}
+
+$ runner crew delete Empty
+exit 0
+Deleted crew crew-empty
+
+$ runner crew delete Empty --json
+exit 0
+{"deleted":true,"id":"crew-empty"}
+
+$ runner crew add Peer unused --as impl
+exit 0
+Updated crew slots <ULID_1>
+
+$ runner crew add Peer unused --as impl --json
+exit 0
+{"id":"<ULID_1>","crew_id":"crew-fixture","role_id":"role-unused","slot_handle":"impl","position":2,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"<TIMESTAMP>","role":{"id":"role-unused","handle":"unused","display_name":"Unused","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}
+
+$ runner crew set Peer reviewer --effort medium
+exit 0
+Updated crew slots slot-reviewer
+
+$ runner crew set Peer reviewer --effort medium --json
+exit 0
+{"id":"slot-reviewer","crew_id":"crew-fixture","role_id":"role-reviewer","slot_handle":"reviewer","position":1,"lead":false,"runtime_override":null,"model_override":null,"effort_override":"medium","codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}
+
+$ runner crew remove Peer reviewer
+exit 0
+Updated crew slots slot-reviewer
+
+$ runner crew remove Peer reviewer --json
+exit 0
+{"deleted":true,"slot_id":"slot-reviewer"}
+
+$ runner crew lead Peer reviewer
+exit 0
+Updated crew slots slot-reviewer
+
+$ runner crew lead Peer reviewer --json
+exit 0
+{"id":"slot-reviewer","crew_id":"crew-fixture","role_id":"role-reviewer","slot_handle":"reviewer","position":1,"lead":true,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}
+
+$ runner crew order Peer reviewer coder
+exit 0
+Updated crew slots slot-reviewer, slot-coder
+
+$ runner crew order Peer reviewer coder --json
+exit 0
+[{"id":"slot-reviewer","crew_id":"crew-fixture","role_id":"role-reviewer","slot_handle":"reviewer","position":0,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}},{"id":"slot-coder","crew_id":"crew-fixture","role_id":"role-coder","slot_handle":"coder","position":1,"lead":true,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}]
+
+$ runner mission list --crew Peer
+exit 0
+ID               TITLE            CREW  STATUS     LIVE  ASKS  PROJECT
+mission-fixture  Fixture mission  Peer  completed  0/1   1     project-fixture
+mission-running  Active fixture   Peer  stopped    0/0   0     -
+
+$ runner mission list --crew Peer --json
+exit 0
+[{"session_statuses":[["session-mission",{"lifecycle":"stopped","observation":{"activity":"unavailable","source":"unavailable","outcome":null,"interactions":[],"detail":null},"exit_code":null,"error_since":null,"failed_since":null,"unread_since":null}]],"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"crew_name":"Peer","pending_ask_count":1,"any_session_live":false,"all_sessions_live":false,"activity":null},{"session_statuses":[],"id":"mission-running","crew_id":"crew-fixture","project_id":null,"title":"Active fixture","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":null,"pinned_at":null,"archived_at":null,"crew_name":"Peer","pending_ask_count":0,"any_session_live":false,"all_sessions_live":false,"activity":null}]
+
+$ runner mission show mission-fixture
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     Peer
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+HANDLE  LEAD  RUNTIME  STATUS   STATE  SESSION ID
+coder   yes   codex    stopped  idle   session-mission
+
+QUESTION ID                 ASKER  PROMPT  CHOICES
+01K5ZCJNP00000000000000002  coder  Ship?   yes, no
+
+$ runner mission show mission-fixture --json
+exit 0
+{"mission":{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null},"crew":{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},"sessions":[{"id":"session-mission","mission_id":"mission-fixture","role_id":"role-coder","slot_id":"slot-coder","cwd":"<ROOT>","status":"stopped","pid":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","live_title":null,"handle":"coder","runtime":"codex","lead":true,"agent_session_key":null}],"latest_session_status_by_handle":{"coder":{"state":"idle","event_id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","source":"fixture"}},"pending_asks":[{"question_id":"01K5ZCJNP00000000000000002","asker":"coder","prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder","event_id":"01K5ZCJNP00000000000000002","ts":"2026-09-18T10:20:30Z"}],"pending_ask_count":1,"live_session_count":0,"stopped_session_count":1,"crashed_session_count":0,"recent_warnings":[],"last_event_id":"01K5ZCJNP00000000000000003","last_event_offset":692,"skipped_event_count":0}
+
+$ runner mission start --crew Peer --goal ship --cwd not-a-directory
+exit 0
+ID       <ULID_1>
+TITLE    ship
+STATUS   running
+CREW     crew-fixture
+PROJECT  project-fixture
+CWD      <ROOT>/not-a-directory
+STARTED  <TIMESTAMP>
+
+$ runner mission start --crew Peer --goal ship --cwd not-a-directory --json
+exit 0
+{"mission":{"id":"<ULID_1>","crew_id":"crew-fixture","project_id":"project-fixture","title":"ship","status":"running","goal_override":"ship","cwd":"<ROOT>/not-a-directory","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":"ship"}
+
+$ runner mission stop mission-fixture
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   stopped
+CREW     Peer
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission stop mission-fixture --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner mission resume mission-fixture
+exit 1
+[stderr]
+mission mission-fixture resume failed for session session-mission: session_resume: mission is not running; resumed session ids: []
+
+$ runner mission resume mission-fixture --json
+exit 1
+[stderr]
+mission mission-fixture resume failed for session session-mission: session_resume: mission is not running; resumed session ids: []
+
+$ runner mission archive mission-fixture
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     Peer
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission archive mission-fixture --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":"<TIMESTAMP>"}
+
+$ runner mission unarchive 01K5ZCJNP00000000000000010
+exit 0
+ID       01K5ZCJNP00000000000000010
+TITLE    Archived mission
+STATUS   completed
+CREW     Peer
+PROJECT  -
+CWD      -
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission unarchive 01K5ZCJNP00000000000000010 --json
+exit 0
+{"id":"01K5ZCJNP00000000000000010","crew_id":"crew-fixture","project_id":null,"title":"Archived mission","status":"completed","goal_override":null,"cwd":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner mission rename mission-fixture Renamed
+exit 0
+ID       mission-fixture
+TITLE    Renamed
+STATUS   completed
+CREW     crew-fixture
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission rename mission-fixture Renamed --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Renamed","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner mission pin mission-fixture
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     crew-fixture
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission pin mission-fixture --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":"<TIMESTAMP>","archived_at":null}
+
+$ runner mission unpin mission-fixture
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     crew-fixture
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission unpin mission-fixture --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner mission move mission-fixture --unfile
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     crew-fixture
+PROJECT  -
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission move mission-fixture --unfile --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":null,"title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner mission feed mission-fixture --oldest-first
+exit 0
+10:20:30  reviewer -> coder  message  Ready for review Checks passed
+10:20:30  coder -> all  human_question  Ship?
+next_offset  692
+
+$ runner mission feed mission-fixture --oldest-first --json
+exit 0
+{"mission_id":"mission-fixture","events":[{"next_offset":221,"event":{"id":"01K5ZCJNP00000000000000001","ts":"2026-09-18T10:20:30Z","crew_id":"crew-fixture","mission_id":"mission-fixture","kind":"message","from":"reviewer","to":"coder","payload":{"text":"Ready for review\nChecks passed"}}},{"next_offset":471,"event":{"id":"01K5ZCJNP00000000000000002","ts":"2026-09-18T10:20:30Z","crew_id":"crew-fixture","mission_id":"mission-fixture","kind":"signal","from":"coder","to":null,"type":"human_question","payload":{"prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder"}}},{"next_offset":692,"event":{"id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","crew_id":"crew-fixture","mission_id":"mission-fixture","kind":"signal","from":"coder","to":null,"type":"session_status","payload":{"state":"idle","source":"fixture"}}}],"next_offset":692,"skipped":[]}
+
+$ runner mission answer mission-fixture 01K5ZCJNP00000000000000002 yes
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner mission answer mission-fixture 01K5ZCJNP00000000000000002 yes --json
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner chat start coder --cwd not-a-directory
+exit 1
+[stderr]
+session_start_direct: working directory does not exist: <ROOT>/not-a-directory
+
+$ runner chat start coder --cwd not-a-directory --json
+exit 1
+[stderr]
+session_start_direct: working directory does not exist: <ROOT>/not-a-directory
+
+$ runner chat start --runtime codex --cwd not-a-directory
+exit 1
+[stderr]
+session_start_runtime: Codex executable was not found. Open Settings → Agents to refresh discovery or set an override.
+
+$ runner chat start --runtime codex --cwd not-a-directory --json
+exit 1
+[stderr]
+session_start_runtime: Codex executable was not found. Open Settings → Agents to refresh discovery or set an override.
+
+$ runner session list
+exit 0
+ID               RUNTIME  ROLE   TITLE         STATUS   ACTIVITY     CWD
+session-fixture  codex    coder  Fixture chat  stopped  unavailable  <ROOT>/not-a-directory
+
+$ runner session list --json
+exit 0
+[{"session_id":"session-fixture","project_id":"project-fixture","role_id":"role-coder","handle":"coder","agent_runtime":"codex","agent_command":"missing-fixture-agent","agent_model":null,"agent_effort":null,"display_name":"Coder","status":"stopped","title":"Fixture chat","live_title":null,"cwd":"<ROOT>/not-a-directory","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","resumable":false,"native_fork":true,"forkable":false,"agent_session_key":null,"pinned":false,"archived_at":null,"activity":"unavailable"}]
+
+$ runner session show session-fixture
+exit 0
+ID            session-fixture
+MISSION       -
+RUNTIME       codex
+ROLE          coder
+SPEED         inherit (role or slot)
+ROW STATUS    stopped
+LIFECYCLE     starting
+ACTIVITY      unavailable
+RAW ACTIVITY  -
+SOURCE        unavailable
+OUTCOME       -
+DETAIL        -
+WAITS         0
+CWD           <ROOT>/not-a-directory
+
+$ runner session show session-fixture --json
+exit 0
+{"session_id":"session-fixture","project_id":"project-fixture","role_id":"role-coder","handle":"coder","agent_runtime":"codex","agent_command":"missing-fixture-agent","agent_model":"fixture-model","agent_effort":"high","display_name":"Coder","status":"stopped","title":"Fixture chat","live_title":null,"cwd":"<ROOT>/not-a-directory","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","resumable":false,"native_fork":true,"forkable":false,"agent_session_key":null,"pinned":false,"archived_at":null,"agent_speed":null,"agent_status":{"lifecycle":"starting","observation":{"activity":"unavailable","source":"unavailable","outcome":null,"interactions":[],"detail":null},"exit_code":null,"error_since":null,"failed_since":null,"unread_since":null},"activity":null}
+
+$ runner session stop session-fixture
+exit 0
+Stopped session session-fixture
+
+$ runner session stop session-fixture --json
+exit 0
+{"session_id":"session-fixture"}
+
+$ runner session archive session-fixture
+exit 0
+Archived session session-fixture
+
+$ runner session archive session-fixture --json
+exit 0
+{"session_id":"session-fixture"}
+
+$ runner session resume session-fixture
+exit 1
+[stderr]
+session_resume: working directory does not exist: <ROOT>/not-a-directory
+
+$ runner session resume session-fixture --json
+exit 1
+[stderr]
+session_resume: working directory does not exist: <ROOT>/not-a-directory
+
+$ runner session restart session-fixture
+exit 1
+[stderr]
+only mission slots can be restarted
+
+$ runner session restart session-fixture --json
+exit 1
+[stderr]
+only mission slots can be restarted
+
+$ runner msg post Hello --mission mission-fixture --to reviewer
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post messages
+
+$ runner msg post Hello --mission mission-fixture --to reviewer --json
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post messages
+
+$ runner msg read
+exit 2
+[stderr]
+runner msg read is available only inside a mission; use runner mission feed <mission>
+
+$ runner msg read --json
+exit 2
+[stderr]
+runner msg read is available only inside a mission; use runner mission feed <mission>
+
+$ runner signal ask_lead --mission mission-fixture --as coder --payload '{"question":"Review?"}'
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner signal ask_lead --mission mission-fixture --as coder --payload '{"question":"Review?"}' --json
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner ask 'Review?' --context 'Checks pass' --mission mission-fixture --as coder
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner ask 'Review?' --context 'Checks pass' --mission mission-fixture --as coder --json
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner ask --human 'Ship?' --choices 'yes,no' --mission mission-fixture --as coder
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner ask --human 'Ship?' --choices 'yes,no' --mission mission-fixture --as coder --json
+exit 1
+[stderr]
+mission mission-fixture is not running (status = Completed); cannot post signals
+
+$ runner call role_get '{"id":"role-coder"}'
+exit 0
+id             role-coder
+handle         coder
+display_name   Coder
+runtime        codex
+command        missing-fixture-agent
+args           []
+working_dir    -
+system_prompt  Fixture prompt
+env            {}
+model          fixture-model
+effort         high
+codex_speed    fast
+created_at     2026-09-18T10:20:30Z
+updated_at     2026-09-18T10:20:30Z
+
+$ runner call role_get '{"id":"role-coder"}' --json
+exit 0
+{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}
+
+$ runner msg post Hello --mission mission-running
+exit 0
+Posted message <ULID_1>
+
+$ runner msg post Hello --mission mission-running --json
+exit 0
+{"id":"<ULID_1>","ts":"<TIMESTAMP>","crew_id":"crew-fixture","mission_id":"mission-running","kind":"message","from":"human","to":null,"payload":{"text":"Hello"}}
+
+$ runner signal ask_lead --mission mission-running --as coder --payload '{"question":"Review?"}'
+exit 0
+Posted signal <ULID_1>
+
+$ runner signal ask_lead --mission mission-running --as coder --payload '{"question":"Review?"}' --json
+exit 0
+{"id":"<ULID_1>","ts":"<TIMESTAMP>","crew_id":"crew-fixture","mission_id":"mission-running","kind":"signal","from":"coder","to":null,"type":"ask_lead","payload":{"question":"Review?"}}
+
+$ runner ask 'Review?' --mission mission-running --as coder
+exit 0
+Posted question <ULID_1>
+
+$ runner ask 'Review?' --mission mission-running --as coder --json
+exit 0
+{"id":"<ULID_1>","ts":"<TIMESTAMP>","crew_id":"crew-fixture","mission_id":"mission-running","kind":"signal","from":"coder","to":null,"type":"ask_lead","payload":{"question":"Review?"}}
+
+$ runner ask --human 'Ship?' --choices 'yes,no' --mission mission-running --as coder
+exit 0
+Posted question <ULID_1>
+
+$ runner ask --human 'Ship?' --choices 'yes,no' --mission mission-running --as coder --json
+exit 0
+{"id":"<ULID_1>","ts":"<TIMESTAMP>","crew_id":"crew-fixture","mission_id":"mission-running","kind":"signal","from":"coder","to":null,"type":"ask_human","payload":{"prompt":"Ship?","choices":["yes","no"]}}
+
+$ runner mission answer mission-running 01K5ZCJNP00000000000000002 yes
+exit 0
+Answered question <ULID_1>
+
+$ runner mission answer mission-running 01K5ZCJNP00000000000000002 yes --json
+exit 0
+{"id":"<ULID_1>","ts":"<TIMESTAMP>","crew_id":"crew-fixture","mission_id":"mission-running","kind":"signal","from":"human","to":null,"type":"human_response","payload":{"question_id":"01K5ZCJNP00000000000000002","choice":"yes"}}
+
+$ runner project show missing
+exit 2
+[stderr]
+project not found: missing
+
+$ runner project show missing --json
+exit 2
+[stderr]
+project not found: missing
+
+$ runner role show missing
+exit 2
+[stderr]
+role handle not found: @missing
+
+$ runner role show missing --json
+exit 2
+[stderr]
+role handle not found: @missing
+
+$ runner crew show missing
+exit 2
+[stderr]
+crew not found: missing
+
+$ runner crew show missing --json
+exit 2
+[stderr]
+crew not found: missing
+
+$ runner mission show missing
+exit 2
+[stderr]
+mission not found: missing
+
+$ runner mission show missing --json
+exit 2
+[stderr]
+mission not found: missing
+
+$ runner session show missing
+exit 2
+[stderr]
+session not found: missing
+
+$ runner session show missing --json
+exit 2
+[stderr]
+session not found: missing
+
+$ runner msg post Hello --mission mission-running --as ghost
+exit 1
+[stderr]
+@ghost is not in the mission roster
+
+$ runner msg post Hello --mission mission-running --as ghost --json
+exit 1
+[stderr]
+@ghost is not in the mission roster
+
+$ runner signal ask_lead --mission mission-fixture --as ghost
+exit 1
+[stderr]
+@ghost is not in the mission roster
+
+$ runner signal ask_lead --mission mission-fixture --as ghost --json
+exit 1
+[stderr]
+@ghost is not in the mission roster
+
+$ runner mission feed mission-fixture --since 0 --limit 1
+exit 0
+next_offset  692
+
+$ runner mission feed mission-fixture --since 0 --limit 1 --json
+exit 0
+{"mission_id":"mission-fixture","events":[{"next_offset":692,"event":{"id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","crew_id":"crew-fixture","mission_id":"mission-fixture","kind":"signal","from":"coder","to":null,"type":"session_status","payload":{"state":"idle","source":"fixture"}}}],"next_offset":692,"skipped":[]}
+
+$ runner mission feed mission-fixture --types message --from reviewer
+exit 0
+10:20:30  reviewer -> coder  message  Ready for review Checks passed
+next_offset  692
+
+$ runner mission feed mission-fixture --types message --from reviewer --json
+exit 0
+{"mission_id":"mission-fixture","events":[{"next_offset":221,"event":{"id":"01K5ZCJNP00000000000000001","ts":"2026-09-18T10:20:30Z","crew_id":"crew-fixture","mission_id":"mission-fixture","kind":"message","from":"reviewer","to":"coder","payload":{"text":"Ready for review\nChecks passed"}}}],"next_offset":692,"skipped":[]}
+
+$ runner mission move mission-fixture --project Runner
+exit 0
+ID       mission-fixture
+TITLE    Fixture mission
+STATUS   completed
+CREW     crew-fixture
+PROJECT  project-fixture
+CWD      <ROOT>
+STARTED  2026-09-18T10:20:30Z
+
+$ runner mission move mission-fixture --project Runner --json
+exit 0
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+
+$ runner role create coder
+exit 2
+[stderr]
+runner role create: --runtime is required
+
+$ runner role create coder --json
+exit 2
+[stderr]
+runner role create: --runtime is required
+
+$ runner role create new --runtime shell
+exit 2
+[stderr]
+unknown role runtime "shell"; expected codex, claude-code, antigravity, pi, copilot, or trae
+
+$ runner role create new --runtime shell --json
+exit 2
+[stderr]
+unknown role runtime "shell"; expected codex, claude-code, antigravity, pi, copilot, or trae
+
+$ runner mission move mission-fixture
+exit 2
+[stderr]
+runner mission move requires exactly one of --project or --unfile
+
+$ runner mission move mission-fixture --json
+exit 2
+[stderr]
+runner mission move requires exactly one of --project or --unfile
+
+$ runner signal unknown --mission mission-fixture
+exit 2
+[stderr]
+runner signal: unknown type "unknown"
+
+$ runner signal unknown --mission mission-fixture --json
+exit 2
+[stderr]
+runner signal: unknown type "unknown"
+
+# context: inside mission
+$ runner msg read
+exit 0
+[2026-09-18T10:20:30+00:00] @reviewer -> @coder: Ready for review
+Checks passed
+  id: 01K5ZCJNP00000000000000001
+
+# context: inside mission
+$ runner msg read --json
+exit 0
+[2026-09-18T10:20:30+00:00] @reviewer -> @coder: Ready for review
+Checks passed
+  id: 01K5ZCJNP00000000000000001
+
+# context: inside mission
+$ runner msg post 'Direct message' --to reviewer
+exit 0
+
+# context: inside mission
+$ runner msg post 'Direct message' --to reviewer --json
+exit 0
+
+# context: inside mission
+$ runner signal ask_lead --payload '{"question":"Review?"}'
+exit 0
+
+# context: inside mission
+$ runner signal ask_lead --payload '{"question":"Review?"}' --json
+exit 0
+
+# context: inside mission
+$ runner ask 'Review?'
+exit 0
+
+# context: inside mission
+$ runner ask 'Review?' --json
+exit 0
+
+# context: inside mission
+$ runner ask --human 'Ship?' --choices 'yes,no'
+exit 0
+
+# context: inside mission
+$ runner ask --human 'Ship?' --choices 'yes,no' --json
+exit 0
+
+# context: not running
+$ runner status
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner status --json
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner role list
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner role list --json
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner daemon status
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner daemon stop
+exit 3
+[stderr]
+Runner is not running. Open Runner and retry.
+
+# context: not running
+$ runner unknown-command
+exit 2
+[stderr]
+error: unrecognized subcommand 'unknown-command'
+
+Usage: runner [OPTIONS] <COMMAND>
+
+For more information, try '--help'.
+
+# context: not running
+$ runner help
+exit 0
+runner — operate Runner from a shell or a mission session
+
+USAGE
+  runner status
+  runner daemon status|stop
+  runner project list|show|create|rename|delete
+  runner role list|show|create|update|delete
+  runner crew list|show|create|update|delete|add|set|remove|lead|order
+  runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|feed|answer
+  runner chat start
+  runner session list|show|stop|archive|resume|restart
+  runner msg post|read
+  runner signal <type>
+  runner ask <question> | runner ask --human <prompt> --choices <a,b,...>
+  runner call <tool> [<json>]
+
+OUTPUT
+  --json   print the JSON result
+  -q       print only result ids
+
+CONTEXT
+  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Outside, mission-scoped writes require --mission; --as names a roster handle.
+
+RESERVED FOR #562
+  spawn, ps, wait, stop <handle>, done
+
+
+# context: not running
+$ runner help agents
+exit 0
+runner — version-matched guide for agents
+
+DISCOVER
+  runner status
+  runner project --help
+  runner role --help
+  runner crew --help
+  runner mission --help
+  runner chat --help
+  runner session --help
+  runner daemon --help
+  runner msg --help
+  runner signal --help
+  runner ask --help
+  runner call --help
+  runner help
+
+OUTPUT AND EXITS
+  Add --json for structured output. Add -q when only the changed object's id is needed.
+  0 success; 1 Runner refused or watch failed; 2 usage or reference error; 3 Runner is not running;
+  5 a sandbox kept this command from reaching Runner.
+  On exit 3, ask the user to open Runner. On exit 5, nothing is known about Runner yet:
+  run the same command again outside the sandbox (in Codex, request escalated permissions
+  for it) before telling the user anything.
+  Use --help instead of guessing a command.
+
+REFERENCES
+  Roles use their unique handle. Crews and projects accept an id or exact name.
+  Missions and direct-chat sessions accept an id or unique id prefix.
+  A mission or chat started inside a project's directory belongs to it; --project overrides.
+
+COMMON FLOW
+  runner crew list --json
+  mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+  runner mission feed "$mission" --follow --json
+  runner mission show "$mission" --json
+  runner mission answer "$mission" <question_id_from_mission_show> <choice>
+  # Use the HANDLE from the LEAD row in mission show.
+  runner msg post --mission "$mission" --to <lead_handle> "message"
+  runner mission stop "$mission"
+  runner mission archive "$mission"
+
+START AND WATCH (REQUIRED)
+  After every successful runner mission start, arm runner mission feed <id> --follow --json
+  for the exact returned ID in your host's supported background/watch facility before
+  reporting delegation complete. Keep exactly one watcher per mission; reuse it on later
+  turns. Events, stderr diagnostics and process exit must reach you during later work and
+  while idle. An unread background log or a completion-only notification is not a watch.
+  Plain mission start still returns its result and exits; it does not block on watching.
+  Surface handoffs, human questions, completion, stop/crash and lost connections promptly.
+  The daemon pushes new events; each event is flushed immediately, without notification batching.
+  Routine busy/idle and inbox noise stays hidden by default; do not add --all for a watch.
+  The follower ends on archive, completed/aborted mission state, or all sessions exiting.
+  Busy/idle and a crew message saying "done" do not end a live mission. Resume needs a new watch.
+  A watch request timeout after 30 seconds exits 1; Runner may still be running.
+  Each JSON event line carries next_offset, the cursor that resumes after that event.
+  Clean up on exit. On host expiry or unexpected exit, report the gap, check mission show,
+  and re-arm one watch if still active with --since <next_offset of the last event line
+  you received> --oldest-first; a watch error prints its own resume command. Only when no event
+  line arrived, re-arm with --since 0 --oldest-first and skip event IDs already seen.
+  Never silently abandon a watch. Stop any undeliverable follower before ending your turn.
+  If your host cannot deliver background events, tell the user plainly:
+    "Mission <id> started, but this host cannot notify me of later events;
+     automatic watching is unavailable. Follow with: runner mission feed <id> --follow --json"
+  Do not claim monitoring is active without a verified delivery path.
+
+WATCH FACILITIES
+  A facility qualifies only if its own documentation says each output line and the exit
+  reach you while idle. Claude Code's Monitor does: run the feed command with 2>&1 so stderr
+  diagnostics notify you too, set timeout_ms to its maximum, and re-arm on expiry as above.
+  A completion-only background command, a PTY session you must poll, a task list or a log
+  file does not qualify. Without a qualifying facility, take the limitation path above.
+  Do not install extensions or change agent configuration to create one.
+
+IDENTITY
+  Inside a mission, mission commands carry the caller's own handle.
+  Outside a mission, --as <handle> names a roster slot and is refused if that handle is not in the roster.
+  Outside a mission with no --as, the caller is the person at the app.
+  Do not use --as to speak as another agent's slot; it exists for a slot you hold.
+
+
+# context: not running
+$ runner help mission
+exit 0
+runner help mission: use `runner mission --help` for the command reference.
+
+# context: not running
+$ runner status --help
+exit 0
+Check whether Runner is running
+
+Usage: runner status [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner daemon status --help
+exit 0
+Usage: runner daemon status [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner daemon stop --help
+exit 0
+Usage: runner daemon stop [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner project list --help
+exit 0
+List projects
+
+Usage: runner project list [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner project show --help
+exit 0
+Show one project by ID or exact name
+
+Usage: runner project show [OPTIONS] <PROJECT>
+
+Arguments:
+  <PROJECT>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner project create --help
+exit 0
+Create a project
+
+Usage: runner project create [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --json         Print the tool result as exact JSON
+      --path <PATH>  Project directory; defaults to the current directory
+  -q                 Print only result IDs
+  -h, --help         Print help
+
+# context: not running
+$ runner project rename --help
+exit 0
+Rename a project
+
+Usage: runner project rename [OPTIONS] <PROJECT> <NAME>
+
+Arguments:
+  <PROJECT>  
+  <NAME>     
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner project delete --help
+exit 0
+Delete a project and archive its members
+
+Usage: runner project delete [OPTIONS] <PROJECT>
+
+Arguments:
+  <PROJECT>  
+
+Options:
+      --force  Allow deletion when the project has running members
+      --json   Print the tool result as exact JSON
+  -q           Print only result IDs
+  -h, --help   Print help
+
+# context: not running
+$ runner role list --help
+exit 0
+List reusable roles
+
+Usage: runner role list [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner role show --help
+exit 0
+Show a role by handle
+
+Usage: runner role show [OPTIONS] <HANDLE>
+
+Arguments:
+  <HANDLE>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner role create --help
+exit 0
+Create a role
+
+Usage: runner role create [OPTIONS] <HANDLE>
+
+Arguments:
+  <HANDLE>  
+
+Options:
+      --json                       Print the tool result as exact JSON
+      --name <NAME>                Display name
+  -q                               Print only result IDs
+      --runtime <RUNTIME>          Agent runtime registry name
+      --model <MODEL>              Model override; pass an empty value to clear it
+      --effort <EFFORT>            Reasoning effort; pass an empty value to clear it
+      --speed <SPEED>              Codex Speed: inherit, standard, or fast [possible values: inherit, standard, fast]
+      --permission <PERMISSION>    Permission mode: default, accept_edits, auto, or bypass
+      --prompt <PROMPT>            Inline system prompt; pass an empty value to clear it
+      --prompt-file <PROMPT_FILE>  Read the system prompt from a file, or - for stdin
+      --arg <ARGS>                 Append one runtime argument; repeat for multiple arguments
+      --env <ENV>                  Set one KEY=VALUE environment entry; repeat as needed
+      --cwd <CWD>                  Working directory; pass an empty value to clear it
+  -h, --help                       Print help
+
+# context: not running
+$ runner role update --help
+exit 0
+Update a role
+
+Usage: runner role update [OPTIONS] <HANDLE>
+
+Arguments:
+  <HANDLE>  
+
+Options:
+      --json                       Print the tool result as exact JSON
+      --name <NAME>                Display name
+  -q                               Print only result IDs
+      --runtime <RUNTIME>          Agent runtime registry name
+      --model <MODEL>              Model override; pass an empty value to clear it
+      --effort <EFFORT>            Reasoning effort; pass an empty value to clear it
+      --speed <SPEED>              Codex Speed: inherit, standard, or fast [possible values: inherit, standard, fast]
+      --permission <PERMISSION>    Permission mode: default, accept_edits, auto, or bypass
+      --prompt <PROMPT>            Inline system prompt; pass an empty value to clear it
+      --prompt-file <PROMPT_FILE>  Read the system prompt from a file, or - for stdin
+      --arg <ARGS>                 Append one runtime argument; repeat for multiple arguments
+      --env <ENV>                  Set one KEY=VALUE environment entry; repeat as needed
+      --cwd <CWD>                  Working directory; pass an empty value to clear it
+  -h, --help                       Print help
+
+# context: not running
+$ runner role delete --help
+exit 0
+Delete a role
+
+Usage: runner role delete [OPTIONS] <HANDLE>
+
+Arguments:
+  <HANDLE>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew list --help
+exit 0
+List crews
+
+Usage: runner crew list [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew show --help
+exit 0
+Show one crew and its slots
+
+Usage: runner crew show [OPTIONS] <CREW>
+
+Arguments:
+  <CREW>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew create --help
+exit 0
+Create a crew
+
+Usage: runner crew create [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  
+
+Options:
+      --conventions-file <CONVENTIONS_FILE>  Read crew conventions from a file, or - for stdin
+      --json                                 Print the tool result as exact JSON
+  -q                                         Print only result IDs
+  -h, --help                                 Print help
+
+# context: not running
+$ runner crew update --help
+exit 0
+Update a crew
+
+Usage: runner crew update [OPTIONS] <CREW>
+
+Arguments:
+  <CREW>  
+
+Options:
+      --json                                 Print the tool result as exact JSON
+      --name <NAME>                          New crew name
+      --conventions-file <CONVENTIONS_FILE>  Read crew conventions from a file, or - for stdin
+  -q                                         Print only result IDs
+  -h, --help                                 Print help
+
+# context: not running
+$ runner crew delete --help
+exit 0
+Delete a crew
+
+Usage: runner crew delete [OPTIONS] <CREW>
+
+Arguments:
+  <CREW>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew add --help
+exit 0
+Add a role to a crew
+
+Usage: runner crew add [OPTIONS] <CREW> <ROLE>
+
+Arguments:
+  <CREW>  
+  <ROLE>  
+
+Options:
+      --as <HANDLE>        Assign this in-crew handle
+      --json               Print the tool result as exact JSON
+  -q                       Print only result IDs
+      --runtime <RUNTIME>  Override the role runtime for this slot
+      --model <MODEL>      Override the role model for this slot
+      --effort <EFFORT>    Override the role effort for this slot
+      --speed <SPEED>      Codex Speed override: inherit, standard, or fast [possible values: inherit, standard, fast]
+  -h, --help               Print help
+
+# context: not running
+$ runner crew set --help
+exit 0
+Update one crew slot by handle
+
+Usage: runner crew set [OPTIONS] <CREW> <HANDLE>
+
+Arguments:
+  <CREW>    
+  <HANDLE>  
+
+Options:
+      --as <NEW_HANDLE>    Rename the in-crew handle
+      --json               Print the tool result as exact JSON
+  -q                       Print only result IDs
+      --runtime <RUNTIME>  Override the runtime; pass an empty value to inherit
+      --model <MODEL>      Override the model; pass an empty value to inherit
+      --effort <EFFORT>    Override the effort; pass an empty value to inherit
+      --speed <SPEED>      Codex Speed override: inherit, standard, or fast [possible values: inherit, standard, fast]
+  -h, --help               Print help
+
+# context: not running
+$ runner crew remove --help
+exit 0
+Remove a slot from a crew
+
+Usage: runner crew remove [OPTIONS] <CREW> <HANDLE>
+
+Arguments:
+  <CREW>    
+  <HANDLE>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew lead --help
+exit 0
+Make a slot the crew lead
+
+Usage: runner crew lead [OPTIONS] <CREW> <HANDLE>
+
+Arguments:
+  <CREW>    
+  <HANDLE>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner crew order --help
+exit 0
+Reorder every crew slot by handle
+
+Usage: runner crew order [OPTIONS] <CREW> <HANDLES>...
+
+Arguments:
+  <CREW>        
+  <HANDLES>...  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission list --help
+exit 0
+List active missions
+
+Usage: runner mission list [OPTIONS]
+
+Options:
+      --crew <CREW>  Filter by crew ID or exact name
+      --json         Print the tool result as exact JSON
+  -q                 Print only result IDs
+  -h, --help         Print help
+
+# context: not running
+$ runner mission show --help
+exit 0
+Show an operational mission snapshot
+
+Usage: runner mission show [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission start --help
+exit 0
+Start a mission
+
+Usage: runner mission start [OPTIONS] --crew <CREW>
+
+Options:
+      --crew <CREW>            Crew ID or exact name
+      --json                   Print the tool result as exact JSON
+      --goal <GOAL>            Mission goal text
+  -q                           Print only result IDs
+      --goal-file <GOAL_FILE>  Read the mission goal from a file, or - for stdin
+      --title <TITLE>          Mission title; defaults from the goal or crew name
+      --project <PROJECT>      Project ID or exact name whose directory the mission uses
+      --cwd <CWD>              Mission directory; defaults to the current directory
+  -h, --help                   Print help
+
+# context: not running
+$ runner mission stop --help
+exit 0
+Stop a running mission
+
+Usage: runner mission stop [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission resume --help
+exit 0
+Resume every stopped session in a mission
+
+Usage: runner mission resume [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission archive --help
+exit 0
+Archive a mission
+
+Usage: runner mission archive [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission unarchive --help
+exit 0
+Restore an archived mission to active lists
+
+Usage: runner mission unarchive [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission rename --help
+exit 0
+Rename a mission
+
+Usage: runner mission rename [OPTIONS] <MISSION> <TITLE>
+
+Arguments:
+  <MISSION>  
+  <TITLE>    
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission pin --help
+exit 0
+Pin a mission
+
+Usage: runner mission pin [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission unpin --help
+exit 0
+Unpin a mission
+
+Usage: runner mission unpin [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner mission move --help
+exit 0
+Move a mission into a project or unfile it
+
+Usage: runner mission move [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --json               Print the tool result as exact JSON
+      --project <PROJECT>  Destination project ID or exact name
+  -q                       Print only result IDs
+      --unfile             Remove the mission from its project
+  -h, --help               Print help
+
+# context: not running
+$ runner mission feed --help
+exit 0
+Print a window from the mission event feed
+
+Usage: runner mission feed [OPTIONS] [MISSION]
+
+Arguments:
+  [MISSION]  
+
+Options:
+      --follow         Follow pushed events until the mission ends or all its sessions exit
+      --json           Print the tool result as exact JSON
+  -q                   Print only result IDs
+      --since <SINCE>  Start after this byte offset
+      --limit <LIMIT>  Maximum events to return
+      --oldest-first   Ask the backend for chronological order
+      --types <TYPES>  Comma-separated signal kinds (or message) to include
+      --from <FROM>    Include only events from this handle
+      --all            Include session_status and inbox_read noise
+  -h, --help           Print help
+
+# context: not running
+$ runner mission answer --help
+exit 0
+Answer a pending person question
+
+Usage: runner mission answer [OPTIONS] <MISSION> <QUESTION_ID> <CHOICE>
+
+Arguments:
+  <MISSION>      
+  <QUESTION_ID>  
+  <CHOICE>       
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner chat start --help
+exit 0
+Start a role-backed or runtime-only direct chat
+
+Usage: runner chat start [OPTIONS] [ROLE]
+
+Arguments:
+  [ROLE]  
+
+Options:
+      --json               Print the tool result as exact JSON
+      --runtime <RUNTIME>  Start a role-free chat with this runtime
+      --model <MODEL>      Model override
+  -q                       Print only result IDs
+      --effort <EFFORT>    Reasoning effort override
+      --speed <SPEED>      Codex Speed override: inherit, standard, or fast [possible values: inherit, standard, fast]
+      --project <PROJECT>  Project ID or exact name whose directory the chat uses
+      --cwd <CWD>          Chat directory; defaults to the current directory
+  -h, --help               Print help
+
+# context: not running
+$ runner session list --help
+exit 0
+List recent direct-chat sessions
+
+Usage: runner session list [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner session show --help
+exit 0
+Show one session with its live agent status
+
+Usage: runner session show [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner session stop --help
+exit 0
+Stop a session and leave it resumable
+
+Usage: runner session stop [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner session archive --help
+exit 0
+Stop and archive a direct chat
+
+Usage: runner session archive [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner session resume --help
+exit 0
+Resume a stopped session
+
+Usage: runner session resume [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner session restart --help
+exit 0
+Restart a mission session with a fresh conversation
+
+Usage: runner session restart [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner msg post --help
+exit 0
+Post a mission message
+
+Usage: runner msg post [OPTIONS] <TEXT>
+
+Arguments:
+  <TEXT>  
+
+Options:
+      --json               Print the tool result as exact JSON
+      --to <TO>            Direct the message to one roster handle
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+  -q                       Print only result IDs
+      --as <FROM>          Attribute the message to this roster handle
+  -h, --help               Print help
+
+# context: not running
+$ runner msg read --help
+exit 0
+Read the current mission inbox
+
+Usage: runner msg read [OPTIONS]
+
+Options:
+      --json               Print the tool result as exact JSON
+      --since <SINCE>      Return messages after this event ID
+      --from <FROM>        Filter by sender handle
+  -q                       Print only result IDs
+      --mission <MISSION>  Mission reference; only the caller's mission is supported
+  -h, --help               Print help
+
+# context: not running
+$ runner signal --help
+exit 0
+Emit a typed signal
+
+Usage: runner signal [OPTIONS] <TYPE>
+
+Arguments:
+  <TYPE>  Signal type from the Runner coordination protocol
+
+Options:
+      --json               Print the tool result as exact JSON
+      --payload <PAYLOAD>  JSON object carried by the signal
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+  -q                       Print only result IDs
+      --as <FROM>          Attribute the signal to this roster handle
+  -h, --help               Print help
+
+# context: not running
+$ runner ask --help
+exit 0
+Ask the lead, or ask the person with --human
+
+Usage: runner ask [OPTIONS] [QUESTION]
+
+Arguments:
+  [QUESTION]  Question for the mission lead
+
+Options:
+      --context <CONTEXT>  Additional context for a lead question
+      --json               Print the tool result as exact JSON
+      --human <HUMAN>      Ask the person at the app instead of the lead
+  -q                       Print only result IDs
+      --choices <CHOICES>  Comma-separated choices for --human
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+      --as <FROM>          Attribute the question to this roster handle
+  -h, --help               Print help
+
+# context: not running
+$ runner call --help
+exit 0
+Call any registered socket tool
+
+Usage: runner call [OPTIONS] <TOOL> [ARGUMENTS]
+
+Arguments:
+  <TOOL>       
+  [ARGUMENTS]  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+

@@ -4,16 +4,12 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use runner_cli::client::{ClientError, SocketClient, ToolResponse};
+use runner_core::protocol::{ClientEvent, EventError, EventSubscription};
 use serde_json::{json, Value};
 
 use crate::env::{BusContext, MissionEnv};
 use crate::{env, help, msg, output, signal};
 
-const DEFAULT_FEED_POLL_INTERVAL: Duration = Duration::from_secs(3);
-#[cfg(not(test))]
-const FEED_POLL_INTERVAL: Duration = DEFAULT_FEED_POLL_INTERVAL;
-#[cfg(test)]
-const FEED_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const DEFAULT_FEED_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const FEED_REQUEST_TIMEOUT: Duration = DEFAULT_FEED_REQUEST_TIMEOUT;
@@ -361,7 +357,7 @@ enum MissionCommand {
     /// Print a window from the mission event feed.
     Feed {
         mission: Option<String>,
-        /// Poll every 3 seconds until the mission ends or all its sessions exit.
+        /// Follow pushed events until the mission ends or all its sessions exit.
         #[arg(long)]
         follow: bool,
         /// Start after this byte offset.
@@ -512,11 +508,28 @@ impl From<ClientError> for CliError {
     }
 }
 
-trait ToolCaller {
+trait Caller {
+    fn subscribe(&self) -> Box<dyn EventSubscription> {
+        Box::new(ClosedSubscription)
+    }
     async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError>;
 }
 
-impl ToolCaller for SocketClient {
+struct ClosedSubscription;
+impl EventSubscription for ClosedSubscription {
+    fn recv(
+        &mut self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<ClientEvent, EventError>> + Send + '_>,
+    > {
+        Box::pin(async { Err(EventError::Closed) })
+    }
+}
+
+impl Caller for SocketClient {
+    fn subscribe(&self) -> Box<dyn EventSubscription> {
+        SocketClient::subscribe(self)
+    }
     async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError> {
         SocketClient::call(self, name, arguments)
             .await
@@ -943,7 +956,7 @@ async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolRespon
 }
 
 async fn run_connected(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     cli: &Cli,
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
@@ -1180,7 +1193,7 @@ fn skill_statuses(home: &Path, debug: bool) -> Vec<Value> {
 }
 
 async fn run_project(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     command: &ProjectCommand,
 ) -> Result<ToolResponse, CliError> {
     match command {
@@ -1220,10 +1233,7 @@ async fn run_project(
     }
 }
 
-async fn run_role(
-    client: &impl ToolCaller,
-    command: &RoleCommand,
-) -> Result<ToolResponse, CliError> {
+async fn run_role(client: &impl Caller, command: &RoleCommand) -> Result<ToolResponse, CliError> {
     match command {
         RoleCommand::List => call(client, "role_list", json!({})).await,
         RoleCommand::Show { handle } => {
@@ -1262,10 +1272,7 @@ async fn run_role(
     }
 }
 
-async fn run_crew(
-    client: &impl ToolCaller,
-    command: &CrewCommand,
-) -> Result<ToolResponse, CliError> {
+async fn run_crew(client: &impl Caller, command: &CrewCommand) -> Result<ToolResponse, CliError> {
     match command {
         CrewCommand::List => call(client, "crew_list", json!({})).await,
         CrewCommand::Show { crew } => {
@@ -1402,7 +1409,7 @@ async fn run_crew(
 }
 
 async fn run_mission(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     command: &MissionCommand,
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
@@ -1659,7 +1666,7 @@ fn postprocess_response(cli: &Cli, response: ToolResponse) -> ToolResponse {
 
 #[allow(clippy::too_many_arguments)]
 async fn follow_feed(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     mission_id: &str,
     since: Option<u64>,
     limit: Option<usize>,
@@ -1672,6 +1679,7 @@ async fn follow_feed(
 ) -> Result<(), CliError> {
     let mut cursor = since.unwrap_or(0);
     let follow = async {
+        let mut subscription = client.subscribe();
         let mut initial = true;
         let mut seen = HashSet::new();
         let mut session_states = BTreeMap::new();
@@ -1736,7 +1744,44 @@ async fn follow_feed(
                 write_watch_notice(diagnostics, mission_id, reason)?;
                 return Ok(());
             }
-            tokio::time::sleep(FEED_POLL_INTERVAL).await;
+            loop {
+                let update = match subscription.recv().await {
+                    Ok(update) => update,
+                    Err(EventError::Lagged(_)) => break,
+                    Err(EventError::Closed) => return Err(ClientError::NotRunning.into()),
+                };
+                if update.name == "daemon/disconnected" {
+                    return Err(ClientError::NotRunning.into());
+                }
+                let target = update.payload.get("mission_id").and_then(Value::as_str);
+                match update.name.as_str() {
+                    "event/appended" if target == Some(mission_id) => {
+                        let next =
+                            update.payload["next_offset"]
+                                .as_u64()
+                                .ok_or_else(|| CliError {
+                                    code: 1,
+                                    message: runner_cli::client::VERSION_SKEW_MESSAGE.into(),
+                                })?;
+                        if next <= cursor {
+                            continue;
+                        }
+                        let response = response(json!({
+                            "events": [{"next_offset": next, "event": update.payload["event"]}],
+                            "next_offset": next,
+                        }))?;
+                        write_follow_events(&response, filter, json, quiet, &mut seen, writer)?;
+                        cursor = next;
+                    }
+                    "mission/changed" if target.is_none() || target == Some(mission_id) => break,
+                    "session/exit" | "session/updated" | "session/spawned"
+                        if target == Some(mission_id) =>
+                    {
+                        break
+                    }
+                    _ => {}
+                }
+            }
         }
     };
     let result = tokio::select! {
@@ -1753,7 +1798,7 @@ async fn follow_feed(
 }
 
 async fn follow_call(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     tool: &str,
     args: Value,
 ) -> Result<ToolResponse, CliError> {
@@ -1852,10 +1897,7 @@ fn write_follow_events(
     })
 }
 
-async fn run_chat(
-    client: &impl ToolCaller,
-    command: &ChatCommand,
-) -> Result<ToolResponse, CliError> {
+async fn run_chat(client: &impl Caller, command: &ChatCommand) -> Result<ToolResponse, CliError> {
     let ChatCommand::Start {
         role,
         runtime,
@@ -1895,7 +1937,7 @@ async fn run_chat(
 }
 
 async fn run_session(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     command: &SessionCommand,
 ) -> Result<ToolResponse, CliError> {
     match command {
@@ -1925,7 +1967,7 @@ async fn run_session(
 }
 
 async fn run_msg(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     command: &MsgCommand,
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
@@ -1949,7 +1991,7 @@ async fn run_msg(
 }
 
 async fn run_ask(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     args: &AskArgs,
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
@@ -2022,7 +2064,7 @@ fn mission_signal_args(
 }
 
 async fn mission_lifecycle(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     tool: &str,
     mission: Option<&str>,
     context: &BusContext,
@@ -2072,7 +2114,7 @@ fn mission_value_mut(value: &mut Value) -> &mut Value {
 }
 
 async fn resolve_scoped_mission(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     target: Option<&str>,
     context: &BusContext,
 ) -> Result<String, CliError> {
@@ -2089,7 +2131,7 @@ async fn resolve_scoped_mission(
 }
 
 async fn resolve_mission_arg(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     target: Option<&str>,
     context: &BusContext,
 ) -> Result<String, CliError> {
@@ -2103,7 +2145,7 @@ async fn resolve_mission_arg(
     }
 }
 
-async fn resolve_mission(client: &impl ToolCaller, target: &str) -> Result<String, CliError> {
+async fn resolve_mission(client: &impl Caller, target: &str) -> Result<String, CliError> {
     match resolve_prefix(client, "mission", "mission_list", target).await {
         Ok(id) => Ok(id),
         Err(error) if target.len() == 26 && error.code == 2 => {
@@ -2124,7 +2166,7 @@ struct Resolved {
 }
 
 async fn resolve_named(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     kind: &str,
     tool: &str,
     target: &str,
@@ -2160,12 +2202,12 @@ fn resolve_named_rows(rows: &[Value], kind: &str, target: &str) -> Result<Resolv
     }
 }
 
-async fn resolve_role(client: &impl ToolCaller, handle: &str) -> Result<Resolved, CliError> {
+async fn resolve_role(client: &impl Caller, handle: &str) -> Result<Resolved, CliError> {
     let rows = list(client, "role_list", json!({})).await?;
     resolve_role_rows(&rows, handle)
 }
 
-async fn resolve_session(client: &impl ToolCaller, target: &str) -> Result<String, CliError> {
+async fn resolve_session(client: &impl Caller, target: &str) -> Result<String, CliError> {
     match resolve_prefix(client, "session", "session_list", target).await {
         Ok(id) => Ok(id),
         Err(error) if target.len() == 26 && error.code == 2 => Ok(target.to_owned()),
@@ -2186,7 +2228,7 @@ fn resolve_role_rows(rows: &[Value], handle: &str) -> Result<Resolved, CliError>
 }
 
 async fn resolve_slot(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     crew_id: &str,
     handle: &str,
 ) -> Result<Resolved, CliError> {
@@ -2202,7 +2244,7 @@ async fn resolve_slot(
 }
 
 async fn resolve_prefix(
-    client: &impl ToolCaller,
+    client: &impl Caller,
     kind: &str,
     tool: &str,
     target: &str,
@@ -2234,7 +2276,7 @@ fn reference_id(value: &Value) -> Option<&str> {
     field(value, "id").or_else(|| field(value, "session_id"))
 }
 
-async fn list(client: &impl ToolCaller, tool: &str, args: Value) -> Result<Vec<Value>, CliError> {
+async fn list(client: &impl Caller, tool: &str, args: Value) -> Result<Vec<Value>, CliError> {
     let response = call(client, tool, args).await?;
     response.value.as_array().cloned().ok_or_else(|| CliError {
         code: 1,
@@ -2242,7 +2284,7 @@ async fn list(client: &impl ToolCaller, tool: &str, args: Value) -> Result<Vec<V
     })
 }
 
-async fn call(client: &impl ToolCaller, tool: &str, args: Value) -> Result<ToolResponse, CliError> {
+async fn call(client: &impl Caller, tool: &str, args: Value) -> Result<ToolResponse, CliError> {
     client.call(tool, args).await
 }
 
@@ -2463,6 +2505,26 @@ mod tests {
     #[derive(Default)]
     struct RecordingClient {
         calls: Mutex<Vec<(String, Value)>>,
+        requests: Mutex<Vec<String>>,
+    }
+
+    #[derive(Default)]
+    struct RequestRecorder(Mutex<Vec<String>>);
+    impl runner_core::protocol::Transport for RequestRecorder {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> Result<runner_core::protocol::Response, runner_core::protocol::ClientError> {
+            let value = serde_json::to_value(request).unwrap();
+            self.0
+                .lock()
+                .unwrap()
+                .push(value.as_object().unwrap().keys().next().unwrap().clone());
+            Err(runner_core::protocol::ClientError::msg("recorded"))
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            panic!("recorder does not subscribe")
+        }
     }
 
     struct FailingMissionGetClient {
@@ -2488,8 +2550,21 @@ mod tests {
         }
     }
 
-    impl ToolCaller for RecordingClient {
+    impl Caller for RecordingClient {
         async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError> {
+            let transport = std::sync::Arc::new(RequestRecorder::default());
+            let client = runner_core::protocol::DaemonClient::new(transport.clone());
+            let result = runner_cli::client::call_daemon(&client, name, arguments.clone());
+            let requests = transport.0.lock().unwrap();
+            assert_eq!(
+                requests.len(),
+                1,
+                "{name} did not reach a typed request: {result:?}"
+            );
+            self.requests
+                .lock()
+                .unwrap()
+                .extend(requests.iter().cloned());
             self.calls
                 .lock()
                 .unwrap()
@@ -2514,7 +2589,7 @@ mod tests {
         }
     }
 
-    impl ToolCaller for FailingMissionGetClient {
+    impl Caller for FailingMissionGetClient {
         async fn call(&self, name: &str, _arguments: Value) -> Result<ToolResponse, CliError> {
             match name {
                 "mission_list" => response(json!([])),
@@ -2527,7 +2602,26 @@ mod tests {
         }
     }
 
-    impl ToolCaller for SequenceClient {
+    struct LifecycleSubscription;
+    impl EventSubscription for LifecycleSubscription {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<ClientEvent, EventError>> + Send + '_>,
+        > {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                Ok(ClientEvent {
+                    name: "mission/changed".into(),
+                    payload: Value::Null,
+                })
+            })
+        }
+    }
+    impl Caller for SequenceClient {
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(LifecycleSubscription)
+        }
         async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError> {
             self.calls
                 .lock()
@@ -2570,11 +2664,9 @@ mod tests {
     }
 
     #[test]
-    fn feed_poll_interval_is_three_seconds_with_a_fast_test_seam() {
-        assert_eq!(DEFAULT_FEED_POLL_INTERVAL, Duration::from_secs(3));
-        assert_eq!(FEED_POLL_INTERVAL, Duration::from_millis(1));
+    fn feed_request_timeout_has_a_fast_test_seam() {
         assert_eq!(DEFAULT_FEED_REQUEST_TIMEOUT, Duration::from_secs(30));
-        assert!(DEFAULT_FEED_REQUEST_TIMEOUT > DEFAULT_FEED_POLL_INTERVAL);
+        assert_eq!(FEED_REQUEST_TIMEOUT, Duration::from_millis(50));
     }
 
     #[test]
@@ -2589,7 +2681,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn follow_prints_each_event_once_across_empty_and_multi_event_polls() {
+    async fn follow_prints_each_event_once_across_empty_and_multi_event_drains() {
         let e1 = feed_event("01", 10, "message", "human");
         let e2 = feed_event("02", 20, "ask_lead", "coder");
         let e3 = feed_event("03", 30, "message", "reviewer");
@@ -2864,7 +2956,7 @@ mod tests {
     #[tokio::test]
     async fn follow_reports_an_unresponsive_app() {
         struct UnresponsiveClient;
-        impl ToolCaller for UnresponsiveClient {
+        impl Caller for UnresponsiveClient {
             async fn call(&self, _name: &str, _arguments: Value) -> Result<ToolResponse, CliError> {
                 std::future::pending().await
             }
@@ -2954,11 +3046,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn follow_allows_a_response_slower_than_the_poll_interval() {
+    async fn follow_allows_a_slow_response_before_the_request_deadline() {
         struct SlowClient;
-        impl ToolCaller for SlowClient {
+        impl Caller for SlowClient {
             async fn call(&self, name: &str, _arguments: Value) -> Result<ToolResponse, CliError> {
-                tokio::time::sleep(FEED_POLL_INTERVAL * 2).await;
+                tokio::time::sleep(Duration::from_millis(2)).await;
                 match name {
                     "mission_status" => response(feed_snapshot("completed", &[], 0)),
                     "mission_feed" => response(json!({"events": []})),
@@ -2980,6 +3072,207 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    struct BufferedSubscription(VecDeque<Result<ClientEvent, EventError>>);
+    impl EventSubscription for BufferedSubscription {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<ClientEvent, EventError>> + Send + '_>,
+        > {
+            Box::pin(async { self.0.pop_front().expect("unexpected subscription receive") })
+        }
+    }
+    struct PushClient {
+        sequence: SequenceClient,
+        updates: Mutex<Option<VecDeque<Result<ClientEvent, EventError>>>>,
+    }
+    impl PushClient {
+        fn new(
+            responses: Vec<(&str, Result<Value, CliError>)>,
+            updates: Vec<Result<ClientEvent, EventError>>,
+        ) -> Self {
+            Self {
+                sequence: SequenceClient::new(responses),
+                updates: Mutex::new(Some(updates.into())),
+            }
+        }
+    }
+    impl Caller for PushClient {
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(BufferedSubscription(
+                self.updates.lock().unwrap().take().unwrap(),
+            ))
+        }
+        async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, CliError> {
+            assert!(
+                self.updates.lock().unwrap().is_none(),
+                "subscribe before reading the initial snapshot"
+            );
+            self.sequence.call(name, arguments).await
+        }
+    }
+    fn pushed(entry: Value) -> Result<ClientEvent, EventError> {
+        Ok(ClientEvent {
+            name: "event/appended".into(),
+            payload: json!({"mission_id": "mission", "next_offset": entry["next_offset"], "event": entry["event"]}),
+        })
+    }
+
+    #[tokio::test]
+    async fn follow_consumes_pushes_without_requests_and_recovers_lag_without_duplicates() {
+        let events = (1..=7)
+            .map(|i| feed_event(&format!("{i:02}"), i * 10, "message", "coder"))
+            .collect::<Vec<_>>();
+        let mut other_mission = pushed(events[6].clone()).unwrap();
+        other_mission.payload["mission_id"] = json!("other");
+        let client = PushClient::new(
+            vec![
+                ("mission_status", Ok(feed_snapshot("running", &[], 20))),
+                (
+                    "mission_feed",
+                    Ok(json!({"events": [events[1]], "next_offset": 20})),
+                ),
+                ("mission_status", Ok(feed_snapshot("running", &[], 50))),
+                (
+                    "mission_feed",
+                    Ok(json!({"events": [events[3]], "next_offset": 40})),
+                ),
+                (
+                    "mission_feed",
+                    Ok(json!({"events": [events[4]], "next_offset": 50})),
+                ),
+                ("mission_status", Ok(feed_snapshot("completed", &[], 70))),
+                (
+                    "mission_feed",
+                    Ok(json!({"events": [events[6]], "next_offset": 70})),
+                ),
+            ],
+            vec![
+                pushed(events[0].clone()),
+                pushed(events[1].clone()),
+                pushed(events[2].clone()),
+                pushed(events[2].clone()),
+                Ok(other_mission),
+                Err(EventError::Lagged(2)),
+                pushed(events[3].clone()),
+                pushed(events[4].clone()),
+                pushed(events[5].clone()),
+                Ok(ClientEvent {
+                    name: "mission/changed".into(),
+                    payload: json!({"mission_id": "mission"}),
+                }),
+            ],
+        );
+        let mut output = Vec::new();
+        follow_feed(
+            &client,
+            "mission",
+            None,
+            Some(1),
+            false,
+            &FeedFilter::new(None, None, false).unwrap(),
+            true,
+            false,
+            &mut output,
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+        let lines = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["02", "03", "04", "05", "06", "07"]
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line["next_offset"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [20, 30, 40, 50, 60, 70]
+        );
+        let calls = client.sequence.calls.lock().unwrap();
+        assert_eq!(calls.len(), 7);
+        let feeds = calls
+            .iter()
+            .filter(|(name, _)| name == "mission_feed")
+            .map(|(_, args)| args.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(feeds[0]["order"], "newest_first");
+        assert!(feeds[0]["since_offset"].is_null());
+        assert_eq!(
+            feeds
+                .iter()
+                .skip(1)
+                .map(|args| args["since_offset"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [30, 40, 60]
+        );
+        assert!(feeds
+            .iter()
+            .skip(1)
+            .all(|args| args["order"] == "oldest_first"));
+    }
+
+    #[tokio::test]
+    async fn follow_disconnect_mid_subscription_preserves_output_and_recovery_cursor() {
+        for disconnect in [
+            Err(EventError::Closed),
+            Ok(ClientEvent {
+                name: "daemon/disconnected".into(),
+                payload: Value::Null,
+            }),
+        ] {
+            let client = PushClient::new(
+                vec![
+                    ("mission_status", Ok(feed_snapshot("running", &[], 10))),
+                    (
+                        "mission_feed",
+                        Ok(
+                            json!({"events": [feed_event("01", 10, "message", "coder")], "next_offset": 10}),
+                        ),
+                    ),
+                ],
+                vec![
+                    pushed(feed_event("02", 20, "message", "reviewer")),
+                    pushed(feed_event("03", 30, "inbox_read", "coder")),
+                    disconnect,
+                ],
+            );
+            let mut output = Vec::new();
+            let error = follow_feed(
+                &client,
+                "mission",
+                Some(0),
+                None,
+                true,
+                &FeedFilter::new(None, None, false).unwrap(),
+                true,
+                false,
+                &mut output,
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, 3);
+            assert!(error
+                .message
+                .contains(runner_cli::client::NOT_RUNNING_MESSAGE));
+            assert!(error.message.contains("watch ended"));
+            assert!(error
+                .message
+                .contains("--since 30 --oldest-first --follow --json"));
+            assert_eq!(String::from_utf8(output).unwrap().lines().count(), 2);
+            assert_eq!(client.sequence.calls.lock().unwrap().len(), 2);
+        }
     }
 
     #[test]
@@ -3827,7 +4120,7 @@ mod tests {
             ),
         ];
 
-        let mut reached_tools = std::collections::BTreeSet::new();
+        let mut reached_requests = std::collections::BTreeSet::new();
         for (args, expected_tools, expected_arguments) in cases {
             let argv = std::iter::once("runner")
                 .chain(args.iter().copied())
@@ -3843,12 +4136,12 @@ mod tests {
             run_connected(&client, &cli, &context)
                 .await
                 .unwrap_or_else(|error| panic!("failed to run {argv:?}: {}", error.message));
+            reached_requests.extend(client.requests.into_inner().unwrap());
             let calls = client.calls.into_inner().unwrap();
             let tools = calls
                 .iter()
                 .map(|(tool, _)| tool.as_str())
                 .collect::<Vec<_>>();
-            reached_tools.extend(calls.iter().map(|(tool, _)| tool.clone()));
             assert_eq!(tools, expected_tools, "wrong tool sequence for {argv:?}");
             assert_eq!(
                 calls.last().unwrap().1,
@@ -3856,17 +4149,71 @@ mod tests {
                 "wrong final arguments for {argv:?}"
             );
         }
-        let registry_tools = runner_core::RUNNER_TOOL_NAMES
+        let operations = runner_core::protocol::api::API_OPERATIONS
             .iter()
-            .map(|tool| (*tool).to_owned())
+            .map(|(name, _)| *name)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(reached_tools, registry_tools);
+        assert!(reached_requests
+            .iter()
+            .all(|name| operations.contains(name.as_str())));
+        let expected_requests = [
+            "crew_list_all",
+            "crew_get",
+            "crew_create",
+            "crew_update",
+            "crew_delete",
+            "role_list",
+            "role_get",
+            "role_get_by_handle",
+            "role_create",
+            "role_update",
+            "role_delete",
+            "slot_list",
+            "slot_create",
+            "slot_update",
+            "slot_delete",
+            "slot_set_lead",
+            "slot_reorder",
+            "project_list",
+            "project_get",
+            "project_create_checked",
+            "project_rename",
+            "project_delete_checked",
+            "mission_list",
+            "mission_get",
+            "mission_list_summary_impl",
+            "mission_feed",
+            "mission_status",
+            "mission_start_impl_with_size",
+            "mission_stop_impl",
+            "mission_resume",
+            "mission_archive_impl",
+            "mission_unarchive_impl",
+            "mission_pin_impl",
+            "mission_rename_impl",
+            "mission_set_project",
+            "mission_post_impl",
+            "mission_signal_impl",
+            "session_list_with_activity",
+            "session_get_with_status",
+            "session_stop",
+            "session_archive_direct",
+            "session_start_chat",
+            "session_resume",
+            "session_restart",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(reached_requests, expected_requests);
     }
 
     #[test]
     fn every_command_leaf_parses_without_a_socket() {
         let cases: &[&[&str]] = &[
             &["status"],
+            &["daemon", "status"],
+            &["daemon", "stop"],
             &["project", "list"],
             &["project", "show", "Runner"],
             &["project", "create", "Runner", "--path", "."],
@@ -3933,6 +4280,21 @@ mod tests {
             assert!(
                 Cli::try_parse_from(&argv).is_ok(),
                 "failed to parse {argv:?}"
+            );
+            let leaf_len = if matches!(args[0], "status" | "signal" | "ask" | "call") {
+                1
+            } else {
+                2
+            };
+            let leaf = format!("$ runner {}", args[..leaf_len].join(" "));
+            assert!(
+                include_str!("../tests/goldens/cli.txt")
+                    .lines()
+                    .any(|line| !line.ends_with("--help")
+                        && line
+                            .strip_prefix(&leaf)
+                            .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))),
+                "missing built-binary golden for {leaf}"
             );
         }
     }

@@ -145,15 +145,12 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
     let daemon_file = Identity::new(config.endpoint.clone())?;
     #[cfg(windows)]
     let daemon_file = Identity::new(listener.duplicate_handle()?);
-    core.mcp.start(
-        &config.mcp_endpoint,
-        core.clone(),
-        &tokio::runtime::Handle::current(),
-    )?;
+    // A 0.12 app replaces this endpoint; the ownership check prevents two database owners.
+    let mut sentinel = IpcListener::bind(&config.mcp_endpoint)?;
     #[cfg(unix)]
     let mcp_file = Identity::new(config.mcp_endpoint.clone())?;
     #[cfg(windows)]
-    let mcp_file = Identity::new(core.mcp.duplicate_handle()?);
+    let mcp_file = Identity::new(sentinel.duplicate_handle()?);
     core.usage.manage_client_lifetime(config.isolated);
     if !config.isolated {
         core.usage.start_scheduler(core.clone());
@@ -199,6 +196,7 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
                 if !daemon_file.owned() || !mcp_file.owned() { log::error!("runnerd endpoint replaced; stopping"); cancel.cancel(); break; }
             }
             Some(result) = connections.join_next(), if !connections.is_empty() => { if let Err(error) = result { log::warn!("runnerd connection task: {error}"); } }
+            accepted = sentinel.accept() => discard_sentinel_connection(accepted).await,
             accepted = listener.accept() => match accepted {
                 Ok(stream) => {
                     let core = core.clone(); let welcome = welcome.clone(); let cancel = cancel.clone();
@@ -213,7 +211,7 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
         }
     }
     drop(listener);
-    core.mcp.stop_accepting();
+    drop(sentinel);
     core.usage.set_polling_enabled(false);
     cancel.cancel();
     let shutdown_core = core.clone();
@@ -251,10 +249,26 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
     let _ = tokio::time::timeout(Duration::from_secs(1), resume).await;
     connections.abort_all();
     while connections.join_next().await.is_some() {}
-    core.mcp.stop();
     mcp_file.remove();
     daemon_file.remove();
     Ok(())
+}
+
+async fn discard_sentinel_connection(accepted: std::io::Result<IpcStream>) {
+    match accepted {
+        Ok(stream) => {
+            // The ownership handle keeps the Windows pipe alive after this stream drops.
+            #[cfg(windows)]
+            if let Err(error) = stream.disconnect() {
+                log::error!("runnerd sentinel disconnect: {error}");
+            }
+            drop(stream);
+        }
+        Err(error) => {
+            log::error!("runnerd sentinel accept: {error}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 struct Connected {
@@ -593,7 +607,15 @@ async fn connection(
                     match frame.kind {
                         wire::SHUTDOWN => { if frame.decode::<wire::Shutdown>()?.stop_sessions { shutdown.cancel(); break; } }
                         wire::REQUEST => {
-                            let call: wire::Call = frame.decode()?;
+                            let call: wire::Call = match frame.decode() {
+                                Ok(call) => call,
+                                Err(_) => {
+                                    let value: serde_json::Value = frame.decode()?;
+                                    let id = value.get("id").and_then(serde_json::Value::as_u64).context("request has no id")?;
+                                    write_frame(&mut write, Frame::json(wire::REQUEST_ERROR, &wire::RequestError { id, message: wire::PROTOCOL_MISMATCH.into() })?).await?;
+                                    continue;
+                                }
+                            };
                             let windows = windows.clone(); let tx = control_tx.clone(); let cancel = local.clone();
                             tokio::task::spawn_blocking(move || {
                                 if cancel.is_cancelled() { return; }
@@ -732,6 +754,27 @@ async fn os_shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn sentinel_accept_errors_back_off_and_return_to_serving() {
+        #[cfg(unix)]
+        let raw_error = libc::EMFILE;
+        #[cfg(windows)]
+        let raw_error = windows_sys::Win32::Foundation::ERROR_NO_DATA as i32;
+        for error in [
+            std::io::Error::from_raw_os_error(raw_error),
+            std::io::ErrorKind::ConnectionAborted.into(),
+        ] {
+            let started = tokio::time::Instant::now();
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                discard_sentinel_connection(Err(error)),
+            )
+            .await
+            .expect("a sentinel accept error must return to the serve loop");
+            assert!(started.elapsed() >= Duration::from_millis(100));
+        }
+    }
 
     #[test]
     fn queued_window_requests_cannot_recreate_a_disconnected_window() {

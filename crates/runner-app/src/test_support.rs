@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use runner_core::protocol::DaemonClient;
-use runner_daemon::{db, event_bus, events, mcp, router, session, shell_path, windows, AppCore};
+use runner_daemon::{db, event_bus, events, router, session, shell_path, windows, AppCore};
 
 pub(crate) fn core(
     db: Arc<db::DbPool>,
@@ -21,7 +21,6 @@ pub(crate) fn core(
         buses: event_bus::BusRegistry::new(),
         routers: router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
-        mcp: Arc::new(mcp::McpHandle::new()),
         windows: Arc::new(windows::WindowRegistry::new()),
         events: events::EventChannel::new(),
         session_event_observer: Default::default(),

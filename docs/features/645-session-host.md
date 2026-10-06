@@ -12,7 +12,7 @@ A second reason arrived on 2026-09-17: crew members on other machines, such as a
 
 A third arrived on 2026-10-04, from comparing [Paseo](https://github.com/getpaseo/paseo) and [Orca](https://github.com/stablyai/orca): **whatever owns the state must be able to run without the UI.** In Runner the router, the delivery gate and the socket the CLI talks to all live in the app. If only the PTYs moved out, closing the app would still stop every mission's coordination, the CLI would still fail with "Runner is not running", and a phone client would only ever work while the desktop app was open.
 
-## How it works today
+## Before runnerd (0.12)
 
 - **One process.** `bootstrap::boot_core` builds `AppCore` inside the GPUI app: the SQLite pool, `SessionManager` over `PtyRuntime`, the bus and router registries, the MCP server on `mcp.sock`, usage and runtime discovery. 82 files in `runner-app` call `runner_backend` directly, reaching 99 distinct `ops::` functions and 16 `repo::` functions, plus a few `SessionManager` methods.
 - **The terminal lives in the app, and the router depends on it.** `TerminalBridge` in `runner-terminal` holds one alacritty `Term` per live session, fed synchronously by the manager's forwarder through `SessionEvents::output`. The same `TerminalSession` answers terminal queries (its event worker writes the replies through `SessionManager::inject_stdin`) and derives draft observations from the grid (`observe_parsed` → `report_input_state`). Those observations hold crew deliveries at the delivery gate (arch §8.5), so the router's gate reads state the app computes.
@@ -24,14 +24,14 @@ A third arrived on 2026-10-04, from comparing [Paseo](https://github.com/getpase
 
 ### The daemon owns the state; every interface is a client
 
-`runnerd` is a background daemon that runs `AppCore`: the database, the sessions and their PTYs, the event buses and routers, the MCP socket, usage and runtime discovery. The GPUI app becomes a client of it. It connects over a local socket, sends requests, receives `AppEvent`s and mirrors terminals. The `runner` CLI stays a client, as it is today. A phone or web client later would be one more client, but v1 builds none.
+`runnerd` is a background daemon that runs `AppCore`: the database, the sessions and their PTYs, the event buses and routers, the client protocol, usage and runtime discovery. The GPUI app becomes a client of it. It connects over a local socket, sends requests, receives `AppEvent`s and mirrors terminals. The `runner` CLI stays a client, as it is today. A phone or web client later would be one more client, but v1 builds none.
 
 ```
 Runner.app (GPUI)                    runnerd (one per app-data dir)                   agents
   windows, panes, AppStore   ──req──►  AppCore: SQLite · SessionManager ·    ──PTY──►  claude, codex, pi,
   mirror Term per session    ◄─evt──   routers · buses · usage · discovery  ◄─hooks─   copilot, agy, shells
                                        authoritative Term per session
-            runnerd.sock                         mcp.sock ◄── runner CLI (people, scripts, agents)
+            runnerd.sock ◄── app and runner CLI (people, scripts, agents)
 ```
 
 What this gives:
@@ -51,7 +51,7 @@ What it costs:
 | Piece | Today | With runnerd |
 | --- | --- | --- |
 | `AppCore`: SQLite, `SessionManager`, `PtyRuntime`, buses, routers, usage, discovery, window registry | app | daemon |
-| MCP server on `mcp.sock` (`NativeMcpServer`) | app | daemon |
+| CLI transport | MCP server in app | typed client protocol in daemon; old MCP endpoint retained only as a sentinel |
 | The authoritative terminal: `Term`, parser, synchronized-update flush, query replies, colour-scheme reports, OSC 7 cwd, draft observations, fixture recorder | app (`TerminalSession`) | daemon |
 | Painting, selection, scrollback viewing, links, key, IME and mouse encoding | app | app, against a mirror `Term` |
 | `AppStore` snapshots, windows, tabs and layout | app | app, filled by requests and events |
@@ -63,7 +63,7 @@ Pure functions and types (`model`, `runtimes::for_key`, `app_paths`, constants) 
 
 ### The client protocol
 
-The endpoint is `runnerd.sock` in app data, beside `mcp.sock`, or the named pipe `\\.\pipe\com.wycstudios.runnerd` (`runnerd-dev` for debug builds) on Windows, built on the existing `IpcListener` in `ipc.rs`. Only the user can connect, as with `mcp.sock`: anything that can reach it can start processes as the user.
+The endpoint is `runnerd.sock` in app data, beside the accept-and-close `mcp.sock` older-app sentinel, or the named pipe `\\.\pipe\com.wycstudios.runnerd` (`runnerd-dev` for debug builds) on Windows, built on the existing `IpcListener` in `ipc.rs`. Only the user can connect: anything that can reach it can start processes as the user.
 
 The shape is length-prefixed frames on one connection. The plan settles the encoding.
 
@@ -109,14 +109,14 @@ Orca runs this design in production with `@xterm/headless` and lists what it hit
 
 ### Starting, finding and stopping the daemon
 
-- **One daemon per app-data directory.** Production and the `make run` development build each get their own, as they each get their own `mcp.sock`. The daemon takes `runnerd.lock` before binding, so of two simultaneous starters, the second exits and its caller connects to the first.
+- **One daemon per app-data directory.** Production and the `make run` development build each get their own, as they each get their own `runnerd.sock`. The daemon takes `runnerd.lock` before binding, so of two simultaneous starters, the second exits and its caller connects to the first.
 - **`runnerd` is the bundled CLI under a second name.** The app installs the sidecar twice in `<app data>/bin`, as `runner` and as `runnerd`, and the binary runs the daemon when started under the name `runnerd`. Activity Monitor and Task Manager then show `runnerd`, and there is no second build target to sign. The sidecar already links `runner-backend` (9.5 MB in the release bundle). The app never replaces `runnerd` while a daemon runs from it, because Windows cannot replace a running executable.
 - **Who starts it.** The app at launch, when nothing answers on `runnerd.sock`. The CLI, when a socket command finds nothing listening. A connection the sandbox blocks (Codex's default sandbox) still exits 5 as today and starts nothing. The CLI never starts a daemon from an ssh session (`SSH_CONNECTION` set); it says to open Runner on that machine. A daemon started there would run its agents inside the ssh logon, where macOS may keep the login keychain locked, so Claude Code could not read its credentials, and Windows may kill the session's processes when it closes.
 - **Detached.** On macOS it gets its own session (`setsid`) with closed stdio. On Windows it starts with `CREATE_NO_WINDOW`, `CREATE_NEW_PROCESS_GROUP` and `CREATE_BREAKAWAY_FROM_JOB`, but not `DETACHED_PROCESS`. That gives it a hidden console of its own, which the console programs it starts inherit; with no console at all, any console child started without `CREATE_NO_WINDOW` would open a visible window. Its working directory is the home directory, and it logs to `runnerd.log` in the log directory with the same panic hook as the app.
 - **A clean environment.** When started from a terminal or an agent, the daemon drops the `RUNNER_*` variables and the mission-shim and sidecar `PATH` entries it inherited. Spawns compose `PATH` from the process `PATH` (arch §5.3), and an agent's environment must not leak into the next spawn.
 - **Ending when the OS asks.** At logout, restart or shutdown, `runnerd` does what Stop Sessions does before it exits, so sessions resume after a reboot as they do today (see When something dies). This applies only to the OS's request to end (SIGTERM on macOS; the logoff, shutdown and close events on Windows), never to a crash.
 - **Lifetime: once started, it keeps running** (Jason, 2026-10-05, after comparing Paseo, Zeron and Docker). `runnerd` has no idle exit. It stops on four things: quitting with Stop Sessions, `runner daemon stop`, logout or restart (see Ending when the OS asks), and an update restart. Nothing starts it at login in phase 1. While no client is connected, it pauses work that exists only for a UI, plan-usage polling and agent-discovery refreshes, and resumes it when a client connects. So `runner` commands answer at once, the router and the CLI socket are always there, and an idle daemon costs almost nothing.
-- **Startup is `boot_core` without GPUI:** install nothing (the app or CLI already did), open the database, mount routers for running missions, demote stale rows, sweep orphans, resume stamped sessions at their persisted sizes, start the MCP server and `runnerd.sock`, then start discovery and usage. These steps all run at app launch today, so first launch is no slower. A relaunch that finds the daemon running skips them all.
+- **Startup is `boot_core` without GPUI:** install nothing (the app or CLI already did), open the database, mount routers for running missions, demote stale rows, sweep orphans, resume stamped sessions at their persisted sizes, bind `runnerd.sock` and the older-app sentinel, then start discovery and usage. These steps all run at app launch today, so first launch is no slower. A relaunch that finds the daemon running skips them all.
 - **`runner daemon status`** prints the pid, build, uptime, live sessions and connected clients. **`runner daemon stop`** stops every session the way Stop sessions does (below) and exits.
 
 ### Quitting
@@ -209,7 +209,7 @@ Phase 3's host picker and disconnected pane get designed with phase 3.
 ## Rules
 
 - Agents see no change: argv, prompts and first turns are identical, and the environment differs only in the cleaned `PATH` described above.
-- `events.ndjson`, `sessions` rows, MCP tools and CLI output keep their shape. The CLI gains only `runner daemon status` and `runner daemon stop`. After phase 1, the CLI moves onto the client protocol, and `mcp.sock` and the MCP server go, with the CLI's output unchanged ([plan](../impls/645-runnerd/plan.md#after-phase-1--the-cli-moves-to-the-client-protocol)).
+- `events.ndjson`, `sessions` rows and CLI output keep their shape. The CLI gains only `runner daemon status` and `runner daemon stop`. After phase 1, the CLI moves onto the client protocol, and the MCP server goes. The old MCP endpoint stays as an accept-and-close sentinel against a 0.12 app; CLI output stays unchanged except for the status endpoint and follow-delivery wording ([plan](../impls/645-runnerd/plan.md#after-phase-1--the-cli-moves-to-the-client-protocol)).
 - Tests never start a daemon in real app data. They use temporary app-data directories and endpoints, with every root passed in rather than resolved from `$HOME` (the lesson of the #648 skill leak).
 - Every PR leaves both platforms working, with Windows-only paths covered on Windows CI.
 

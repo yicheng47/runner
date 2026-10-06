@@ -608,7 +608,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            serde_json::from_value::<crate::mcp::tools::session::StartDirectSessionArgs>(
+            serde_json::from_value::<runner_core::protocol::StartDirectSessionArgs>(
                 serde_json::json!({
                     "role_id": "agent",
                     "runtime": "aider-future"

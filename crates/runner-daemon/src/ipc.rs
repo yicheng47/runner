@@ -30,7 +30,7 @@ impl IpcListener {
             let listener = bind_unix_listener(&endpoint.0)?;
             let listener = UnixListener::from_std(listener).map_err(|e| {
                 crate::error::Error::msg(format!(
-                    "mcp: failed to attach listener to tokio runtime: {e}"
+                    "runnerd: failed to attach listener to tokio runtime: {e}"
                 ))
             })?;
             Ok(Self { listener })
@@ -38,7 +38,7 @@ impl IpcListener {
         #[cfg(windows)]
         {
             let listener = secure_pipe(endpoint, true).map_err(|e| {
-                crate::error::Error::msg(format!("mcp: failed to bind {endpoint}: {e}"))
+                crate::error::Error::msg(format!("runnerd: failed to bind {endpoint}: {e}"))
             })?;
             Ok(Self {
                 listener,
@@ -74,6 +74,11 @@ pub struct IpcStream(UnixStream);
 pub struct IpcStream(NamedPipeServer);
 
 impl IpcStream {
+    #[cfg(windows)]
+    pub fn disconnect(&self) -> io::Result<()> {
+        self.0.disconnect()
+    }
+
     pub fn into_split(self) -> (ReadHalf<Self>, WriteHalf<Self>) {
         tokio::io::split(self)
     }
@@ -114,7 +119,7 @@ fn bind_unix_listener(socket_path: &Path) -> crate::error::Result<StdUnixListene
 
     let listener = StdUnixListener::bind(socket_path).map_err(|e| {
         crate::error::Error::msg(format!(
-            "mcp: failed to bind {}: {e}",
+            "runnerd: failed to bind {}: {e}",
             socket_path.display()
         ))
     })?;
@@ -122,7 +127,7 @@ fn bind_unix_listener(socket_path: &Path) -> crate::error::Result<StdUnixListene
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true).map_err(|e| {
         crate::error::Error::msg(format!(
-            "mcp: failed to set {} nonblocking: {e}",
+            "runnerd: failed to set {} nonblocking: {e}",
             socket_path.display()
         ))
     })?;
@@ -203,7 +208,7 @@ mod tests {
     #[test]
     fn bind_listener_does_not_require_tokio_reactor() {
         let dir = tempfile::tempdir().unwrap();
-        let socket_path = dir.path().join("mcp.sock");
+        let socket_path = dir.path().join("runnerd.sock");
 
         let listener = bind_unix_listener(&socket_path).unwrap();
 
@@ -218,11 +223,45 @@ mod transport_tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn disconnect_closes_client_while_ownership_handle_keeps_pipe_bound() {
+        use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-disconnect-test-{}",
+            dir.path().file_name().unwrap().to_string_lossy()
+        )));
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+        let _owner = listener.duplicate_handle().unwrap();
+        let mut client = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&endpoint.0)
+            .unwrap();
+        let stream = listener.accept().await.unwrap();
+        stream.disconnect().unwrap();
+        drop(stream);
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(2), client.read(&mut [0]))
+            .await
+            .expect("the ownership handle must not keep a sentinel client connected");
+        match closed {
+            Ok(n) => assert_eq!(n, 0),
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe | io::ErrorKind::UnexpectedEof
+                ) || error.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32),
+                "unexpected sentinel read error: {error:?}"
+            ),
+        }
+        assert!(IpcListener::bind(&endpoint).is_err());
+    }
+
     #[test]
     fn accepts_multiple_connections() {
         let dir = tempfile::tempdir().unwrap();
         #[cfg(unix)]
-        let endpoint = IpcEndpoint(dir.path().join("mcp.sock"));
+        let endpoint = IpcEndpoint(dir.path().join("runnerd.sock"));
         #[cfg(windows)]
         let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
             r"\\.\pipe\runner-test-{}",

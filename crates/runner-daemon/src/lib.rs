@@ -2,7 +2,7 @@
 //
 // Everything a frontend needs to run Runner lives here: the SQLite layer,
 // the PTY session manager, the per-mission event bus + signal router, the
-// MCP server, and the command bodies (`ops`). The GPUI frontend is a thin
+// client protocol, and the command bodies (`ops`). The GPUI frontend is a thin
 // adapter: it builds an `AppCore`, subscribes to its event channel, and
 // delegates its command surface to `ops::*`.
 
@@ -16,7 +16,6 @@ pub mod error;
 pub mod event_bus;
 pub mod events;
 pub mod ipc;
-pub mod mcp;
 pub mod model;
 pub mod ops;
 pub mod repo;
@@ -43,7 +42,7 @@ use session::manager::{CoreSessionEvents, SessionEventObserverRegistry};
 
 /// Shared application state. One instance per process, cheap to clone
 /// (every field is an `Arc` or small value) — the GPUI app owns it and the
-/// MCP handler clones it per connection.
+/// daemon clones it per connection.
 #[derive(Clone)]
 pub struct AppCore {
     pub db: Arc<db::DbPool>,
@@ -72,9 +71,6 @@ pub struct AppCore {
     /// Most recent mission-pane grid measured by the frontend. Backend-only
     /// mission starts use it when their caller cannot provide a size.
     pub mission_grid_hint: Arc<Mutex<Option<(u16, u16)>>>,
-    /// MCP server lifecycle handle (impl 0013). Local IPC listener used by
-    /// the bundled `runner` CLI for workspace and lifecycle commands.
-    pub mcp: Arc<mcp::McpHandle>,
     /// Cross-window coordination map (impl 0018). Tracks which subject
     /// (mission / direct chat) each window is looking at + when it
     /// was last focused, so exactly one window owns a duplicated subject's
@@ -86,7 +82,7 @@ pub struct AppCore {
     pub session_event_observer: SessionEventObserverRegistry,
     /// The application's user-facing version (the GPUI app crate's
     /// `CARGO_PKG_VERSION`, which the release bump updates). Advertised by
-    /// the MCP server's `ServerInfo`.
+    /// the client protocol.
     pub app_version: String,
 }
 

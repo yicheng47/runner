@@ -6,7 +6,7 @@ For new agent support, use the [runtime integration checklist](runtime-integrati
 
 ## 1. Overview
 
-Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. Three processes separate presentation from session lifetime: the GPUI app, `runnerd` (`crates/runner-daemon`) and the bundled `runner` CLI. The daemon owns SQLite, PTYs, mission routers and an authoritative `alacritty_terminal` grid per live session. The app sends requests over `runnerd.sock` and paints terminal mirrors; the CLI uses the daemon’s MCP socket. Per-mission NDJSON remains the coordination record.
+Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. Three processes separate presentation from session lifetime: the GPUI app, `runnerd` (`crates/runner-daemon`) and the bundled `runner` CLI. The daemon owns SQLite, PTYs, mission routers and an authoritative `alacritty_terminal` grid per live session. The app sends requests over `runnerd.sock` and paints terminal mirrors; the CLI sends typed requests over the same client protocol. Per-mission NDJSON remains the coordination record.
 
 ### 1.1 Runtime picture
 
@@ -15,7 +15,7 @@ Runner.app ── requests/input/resize ──► runnerd ── PTY ──► a
            ◄─ events/snapshots/bytes ──        ◄─ hooks ──
 AppStore + terminal mirrors             AppCore + authoritative terminal models
 GPUI windows and panes                  SQLite, SessionManager, buses, routers
-            runnerd.sock                         mcp.sock ◄── runner CLI
+            runnerd.sock ◄── app and runner CLI
 ```
 
 See [Process model](process-model.md) for ownership, workers and data paths.
@@ -71,13 +71,13 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | UI framework | **GPUI** (`gpui-pre` 0.3.7, `zed@1a28cff`, Metal / DirectX) | A crates.io snapshot of upstream Zed's retained-mode Rust UI: entities + elements, native text shaping and IME, with the application core in `runnerd`. Replaced Tauri + React in the 2026-08 rewrite. |
 | Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
 | Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
-| Application core | **Rust** crate `runner-daemon`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The daemon serves the app’s client protocol and the CLI’s MCP transport. |
+| Application core | **Rust** crate `runner-daemon`, UI-agnostic | SQLite, session manager, event bus, router and client protocol. The daemon serves the app and CLI through one request table. |
 | PTY runtime | **`portable-pty`** (inside `runnerd`) | One blocking OS thread per session reads the master; writes are serialized per session. |
 | Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-daemon/migrations/` (0001–0023). |
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`crates/runner-cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
-| MCP | **`rmcp`** server over local IPC | `runnerd` owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); the bundled CLI uses `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows as its transport. |
+| Client protocol | **Length-prefixed frames** over owner-only local IPC | The app and bundled CLI use `$APPDATA/runnerd.sock` on Unix or `\\.\pipe\com.wycstudios.runnerd[-dev]` on Windows for typed requests, pushed events and terminal streams. |
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
@@ -163,7 +163,7 @@ A mission is the only runtime container in the system. Everything alive at runti
 
 Lifecycle:
 
-- **Start**: a mission row is created (with its own `cwd` and an optional per-mission `goal_override`), one session is spawned per slot, the router boots with fresh state, and an NDJSON file is opened. Missions can be started from the UI or through the MCP `mission_start` tool.
+- **Start**: a mission row is created (with its own `cwd` and an optional per-mission `goal_override`), one session is spawned per slot, the router boots with fresh state, and an NDJSON file is opened. Missions can be started from the UI or through `runner mission start`.
 - **Stop**: live PTYs are killed, but the mission row remains `running`; router/bus state stays mounted and stopped slots can be resumed.
 - **Archive**: Runner appends `mission_stopped`, marks the row `completed`, sets `archived_at`, kills any live PTYs (verified dead before the row flips), and unmounts router/bus state. Archived missions are hidden from active lists and render read-only.
 - **Reset**: kills the slots and re-spawns them against the same mission row and log; forks read the persisted last size so they open at the width the pane had.
@@ -399,7 +399,7 @@ The PTY writer is shared between the human and the router. Each session's writer
 
 ### 5.7 Threads, not async
 
-`portable-pty`'s reader is blocking. One OS thread per session does one blocking `read(2)` in a loop; the kernel parks it cheaply. Writes are short and take a per-session lock. The core uses a small tokio runtime only where the libraries want one — the `rmcp` MCP server on its Unix socket and the broadcast channel behind `AppEvent`s.
+`portable-pty`'s reader is blocking. One OS thread per session does one blocking `read(2)` in a loop; the kernel parks it cheaply. Writes are short and take a per-session lock. The core uses a small tokio runtime only where the libraries want one — the client-protocol server and the broadcast channel behind `AppEvent`s.
 
 ### 5.8 Scrollback and size
 
@@ -497,7 +497,7 @@ Stdin pushes are deliberately silent: the router writes bytes into the target PT
 | Event | Fixed handler |
 |---|---|
 | `mission_goal` | No runtime side effect; the launch prompt was composed before spawn and this event remains the durable goal record. |
-| `human_said` | Inject MCP-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
+| `human_said` | Inject CLI-provided `payload.text` to `payload.target` if present, otherwise to the lead. |
 | `ask_lead` | Inject the worker's `{ question, context }` to the lead. |
 | `ask_human` | Append a `human_question` event for the UI. |
 | `human_response` | Look up the matching `question_id` and inject the answer to the session that emitted the original `ask_human`. |
@@ -567,7 +567,7 @@ Message *bodies* are never pushed; recipients read them with `msg read`. What th
 
 ## 9. The `runner` CLI
 
-The bundled CLI is Runner's external command surface for people, scripts, direct chats, and mission sessions. It connects to the app's local MCP socket for workspace and lifecycle operations; the socket protocol is an implementation detail. Mission sessions continue to use the same binary for direct event-log messaging.
+The bundled CLI is Runner's external command surface for people, scripts, direct chats, and mission sessions. It connects to the daemon's local client-protocol endpoint for workspace and lifecycle operations; the socket protocol is an implementation detail. Mission sessions continue to use the same binary for direct event-log messaging.
 
 ### 9.1 Surface
 
@@ -624,11 +624,11 @@ Roles resolve by their unique handle. Crews and projects resolve by id or exact 
 
 Default output is command-aware rather than a generic JSON projection. List commands expose only their identifying and operational columns; show commands use key-value blocks plus noun-specific sections; mission feed emits one chronological line per event. Table cells collapse whitespace, truncate at a fixed width with an ellipsis, and render null as `-`. `--json` preserves the tool's JSON text verbatim and `-q` prints ids only.
 
-`mission feed --follow` prints the requested window, then polls `mission_feed` from its last `next_offset` every 3 seconds in oldest-first order. Three seconds reduces quiet polling sixfold from 500 ms while keeping questions and lifecycle changes within the next poll, plus IPC time. Polling and notification batching are separate: each event is flushed immediately, and pages through the snapshot's last event offset are drained without an extra poll delay. Each event is printed once. The 1 ms test-build interval seam remains.
+`mission feed --follow` subscribes to the daemon's event stream before printing the requested snapshot window. Each `event/appended` payload carries the event's durable byte `next_offset`; the follower prints new entries immediately and ignores buffered entries already covered by its cursor. There is no CLI poll timer or notification batching. On subscription lag, it drains the log from its last cursor in oldest-first pages before continuing pushed delivery. Each event is printed once.
 
-Each poll first reads `mission_status`, replacing the old archive check every fourth poll (2 seconds then, 12 seconds at the new interval). This existing snapshot includes mission lifecycle, session rows and a last-event offset; it does scan the mission log, but avoids a new transport or a new backend contract. Taking the snapshot before reading the feed lets the follower drain final events before exiting. Ctrl-C, archive, completed mission state and all sessions stopped exit successfully. An aborted mission or terminal crashed sessions exit 1; a partial session crash is reported immediately while watching the surviving sessions. Empty startup rosters and busy/idle activity do not end the watch. `mission stop` leaves the mission row running for later resume, so the follower uses session lifecycle too. A crew message saying “done” is surfaced as a message, not interpreted as a lifecycle transition. Resume requires a new watcher.
+Startup, mission/session lifecycle notifications and subscription lag read `mission_status`, then drain `mission_feed` through that snapshot's last-event offset before deciding whether to end. The existing event bus supplies pushed events and their log cursors; the follower adds no watcher. Taking the snapshot before reading the feed lets it drain final events before exiting. Ctrl-C, archive, completed mission state and all sessions stopped exit successfully. An aborted mission or terminal crashed sessions exit 1; a partial session crash is reported immediately while watching the surviving sessions. Empty startup rosters and busy/idle activity do not end the watch. `mission stop` leaves the mission row running for later resume, so the follower uses session lifecycle too. A crew message saying “done” is surfaced as a message, not interpreted as a lifecycle transition. Resume requires a new watcher.
 
-Every stopped/crashed session transition and successful watch end is reported on stderr, independently of feed filters; session notices use roster handles when available. App disconnect exits 3. A watch request timing out after 30 seconds exits 1 and explicitly says Runner may still be running; the timeout is independent of the 3-second polling cadence so an ordinary slow reply does not end a watch. A missing mission or non-advancing feed cursor also exits 1. Errors identify the mission and last consumed cursor with show/re-follow arguments for the same Runner executable, preserving the development/installed app boundary. There is no silent retry. Host watch expiry is handled by the agent's watch rule, since the host can kill the CLI before it can report: each follow JSON line carries its own `next_offset`, so the agent re-arms with `--since <last line's next_offset> --oldest-first` instead of replaying the log. Claude Code's Monitor expires after at most 30 minutes, shorter than most missions, so this is the routine path there. Watch facilities must deliver stderr and process exit as well as stdout; Claude Code Monitor needs `2>&1` because only stdout produces notifications. That merged host stream can include plain-text diagnostics; the CLI's own stdout remains event NDJSON.
+Every stopped/crashed session transition and successful watch end is reported on stderr, independently of feed filters; session notices use roster handles when available. App disconnect exits 3. A watch request timing out after 30 seconds exits 1 and explicitly says Runner may still be running; the timeout applies to snapshot/drain requests, while an idle pushed subscription waits for events. A missing mission or non-advancing feed cursor also exits 1. Errors identify the mission and last consumed cursor with show/re-follow arguments for the same Runner executable, preserving the development/installed app boundary. There is no silent retry. Host watch expiry is handled by the agent's watch rule, since the host can kill the CLI before it can report: each follow JSON line carries its own `next_offset`, so the agent re-arms with `--since <last line's next_offset> --oldest-first` instead of replaying the log. Claude Code's Monitor expires after at most 30 minutes, shorter than most missions, so this is the routine path there. Watch facilities must deliver stderr and process exit as well as stdout; Claude Code Monitor needs `2>&1` because only stdout produces notifications. That merged host stream can include plain-text diagnostics; the CLI's own stdout remains event NDJSON.
 
 `--types` and `--from` filter client-side. Human feed output and every follow stream hide routine `session_status`/legacy `runner_status` and `inbox_read` unless `--all` is present or `--types` explicitly names them; status payloads with `status.lifecycle = "error"` or `status.observation.outcome = "failed"` remain visible by default. A failed outcome persists across later busy/idle rows, so each distinct failure-bearing event remains visible until the outcome clears; event-ID deduplication still applies. One-shot `--json` without a filter remains the exact tool result; follow JSON is one flushed event per NDJSON line, with that entry's `next_offset` added to the event object as the `--since` cursor that resumes after it; no separate cursor line is printed. `--follow --limit 0` is rejected because it cannot deliver events or advance through a backlog.
 
@@ -646,7 +646,7 @@ Direct chats remain off the mission bus, so they have no implicit mission, missi
 
 ### 9.5 Socket transport
 
-Each outside command opens `$APPDATA/mcp.sock`, bounds connection establishment to 500 ms and the MCP handshake separately to 3 s, performs the reference-list calls and one requested operation, prints the result, and exits. The backend registry and the tools reached by the CLI's exhaustive recorder test assert against one shared list of tool names. The stdio bridge is gone; the once-only upgrade step removes only the exact bridge registrations this installation wrote, leaves mismatched entries unchanged as final skips, and defers unreadable, unparseable, or concurrently changed configs for retry without changing them.
+Each outside command connects to `runnerd.sock` through `SocketTransport` and `DaemonClient`, bounds connection and handshake establishment to 500 ms, performs the reference-list calls and requested operation, prints the result, and exits. A fast `app_version` request reports the daemon version without hashing the CLI executable. Undecodable requests or responses report protocol skew with a restart-Runner message and exit 1. The exhaustive recorder test exercises the CLI adapter and checks its typed requests against `api.rs`. `runnerd` also binds the old MCP endpoint as an accept-and-close sentinel: if a 0.12 app replaces it, the ownership check stops the daemon before two processes own the database. The stdio bridge is gone; the once-only upgrade step removes only the exact bridge registrations this installation wrote, leaves mismatched entries unchanged as final skips, and defers unreadable, unparseable, or concurrently changed configs for retry without changing them.
 
 ### 9.6 Agent discovery skill
 
@@ -778,7 +778,7 @@ Migrations live in `crates/runner-daemon/migrations/` (`0001_init.sql` … `0023
 ~/Library/Application Support/com.wycstudios.runner/      ($APPDATA; debug builds: …runner-dev)
 ├── runner.db                               # SQLite (WAL)
 ├── ui-settings.json                        # preferences (§3.7)
-├── mcp.sock                                # MCP server socket while the app runs
+├── mcp.sock                                # accept-and-close sentinel for older apps
 ├── bin/
 │   └── runner                              # general CLI + direct mission-bus verbs
 ├── shell-integration/                      # OSC 7 hooks for terminal shells (§5.3)
@@ -824,10 +824,10 @@ runnerd
   AppCore, SQLite pool, SessionManager, authoritative terminals
   per-session PTY reader, idle detector, forwarder, terminal-event and input workers
   per-mission bus watchers, router cooldown/reconciliation timers
-  runner-ipc tokio runtime: client protocol and MCP server
+  runner-ipc tokio runtime: client protocol and older-app sentinel
   discovery/login-shell/version probes and usage workers
 runner CLI
-  current-thread tokio runtime for one MCP call; mission appends write directly
+  current-thread tokio runtime for typed requests and pushed feed events; mission appends write directly
 ```
 
 ### 11.2 Why a thread per PTY reader (not async)
@@ -859,7 +859,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 2. **Slot is the indirection** that lets one role participate in many crews and direct chats without duplication.
 3. **PTYs in `runnerd` via `portable-pty`, not pipes or tmux.** TUI fidelity is non-negotiable.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
-5. **One CLI for people, scripts, and agents.** The local MCP socket is its internal transport.
+5. **One CLI for people, scripts, and agents.** The local client protocol is its transport.
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
 7. **The signal router is the only urgent wake-up path**, and every push goes through one delivery gate.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.
@@ -867,7 +867,7 @@ A panic in a PTY reader thread only affects that session: the forwarder ends, th
 10. **One authoritative terminal in the daemon, a mirror in the app.** Both use the same `alacritty_terminal` parser. Numbered raw bytes and exact snapshots cross the socket; only the daemon answers terminal queries.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
 12. **Mission state and PTYs outlive the app process.** Keep running disconnects the app; Stop and updates stamp launch resume and replace children. The daemon keeps routing while no window is open.
-13. **The core is UI-agnostic.** `runner-daemon` knows nothing about GPUI; the app consumes the client protocol, and the MCP server serves the CLI.
+13. **The core is UI-agnostic.** `runner-daemon` knows nothing about GPUI; the app and CLI consume the client protocol.
 
 ## 13. What would break this architecture
 

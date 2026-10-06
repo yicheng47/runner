@@ -131,7 +131,7 @@ Jason asked on 2026-10-05 whether the backend crate should become `runner-daemon
 | --- | --- | --- |
 | `runner-core` | What the app, the CLI and the daemon share: the event log, app paths and the `Runtime` enum, as today, plus a new `protocol` module (1a). That module holds everything that crosses the socket: the row types now in `runner-backend/src/model.rs` (plain serde, no rusqlite), the request table with every argument and result type, `AppEvent`, the frames, the handshake, and `DaemonClient` with its transports. | — |
 | `runner-terminal` | The model, the mirror and the snapshot; no backend dependency (1b) | — |
-| `runner-daemon` (today's `runner-backend`, renamed in 1d) | `AppCore`, ops, the database, sessions, routers, buses, the MCP server, and the daemon's boot and server | `runner-core`, `runner-terminal` |
+| `runner-daemon` (today's `runner-backend`, renamed in 1d) | `AppCore`, ops, the database, sessions, routers, buses, the client protocol, and the daemon's boot and server | `runner-core`, `runner-terminal` |
 | `runner-cli` | The `runner` and `runnerd` binary | `runner-core`, `runner-daemon` |
 | `runner-app` | The GPUI client | `runner-core`, `runner-terminal`; `runner-daemon` only as a dev-dependency, for tests |
 
@@ -181,7 +181,7 @@ Brief `645-m1-request-surface.md`. Crew: codex duo (coder and reviewer), with no
 
 **Design.**
 
-1. **One table, outside the daemon's crate.** `runner_core::protocol` (new; see Crates) holds the row types moved from `runner-backend/src/model.rs`, the argument and result types the app uses, and `api.rs`, which lists every request once: its name, argument type, result type, handler, and whether it is `fast`. A macro generates `Request`, `Response` and the typed `DaemonClient` methods in `runner-core`, and `runner-backend` implements `dispatch(&AppCore, Request) -> Response`. Adding an op is one line, and the table is what the parity test checks, as the MCP tool registry's list is.
+1. **One table, outside the daemon's crate.** `runner_core::protocol` (new; see Crates) holds the row types moved from `runner-backend/src/model.rs`, the argument and result types the app uses, and `api.rs`, which lists every request once: its name, argument type, result type, handler, and whether it is `fast`. A macro generates `Request`, `Response` and the typed `DaemonClient` methods in `runner-core`, and `runner-backend` implements `dispatch(&AppCore, Request) -> Response`. Adding an op is one line, and the table is what the app parity and CLI recorder tests check.
 2. **A transport trait.** `DaemonClient` holds an `Arc<dyn Transport>`. 1a ships `InProcess(AppCore)`, which encodes each request to JSON, decodes it, dispatches, and does the same with the response. It does this always, not only in tests, so a type that cannot cross a socket fails now rather than in 1c. Handlers keep their `ops::` bodies; most arguments are already serde types, because the MCP tools call the same ops.
 3. **Events.** `DaemonClient::subscribe()` yields `AppEvent`s. In-process it maps the broadcast receiver, and the app's `native-app-events` thread consumes it as before. On the client side, event names become `String`.
 4. **What stays a library call:** model types, `runtimes::for_key`, `app_paths`, constants such as `cli_install::runner_command_name` and `SKILL_MARKER`, and pure formatting. The rule: a call that reads or writes the database, `SessionManager`, a router, a bus, usage, discovery or the window registry is a request.
@@ -283,7 +283,7 @@ Brief `645-m3-daemon-process.md`. Crew: codex trio. The QA slot runs live checks
 10. **The OS ending `runnerd`.** On SIGTERM (macOS logout or restart), and on `CTRL_LOGOFF_EVENT`, `CTRL_SHUTDOWN_EVENT` and `CTRL_CLOSE_EVENT` (Windows, through its hidden console), `runnerd` runs the same Stop sessions path before exiting. Otherwise a reboot would bring sessions back stopped instead of resumed, which would be a regression: today macOS quits the app at logout, and its quit handler stamps the sessions. Test it by sending SIGTERM to a test daemon and checking the stamps, and add a logout-and-login check to QA's list.
 11. **Reattach.** At launch the app restores its windows, loads `AppStore` through requests, and attaches every live session: snapshot first, then the mirror.
 12. **Crash recovery.** If the connection drops, the app shows a notice and reconnects or spawns a new daemon. After three restarts in five minutes it stops and points to `runnerd.log`.
-13. **The CLI.** When a socket command gets `NotRunning`, the CLI spawns `runnerd` from its own directory, canonicalized so that a `~/.local/bin` link resolves to the sidecar. It then waits up to 10 s for `mcp.sock` and continues. It never spawns one when `SSH_CONNECTION` is set, and says to open Runner on that machine instead (see Phase 3). `runner daemon status` and `runner daemon stop` use `runnerd.sock`.
+13. **The CLI.** When a socket command gets `NotRunning`, the CLI spawns `runnerd` from its own directory, canonicalized so that a `~/.local/bin` link resolves to the sidecar. It then waits up to 10 s for `runnerd.sock` and continues. It never spawns one when `SSH_CONNECTION` is set, and says to open Runner on that machine instead (see Phase 3). `runner daemon status` and `runner daemon stop` use `runnerd.sock`.
 14. **The app stops depending on the backend.** `runner-backend` moves to `runner-app`'s `[dev-dependencies]`, and the 1a guard test is deleted (see Crates).
 15. **Logs.** `runnerd.log` sits beside `runner.log`, with the same rotation and panic hook; the setup in `runner-app/src/logging.rs` moves somewhere both can share.
 
@@ -339,13 +339,13 @@ Added on 2026-10-05 at Jason's request. One mission, on `main` after the umbrell
 **What changes.**
 
 - The CLI's socket commands become `DaemonClient` calls over `runnerd.sock`. `mission feed --follow` becomes a subscription.
-- The MCP server, `mcp.sock`, the tool registry and both `rmcp` dependencies go.
+- The MCP server, tool registry and all `rmcp` dependencies go. The old MCP endpoint remains only as an accept-and-close sentinel against a 0.12 app; its ownership check stays on Unix and Windows.
 - The CLI's exhaustive recorder test checks against the request table, in place of the shared tool-name list.
 - Inside a mission, `msg post`, `msg read`, `signal` and `ask` still append to the event log directly with no socket, as they do today.
 
-**What must not change.** The CLI's output, including every `--json` shape, stays byte-identical, because agents' skills and scripts read it. Its exit codes stay the same: 3 for not running, 5 for blocked by a sandbox, and 4 reserved for #562's `wait`. So do the caller-identity rules (arch §9.3). The one intended difference is that `runner status` reports `runnerd.sock` instead of `mcp.sock`. Golden tests capture the CLI's output on `main` before the change and compare it after.
+**What must not change.** The CLI's output, including every `--json` shape, stays byte-identical, because agents' skills and scripts read it. Its exit codes stay the same: 3 for not running, 5 for blocked by a sandbox, and 4 reserved for #562's `wait`. So do the caller-identity rules (arch §9.3). The intended differences are that `runner status` reports `runnerd.sock` instead of `mcp.sock`, and the follow help describes pushed delivery. Golden tests capture the CLI's output on `main` before the change and compare it after.
 
-**Crew:** codex duo. Live checks run against `make run` on the development data, under live-test authorization.
+**Crew:** codex duo. The #821 brief authorizes isolated daemon tests and no QA slot or live regression; Jason smoke-tests after implementation.
 
 ## Phase 2 — dropped
 

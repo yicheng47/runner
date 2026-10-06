@@ -1,7 +1,7 @@
 [package]
 name = "runner-daemon"
 version.workspace = true
-description = "UI-agnostic application core for Runner: command bodies, session manager, event bus, router, and MCP server"
+description = "UI-agnostic application core for Runner: command bodies, session manager, event bus, router, and client protocol"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -36,10 +36,8 @@ tempfile = "3"
 # `macos_fsevent` backend is the default on macOS; on Linux it falls back to
 # inotify, on Windows to ReadDirectoryChangesW.
 notify = "6"
-# MCP server (impl 0013): local IPC transport for the bundled Runner CLI.
-rmcp = { version = "1.7", features = ["server"] }
 schemars = "1"
-tokio = { version = "1", features = ["net", "rt-multi-thread", "io-util", "sync", "signal", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "io-util", "sync", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 # Codex MCP config lives in ~/.codex/config.toml; toml_edit preserves
 # user-authored comments + formatting on round-trip writes.

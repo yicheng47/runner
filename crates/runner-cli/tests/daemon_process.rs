@@ -364,7 +364,7 @@ fn cli_starts_only_on_not_running_and_never_from_ssh() {
         let client = runner_cli::client::SocketClient::connect_or_start(&daemon.launch, false)
             .await
             .unwrap();
-        assert_eq!(client.endpoint(), &daemon.launch.mcp_endpoint);
+        assert_eq!(client.endpoint(), &daemon.launch.daemon_endpoint);
         drop(client);
     });
     let socket = daemon.connect();
@@ -1137,5 +1137,128 @@ fn mismatch_restart_reports_successful_resumes_even_to_late_subscribers() {
     assert_eq!(cached.name, "daemon/restarted");
     assert_eq!(cached.payload["count"], 1);
     managed.shutdown().unwrap();
+    daemon.stopped();
+}
+
+#[test]
+fn older_app_sentinel_accepts_and_closes_without_serving_requests() {
+    let mut daemon = Daemon::new();
+    let socket = daemon.start();
+    #[cfg(unix)]
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            let mut stream = tokio::net::UnixStream::connect(&daemon.launch.mcp_endpoint.0)
+                .await
+                .unwrap();
+            let closed = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut [0]))
+                .await
+                .unwrap();
+            assert_eq!(closed.unwrap(), 0);
+        });
+    }
+    #[cfg(windows)]
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+            use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
+            let mut stream = tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(&daemon.launch.mcp_endpoint.0)
+                .unwrap();
+            let closed = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut [0]))
+                .await
+                .unwrap();
+            match closed {
+                Ok(n) => assert_eq!(n, 0),
+                Err(error) => assert!(
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
+                    ) || error.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32),
+                    "unexpected sentinel read error: {error:?}"
+                ),
+            }
+            assert!(runner_daemon::ipc::IpcListener::bind(&daemon.launch.mcp_endpoint).is_err());
+        });
+    }
+    assert!(socket.client().role_list().is_ok());
+    socket.shutdown(true).unwrap();
+    daemon.stopped();
+}
+
+#[cfg(unix)]
+#[test]
+fn older_app_replacing_sentinel_stops_daemon_and_preserves_replacement() {
+    let mut daemon = Daemon::new();
+    let socket = daemon.start();
+    std::fs::remove_file(&daemon.launch.mcp_endpoint.0).unwrap();
+    let replacement =
+        std::os::unix::net::UnixListener::bind(&daemon.launch.mcp_endpoint.0).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while daemon.child.as_mut().unwrap().try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "runnerd ignored the older app sentinel replacement"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.client().role_list().is_err());
+    assert!(!daemon.launch.daemon_endpoint.0.exists());
+    assert!(daemon.launch.mcp_endpoint.0.exists());
+    daemon_process::wait_unlocked(&daemon.launch.paths.app_data_dir, Duration::from_secs(1))
+        .unwrap();
+    drop(replacement);
+}
+
+#[cfg(unix)]
+#[test]
+fn undecodable_request_reports_protocol_skew_and_keeps_control_connection_alive() {
+    use runner_core::protocol::wire::{self, Frame};
+    let mut daemon = Daemon::new();
+    let socket = daemon.start();
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(&daemon.launch.daemon_endpoint.0).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    Frame::json(wire::HELLO, &daemon.hello(""))
+        .unwrap()
+        .write(&mut stream)
+        .unwrap();
+    assert_eq!(Frame::read(&mut stream).unwrap().kind, wire::WELCOME);
+    Frame::json(
+        wire::REQUEST,
+        &serde_json::json!({"id": 42, "request": {"future_operation": {}}}),
+    )
+    .unwrap()
+    .write(&mut stream)
+    .unwrap();
+    loop {
+        let frame = Frame::read(&mut stream).unwrap();
+        if frame.kind == wire::REQUEST_ERROR {
+            let error: wire::RequestError = frame.decode().unwrap();
+            assert_eq!(error.id, 42);
+            assert_eq!(error.message, runner_cli::client::VERSION_SKEW_MESSAGE);
+            break;
+        }
+    }
+    assert!(socket.client().role_list().is_ok());
+    Frame::json(
+        wire::SHUTDOWN,
+        &wire::Shutdown {
+            stop_sessions: true,
+        },
+    )
+    .unwrap()
+    .write(&mut stream)
+    .unwrap();
     daemon.stopped();
 }

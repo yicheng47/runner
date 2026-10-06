@@ -1,5 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StartMissionInput {
@@ -19,7 +20,7 @@ pub struct StartMissionInput {
     pub cwd: Option<String>,
 }
 
-/// A mission start whose project the caller has decided. The socket tool's
+/// A mission start whose project the caller has decided. The CLI's
 /// `StartMissionInput` converts with its project inferred from `cwd` when
 /// none is named.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,4 +126,93 @@ pub struct PostMessageInput {
     /// targeted message.
     #[serde(default)]
     pub to: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionFeedOrder {
+    #[default]
+    NewestFirst,
+    OldestFirst,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct MissionFeedArgs {
+    /// Mission ID.
+    pub mission_id: String,
+    /// Maximum number of events to return. Defaults to 50 and is capped at 500.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Sort order for returned events.
+    #[serde(default)]
+    pub order: MissionFeedOrder,
+    /// Optional byte offset into events.ndjson. Use a returned next_offset as the next cursor.
+    #[serde(default)]
+    pub since_offset: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MissionFeed {
+    pub mission_id: String,
+    pub events: Vec<MissionFeedEntry>,
+    pub next_offset: Option<u64>,
+    pub skipped: Vec<SkippedEventLine>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MissionFeedEntry {
+    pub next_offset: u64,
+    pub event: Event,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SkippedEventLine {
+    pub offset: u64,
+    pub next_offset: u64,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MissionStatusSnapshot {
+    pub mission: Mission,
+    pub crew: Crew,
+    pub sessions: Vec<SessionRow>,
+    pub latest_session_status_by_handle: BTreeMap<String, SessionStatusSnapshot>,
+    pub pending_asks: Vec<PendingAskSnapshot>,
+    pub pending_ask_count: usize,
+    pub live_session_count: usize,
+    pub stopped_session_count: usize,
+    pub crashed_session_count: usize,
+    pub recent_warnings: Vec<MissionWarningSnapshot>,
+    pub last_event_id: Option<String>,
+    pub last_event_offset: Option<u64>,
+    pub skipped_event_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStatusSnapshot {
+    pub state: String,
+    pub event_id: String,
+    pub ts: Timestamp,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingAskSnapshot {
+    pub question_id: String,
+    pub asker: String,
+    pub prompt: String,
+    pub choices: Option<serde_json::Value>,
+    pub on_behalf_of: Option<String>,
+    pub event_id: String,
+    pub ts: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionWarningSnapshot {
+    pub event_id: String,
+    pub ts: Timestamp,
+    pub from: String,
+    pub message: Option<String>,
+    pub payload: serde_json::Value,
 }

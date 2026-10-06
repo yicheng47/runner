@@ -1,43 +1,11 @@
 use crate::{
-    cli_install, db, event_bus, events, mcp, ops, repo, runtime_status, session, shell_path,
-    windows, AppCore,
+    cli_install, db, event_bus, events, ops, repo, runtime_status, session, shell_path, windows,
+    AppCore,
 };
 use anyhow::{Context as _, Result};
 pub use runner_core::daemon_process::NativePaths;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-
-pub struct NativeMcpServer {
-    core: AppCore,
-    _runtime: tokio::runtime::Runtime,
-}
-
-impl NativeMcpServer {
-    pub fn start(core: &AppCore) -> Result<Self> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("runner-ipc")
-            .enable_all()
-            .build()
-            .context("create native MCP runtime")?;
-        core.mcp
-            .start(
-                &crate::app_paths::mcp_endpoint(&core.app_data_dir, cfg!(debug_assertions)),
-                core.clone(),
-                runtime.handle(),
-            )
-            .context("start native MCP listener")?;
-        Ok(Self {
-            core: core.clone(),
-            _runtime: runtime,
-        })
-    }
-}
-
-impl Drop for NativeMcpServer {
-    fn drop(&mut self) {
-        self.core.mcp.stop();
-    }
-}
 
 pub fn boot_core(
     paths: &NativePaths,
@@ -109,7 +77,6 @@ pub fn boot(
         buses: event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-        mcp: Arc::new(mcp::McpHandle::new()),
         windows: window_registry,
         events: event_channel.clone(),
         session_event_observer: Default::default(),

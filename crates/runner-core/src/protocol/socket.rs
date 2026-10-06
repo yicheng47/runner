@@ -399,8 +399,16 @@ impl SocketTransport {
     }
     fn receive(&self, frame: Frame) -> io::Result<()> {
         match frame.kind {
+            wire::REQUEST_ERROR => {
+                let error: wire::RequestError = frame.decode()?;
+                if let Some(pending) = self.pending.lock().unwrap().remove(&error.id) {
+                    let _ = pending.send(Err(ClientError::msg(error.message)));
+                }
+            }
             wire::RESPONSE => {
-                let reply: wire::Reply = frame.decode()?;
+                let reply: wire::Reply = frame
+                    .decode()
+                    .map_err(|_| wire::invalid(wire::PROTOCOL_MISMATCH))?;
                 if let Some(pending) = self.pending.lock().unwrap().remove(&reply.id) {
                     let _ = pending.send(Ok(reply.response));
                 }
@@ -643,6 +651,52 @@ impl EventSubscription for Events {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    #[test]
+    fn protocol_errors_reach_pending_calls_as_restart_messages() {
+        for kind in [wire::REQUEST_ERROR, wire::RESPONSE] {
+            let root = tempfile::tempdir().unwrap();
+            let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+            let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert_eq!(Frame::read(&mut stream).unwrap().kind, wire::HELLO);
+                Frame::json(
+                    wire::WELCOME,
+                    &wire::Welcome {
+                        exe_sha256: "hash".into(),
+                        pid: 1,
+                        started_at: "now".into(),
+                    },
+                )
+                .unwrap()
+                .write(&mut stream)
+                .unwrap();
+                let call: wire::Call = Frame::read(&mut stream).unwrap().decode().unwrap();
+                let payload = if kind == wire::REQUEST_ERROR {
+                    serde_json::json!({"id": call.id, "message": wire::PROTOCOL_MISMATCH})
+                } else {
+                    serde_json::json!({"id": call.id, "response": {"future_operation": {}}})
+                };
+                Frame::json(kind, &payload)
+                    .unwrap()
+                    .write(&mut stream)
+                    .unwrap();
+            });
+            let socket = SocketTransport::connect(
+                &endpoint,
+                wire::Hello {
+                    exe_sha256: "hash".into(),
+                    client: "test".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                socket.client().role_list().unwrap_err().message,
+                wire::PROTOCOL_MISMATCH
+            );
+            server.join().unwrap();
+        }
+    }
     #[test]
     fn pending_request_has_a_deadline_without_blocking_another_call() {
         let root = tempfile::tempdir().unwrap();

@@ -175,7 +175,6 @@ fn test_core_with_runtime(root: &std::path::Path, runtime: Arc<dyn SessionRuntim
         buses: crate::event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-        mcp: Arc::new(crate::mcp::McpHandle::new()),
         windows,
         events: crate::events::EventChannel::new(),
         session_event_observer: Default::default(),

@@ -2,7 +2,7 @@
 //
 // Each submodule splits into pure-SQL functions (unit-testable against an
 // in-memory pool) plus state-level functions over `AppCore` used by the GPUI
-// frontend and MCP tools.
+// frontend and CLI clients.
 
 pub use runner_core::protocol::mod_types::ListPage;
 

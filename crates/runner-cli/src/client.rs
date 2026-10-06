@@ -1,20 +1,14 @@
+use runner_core::app_paths::IpcEndpoint;
+use runner_core::protocol::socket::{ConnectError, SocketTransport};
+use runner_core::protocol::wire;
+use runner_core::protocol::{DaemonClient, EventSubscription};
+use serde::de::DeserializeOwned;
+use serde_json::{json, Value};
 use std::time::Duration;
 
-use rmcp::model::{
-    CallToolRequestParams, CallToolResult, JsonObject, ListToolsResult, PaginatedRequestParams,
-};
-use rmcp::service::{RoleClient, RunningService, ServiceError};
-use rmcp::ServiceExt;
-use runner_core::app_paths::IpcEndpoint;
-use serde_json::Value;
-use tokio::time::timeout;
-
-use crate::ipc::IpcStream;
-
-const CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 pub const NOT_RUNNING_MESSAGE: &str = "Runner is not running. Open Runner and retry.";
 pub const BLOCKED_MESSAGE: &str = "Runner cannot be reached from this process: connecting to its socket was denied, which usually means a command sandbox. Run the same command again outside the sandbox.";
+pub const VERSION_SKEW_MESSAGE: &str = wire::PROTOCOL_MISMATCH;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientError {
@@ -23,7 +17,6 @@ pub enum ClientError {
     Refused(String),
     Protocol(String),
 }
-
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -33,22 +26,16 @@ impl std::fmt::Display for ClientError {
         }
     }
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolResponse {
     pub value: Value,
     pub raw_json: String,
 }
-
 pub fn endpoint() -> Option<IpcEndpoint> {
     let debug = cfg!(debug_assertions);
-    let app_data_dir = runner_core::app_paths::app_data_dir(debug)?;
-    Some(runner_core::app_paths::mcp_endpoint(&app_data_dir, debug))
+    let data = runner_core::app_paths::app_data_dir(debug)?;
+    Some(runner_core::app_paths::daemon_endpoint(&data, debug))
 }
-
-/// A sandboxed caller (Codex's default Seatbelt profile, for one) sees the socket but is
-/// denied the connection. That is not "Runner is not running", and telling the user to
-/// open an app that is already open is wrong advice.
 fn connect_failure(kind: std::io::ErrorKind, endpoint_exists: bool) -> ClientError {
     if kind == std::io::ErrorKind::PermissionDenied && endpoint_exists {
         ClientError::Blocked
@@ -56,25 +43,21 @@ fn connect_failure(kind: std::io::ErrorKind, endpoint_exists: bool) -> ClientErr
         ClientError::NotRunning
     }
 }
-
 #[cfg(unix)]
 fn endpoint_exists(endpoint: &IpcEndpoint) -> bool {
     endpoint.0.exists()
 }
-
-/// Opening a named pipe that is not there fails with not-found, so access denied
-/// already means the pipe exists.
 #[cfg(windows)]
-fn endpoint_exists(_endpoint: &IpcEndpoint) -> bool {
+fn endpoint_exists(_: &IpcEndpoint) -> bool {
     true
 }
 
 pub struct SocketClient {
-    service: RunningService<RoleClient, ()>,
+    daemon: DaemonClient,
+    transport: std::sync::Arc<SocketTransport>,
     endpoint: IpcEndpoint,
     app_version: String,
 }
-
 impl SocketClient {
     pub async fn connect() -> Result<Self, ClientError> {
         let endpoint = endpoint().ok_or_else(|| {
@@ -101,7 +84,7 @@ impl SocketClient {
         launch: &runner_core::daemon_process::Launch,
         ssh: bool,
     ) -> Result<Self, ClientError> {
-        match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+        match Self::connect_endpoint(launch.daemon_endpoint.clone()).await {
             Err(ClientError::NotRunning) if !ssh => (),
             result => return result,
         }
@@ -111,7 +94,7 @@ impl SocketClient {
                 .await
                 .map_err(|error| ClientError::Protocol(error.to_string()))?
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+        match Self::connect_endpoint(launch.daemon_endpoint.clone()).await {
             Err(ClientError::NotRunning) => (),
             result => return result,
         }
@@ -121,7 +104,7 @@ impl SocketClient {
         });
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
-            match Self::connect_endpoint(launch.mcp_endpoint.clone()).await {
+            match Self::connect_endpoint(launch.daemon_endpoint.clone()).await {
                 Err(ClientError::NotRunning) if tokio::time::Instant::now() < deadline => {
                     tokio::time::sleep(Duration::from_millis(20)).await
                 }
@@ -131,204 +114,276 @@ impl SocketClient {
     }
 
     pub async fn connect_endpoint(endpoint: IpcEndpoint) -> Result<Self, ClientError> {
-        let stream = match timeout(CONNECT_TIMEOUT, IpcStream::connect(&endpoint)).await {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(error)) => {
-                return Err(connect_failure(error.kind(), endpoint_exists(&endpoint)));
+        let destination = endpoint.clone();
+        let exists = endpoint_exists(&endpoint);
+        let transport = tokio::task::spawn_blocking(move || {
+            SocketTransport::connect_with_timeout(
+                &destination,
+                wire::Hello {
+                    exe_sha256: String::new(),
+                    client: "cli".into(),
+                },
+                Duration::from_secs(30),
+            )
+        })
+        .await
+        .map_err(|error| ClientError::Protocol(error.to_string()))?
+        .map_err(|error| match error {
+            ConnectError::NotRunning => ClientError::NotRunning,
+            ConnectError::Blocked => connect_failure(std::io::ErrorKind::PermissionDenied, exists),
+            ConnectError::Mismatch(_) | ConnectError::Protocol(_) => {
+                ClientError::Protocol(VERSION_SKEW_MESSAGE.into())
             }
-            Err(_) => return Err(ClientError::NotRunning),
-        };
-        let (read, write) = stream.into_split();
-        let write = tokio::io::BufWriter::new(write);
-        let service = match timeout(HANDSHAKE_TIMEOUT, ().serve((read, write))).await {
-            Ok(Ok(service)) => service,
-            Ok(Err(_)) | Err(_) => return Err(ClientError::NotRunning),
-        };
-        let app_version = service
-            .peer_info()
-            .map(|info| info.server_info.version.clone())
-            .unwrap_or_else(|| "unknown".to_owned());
+        })?;
+        let daemon = transport.client();
+        let probe = daemon.clone();
+        let app_version = tokio::task::spawn_blocking(move || probe.app_version())
+            .await
+            .map_err(|error| ClientError::Protocol(error.to_string()))?
+            .map_err(|_| ClientError::Protocol(VERSION_SKEW_MESSAGE.into()))?;
         Ok(Self {
-            service,
+            daemon,
+            transport,
             endpoint,
             app_version,
         })
     }
-
     pub fn endpoint(&self) -> &IpcEndpoint {
         &self.endpoint
     }
-
     pub fn app_version(&self) -> &str {
         &self.app_version
     }
-
-    pub async fn list_tools(
-        &self,
-        request: Option<PaginatedRequestParams>,
-    ) -> Result<ListToolsResult, ClientError> {
-        self.service
-            .peer()
-            .list_tools(request)
-            .await
-            .map_err(service_error)
+    pub fn subscribe(&self) -> Box<dyn EventSubscription> {
+        self.daemon.subscribe()
     }
-
-    pub async fn call_result(
-        &self,
-        request: CallToolRequestParams,
-    ) -> Result<CallToolResult, ClientError> {
-        self.service
-            .peer()
-            .call_tool(request)
-            .await
-            .map_err(service_error)
-    }
-
     pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolResponse, ClientError> {
-        let arguments = arguments.as_object().cloned().ok_or_else(|| {
-            ClientError::Protocol("tool arguments must be a JSON object".to_owned())
-        })?;
-        let request = CallToolRequestParams::new(name.to_owned()).with_arguments(arguments);
-        decode_result(self.call_result(request).await?)
+        let daemon = self.daemon.clone();
+        let name = name.to_owned();
+        let result = tokio::task::spawn_blocking(move || call_daemon(&daemon, &name, arguments))
+            .await
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        match result {
+            Err(ClientError::Refused(message)) if message == wire::PROTOCOL_MISMATCH => {
+                Err(ClientError::Protocol(VERSION_SKEW_MESSAGE.into()))
+            }
+            Err(_) if self.transport.is_closed() => Err(ClientError::NotRunning),
+            result => result,
+        }
     }
 }
-
-fn service_error(error: ServiceError) -> ClientError {
-    match error {
-        ServiceError::McpError(error) => ClientError::Refused(error.message.into_owned()),
-        ServiceError::TransportClosed
-        | ServiceError::TransportSend(_)
-        | ServiceError::Timeout { .. } => ClientError::NotRunning,
-        other => ClientError::Protocol(other.to_string()),
+fn argument<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, ClientError> {
+    match args.get(name) {
+        Some(value) => parse(value.clone()),
+        None => parse(Value::Null).map_err(|_| {
+            ClientError::Refused(format!(
+                "failed to deserialize parameters: missing field `{name}`"
+            ))
+        }),
     }
 }
-
-fn decode_result(result: CallToolResult) -> Result<ToolResponse, ClientError> {
-    let text = result
-        .content
-        .iter()
-        .find_map(|content| content.as_text())
-        .map(|content| content.text.clone());
-    if result.is_error.unwrap_or(false) {
-        return Err(ClientError::Refused(
-            text.unwrap_or_else(|| "Runner refused the tool call.".to_owned()),
+fn parse<T: DeserializeOwned>(value: Value) -> Result<T, ClientError> {
+    serde_json::from_value(value)
+        .map_err(|error| ClientError::Refused(format!("failed to deserialize parameters: {error}")))
+}
+fn response<T: serde::Serialize>(
+    result: Result<T, runner_core::protocol::ClientError>,
+) -> Result<ToolResponse, ClientError> {
+    let value = result.map_err(|error| ClientError::Refused(error.message))?;
+    let raw_json =
+        serde_json::to_string(&value).map_err(|error| ClientError::Protocol(error.to_string()))?;
+    let value = serde_json::from_str(&raw_json)
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+    Ok(ToolResponse { value, raw_json })
+}
+pub fn call_daemon(
+    client: &DaemonClient,
+    name: &str,
+    args: Value,
+) -> Result<ToolResponse, ClientError> {
+    if !args.is_object() {
+        return Err(ClientError::Protocol(
+            "tool arguments must be a JSON object".into(),
         ));
     }
-    if let Some(raw_json) = text {
-        let value = serde_json::from_str(&raw_json)
-            .map_err(|error| ClientError::Protocol(format!("invalid tool JSON result: {error}")))?;
-        return Ok(ToolResponse { value, raw_json });
+    match name {
+        "crew_list" => response(client.crew_list_all()),
+        "crew_get" => response(client.crew_get(&argument::<String>(&args, "id")?)),
+        "crew_create" => response(client.crew_create(parse(args)?)),
+        "crew_update" => response(
+            client.crew_update(&argument::<String>(&args, "id")?, argument(&args, "input")?),
+        ),
+        "crew_delete" => {
+            let id: String = argument(&args, "id")?;
+            response(
+                client
+                    .crew_delete(&id)
+                    .map(|()| json!({"deleted": true, "id": id})),
+            )
+        }
+        "role_list" => response(client.role_list()),
+        "role_get" => response(client.role_get(&argument::<String>(&args, "id")?)),
+        "role_create" => response(client.role_create(parse(args)?)),
+        "role_update" => response(
+            client.role_update(&argument::<String>(&args, "id")?, argument(&args, "input")?),
+        ),
+        "role_delete" => {
+            let id: String = argument(&args, "id")?;
+            response(
+                client
+                    .role_delete(&id)
+                    .map(|()| json!({"deleted": true, "id": id})),
+            )
+        }
+        "slot_list" => response(client.slot_list(argument::<String>(&args, "crew_id")?.as_str())),
+        "slot_create" => response(client.slot_create(parse(args)?)),
+        "slot_update" => response(client.slot_update(
+            &argument::<String>(&args, "slot_id")?,
+            argument(&args, "input")?,
+        )),
+        "slot_delete" => {
+            let id: String = argument(&args, "slot_id")?;
+            response(
+                client
+                    .slot_delete(&id)
+                    .map(|()| json!({"deleted": true, "slot_id": id})),
+            )
+        }
+        "role_get_by_handle" => {
+            response(client.role_get_by_handle(&argument::<String>(&args, "handle")?))
+        }
+        "slot_set_lead" => response(client.slot_set_lead(&argument::<String>(&args, "slot_id")?)),
+        "slot_reorder" => response(client.slot_reorder(
+            &argument::<String>(&args, "crew_id")?,
+            argument(&args, "ordered_slot_ids")?,
+        )),
+        "project_list" => response(client.project_list()),
+        "project_get" => response(client.project_get(&argument::<String>(&args, "id")?)),
+        "project_create" => response(
+            client.project_create_checked(argument(&args, "name")?, argument(&args, "cwd")?),
+        ),
+        "project_rename" => {
+            response(client.project_rename(argument(&args, "id")?, argument(&args, "name")?))
+        }
+        "project_delete" => response(
+            client.project_delete_checked(
+                argument(&args, "id")?,
+                args.get("force")
+                    .map(|v| parse(v.clone()))
+                    .transpose()?
+                    .unwrap_or(false),
+            ),
+        ),
+        "mission_list" => response(client.mission_list(argument(&args, "crew_id")?)),
+        "mission_list_summary" => {
+            response(client.mission_list_summary_impl(argument(&args, "crew_id")?))
+        }
+        "mission_feed" => response(client.mission_feed(parse(args)?)),
+        "mission_status" => response(client.mission_status(&argument::<String>(&args, "id")?)),
+        "mission_get" => response(client.mission_get(&argument::<String>(&args, "id")?)),
+        "mission_start" => response(client.mission_start_impl_with_size(
+            parse::<runner_core::protocol::StartMissionInput>(args)?.into(),
+            None,
+        )),
+        "mission_resume" => response(client.mission_resume(&argument::<String>(&args, "id")?)),
+        "mission_set_project" => response(client.mission_set_project(
+            argument(&args, "mission_id")?,
+            argument(&args, "project_id")?,
+        )),
+        "mission_pin" => {
+            response(client.mission_pin_impl(argument(&args, "id")?, argument(&args, "pinned")?))
+        }
+        "mission_rename" => {
+            response(client.mission_rename_impl(argument(&args, "id")?, argument(&args, "title")?))
+        }
+        "session_list" => response(client.session_list_with_activity()),
+        "session_get" => {
+            response(client.session_get_with_status(&argument::<String>(&args, "session_id")?))
+        }
+        "session_start_direct" => response(client.session_start_chat(parse(args)?)),
+        "mission_stop" => response(client.mission_stop_impl(argument(&args, "id")?)),
+        "mission_archive" => response(client.mission_archive_impl(argument(&args, "id")?)),
+        "mission_unarchive" => response(client.mission_unarchive_impl(argument(&args, "id")?)),
+        "mission_post" => response(client.mission_post_impl(parse(args)?)),
+        "mission_signal" => response(client.mission_signal_impl(parse(args)?)),
+        "session_resume" => {
+            response(client.session_resume(&argument::<String>(&args, "session_id")?, None, None))
+        }
+        "session_restart" => {
+            response(client.session_restart(&argument::<String>(&args, "session_id")?, None, None))
+        }
+        "session_stop" => {
+            let id: String = argument(&args, "session_id")?;
+            response(client.session_stop(&id).map(|()| json!({"session_id": id})))
+        }
+        "session_archive" => {
+            let id: String = argument(&args, "session_id")?;
+            response(
+                client
+                    .session_archive_direct(&id)
+                    .map(|()| json!({"session_id": id})),
+            )
+        }
+        _ => Err(ClientError::Refused("tool not found".into())),
     }
-    if let Some(value) = result.structured_content {
-        let raw_json = serde_json::to_string(&value)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        return Ok(ToolResponse { value, raw_json });
-    }
-    Ok(ToolResponse {
-        value: Value::Null,
-        raw_json: "null".to_owned(),
-    })
-}
-
-pub fn arguments(value: Value) -> Result<JsonObject, ClientError> {
-    value
-        .as_object()
-        .cloned()
-        .ok_or_else(|| ClientError::Protocol("tool arguments must be a JSON object".to_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmcp::handler::server::ServerHandler;
-    use rmcp::model::{CallToolResult, Content, ServerInfo};
-    use rmcp::{tool, tool_handler, tool_router, ErrorData};
-
-    #[derive(Clone)]
-    struct Stub;
-
-    #[tool_router]
-    impl Stub {
-        #[tool(description = "Echo arguments.")]
-        async fn echo(
-            &self,
-            rmcp::handler::server::wrapper::Parameters(input): rmcp::handler::server::wrapper::Parameters<
-                std::collections::HashMap<String, String>,
-            >,
-        ) -> Result<CallToolResult, ErrorData> {
-            Ok(CallToolResult::success(vec![Content::json(input)?]))
-        }
-    }
-
-    #[tool_handler]
-    impl ServerHandler for Stub {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn shared_call_path_works_over_a_duplex_rmcp_server() {
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-        let server = tokio::spawn(async move { Stub.serve(server_stream).await.unwrap() });
-        let client = ().serve(client_stream).await.unwrap();
-        let request = CallToolRequestParams::new("echo")
-            .with_arguments(arguments(serde_json::json!({"value": "wire"})).unwrap());
-        let response = decode_result(client.peer().call_tool(request).await.unwrap()).unwrap();
-        assert_eq!(response.value, serde_json::json!({"value": "wire"}));
-        drop(client);
-        drop(server.await.unwrap());
-    }
-
     #[test]
-    fn json_is_preserved_and_tool_errors_are_refusals() {
-        let response = decode_result(CallToolResult::success(vec![Content::text(
-            r#"{"id":"01","name":"Runner"}"#,
-        )]))
-        .unwrap();
-        assert_eq!(response.raw_json, r#"{"id":"01","name":"Runner"}"#);
-        assert_eq!(response.value["id"], "01");
-
-        let error =
-            decode_result(CallToolResult::error(vec![Content::text("refused")])).unwrap_err();
-        assert_eq!(error, ClientError::Refused("refused".into()));
+    fn denied_existing_endpoint_is_blocked() {
         assert_eq!(
-            service_error(ServiceError::McpError(ErrorData::invalid_request(
-                "bad request",
-                None,
-            ))),
-            ClientError::Refused("bad request".into())
+            connect_failure(std::io::ErrorKind::PermissionDenied, true),
+            ClientError::Blocked
+        );
+        assert_eq!(
+            connect_failure(std::io::ErrorKind::PermissionDenied, false),
+            ClientError::NotRunning
+        );
+        assert_eq!(
+            connect_failure(std::io::ErrorKind::NotFound, false),
+            ClientError::NotRunning
         );
     }
 }
 
-#[cfg(test)]
-mod connect_failure_tests {
+#[cfg(all(test, unix))]
+mod skew_tests {
     use super::*;
-    use std::io::ErrorKind;
+    use wire::Frame;
 
-    #[test]
-    fn a_denied_connection_to_an_existing_socket_is_blocked_not_stopped() {
-        assert_eq!(
-            connect_failure(ErrorKind::PermissionDenied, true),
-            ClientError::Blocked
-        );
-        assert_eq!(ClientError::Blocked.to_string(), BLOCKED_MESSAGE);
-    }
-
-    #[test]
-    fn every_other_connect_failure_still_means_not_running() {
-        for kind in [
-            ErrorKind::NotFound,
-            ErrorKind::ConnectionRefused,
-            ErrorKind::TimedOut,
-        ] {
-            assert_eq!(connect_failure(kind, true), ClientError::NotRunning);
-        }
-        assert_eq!(
-            connect_failure(ErrorKind::PermissionDenied, false),
-            ClientError::NotRunning
-        );
+    #[tokio::test]
+    async fn old_daemon_without_version_request_reports_restart_instead_of_not_running() {
+        let root = tempfile::tempdir().unwrap();
+        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let hello: wire::Hello = Frame::read(&mut stream).unwrap().decode().unwrap();
+            assert!(hello.exe_sha256.is_empty());
+            Frame::json(
+                wire::WELCOME,
+                &wire::Welcome {
+                    exe_sha256: "old".into(),
+                    pid: 1,
+                    started_at: "now".into(),
+                },
+            )
+            .unwrap()
+            .write(&mut stream)
+            .unwrap();
+            let call: wire::Call = Frame::read(&mut stream).unwrap().decode().unwrap();
+            assert!(matches!(
+                call.request,
+                runner_core::protocol::Request::app_version { .. }
+            ));
+        });
+        let error = SocketClient::connect_endpoint(endpoint)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error, ClientError::Protocol(VERSION_SKEW_MESSAGE.into()));
+        server.join().unwrap();
     }
 }

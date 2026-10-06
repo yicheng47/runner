@@ -21,7 +21,7 @@ flowchart TB
         manager <--> terminal
     end
     store <-->|"runnerd.sock: requests, events, snapshots and bytes"| core
-    cli["runner CLI"] <-->|"mcp.sock"| core
+    cli["runner CLI"] <-->|"runnerd.sock: typed requests and pushed events"| core
     cli -->|"mission appends"| log["events.ndjson"]
     log --> core
     manager <-->|"local PTY"| child["Agent / shell and descendants"]

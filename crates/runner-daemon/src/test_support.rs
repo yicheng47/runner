@@ -7,7 +7,6 @@ use rusqlite::Connection;
 use crate::db;
 use crate::event_bus::BusRegistry;
 use crate::events::EventChannel;
-use crate::mcp::McpHandle;
 use crate::router::RouterRegistry;
 use crate::session::runtime::{
     OutputStream, RuntimeError, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
@@ -65,7 +64,6 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         buses: BusRegistry::new(),
         routers: RouterRegistry::new(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
-        mcp: Arc::new(McpHandle::new()),
         windows: Arc::new(WindowRegistry::new()),
         events: EventChannel::new(),
         session_event_observer: Default::default(),

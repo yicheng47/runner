@@ -234,6 +234,62 @@ record!(Mission {
     archived_at
 });
 variant!(MissionActivityState => Self::Busy);
+variant!(MissionFeedOrder => Self::OldestFirst);
+record!(MissionFeedArgs {
+    mission_id,
+    limit,
+    order,
+    since_offset
+});
+record!(MissionFeed {
+    mission_id,
+    events,
+    next_offset,
+    skipped
+});
+record!(MissionFeedEntry { next_offset, event });
+record!(SkippedEventLine {
+    offset,
+    next_offset,
+    error
+});
+record!(MissionStatusSnapshot {
+    mission,
+    crew,
+    sessions,
+    latest_session_status_by_handle,
+    pending_asks,
+    pending_ask_count,
+    live_session_count,
+    stopped_session_count,
+    crashed_session_count,
+    recent_warnings,
+    last_event_id,
+    last_event_offset,
+    skipped_event_count
+});
+record!(SessionStatusSnapshot {
+    state,
+    event_id,
+    ts,
+    source
+});
+record!(PendingAskSnapshot {
+    question_id,
+    asker,
+    prompt,
+    choices,
+    on_behalf_of,
+    event_id,
+    ts
+});
+record!(MissionWarningSnapshot {
+    event_id,
+    ts,
+    from,
+    message,
+    payload
+});
 record!(MissionStart {
     crew_id,
     scope,
@@ -299,6 +355,11 @@ record!(ProjectRow {
 });
 variant!(ProjectScope => Self::Infer);
 variant!(RefreshReason => Self::Launch);
+record!(ResumeMissionOutput {
+    mission_id,
+    resumed_session_ids,
+    sessions
+});
 record!(Role {
     id,
     handle,
@@ -441,6 +502,15 @@ record!(SpawnedSession {
 });
 record!(StartDirectSessionOutput {
     session,
+    project_id,
+    cwd
+});
+record!(StartDirectSessionArgs {
+    role_id,
+    runtime,
+    model,
+    effort,
+    speed,
     project_id,
     cwd
 });

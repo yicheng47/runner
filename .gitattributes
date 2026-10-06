@@ -3,6 +3,7 @@ crates/runner-daemon/src/session/manager/tests/expectations/*.json text eol=lf
 crates/runner-app/src/expectations/*.json text eol=lf
 tests/fixtures/system-prompts/*.md text eol=lf
 crates/runner-terminal/fixtures/*.txt text eol=lf
+crates/runner-cli/tests/goldens/cli.txt text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 make.cmd text eol=crlf
 crates/runner-daemon/src/session/fixtures/scenarios/**/*.ndjson text eol=lf
 crates/runner-daemon/src/session/fixtures/expectations/**/*.txt text eol=lf

@@ -94,7 +94,7 @@ START AND WATCH (REQUIRED)
   while idle. An unread background log or a completion-only notification is not a watch.
   Plain mission start still returns its result and exits; it does not block on watching.
   Surface handoffs, human questions, completion, stop/crash and lost connections promptly.
-  Polling is every 3 seconds; each event is flushed immediately, without notification batching.
+  The daemon pushes new events; each event is flushed immediately, without notification batching.
   Routine busy/idle and inbox noise stays hidden by default; do not add --all for a watch.
   The follower ends on archive, completed/aborted mission state, or all sessions exiting.
   Busy/idle and a crew message saying "done" do not end a live mission. Resume needs a new watch.

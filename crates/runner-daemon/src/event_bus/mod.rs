@@ -86,6 +86,7 @@ impl BusEmitter for ChannelBusEvents {
 #[derive(Debug, Clone, Serialize)]
 pub struct AppendedEvent {
     pub mission_id: String,
+    pub next_offset: u64,
     pub event: Event,
 }
 
@@ -316,6 +317,7 @@ impl BusState {
 
             emitter.appended(&AppendedEvent {
                 mission_id: self.mission_id.clone(),
+                next_offset: entry.next_offset,
                 event: event.clone(),
             });
 
@@ -587,6 +589,17 @@ mod tests {
         wait_until(1000, || cap.appended.lock().unwrap().len() == 2);
         let appended = cap.appended.lock().unwrap();
         assert_eq!(appended.len(), 2);
+        let expected = log.read_from_lossy(0).unwrap().0;
+        assert_eq!(
+            appended
+                .iter()
+                .map(|entry| entry.next_offset)
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|entry| entry.next_offset)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             appended[0].event.signal_type.as_ref().unwrap().as_str(),
             "mission_start"

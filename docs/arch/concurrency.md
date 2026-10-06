@@ -13,7 +13,7 @@ Runner.app
 
 runnerd (one per app-data directory)
 ├── AppCore: SQLite pool, SessionManager, buses, routers, usage and discovery
-├── runner-ipc tokio runtime: runnerd.sock client protocol and mcp.sock CLI transport
+├── runner-ipc tokio runtime: runnerd.sock client protocol and accept-and-close older-app sentinel
 ├── per-session threads: PTY reader, idle detector, forwarder, terminal events and input
 ├── per-mission threads: event bus, inbox reconciliation and router timers
 └── startup/version/usage helpers
@@ -28,9 +28,9 @@ Production and development data each have their own daemon. The app and CLI use 
 
 GPUI’s foreground executor owns every UI entity. Its background executor sends blocking typed requests through `DaemonClient`; render reads `AppStore` and mirrors only. The socket reader publishes runtime-neutral events and terminal frames, which GPUI tasks turn into entity updates and batched wakes. No app code reaches the daemon’s SQLite or session manager directly.
 
-Tokio owns the daemon’s two socket servers. Requests reach the same `AppCore` through synchronous `ops` functions; process and network waits run in its blocking pool. The daemon’s ordinary threads share the SQLite pool, manager and terminal registry through `Arc`, mutexes and channels. The app shares no address space with them.
+Tokio owns the daemon’s client-protocol server and older-app sentinel. Requests reach the same `AppCore` through synchronous `ops` functions; process and network waits run in its blocking pool. The daemon’s ordinary threads share the SQLite pool, manager and terminal registry through `Arc`, mutexes and channels. The app shares no address space with them.
 
-The CLI uses a current-thread runtime for one MCP call and exits. Inside a mission, messages and signals append directly to `events.ndjson`; the daemon’s watcher and router continue consuming those writes while the app is closed.
+The CLI uses a current-thread runtime, runs typed `DaemonClient` calls in the blocking pool, and receives pushed feed events when following a mission. Inside a mission, messages and signals append directly to `events.ndjson`; the daemon’s watcher and router continue consuming those writes while the app is closed.
 
 ## Terminal threads
 

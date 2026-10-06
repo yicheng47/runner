@@ -69,6 +69,10 @@ pub fn mcp_endpoint(app_data_dir: &Path, debug: bool) -> IpcEndpoint {
     #[cfg(windows)]
     {
         let _ = app_data_dir;
+        #[cfg(debug_assertions)]
+        if let Some(endpoint) = std::env::var_os("RUNNER_TEST_MCP_ENDPOINT") {
+            return IpcEndpoint(endpoint.into());
+        }
         IpcEndpoint(PathBuf::from(format!(
             r"\\.\pipe\{}",
             app_identifier(debug)
@@ -85,6 +89,10 @@ pub fn daemon_endpoint(app_data_dir: &Path, debug: bool) -> IpcEndpoint {
     #[cfg(windows)]
     {
         let _ = app_data_dir;
+        #[cfg(debug_assertions)]
+        if let Some(endpoint) = std::env::var_os("RUNNER_TEST_DAEMON_ENDPOINT") {
+            return IpcEndpoint(endpoint.into());
+        }
         IpcEndpoint(PathBuf::from(if debug {
             r"\\.\pipe\com.wycstudios.runnerd-dev"
         } else {
