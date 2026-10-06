@@ -135,20 +135,29 @@ impl Launch {
         command.spawn()
     }
     pub fn connect_or_spawn(&self, hash: &str) -> Result<Arc<SocketTransport>, ConnectError> {
+        self.connect_or_spawn_with_restart(hash)
+            .map(|(client, _)| client)
+    }
+    pub fn connect_or_spawn_with_restart(
+        &self,
+        hash: &str,
+    ) -> Result<(Arc<SocketTransport>, bool), ConnectError> {
+        let mut restarted = false;
         let hello = || Hello {
             exe_sha256: hash.to_owned(),
             client: if self.app { "app" } else { "cli" }.into(),
         };
         match SocketTransport::connect(&self.daemon_endpoint, hello()) {
-            Ok(client) => return Ok(client),
+            Ok(client) => return Ok((client, restarted)),
             Err(ConnectError::NotRunning | ConnectError::Mismatch(_)) => (),
             Err(error) => return Err(error),
         }
         let _starter = startup_lock(&self.paths.app_data_dir)
             .map_err(|error| ConnectError::Protocol(format!("runnerd startup lock: {error}")))?;
         match SocketTransport::connect(&self.daemon_endpoint, hello()) {
-            Ok(client) => return Ok(client),
+            Ok(client) => return Ok((client, restarted)),
             Err(ConnectError::Mismatch(_)) if self.app => {
+                restarted = true;
                 let old = SocketTransport::connect(
                     &self.daemon_endpoint,
                     Hello {
@@ -178,7 +187,7 @@ impl Launch {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             match SocketTransport::connect(&self.daemon_endpoint, hello()) {
-                Ok(client) => return Ok(client),
+                Ok(client) => return Ok((client, restarted)),
                 Err(ConnectError::NotRunning) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20))
                 }

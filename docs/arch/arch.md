@@ -6,69 +6,42 @@ For new agent support, use the [runtime integration checklist](runtime-integrati
 
 ## 1. Overview
 
-Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. The app is one native process: a GPUI user interface, a Rust application core (`crates/runner-daemon`), an `alacritty_terminal` grid per live session, SQLite for configuration, and a per-mission NDJSON file for live coordination state. There is no webview, no IPC bridge, and no serialization between the PTY and the screen.
+Runner is a local desktop app for macOS and Windows. A user configures a **crew** of CLI coding agents, launches a **mission** to activate it, and watches the crew coordinate in real time. Three processes separate presentation from session lifetime: the GPUI app, `runnerd` (`crates/runner-daemon`) and the bundled `runner` CLI. The daemon owns SQLite, PTYs, mission routers and an authoritative `alacritty_terminal` grid per live session. The app sends requests over `runnerd.sock` and paints terminal mirrors; the CLI uses the daemon’s MCP socket. Per-mission NDJSON remains the coordination record.
 
 ### 1.1 Runtime picture
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Runner.app — one process                                                     │
-│                                                                              │
-│  UI (crates/runner-app, GPUI main thread)                                    │
-│   windows · sidebar · tabs/panes · mission workspace + feed · settings       │
-│   terminal element paints each pane's grid; keys/IME/mouse → PTY input       │
-│          ▲ wake + AppEvents                       ▲ grid            │ bytes  │
-│          │                                        │                 ▼        │
-│  ┌───────┴────────────┐        ┌──────────────────┴──────────────────────┐   │
-│  │ AppStore           │        │ TerminalBridge registry                 │   │
-│  │  snapshots of rows │        │  (crates/runner-terminal)               │   │
-│  │  + reactions       │        │  one alacritty Term per live session,   │   │
-│  └───────▲────────────┘        │  fed raw bytes on the ingestion thread  │   │
-│          │ AppEvent broadcast  └──────────────────▲──────────────────────┘   │
-│          │ (mission/changed, session/*, …)        │ SessionEvents::output    │
-│  ════════╪════════════════════════════════════════╪══════════════════════    │
-│  Core (crates/runner-daemon, AppCore)            │                          │
-│   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
-│   │ EventBus         │  │ Router       │  │ SessionManager             │     │
-│   │  notify tailer   │─►│  handlers    │─►│  PTY runtime (hot path)    │     │
-│   │  per mission     │  │  delivery    │  │  spawn/kill/resume, reader │     │
-│   │  + projections   │  │  gate/outbox │  │  threads, writers, sizes   │     │
-│   └──────▲───────────┘  └──────────────┘  └───────┬────────────────────┘     │
-│          │                                         │ PTY master             │
-│   ┌──────┴───────────┐  ┌──────────────┐  ┌───────┴────────────────────┐     │
-│   │ events.ndjson    │◄─│ MissionMgr   │  │ child: claude-code / codex │     │
-│   │  per mission     │  │ (ops::mission│  │   / trae / copilot / pi /  │     │
-│   └──────▲───────────┘  │  lifecycle)  │  │   agy / shell              │     │
-│          │ flock append └──────────────┘  │  env: RUNNER_*, PATH=…     │     │
-│          │                                └───────┬────────────────────┘     │
-│          └────────────────────────────────────────┘ runs `runner` CLI        │
-│                                                                              │
-│   MCP server (rmcp, Unix socket $APPDATA/mcp.sock) ◄── runner CLI transport                    │
-│   SQLite runner.db (rusqlite + r2d2, WAL) — config + session lifecycle, off the hot path │
-└──────────────────────────────────────────────────────────────────────────────┘
+```text
+Runner.app ── requests/input/resize ──► runnerd ── PTY ──► agent / shell children
+           ◄─ events/snapshots/bytes ──        ◄─ hooks ──
+AppStore + terminal mirrors             AppCore + authoritative terminal models
+GPUI windows and panes                  SQLite, SessionManager, buses, routers
+            runnerd.sock                         mcp.sock ◄── runner CLI
 ```
 
-**Three layers inside the box.**
+See [Process model](process-model.md) for ownership, workers and data paths.
 
-*Orchestration (lifecycle only).* **MissionManager** (`ops::mission`) starts, stops, archives and resets missions, composes each role's system prompt at spawn, and re-mounts router + bus state for `running` missions on launch. Once a mission is up it goes quiet; it is not in the runtime data path.
+
+**Three layers across the app and daemon.**
+
+*Orchestration (lifecycle only).* **MissionManager** (`ops::mission`) starts, stops, archives and resets missions, composes each role's system prompt at spawn, and re-mounts router + bus state for `running` missions on daemon launch. Once a mission is up it goes quiet; it is not in the runtime data path.
 
 *Runtime (the hot path).* **SessionManager** owns each PTY master, the blocking reader thread, the serialized writer, the idle detector and the session's last applied size. **EventBus** tails the per-mission NDJSON file with `notify`, parses each new line, hands it to the **Router** for handler dispatch and republishes a `mission/changed` notification for the UI. "Projections" — inbox, pending HITL cards, status map — are in-memory rollups over the same event stream.
 
-*Presentation (the app crate).* **`AppStore`** holds read snapshots of the rows the UI renders and turns `AppEvent`s into scoped GPUI notifications. **`TerminalBridge`** (in `crates/runner-terminal`) owns one `alacritty_terminal::Term` per live session for the session's lifetime; panes borrow the terminal, they never own it. The terminal element paints the grid, and keys, IME composition and mouse events go straight back to the PTY writer.
+*Presentation (the app crate).* **`AppStore`** holds read snapshots of the rows the UI renders and turns `AppEvent`s into scoped GPUI notifications. **`TerminalBridge`** (in `crates/runner-terminal`) maintains app-side terminal mirrors. The daemon’s authoritative model parses output, answers terminal queries and derives draft observations even without a client. The terminal element paints its mirror; keys, IME and mouse events encode locally and go to the daemon’s ordered input worker.
 
 *Agent usage.* The backend `usage` module keeps Claude Code and Codex plan windows in memory and emits `usage/updated` for the sidebar popover. On macOS it reads Claude Code's OAuth token through `/usr/bin/security`, the same Keychain tool Claude Code uses, so no prompt is expected; elsewhere it reads `~/.claude/.credentials.json`. It then calls Anthropic's usage endpoint through the captured login-shell proxy. Codex usage comes from the effective CLI's `app-server` JSON-RPC interface. Fetches run on background threads; the module does not write credentials or persist usage.
 
 *Agent updates.* Sessions never prompt to update their CLI: Codex gets `-c check_for_update_on_startup=false`, Claude Code gets `DISABLE_INSTALLATION_CHECKS=1` and `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1`, Copilot gets `--no-auto-update`, pi gets `PI_SKIP_VERSION_CHECK=1` ([#475](../features/archive/475-codex-auto-update.md)). Antigravity CLI updates itself in the background at launch with no opt-out, and a running session keeps its version, so Runner leaves it alone ([#644](../features/archive/644-antigravity-runtime.md) decision 7). The update signal lives in Settings → Agents instead ([#533](../features/archive/533-agent-cli-updates.md)). `runtime_status::versions` records the first semver token of `<effective command> --version`, probed off the UI thread with a five-second timeout when discovery completes, on Refresh, on an override change and after an update exits, and compares it with the npm dist-tag the runtime's own updater follows (`latest`, or `stable` when Claude Code's `autoUpdatesChannel` says so), fetched through the usage module's proxy-aware client and cached for six hours per app run. A check asked for while discovery is still resolving executables waits for it; a failed check drops the answer, so the row shows its version alone. Only the newest probe and the newest npm check per runtime store their results, so an override set during a probe, a channel switched during a check, or a later forced run supersedes the older one. Antigravity CLI's row shows the bare semver `agy --version` prints and never offers Update: agy is not on npm, so its definition names no package and no update arguments. The Update button runs the runtime's own update command (`claude update`, `codex update`, `copilot update`, `pi update`) in a modal terminal. Its PTY is an unlisted process in the SessionManager, spawned by `spawn_unlisted`: it has no `sessions` row and reports only to the modal, so it never reaches the sidebar, tabs, archive, relaunch or any session list, and it gets the agent environment without Runner's layers, with the home directory as cwd.
 
-**Two channels out of the core, deliberately different.** Terminal bytes take the synchronous path: the PTY reader thread calls `SessionEvents::output` and the bridge feeds the session's `Term` under its lock — no queue, no encoding, nothing to lag. Everything else (row changes, mission events, session lifecycle, router warnings) goes through a `tokio::sync::broadcast` of `AppEvent`s consumed by the `native-app-events` thread, which updates `AppStore` and wakes GPUI. Names in use today: `mission/changed`, `mission/resync`, `session/spawned`, `session/exit`, `session/updated`, `session/archived`, `session/status`, `session/warning`, `role/changed`, `role/activity`, `crew/changed`, `slot/changed`, `project/changed`, `chat/layout-changed`, `router/delivery-blocked`, `usage/updated`, `app/woke`.
+**Two channels out of the daemon.** Numbered terminal bytes and snapshots use binary client-protocol frames; raw output is queued to clients before the authoritative model parses it. Slow clients resync without slowing agents. Row changes, mission events and status flow through the `AppEvent` broadcast and the socket to `AppStore`. Neither path changes the mission log.
 
-**One session.** The session row is one slot's PTY process: SessionManager holds the master file descriptor; the child runs the agent binary with a real tty on stdin/stdout/stderr. The env vars are what make the bundled `runner` CLI work inside that child — when the agent runs `runner msg post …`, the CLI reads `RUNNER_MISSION_ID` + `RUNNER_EVENT_LOG` from its environment, builds the JSON line, and `flock`-appends to the right file. No daemon, no socket; the CLI opens the file directly.
+**One session.** The session row is one slot's PTY process: SessionManager holds the master file descriptor; the child runs the agent binary with a real tty on stdin/stdout/stderr. The env vars are what make the bundled `runner` CLI work inside that child — when the agent runs `runner msg post …`, the CLI reads `RUNNER_MISSION_ID` + `RUNNER_EVENT_LOG` from its environment, builds the JSON line, and `flock`-appends to the right file. That append needs no socket; the daemon’s bus watches the file.
 
 **Closing the loop.** Child invokes `runner` CLI → CLI appends a line to `events.ndjson` → `notify` wakes the EventBus → the line goes to (a) the Router and (b) the UI as `mission/changed`. If a handler needs to wake a session, it writes bytes into that session's PTY through SessionManager's writer. The bus is the spine: all coordination flows through one append-only file, which is why it's debuggable with `tail -f | jq`.
 
 **What's not in the hot path.** SQLite holds configuration and session-lifecycle metadata (roles, crews, slots, projects, the sidebar tree, mission rows, session rows with PID, runtime metadata and last size). Live coordination state lives in the NDJSON file or in the router's memory; live screen state lives in the `Term`s.
 
-**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is a writer to it (the `runner` CLI; the router for `human_question` / `mission_warning`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it. On restart Runner re-opens the file and reconstructs router/feed projections from replay. PTY children do not survive app restart; their rows become resumable stopped sessions, and sessions flagged `resume_on_launch` are re-spawned at startup.
+**The invariant this picture encodes.** There is exactly one piece of mutable shared state per mission: `events.ndjson`. Every other component is a writer to it (the `runner` CLI; the router for `human_question` / `mission_warning`), a reader of it (EventBus → router + UI), or a per-session PTY pipeline that doesn't touch it. On restart Runner re-opens the file and reconstructs router/feed projections from replay. PTY children survive app restart when Keep running is chosen. Daemon restart demotes stale rows, sweeps orphans and resumes stamped sessions.
 
 ### 1.2 Code map
 
@@ -95,16 +68,16 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 
 | Layer | Choice | Why |
 |---|---|---|
-| UI framework | **GPUI** (`gpui-pre` 0.3.7, `zed@1a28cff`, Metal / DirectX) | A crates.io snapshot of upstream Zed's retained-mode Rust UI: entities + elements, one process with the core, native text shaping and IME. Replaced Tauri + React in the 2026-08 rewrite. |
+| UI framework | **GPUI** (`gpui-pre` 0.3.7, `zed@1a28cff`, Metal / DirectX) | A crates.io snapshot of upstream Zed's retained-mode Rust UI: entities + elements, native text shaping and IME, with the application core in `runnerd`. Replaced Tauri + React in the 2026-08 rewrite. |
 | Terminal model | **`alacritty_terminal` 0.26** | Grid, VTE parser, scrollback with reflow, selection, mouse/alt-screen modes. The same model Zed embeds. |
 | Terminal renderer | custom GPUI element (`runner-app/src/terminal/element.rs`) | Walks the `Term` grid per frame, shapes runs through GPUI's text system; bundled JetBrainsMono Nerd Font Mono is the default face, Menlo the alternative. |
-| Application core | **Rust** crate `runner-daemon`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The same crate could host another front end; the app crate is a consumer. |
-| PTY runtime | **`portable-pty`** (in-process) | One blocking OS thread per session reads the master; writes are serialized per session. |
+| Application core | **Rust** crate `runner-daemon`, UI-agnostic | SQLite, session manager, event bus, router, MCP server. The daemon serves the app’s client protocol and the CLI’s MCP transport. |
+| PTY runtime | **`portable-pty`** (inside `runnerd`) | One blocking OS thread per session reads the master; writes are serialized per session. |
 | Persistence | **SQLite via `rusqlite`** + `r2d2` pool, WAL | Config + session lifecycle only. Migrations in `crates/runner-daemon/migrations/` (0001–0023). |
 | Event transport | **Append-only NDJSON per mission** | Tailable, crash-durable, replayable; `flock(LOCK_EX)` for cross-process append atomicity. |
 | File watching | **`notify`** | The bus tails the NDJSON file and republishes lines. |
 | Bundled CLI | **`runner`** (`crates/runner-cli/`) | Agents talk to the bus through it — `runner signal …`, `runner msg post …`, `runner msg read`. Dropped at `$APPDATA/bin/runner` on first run, PATH-prepended per spawn. |
-| MCP | **`rmcp`** server over local IPC | Runner.app owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); the bundled CLI uses `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows as its transport. |
+| MCP | **`rmcp`** server over local IPC | `runnerd` owns stateful tool execution (crews, roles, slots, projects, missions, direct sessions); the bundled CLI uses `$APPDATA/mcp.sock` on Unix or `\\.\pipe\com.wycstudios.runner[-dev]` on Windows as its transport. |
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUStandardUpdaterController`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
@@ -215,7 +188,7 @@ A session owns, in the core:
 - A serialized writer for stdin (the human's keystrokes, pastes, and the router's injections all go through it).
 - Its last applied PTY size (`last_cols`/`last_rows` on the row, the latest measurement in memory) and an exit status once the child has terminated.
 
-And, in the app: one `alacritty_terminal::Term` in the `TerminalBridge` registry, created when the session spawns and released when it exits or is archived (§5.5). There is no separate scrollback buffer — the `Term` *is* the screen and the history.
+The daemon owns an authoritative `alacritty_terminal::Term` until the session exits. The app’s `TerminalBridge` owns an attached mirror restored from a snapshot and numbered live output (§5.5). Each `Term` holds its own screen and scrollback.
 
 A session is the only object in the system that actually *executes* code — everything else is metadata, a coordination channel, or a projection over the event log.
 
@@ -312,36 +285,34 @@ A **pseudo-terminal (PTY)** is a kernel-emulated terminal device. To the child i
 
 ### 5.1 Topology at a glance
 
-Output (agent → screen + idle inference):
+Output (agent → screen + status):
 
-```
-   Child ──► PTY slave ──► PTY master ──► Reader thread ─┬─► SessionEvents::output
-   (tty stdout                            (blocking      │     └─► TerminalBridge ─► the session's Term
-    + stderr)                              OS thread)    │            (alacritty, 10,000-line scrollback)
-                                                         │            └─► wake GPUI if a pane is viewing it
-                                                         └─► Idle detector ─► session_status (forwarder)
+```text
+child → PTY reader → daemon manager forwarder
+                       ├─ numbered bytes → client queue → app TerminalMirror → GPUI
+                       └─ authoritative TerminalModel → draft observations
+hooks / idle detector → daemon session state → events → app AppStore
 ```
 
 Input (UI + router → agent):
 
-```
-   terminal element (keys, IME, paste, mouse) ──► TerminalSession ─┐
-     direct chats: inline write                                     ├─► per-session writer ──► PTY master ──► child
-     mission panes: queued input worker (off the render thread)     │
-   Router (launch prompt, ask_lead, human_response, inbox nudges) ──┘
-```
-
-The PTY master is the hinge: held by SessionManager, written to by the serialized writer, read from by the blocking reader thread. Bus side, orthogonal to the PTY:
-
-```
-   Child ──► `runner` CLI on PATH ──► events.ndjson ──► notify ──► EventBus ──► Router ──► back to the writer on wake-up signals
+```text
+GPUI element → mirror key/IME/mouse encoding → input frame → daemon input queue ─┐
+Router (prompts, human responses, inbox nudges) → reserved delivery path ────────┼→ PTY writer → child
+TerminalModel query replies → terminal-event worker ──────────────────────────┘
 ```
 
-The whole system runs many of these side-by-side — one per slot per live mission, plus one per active direct chat — each with its own reader thread, writer, idle detector and `Term`.
+PtyRuntime holds the master and serialized writer in `runnerd`. Bus-side coordination continues independently of an app connection:
+
+```text
+child → runner CLI → events.ndjson → daemon EventBus → Router → delivery writer
+```
+
+Each live session has its own daemon reader, writer, idle detector and authoritative `Term`; attached app panes use mirrors. [Process model](process-model.md) covers their channel and snapshot boundaries.
 
 ### 5.2 Why PTY (not pipes) and why alacritty
 
-Claude Code, Codex, TRAE CLI, GitHub Copilot CLI, pi, and Antigravity CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains. Runner feeds each chunk to the `Term`'s VTE parser itself (`TerminalSession::feed_output`) instead of running alacritty's `EventLoop`, so it also services the parser's synchronized-update deadline, which that loop would otherwise own: vte holds everything between `ESC[?2026h` and `ESC[?2026l` and only records when to give up waiting for the end marker, so a per-session flusher applies a held update 150 ms after its last begin marker and logs the flush at info level (#647).
+Claude Code, Codex, TRAE CLI, GitHub Copilot CLI, pi, and Antigravity CLI are TUIs. They check `isatty()`; if false they degrade. Their output is escape sequences that only a terminal emulator can render. The PTY gives the child a real terminal; `alacritty_terminal` gives Runner a correct emulator — grid, VTE parser, alt screen, scrollback reflow, selection, mouse reporting modes — without reinventing one. GPUI paints the grid it maintains. Runner feeds each chunk to the `Term`'s VTE parser itself (`TerminalModel::feed_output` in the daemon and `TerminalMirror::feed_output` in the app) instead of running alacritty's `EventLoop`, so it also services the parser's synchronized-update deadline, which that loop would otherwise own: vte holds everything between `ESC[?2026h` and `ESC[?2026l` and only records when to give up waiting for the end marker, so a per-session flusher applies a held update 150 ms after its last begin marker and logs the flush at info level (#647).
 
 ### 5.3 Spawn
 
@@ -384,7 +355,7 @@ Reader thread (blocking):
 
 The hook prints `ESC ] 7 ; file://<percent-encoded $PWD> ST` at each prompt, with an empty host: it only runs in a local shell, and a hostname read at shell start goes stale when the network changes it. When the user's configuration already sends OSC 7 (a prompt hook, a function one calls, or the prompt string, found by a bounded transitive scan), the hook removes itself. It rescans whenever the hook lists or the prompt strings change. Agent sessions, role-backed shell chats, mission slots, other shells and Windows get no injection.
 
-On the terminal side, `TerminalSession` scans the raw output of `shell`-runtime sessions for OSC 7 before `vte` parses it, since `vte` drops the sequence. The scan carries a cut-off introducer or report across chunks and ends a report at BEL or ST. It keeps the last report whose host is this machine and whose path is absolute as the session's live cwd. `live_cwd()` offers that cwd only while it is a directory. A terminal split and New terminal start from it (§3.6), and relative file links try it before the spawn cwd. The terminal drawer is unchanged: its source is the tab's chat.
+On the terminal side, The terminal model and mirror scan the raw output of `shell`-runtime sessions for OSC 7 before `vte` parses it, since `vte` drops the sequence. The scan carries a cut-off introducer or report across chunks and ends a report at BEL or ST. It keeps the last report whose host is this machine and whose path is absolute as the session's live cwd. `live_cwd()` offers that cwd only while it is a directory. A terminal split and New terminal start from it (§3.6), and relative file links try it before the spawn cwd. The terminal drawer is unchanged: its source is the tab's chat.
 
 The composed prompt is split into the runtime's system-prompt and first-turn channels in `router/prompt.rs`, then delivered by the adapter in `runtimes/<name>/`. Claude Code, Codex, TRAE and Copilot preserve their existing byte-identical first turns: a positional argument where accepted, `-i <body>` for Copilot and Antigravity, or a verified paste after a Windows batch wrapper is ready; genuine resumes suppress that first turn. Pi instead receives `--append-system-prompt <app data>/session-prompts/<Runner session id>.md` on every fresh spawn and resume. Runner rewrites that file from the current role, crew and roster rows before each spawn, removes it when the session ends, and sweeps leftovers at startup. A Pi direct chat and worker have no first turn; only the lead's `== Mission ==` section follows `--` as its first turn.
 
@@ -396,9 +367,9 @@ Restart records a human `slot_restarted` signal followed by a `runner` message a
 
 ### 5.4 Native wiring and human takeover
 
-- The terminal element renders the session's `Term` from the registry; a pane that mounts late simply paints the grid as it is — there is no history fetch.
+- The terminal element renders its attached mirror’s `Term`. A pane that mounts late first restores the daemon’s snapshot, then follows numbered output; paint reads only the local grid.
 - Keys are encoded from the `Term`'s mode (application cursor keys, bracketed paste, ⌥ as Meta, and, once an app has pushed the kitty keyboard protocol's disambiguate level, Esc and the ambiguous chords such as Shift/Alt+Enter and Alt/Ctrl+letter as `CSI code;mods u` in place of `ESC CR`, `ESC d` and the control bytes); the terminal answers the protocol's `CSI ? u` query, acknowledging only the disambiguate flag it implements, and tracks the app's push and pop, so a strict decoder like pi's reads Shift+Enter as a newline and Alt+Enter as its own key; IME composition is native, with marked text drawn in the grid; mouse reporting modes 1000/1002/1003/1006 are honored and Shift bypasses them for selection and scrollback; selection and copy are the element's own.
-- **Resize** is immediate. The pane that owns the terminal's size pushes each measured size from `prepaint`; `TerminalSession::resize` resizes the `Term` (reflowing history) and the PTY ioctl fires on the same call, every frame of a drag, for every runtime. A 175 ms settle thread only persists the final size once per storm. Nothing clears the grid on resize: the TUI's own SIGWINCH repaint plus alacritty's reflow is the whole story (M6.6 — the earlier "clear and replay" contract duplicated history, because `ESC[2J` on the primary screen is `clear_viewport`, which scrolls the viewport into scrollback).
+- **Resize** is immediate. The pane that owns the terminal's size pushes each measured size from `prepaint`; `TerminalMirror::resize` reflows the local `Term` immediately and sends a one-way frame. The daemon applies the PTY ioctl and authoritative resize when that frame arrives, and sends a `Resized` frame to other viewers. A 175 ms settle thread only persists the final size once per storm. Nothing clears the grid on resize: the TUI's own SIGWINCH repaint plus alacritty's reflow is the whole story (M6.6 — the earlier "clear and replay" contract duplicated history, because `ESC[2J` on the primary screen is `clear_viewport`, which scrolls the viewport into scrollback).
 
 **Human takeover is a first-class capability.** At any moment the human can type directly into any session's stdin — the same writer the router uses. The pane is a real terminal, not a log viewer: special keys pass through untouched, and the agent cannot tell whether bytes came from the router, the human, or its normal terminal input.
 
@@ -408,9 +379,11 @@ The mission feed is read-mostly: it renders coordination events and historical h
 
 Sessions live in the core and belong to the mission, not to any window, tab or pane. Closing a window does *not* kill the sessions — the agents keep running, events keep flowing, the router keeps handling live signals.
 
-Since M6.8 the same is true of the screen. `TerminalBridge` holds a strong `Arc<TerminalSession>` per live session: created on `session/spawned` (with a first-output fallback as an ordering safety net), fed from the first byte, released on `session/exit` and `session/archived`, replaced when a resume or reset spawns a new child under the same id. Panes take a *viewer lease* on the terminal they show; a hidden terminal keeps ingesting but does not wake GPUI. Tab switches, route changes and re-opened panes re-render an existing grid instead of rebuilding one. Consequence, recorded as a deviation from `main`: a stopped pane shows the Ended/Resume card over a neutral background, not the final screen; flip the release point from exit to archive if that is ever missed.
+The daemon holds the authoritative `TerminalModel` for each live session, regardless of open panes or clients. The app’s `TerminalBridge` holds mirrors fed by a snapshot and numbered output. Closing a view releases its viewer lease, not the process or authoritative grid. Relaunching the app reconnects and attaches current snapshots; it does not resume already-running agents.
 
-**Rows persist across app restart; PTY children do not.** On quit, `stop_running_sessions_on_quit` kills every process group (SIGHUP, then SIGKILL) and joins the forwarders; the startup orphan sweep is the crash fallback and a failing sweep is fatal at boot. On next launch Runner re-mounts router/bus state for `running` missions, replays the logs, demotes stale `running` session rows to `stopped`, and re-spawns sessions flagged `resume_on_launch`. Resume spawns a fresh PTY against the same session row; for claude-code/codex/trae/copilot/pi/antigravity, `agent_session_key` lets the agent CLI continue its own conversation when supported.
+**Quitting chooses session lifetime.** Settings → General → When Runner quits defaults to Ask. With live sessions, a user quit (⌘Q, Quit menu, Windows last-window close) offers Keep them running or Stop them, names working agents and supports Cancel, Enter, Escape and Don’t ask again. The last confirmed choice is preselected. Keep disconnects only the app. Stop uses `Shutdown { stop_sessions: true }`: stamp launch resume, kill sessions and end the daemon. macOS ⌥⌘Q bypasses the dialog and always stops. With no live sessions a normal quit leaves the idle daemon running.
+
+OS and update quits never ask and leave the daemon running. On OS SIGTERM or Windows logoff/shutdown/console-close, the daemon stamps and stops the sessions itself. Sparkle marks relaunch through its delegate; Windows marks the installer quit. A new app build detects a sidecar hash mismatch, stops the old daemon with stamping, replaces the sidecar and starts the new daemon. The toast “Restarted N sessions in Runner <version>” counts successful launch resumes. Crashes stop the affected daemon’s sessions; the app reconnects and shows the short error toast “Background service restarted · N sessions stopped”. After repeated failures, each window’s main content has a persistent danger banner with Open log and Try again beneath its header, excluding the sidebar and side panel. Try again restores the connection in one attempt without resuming stopped sessions; a failed attempt or another crash returns to the capped notice. Resume creates a fresh child against the same row and saved conversation key.
 
 Copilot assigns a UUID before spawning and persists it as `agent_session_key`, then passes `--session-id <uuid>` for both fresh starts and resumes. The conversation probe checks `$COPILOT_HOME` (otherwise `~/.copilot`), `session-state/<uuid>/events.jsonl`; a missing transcript starts fresh with the same id and includes the cold-start first turn. Before every Copilot spawn, Runner seeds the exact cwd in `config.json` `trustedFolders`, keeping the leading `//` header and unrelated values; `--yolo` alone does not bypass folder trust. Default and Accept edits role permission modes respectively write no permission flag and `--allow-tool=write`; Auto is not offered. Chats strip all Copilot permission flags.
 
@@ -422,7 +395,7 @@ Fork creates a new direct-chat row without writing the source row, key, PTY, or 
 
 ### 5.6 Writer serialization
 
-The PTY writer is shared between the human and the router. Each session's writer is serialized, one `write_all` per turn. Mission panes send through a per-session **queued input worker** so that a delivery waiting on the draft gate (§8.5) can never park GPUI's render thread; direct chats write inline. Pastes are bracketed when the TUI has enabled bracketed paste, and the first-turn paste is verified against the grid before Enter is sent.
+The PTY writer is shared between the human and the router. Each session's writer is serialized, one `write_all` per turn. Direct chats and mission panes send one-way input frames to a per-session **queued input worker** in the daemon, so a delivery waiting on the draft gate (§8.5) never parks GPUI’s render thread. Pastes are bracketed when the TUI has enabled bracketed paste, and the first-turn paste is verified against the grid before Enter is sent.
 
 ### 5.7 Threads, not async
 
@@ -430,9 +403,7 @@ The PTY writer is shared between the human and the router. Each session's writer
 
 ### 5.8 Scrollback and size
 
-Scrollback is the session's `alacritty_terminal::Term`, configured for 10,000 lines, reflowed on width change, and process-local: it does not survive app restart and there is no on-disk overflow. A resumed or reset session gets a fresh `Term`; the agent CLI's own resume restores conversation context on screen.
-
-Each session row persists the last applied PTY `cols` and `rows`. Spawn and resume resolve their initial size as the explicit pane size, then the latest in-memory measurement (which can arrive before the PTY exists and is applied at `install_handle`), then the persisted dimensions, then 80×24 only for a session with no prior size. Mission forks and resets read the persisted size when it is newer than their hint, so a re-spawned slot opens at the width its pane has.
+Each authoritative `Term` keeps 10,000 lines of scrollback and persistent parser state. The app mirrors it through snapshots with unfinished parser input, sequence numbers, cursor and modes, then applies numbered output. Its viewer’s selection and scroll position stay local. A pane resize updates its mirror immediately and sends an ordered resize to the daemon; other mirrors follow the daemon’s `Resized` frame. The manager persists settled sizes, and daemon launch resume reads those dimensions before a pane exists.
 
 ### 5.9 Death and kill
 
@@ -841,70 +812,62 @@ A refused delete rolls back its transaction, including any dependents it had alr
 
 ## 11. Process and thread model
 
-Runner is one process. There is no IPC boundary between the screen and the PTY. [`concurrency.md`](concurrency.md) explains the executors and runtimes behind this section: GPUI's and tokio's, how they share state, and the `runner` CLI as the only other process.
+Runner has three process roles: the native app, `runnerd`, and one CLI process per command. [Concurrency](concurrency.md) explains their executors; [Process model](process-model.md) maps ownership and terminal paths.
 
 ### 11.1 The shape
 
-```
-Runner.app process
-  ├── GPUI main thread
-  │     render + layout, input dispatch, IME, window management,
-  │     AppStore reactions → scoped cx.notify, Sparkle callbacks
-  │
-  ├── GPUI background executor
-  │     UI-issued ops (cx.background_spawn); AppEvent broadcast → AppStore refresh → wake GPUI
-  │
-  ├── Per live session
-  │     ├── blocking PTY reader thread  (read(2) → SessionEvents::output → Term, idle detector)
-  │     ├── queued input worker         (mission panes; draft-gate waits live here)
-  │     └── short-lived settle thread   (one per resize storm; persists last_size)
-  │
-  ├── Per live mission
-  │     └── notify watcher → EventBus tail → Router dispatch; router cooldown / reconciliation timers
-  │
-  ├── tokio runtime `runner-ipc` (one worker per core, plus its blocking pool)
-  │     └── rmcp MCP server on $APPDATA/mcp.sock, the runner CLI's way in
-  │
-  └── login-shell probe thread (startup, five-second deadline)
+```text
+Runner.app
+  GPUI foreground/background executors, AppStore, terminal mirrors, updater
+  socket reader/writer and managed reconnect worker
+runnerd
+  AppCore, SQLite pool, SessionManager, authoritative terminals
+  per-session PTY reader, idle detector, forwarder, terminal-event and input workers
+  per-mission bus watchers, router cooldown/reconciliation timers
+  runner-ipc tokio runtime: client protocol and MCP server
+  discovery/login-shell/version probes and usage workers
+runner CLI
+  current-thread tokio runtime for one MCP call; mission appends write directly
 ```
 
 ### 11.2 Why a thread per PTY reader (not async)
 
-`portable-pty`'s read side is blocking. An OS thread doing one blocking `read(2)` in a loop is the right shape: the kernel parks it cheaply when there are no bytes and wakes it instantly when there are. The same thread feeds the `Term` directly — the lock is the only synchronization between ingestion and painting, and GPUI only re-renders when a viewed terminal changed.
+`portable-pty`'s read side is blocking. An OS thread doing one blocking `read(2)` in a loop is the right shape: the kernel parks it cheaply when there are no bytes and wakes it instantly when there are. The manager forwarder publishes numbered output and feeds the daemon’s authoritative `Term`. The app has a separate socket reader and mirror parser; GPUI only re-renders when a viewed mirror changes.
 
 ### 11.3 What runs per-mission vs. app-wide
 
 | Lifetime | Components |
 |---|---|
-| App-wide | GPUI main thread, the AppStore event task, AppStore, SessionManager, MissionManager, the SQLite pool, the MCP server, the tracing writer, the Sparkle controller. |
+| App-wide | GPUI, AppStore, terminal mirrors, socket connection, updater and app log writer. |
+| Daemon-wide | AppCore, SessionManager, SQLite pool, both socket servers, discovery, usage and daemon log writer. |
 | Per live mission | One notify watcher + bus tail + router dispatch, wired to that mission's NDJSON file. |
-| Per live session | The PTY reader thread, the writer and input worker, the idle detector, and one `Term` (10,000-line scrollback) in the bridge registry. |
+| Per live session | The PTY reader thread, the writer and input worker, the idle detector, an authoritative `Term` (10,000-line scrollback), and a mirror while the app is attached. |
 
-Per-mission components come up at mission start (or app launch for `running` missions) and go down at archive. A reversible Stop kills PTYs but leaves router/bus state mounted.
+Per-mission components come up at mission start (or daemon launch for `running` missions) and go down at archive. A reversible Stop kills PTYs but leaves router/bus state mounted.
 
 ### 11.4 Cost model
 
-The target scale is one operator with a handful of concurrent missions and ≤ ~10 live sessions. That is ~10 reader threads, as many `Term`s (tens of MB each only when their scrollback is full), a few notify watchers and one SQLite pool. Rendering cost scales with *visible* terminals, not live ones. Per-frame work today re-walks the visible grid (M6.7 lists what is still wasteful); nothing in the model needs an event loop over PTY fds at this footprint.
+The target scale is one operator with a handful of concurrent missions and ≤ ~10 live sessions. That is ~10 reader threads, an authoritative `Term` per session and an attached mirror (tens of MB each only when scrollback is full), a few notify watchers and one SQLite pool. Rendering cost scales with *visible* terminals, not live ones. Per-frame work today re-walks the visible grid (M6.7 lists what is still wasteful); nothing in the model needs an event loop over PTY fds at this footprint.
 
 ### 11.5 Failure isolation
 
-A panic in a PTY reader thread only affects that session: the forwarder ends, the session is marked stopped. A panic on the GPUI main thread takes the app down — the panic hook writes the backtrace to `runner.log` first, and the crash reporter's `.ips` lands in `~/Library/Logs/DiagnosticReports/`. The standing GPUI rules in `impl_log.md` exist because several of those were found the hard way (`window.current_view()` outside render, entity updates inside their own observers).
+A panic in a PTY reader thread only affects that session: the forwarder ends, the session is marked stopped. An app crash leaves daemon sessions running. A daemon crash closes PTYs on macOS and kill-on-close jobs on Windows; its next startup sweeps stragglers and demotes stale rows. After three crashes in five minutes or a failed automatic replacement, the app stops automatic recovery and retains a banner in each window’s main content with Open log for `runnerd.log` and Try again. It says “Runner's background service keeps crashing. Sessions are stopped until it runs again.” Requests while the service is down leave that banner intact. Try again resets the counter and makes one connection/start attempt; restored panes resume sessions explicitly, and a failed start or another crash returns to the cap. A panic on the GPUI main thread takes only the app down — the panic hook writes the backtrace to `runner.log` first, and the crash reporter's `.ips` lands in `~/Library/Logs/DiagnosticReports/`. The standing GPUI rules in `impl_log.md` exist because several of those were found the hard way (`window.current_view()` outside render, entity updates inside their own observers).
 
 ## 12. Architectural bets
 
 1. **Mission is the runtime unit.** Crew is config; mission is a run.
 2. **Slot is the indirection** that lets one role participate in many crews and direct chats without duplication.
-3. **PTY in-process via `portable-pty`, not pipes, not tmux.** TUI fidelity is non-negotiable.
+3. **PTYs in `runnerd` via `portable-pty`, not pipes or tmux.** TUI fidelity is non-negotiable.
 4. **NDJSON file per mission, not a broker.** Debuggable and crash-durable.
 5. **One CLI for people, scripts, and agents.** The local MCP socket is its internal transport.
 6. **Signals and messages as distinct primitives.** Keeps the router simple and prose natural.
 7. **The signal router is the only urgent wake-up path**, and every push goes through one delivery gate.
 8. **Prompt composition at spawn time (Layer 1/2/3).** Replaces runtime handshakes.
 9. **Small vocabulary.** Signals + messages; no threads or facts.
-10. **One native process; `alacritty_terminal` as the model, GPUI paints the grid.** Terminal bytes are never serialized, and the terminal outlives its views.
+10. **One authoritative terminal in the daemon, a mirror in the app.** Both use the same `alacritty_terminal` parser. Numbered raw bytes and exact snapshots cross the socket; only the daemon answers terminal queries.
 11. **ULID for event IDs.** Sortable, monotonic within ms.
-12. **Mission state outlives the app process; PTYs do not.** The event log and session rows are the continuation point; Resume creates fresh child processes.
-13. **The core is UI-agnostic.** `runner-daemon` knows nothing about GPUI; the app is one consumer of `AppCore`, and the MCP server is another.
+12. **Mission state and PTYs outlive the app process.** Keep running disconnects the app; Stop and updates stamp launch resume and replace children. The daemon keeps routing while no window is open.
+13. **The core is UI-agnostic.** `runner-daemon` knows nothing about GPUI; the app consumes the client protocol, and the MCP server serves the CLI.
 
 ## 13. What would break this architecture
 

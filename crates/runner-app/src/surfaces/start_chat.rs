@@ -8,7 +8,7 @@ use anyhow::bail;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, Context, Div, FontWeight, KeyDownEvent, PathPromptOptions,
-    ScrollHandle, SharedString, Window,
+    ScrollHandle, Window,
 };
 use runner_core::protocol::model::{CodexSpeed, Role};
 use runner_core::protocol::project::ProjectScope;
@@ -1608,18 +1608,15 @@ impl NativeRoot {
             .when(cfg!(windows), |content| content.w(rems(form_width / 16.)))
             .gap_5()
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
-            .children(modal.error.as_ref().map(|error| {
-                div()
-                    .rounded(rems(4. / 16.))
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.4))
-                    .bg(theme::with_alpha(theme::danger(), 0.1))
-                    .px_3()
-                    .py_2()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(SharedString::from(error.clone()))
-            }))
+            .children(
+                modal
+                    .error
+                    .as_ref()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error.clone(), runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(
                 div()
                     .debug_selector(|| "START_CHAT_MODES".into())
@@ -2042,12 +2039,18 @@ impl NativeRoot {
                             }),
                     )
                 })
-                .children(modal.agents_error.clone().map(|error| {
-                    div()
-                        .text_size(theme::text_meta())
-                        .text_color(theme::danger())
-                        .child(error)
-                })),
+                .children(
+                    modal
+                        .agents_error
+                        .clone()
+                        .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                        .map(|error| {
+                            div()
+                                .text_size(theme::text_meta())
+                                .text_color(theme::danger())
+                                .child(error)
+                        }),
+                ),
         )
         .focus_target(modal.runtime_select.read(cx).focus_handle())
         .emphasized(true)

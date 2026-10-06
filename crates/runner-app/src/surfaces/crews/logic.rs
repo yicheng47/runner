@@ -39,34 +39,6 @@ pub(super) fn text_action(
         .into_any_element()
 }
 
-pub(super) fn error_panel(error: String) -> AnyElement {
-    div()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::with_alpha(theme::danger(), 0.4))
-        .bg(theme::with_alpha(theme::danger(), 0.1))
-        .px_3()
-        .py_2()
-        .text_size(theme::text_title())
-        .text_color(theme::danger())
-        .child(error)
-        .into_any_element()
-}
-
-pub(super) fn error_banner(error: String) -> AnyElement {
-    div()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::with_alpha(theme::danger(), 0.4))
-        .bg(theme::with_alpha(theme::danger(), 0.1))
-        .px_3()
-        .py_2()
-        .text_size(theme::text_ui())
-        .text_color(theme::danger())
-        .child(error)
-        .into_any_element()
-}
-
 pub(super) fn selected_add_slot_role(form: &AddSlotForm) -> Option<&RoleWithActivity> {
     let selected = form.selected_role_id.as_deref()?;
     form.roles.iter().find(|role| role.role.id == selected)

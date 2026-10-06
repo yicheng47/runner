@@ -191,13 +191,27 @@ impl MissionWorkspace {
         } else {
             self.render_loaded_mission(window, cx)
         };
+        let banner = self.shell.upgrade().and_then(|shell| {
+            shell.update(cx, |shell, cx| {
+                (shell.route != AppRoute::Settings)
+                    .then(|| shell.render_daemon_banner(cx))
+                    .flatten()
+            })
+        });
         let center = div()
+            .debug_selector(|| "MISSION_CONTENT_COLUMN".into())
             .min_w(px(0.))
             .flex_1()
             .h_full()
             .flex()
             .flex_col()
-            .child(header)
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "MISSION_HEADER".into())
+                    .child(header),
+            )
+            .children(banner)
             .children(notices)
             .child(body)
             .on_mouse_up(
@@ -433,25 +447,39 @@ impl MissionWorkspace {
 
     fn render_mission_notices(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut notices = Vec::new();
-        if let Some(error) = self.error.clone() {
+        if let Some(error) = self
+            .error
+            .clone()
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+        {
             let root = cx.entity();
             notices.push(
-                mission_notice("error", error, theme::danger(), "Dismiss", move |_, cx| {
-                    root.update(cx, |this, cx| {
-                        this.error = None;
-                        cx.notify();
-                    });
-                })
+                mission_notice(
+                    "error",
+                    error,
+                    runner_app::ui::Tone::Danger,
+                    "Dismiss",
+                    move |_, cx| {
+                        root.update(cx, |this, cx| {
+                            this.error = None;
+                            cx.notify();
+                        });
+                    },
+                )
                 .into_any_element(),
             );
         }
-        if let Some(warning) = self.warning.clone() {
+        if let Some(warning) = self
+            .warning
+            .clone()
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+        {
             let root = cx.entity();
             notices.push(
                 mission_notice(
                     "warning",
                     warning,
-                    theme::warning(),
+                    runner_app::ui::Tone::Warning,
                     "Dismiss",
                     move |_, cx| {
                         root.update(cx, |this, cx| {

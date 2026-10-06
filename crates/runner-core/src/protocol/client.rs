@@ -33,6 +33,9 @@ pub trait EventSubscription: Send {
 pub trait Transport: Send + Sync {
     fn call(&self, request: Request) -> Result<Response, ClientError>;
     fn subscribe(&self) -> Box<dyn EventSubscription>;
+    fn reconnect(&self) -> Result<(), ClientError> {
+        Err(ClientError::msg("manual recovery is unavailable"))
+    }
     fn attach(
         &self,
         _session_id: &str,
@@ -59,6 +62,9 @@ impl DaemonClient {
     }
     pub fn subscribe(&self) -> Box<dyn EventSubscription> {
         self.transport.subscribe()
+    }
+    pub fn reconnect(&self) -> Result<(), ClientError> {
+        self.transport.reconnect()
     }
     pub fn attach(
         &self,

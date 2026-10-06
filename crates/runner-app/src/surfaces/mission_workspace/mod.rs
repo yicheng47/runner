@@ -355,36 +355,16 @@ fn selectable_event_text(event: &Event) -> String {
 fn mission_notice(
     id: &'static str,
     text: String,
-    tone: gpui::Hsla,
+    tone: runner_app::ui::Tone,
     dismiss: &'static str,
     on_dismiss: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .mx_8()
-        .mt_3()
-        .flex()
-        .items_start()
-        .justify_between()
-        .gap_3()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::with_alpha(tone, 0.4))
-        .bg(theme::with_alpha(tone, 0.1))
-        .px_3()
-        .py_2()
-        .text_size(theme::text_body())
-        .text_color(tone)
-        .child(div().flex_1().child(text))
-        .child(
-            div()
-                .id(SharedString::from(format!("dismiss-mission-{id}")))
-                .cursor_pointer()
-                .text_size(theme::text_meta())
-                .opacity(0.8)
-                .hover(|button| button.opacity(1.))
-                .on_click(move |_, window, cx| on_dismiss(window, cx))
-                .child(dismiss),
-        )
+    runner_app::ui::notice_banner(text, tone).child(
+        runner_app::ui::Button::new(format!("dismiss-mission-{id}"), dismiss)
+            .size(runner_app::ui::ButtonSize::Sm)
+            .variant(runner_app::ui::ButtonVariant::Ghost)
+            .on_press(on_dismiss),
+    )
 }
 
 fn mission_tab(

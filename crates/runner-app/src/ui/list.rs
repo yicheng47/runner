@@ -575,6 +575,10 @@ impl PaginatedListPage {
 
 impl RenderOnce for PaginatedListPage {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let load_failed = !self.loaded && !self.loading;
+        let error = self
+            .error
+            .or_else(|| load_failed.then(|| format!("Failed to load {}.", self.noun).into()));
         let body = if self.loading && !self.loaded {
             div()
                 .text_size(theme::text_title())
@@ -582,17 +586,7 @@ impl RenderOnce for PaginatedListPage {
                 .child("Loading…")
                 .into_any_element()
         } else if !self.loaded {
-            div()
-                .rounded(rems(4. / 16.))
-                .border_1()
-                .border_color(theme::with_alpha(theme::danger(), 0.4))
-                .bg(theme::with_alpha(theme::danger(), 0.1))
-                .px_3()
-                .py_2()
-                .text_size(theme::text_title())
-                .text_color(theme::danger())
-                .child(format!("Failed to load {}.", self.noun))
-                .into_any_element()
+            div().into_any_element()
         } else if self.total_count == 0 {
             self.empty_state
         } else {
@@ -704,6 +698,12 @@ impl RenderOnce for PaginatedListPage {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .children(error.map(|error| {
+                div().flex_none().pt(rems(44. / 16.)).child(
+                    crate::ui::notice_banner(error, crate::ui::Tone::Danger)
+                        .debug_selector(|| "PAGINATED_LIST_ERROR".into()),
+                )
+            }))
             .child(
                 div()
                     .min_h(px(0.))
@@ -751,18 +751,6 @@ impl RenderOnce for PaginatedListPage {
                                     .child(self.action),
                             ),
                     )
-                    .children(self.error.map(|error| {
-                        div()
-                            .rounded(rems(4. / 16.))
-                            .border_1()
-                            .border_color(theme::with_alpha(theme::danger(), 0.4))
-                            .bg(theme::with_alpha(theme::danger(), 0.1))
-                            .px_3()
-                            .py_2()
-                            .text_size(theme::text_title())
-                            .text_color(theme::danger())
-                            .child(error)
-                    }))
                     .child(body),
             )
     }

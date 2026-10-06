@@ -12,6 +12,7 @@ pub(crate) mod mission_markdown;
 pub(crate) mod mission_workspace;
 pub(crate) mod panes;
 pub(crate) mod profile_page;
+pub(crate) mod quit_dialog;
 pub(crate) mod roles;
 pub(crate) mod settings;
 pub(crate) mod settings_page;

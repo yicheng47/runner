@@ -578,18 +578,14 @@ impl Render for ArchivedPane {
                     )
                     .child(self.render_filters(cx)),
             )
-            .children(self.error.clone().map(|error| {
-                div()
-                    .rounded(rems(12. / 16.))
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.3))
-                    .bg(theme::with_alpha(theme::danger(), 0.1))
-                    .px_4()
-                    .py_3()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                self.error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .children(content)
     }
 }

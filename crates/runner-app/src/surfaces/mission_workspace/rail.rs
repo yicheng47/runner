@@ -622,18 +622,15 @@ impl MissionWorkspace {
             .flex_col()
             .gap_3()
             .on_key_down(cx.listener(Self::on_mission_rename_key_down))
-            .children(modal.error.clone().map(|error| {
-                div()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.4))
-                    .bg(theme::with_alpha(theme::danger(), 0.1))
-                    .px_3()
-                    .py_2()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                modal
+                    .error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(
                 Field::new("mission-rename-name", "Name", modal.input.clone())
                     .focus_target(modal.input.read(cx).focus_handle())

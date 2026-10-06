@@ -7,6 +7,7 @@ mod theme_snapshot;
 actions!(runner_app_ui, [Copy, Cut, Paste, Redo, SelectAll, Undo]);
 
 pub mod bootstrap;
+pub mod lifecycle;
 pub mod logging;
 pub mod pane_layout;
 #[cfg(target_os = "macos")]

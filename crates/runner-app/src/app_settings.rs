@@ -273,6 +273,8 @@ pub struct AppSettings {
     pub default_working_dir: String,
     pub file_link_editor: FileLinkEditor,
     pub resume_on_launch: bool,
+    pub quit_behavior: runner_app::lifecycle::QuitBehavior,
+    pub last_quit_choice: runner_app::lifecycle::QuitChoice,
     pub automatically_check_for_updates: bool,
     #[cfg(windows)]
     pub automatically_download_updates: bool,
@@ -314,6 +316,8 @@ impl Default for AppSettings {
             default_working_dir: String::new(),
             file_link_editor: FileLinkEditor::DefaultApp,
             resume_on_launch: true,
+            quit_behavior: Default::default(),
+            last_quit_choice: Default::default(),
             automatically_check_for_updates: true,
             #[cfg(windows)]
             automatically_download_updates: true,
@@ -960,5 +964,34 @@ mod tests {
         let loaded = AppSettings::load(&path).unwrap();
         assert!(!loaded.automatically_download_updates);
         assert!(!loaded.automatically_check_for_updates);
+    }
+}
+
+#[cfg(test)]
+mod quit_settings_tests {
+    use super::*;
+    use runner_app::lifecycle::{QuitBehavior, QuitChoice};
+
+    #[test]
+    fn quit_settings_default_and_round_trip_without_migration() {
+        let old: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.quit_behavior, QuitBehavior::Ask);
+        assert_eq!(old.last_quit_choice, QuitChoice::Keep);
+        let unknown: AppSettings = serde_json::from_str(r#"{"quitBehavior":"future"}"#).unwrap();
+        assert_eq!(unknown.quit_behavior, QuitBehavior::Ask);
+        let temp = tempfile::tempdir().unwrap();
+        for behavior in QuitBehavior::ALL {
+            let settings = AppSettings {
+                quit_behavior: behavior,
+                last_quit_choice: QuitChoice::Stop,
+                ..AppSettings::default()
+            };
+            let path = temp.path().join("ui-settings.json");
+            settings.save(&path).unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(value["quitBehavior"], behavior.key());
+            assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        }
     }
 }

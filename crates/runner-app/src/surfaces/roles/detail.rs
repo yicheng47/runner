@@ -1,5 +1,4 @@
 use super::logic::distinct_crew_count;
-use super::logic::error_banner;
 use super::logic::live_activity_label;
 use super::logic::local_short_timestamp;
 use super::logic::prompt_meta;
@@ -66,11 +65,17 @@ impl NativeRoot {
             .edit
             .as_ref()
             .filter(|_| editing)
-            .and_then(|form| form.error.clone());
-        let detail_error = if creating { None } else { detail.error.clone() };
+            .and_then(|form| form.error.clone())
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected);
+        let detail_error = detail
+            .error
+            .clone()
+            .filter(|_| !creating && !self.app_store.read(cx).daemon_disconnected);
         let body = if creating {
             self.render_role_edit_page(None, None, Vec::new(), column, cx)
-        } else if detail.loading {
+        } else if detail.loading
+            || (detail.role.is_none() && self.app_store.read(cx).daemon_disconnected)
+        {
             div()
                 .text_size(theme::text_title())
                 .text_color(theme::muted())
@@ -84,18 +89,14 @@ impl NativeRoot {
             } else {
                 self.render_role_view_page(role, activity, crews, column, cx)
             }
+        } else if detail_error.is_some() {
+            div().into_any_element()
         } else {
-            div()
-                .rounded_sm()
-                .border_1()
-                .border_color(theme::with_alpha(theme::danger(), 0.4))
-                .bg(theme::with_alpha(theme::danger(), 0.1))
-                .px_3()
-                .py_2()
-                .text_size(theme::text_title())
-                .text_color(theme::danger())
-                .child(format!("Role @{handle} not found."))
-                .into_any_element()
+            runner_app::ui::notice_banner(
+                format!("Role @{handle} not found."),
+                runner_app::ui::Tone::Danger,
+            )
+            .into_any_element()
         };
         let on_back: crate::surfaces::profile_page::ClickHandler = Rc::new(move |window, cx| {
             back_root.update(cx, |this, cx| this.open_roles(window, cx));
@@ -150,8 +151,12 @@ impl NativeRoot {
                             })
                         })),
                     )
-                    .children(detail_error.map(error_banner))
-                    .children(edit_error.map(error_banner))
+                    .children(detail_error.map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }))
+                    .children(edit_error.map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }))
                     .child(body),
             )
             .into_any_element()
@@ -450,7 +455,7 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_4()
-            .children(form.error.clone().filter(|_| creating).map(error_banner))
+            .children(form.error.clone().filter(|_| creating && !self.app_store.read(cx).daemon_disconnected).map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)))
             .child({
                 let seed = create.map(|form| form.avatar_seed(cx)).unwrap_or_else(|| role.as_ref().unwrap().handle.clone());
                 div().when(cfg!(test), |avatar| avatar.debug_selector(|| "ROLE_CREATE_AVATAR".into())).child(RoleAvatar::new(seed, 96.)).into_any_element()
@@ -548,14 +553,19 @@ impl NativeRoot {
                     .flex()
                     .flex_col()
                     .gap(rems(14. / 16.))
-                    .child(edit_row("Runtime", form.runtime_select.clone()).children(
-                        form.agents_error.clone().map(|error| {
-                            div()
-                                .text_size(theme::text_meta())
-                                .text_color(theme::danger())
-                                .child(error)
-                        }),
-                    ))
+                    .child(
+                        edit_row("Runtime", form.runtime_select.clone()).children(
+                            form.agents_error
+                                .clone()
+                                .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                                .map(|error| {
+                                    div()
+                                        .text_size(theme::text_meta())
+                                        .text_color(theme::danger())
+                                        .child(error)
+                                }),
+                        ),
+                    )
                     .child(
                         div()
                             .flex()

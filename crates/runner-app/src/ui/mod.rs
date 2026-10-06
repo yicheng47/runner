@@ -56,7 +56,7 @@ pub use select::{
 pub use session_control::{SessionControl, SessionControlKind, SessionControlVariant};
 pub use session_overlay::{SessionOverlay, SessionOverlayKind};
 pub use settings::{PaneHeader, SettingsCard, SettingsHeader, SettingsRow, StepHandler, Stepper};
-pub use surfaces::{pill, status_badge, Badge, Card, RuntimeBadge, Tone};
+pub use surfaces::{notice_banner, pill, status_badge, Badge, Card, RuntimeBadge, Tone};
 pub use toggle::{Toggle, ToggleHandler};
 pub use tooltip::Tooltip;
 #[cfg(windows)]

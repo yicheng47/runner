@@ -25,6 +25,58 @@ fn tone_color(tone: Tone) -> gpui::Hsla {
     }
 }
 
+pub fn notice_banner(message: impl IntoElement, tone: Tone) -> gpui::Div {
+    let color = tone_color(tone);
+    let (background, border, text) = if tone == Tone::Danger {
+        (
+            gpui::rgb(0x22161a).into(),
+            gpui::rgb(0x4a2226).into(),
+            gpui::rgb(0xd8d8dc).into(),
+        )
+    } else {
+        (
+            theme::with_alpha(color, 0.1),
+            theme::with_alpha(color, 0.4),
+            theme::text(),
+        )
+    };
+    div()
+        .debug_selector(|| "NOTICE_BANNER".into())
+        .w_full()
+        .h(rems(41. / 16.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(rems(10. / 16.))
+        .pl(rems(1.))
+        .pr(rems(12. / 16.))
+        .bg(background)
+        .border_b_1()
+        .border_color(border)
+        .child(
+            gpui::svg()
+                .debug_selector(|| "NOTICE_BANNER_ICON".into())
+                .path(if tone == Tone::Warning {
+                    "triangle-alert.svg"
+                } else {
+                    "circle-x.svg"
+                })
+                .size(rems(14. / 16.))
+                .flex_none()
+                .text_color(color),
+        )
+        .child(
+            div()
+                .debug_selector(|| "NOTICE_BANNER_MESSAGE".into())
+                .flex_1()
+                .min_w(gpui::px(0.))
+                .truncate()
+                .text_size(theme::text_body())
+                .text_color(text)
+                .child(message),
+        )
+}
+
 #[derive(IntoElement)]
 pub struct Card {
     child: AnyElement,
@@ -185,4 +237,64 @@ pub fn pill(label: impl Into<SharedString>, tone: Tone) -> AnyElement {
         .text_color(color)
         .child(label.into())
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme_snapshot::ThemeGuard;
+    use crate::ui::{Button, ButtonSize, ButtonVariant};
+    use gpui::{px, size, Context, Render, TestAppContext, VisualTestContext};
+
+    struct BannerHost(Tone);
+    impl Render for BannerHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                notice_banner("An intentionally long notice must stay on one line while its action remains visible in a narrow window.", self.0)
+                    .child(
+                        div().debug_selector(|| "NOTICE_ACTION".into()).flex_none().child(
+                            Button::new("notice-action", "Dismiss")
+                                .size(ButtonSize::Sm)
+                                .variant(ButtonVariant::Ghost),
+                        ),
+                    ),
+            )
+        }
+    }
+
+    #[test]
+    fn warning_and_error_banners_keep_one_line_and_visible_actions_at_every_zoom() {
+        let _theme = ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+            theme::ThemeVariant::CatppuccinMocha,
+            theme::ThemeVariant::CatppuccinLatte,
+        ] {
+            theme::set_active_variant(variant);
+            for tone in [Tone::Warning, Tone::Danger] {
+                for zoom in [0.8, 1., 1.5] {
+                    let mut cx = TestAppContext::single();
+                    let window = cx.add_window(|window, _| {
+                        window.set_rem_size(px(16. * zoom));
+                        BannerHost(tone)
+                    });
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    visual.simulate_resize(size(px(320.), px(150.)));
+                    cx.run_until_parked();
+                    let banner = visual.debug_bounds("NOTICE_BANNER").unwrap();
+                    let message = visual.debug_bounds("NOTICE_BANNER_MESSAGE").unwrap();
+                    let icon = visual.debug_bounds("NOTICE_BANNER_ICON").unwrap();
+                    let action = visual.debug_bounds("NOTICE_ACTION").unwrap();
+                    assert_eq!(banner.size.width, px(320.));
+                    assert!((f32::from(banner.size.height) - 41. * zoom).abs() <= 1.);
+                    assert!((f32::from(icon.size.height) - 14. * zoom).abs() <= 1.);
+                    assert!(message.size.height <= px(22. * zoom));
+                    assert!(icon.right() <= message.left());
+                    assert!(message.right() <= action.left());
+                    assert!(action.right() <= banner.right());
+                }
+            }
+        }
+    }
 }

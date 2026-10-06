@@ -158,11 +158,12 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
     if !config.isolated {
         core.usage.start_scheduler(core.clone());
     }
+    let (resume_tx, resume_rx) = tokio::sync::watch::channel(None);
     let resume_consumer = Arc::new(super::resume::ResumeConsumer::default());
     let consumer = resume_consumer.clone();
     let resume_core = core.clone();
     let resume = tokio::task::spawn_blocking(move || {
-        super::resume::consume_resume_on_launch_until(
+        let result = super::resume::consume_resume_on_launch_until(
             &resume_core,
             settings.resume_on_launch,
             |id| {
@@ -174,7 +175,9 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
                 ))
             },
             &consumer,
-        )
+        );
+        let _ = resume_tx.send(Some(result.as_ref().ok().cloned().unwrap_or_default()));
+        result
     });
     let cancel = CancellationToken::new();
     let welcome = wire::Welcome {
@@ -200,9 +203,10 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
                 Ok(stream) => {
                     let core = core.clone(); let welcome = welcome.clone(); let cancel = cancel.clone();
                     let isolated = config.isolated;
+                    let resume_report = resume_rx.clone();
                     next_connection += 1;
                     let windows = Arc::new(ConnectionWindows { core: core.clone(), owners: window_owners.clone(), id: next_connection, closed: AtomicBool::new(false) });
-                    connections.spawn(async move { if let Err(error) = connection(stream, core, welcome, cancel, isolated, windows).await { log::debug!("runnerd client: {error}"); } });
+                    connections.spawn(async move { if let Err(error) = connection(stream, core, welcome, cancel, isolated, windows, resume_report).await { log::debug!("runnerd client: {error}"); } });
                 }
                 Err(error) => { log::error!("runnerd accept: {error}"); cancel.cancel(); break; }
             }
@@ -453,6 +457,9 @@ async fn connection(
     shutdown: CancellationToken,
     _isolated: bool,
     windows: Arc<ConnectionWindows>,
+    mut resume_report: tokio::sync::watch::Receiver<
+        Option<runner_core::protocol::AutoResumeReport>,
+    >,
 ) -> Result<()> {
     let (mut read, mut write) = stream.into_split();
     let hello = tokio::time::timeout(Duration::from_millis(500), read_frame(&mut read)).await??;
@@ -491,6 +498,26 @@ async fn connection(
     let (control_tx, mut controls) = mpsc::channel::<Frame>(128);
     let (terminal_tx, mut terminals) = mpsc::channel::<Frame>(64);
     let mut events = core.events.subscribe();
+    let report_tx = control_tx.clone();
+    let report_cancel = local.clone();
+    tokio::spawn(async move {
+        let report = tokio::select! {
+            _ = report_cancel.cancelled() => return,
+            report = resume_report.wait_for(|report| report.is_some()) => report.ok().and_then(|report| report.clone()),
+        };
+        if let Some(report) = report {
+            let event = wire::Event {
+                event: Some(runner_core::protocol::ClientEvent {
+                    name: "daemon/launch-resumed".into(),
+                    payload: serde_json::to_value(report).unwrap(),
+                }),
+                lagged: None,
+            };
+            if let Ok(frame) = Frame::json(wire::EVENT, &event) {
+                let _ = report_tx.send(frame).await;
+            }
+        }
+    });
     let (input_tx, input_rx) = std::sync::mpsc::channel::<Frame>();
     let input_core = core.clone();
     let input_cancel = local.clone();

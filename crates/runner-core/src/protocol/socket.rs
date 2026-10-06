@@ -191,6 +191,7 @@ pub struct SocketTransport {
     attaching: Mutex<HashMap<u64, PendingAttach>>,
     frames: Mutex<HashMap<u64, Weak<Frames>>>,
     events: tokio::sync::broadcast::Sender<wire::Event>,
+    launch_resume_report: Mutex<Option<AutoResumeReport>>,
     observer: Mutex<Option<Weak<dyn TerminalLifecycle>>>,
     closed: AtomicBool,
     timeout: Duration,
@@ -258,6 +259,7 @@ impl SocketTransport {
             attaching: Mutex::default(),
             frames: Mutex::default(),
             events,
+            launch_resume_report: Mutex::default(),
             observer: Mutex::default(),
             closed: AtomicBool::new(false),
             timeout,
@@ -332,6 +334,9 @@ impl SocketTransport {
     pub fn client(self: &Arc<Self>) -> DaemonClient {
         DaemonClient::new(self.clone())
     }
+    pub fn launch_resume_report(&self) -> Option<AutoResumeReport> {
+        self.launch_resume_report.lock().unwrap().clone()
+    }
     pub fn event_stream(&self) -> tokio::sync::broadcast::Receiver<wire::Event> {
         self.events.subscribe()
     }
@@ -401,7 +406,16 @@ impl SocketTransport {
                 }
             }
             wire::EVENT => {
-                let _ = self.events.send(frame.decode()?);
+                let event: wire::Event = frame.decode()?;
+                if let Some(report) = event
+                    .event
+                    .as_ref()
+                    .filter(|event| event.name == "daemon/launch-resumed")
+                {
+                    *self.launch_resume_report.lock().unwrap() =
+                        serde_json::from_value(report.payload.clone()).ok();
+                }
+                let _ = self.events.send(event);
             }
             wire::ATTACH_ERROR => {
                 let mut binary = Binary(&frame.payload);

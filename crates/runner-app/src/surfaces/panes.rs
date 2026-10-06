@@ -148,7 +148,17 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(detail) = self.archived_chat_detail.as_ref() else {
-            return div().into_any_element();
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .children(
+                    (self.route != AppRoute::Settings)
+                        .then(|| self.render_daemon_banner(cx))
+                        .flatten(),
+                )
+                .into_any_element();
         };
         let label = session_label(detail);
         let back_label = if detail.handle.is_some() {
@@ -235,6 +245,7 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .child(self.render_titlebar_drag_area("archived-chat-titlebar-drag", header, cx))
+            .children((self.route != AppRoute::Settings).then(|| self.render_daemon_banner(cx)).flatten())
             .child(
                 div()
                     .flex_1()
@@ -309,7 +320,7 @@ impl NativeRoot {
     ) -> AnyElement {
         self.ensure_active_chat_detail(cx);
         let Some(layout) = self.tabs.active().cloned() else {
-            return div()
+            let empty = div()
                 .flex_1()
                 .h_full()
                 .flex()
@@ -330,6 +341,18 @@ impl NativeRoot {
                 } else {
                     "No active tab".to_owned()
                 })
+                .into_any_element();
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .children(
+                    (self.route != AppRoute::Settings)
+                        .then(|| self.render_daemon_banner(cx))
+                        .flatten(),
+                )
+                .child(empty)
                 .into_any_element();
         };
         let session_ids = layout.session_ids();
@@ -515,54 +538,29 @@ impl NativeRoot {
                 .chain(panel_action),
         )
         .into_div();
-        let error_banner = self.chat_error.clone().map(|error| {
-            div()
-                .mx_8()
-                .mt_4()
-                .rounded(rems(4. / 16.))
-                .border_1()
-                .border_color(theme::with_alpha(theme::danger(), 0.4))
-                .bg(theme::with_alpha(theme::danger(), 0.1))
-                .px_3()
-                .py_2()
-                .text_size(theme::text_title())
-                .text_color(theme::danger())
-                .child(error)
-        });
+        let error_banner = self
+            .chat_error
+            .clone()
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+            .map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger));
         let warning_root = root.clone();
-        let warning_banner = self.chat_warning.clone().map(|warning| {
-            div()
-                .mx_8()
-                .mt_4()
-                .flex()
-                .items_start()
-                .justify_between()
-                .gap_3()
-                .rounded(rems(4. / 16.))
-                .border_1()
-                .border_color(theme::with_alpha(theme::warning(), 0.4))
-                .bg(theme::with_alpha(theme::warning(), 0.1))
-                .px_3()
-                .py_2()
-                .text_size(theme::text_title())
-                .text_color(theme::warning())
-                .child(warning)
-                .child(
-                    div()
-                        .id("dismiss-chat-warning")
-                        .cursor_pointer()
-                        .text_size(theme::text_ui())
-                        .text_color(theme::with_alpha(theme::warning(), 0.8))
-                        .hover(|button| button.text_color(theme::warning()))
-                        .child("Dismiss")
-                        .on_click(move |_, _, cx| {
+        let warning_banner = self
+            .chat_warning
+            .clone()
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+            .map(|warning| {
+                runner_app::ui::notice_banner(warning, runner_app::ui::Tone::Warning).child(
+                    Button::new("dismiss-chat-warning", "Dismiss")
+                        .size(ButtonSize::Sm)
+                        .variant(runner_app::ui::ButtonVariant::Ghost)
+                        .on_press(move |_, cx| {
                             warning_root.update(cx, |this, cx| {
                                 this.chat_warning = None;
                                 cx.notify();
                             });
                         }),
                 )
-        });
+            });
 
         let drawer = layout
             .drawer_open()
@@ -627,7 +625,17 @@ impl NativeRoot {
             .h_full()
             .flex()
             .flex_col()
-            .child(self.render_titlebar_drag_area("chat-titlebar-drag", header, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "CHAT_TAB_HEADER".into())
+                    .child(self.render_titlebar_drag_area("chat-titlebar-drag", header, cx)),
+            )
+            .children(
+                (self.route != AppRoute::Settings)
+                    .then(|| self.render_daemon_banner(cx))
+                    .flatten(),
+            )
             .children(error_banner)
             .children(warning_banner)
             .child(tab_body);
@@ -1051,6 +1059,7 @@ impl NativeRoot {
             );
         div()
             .id("chat-side-panel")
+            .debug_selector(|| "CHAT_SIDE_PANEL".into())
             .relative()
             .w(rems(visible_width / 16.))
             .h_full()
@@ -1234,18 +1243,15 @@ impl NativeRoot {
             .flex_col()
             .gap_3()
             .on_key_down(cx.listener(Self::on_chat_rename_key_down))
-            .children(modal.error.clone().map(|error| {
-                div()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(theme::with_alpha(theme::danger(), 0.4))
-                    .bg(theme::with_alpha(theme::danger(), 0.1))
-                    .px_3()
-                    .py_2()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                modal
+                    .error
+                    .clone()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|error| {
+                        runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                    }),
+            )
             .child(
                 runner_app::ui::Field::new("chat-rename-name", "Name", modal.input.clone())
                     .focus_target(modal.input.read(cx).focus_handle())

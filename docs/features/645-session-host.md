@@ -57,7 +57,7 @@ What it costs:
 | `AppStore` snapshots, windows, tabs and layout | app | app, filled by requests and events |
 | Settings the core reads (resume on launch, enabled runtimes, the Runner skill switch) | pushed into `AppCore` in-process | the daemon reads them at start; the app pushes changes |
 | macOS wake observer (needs AppKit) | app | app, forwarded to the daemon as a request |
-| Sparkle and the Windows updater | app | app; they stop the daemon before installing |
+| Sparkle and the Windows updater | app | app; they mark the update quit and leave the daemon for the new build to restart |
 
 Pure functions and types (`model`, `runtimes::for_key`, `app_paths`, constants) stay ordinary library calls. Anything that reads or writes the database, the session manager, a router, a bus, usage or discovery state goes through the daemon.
 
@@ -153,7 +153,7 @@ The same design runs on Windows, and most of it is already there: the named pipe
 - **ConPTY beside `runnerd.exe`.** `portable-pty` loads the bundled `conpty.dll` from beside the running executable ([windows.md](../arch/windows.md)). The sidecar install therefore copies `conpty.dll` and `OpenConsole.exe` into `<app data>\bin` with `runnerd.exe`. Without them, sessions fall back to the inbox conhost, and Codex redraws split again ([492](./archive/492-windows-terminal-output-latency.md)). They are replaced only while no daemon runs, like `runnerd.exe`.
 - **An owner-only pipe.** Without a security descriptor, a named pipe grants read access to Everyone. `runnerd`'s pipe, and the existing CLI pipe, get an explicit owner-only one and keep rejecting remote clients.
 - **Breakaway can be refused.** Runner's own session jobs forbid breakaway, so a `runnerd` that a `runner` command started from inside another Runner session would end with that session. When breakaway fails, the CLI does not start a daemon; it says to open Runner. The app retries without the flag only when its own launcher's job forbids breakaway, and logs it.
-- **The installer.** The update flow stops `runnerd` before the installer runs. The installer already renames files in use aside, and the files `runnerd` runs from live in app data, not in the install directory.
+- **The installer.** The update quit leaves `runnerd` running; the new build stops and replaces it on hash mismatch. The installer already renames files in use aside, and the files `runnerd` runs from live in app data, not in the install directory.
 
 Measuring named-pipe latency on the PC is part of 1c's preparation.
 

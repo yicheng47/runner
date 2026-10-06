@@ -112,6 +112,7 @@ pub(crate) struct StoreRevisions {
     pub(crate) shell_settings: u64,
     pub(crate) full_refresh: u64,
     pub(crate) error: u64,
+    pub(crate) restart: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -258,6 +259,9 @@ pub(crate) struct AppStore {
     pub(crate) missions: Vec<MissionSummary>,
     pub(crate) session_statuses: BTreeMap<String, runner_core::protocol::status::AgentStatus>,
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
+    #[cfg(any(windows, test))]
+    mission_agent_ids: std::collections::BTreeSet<String>,
+    pub(crate) live_session_count: usize,
     pub(crate) settings: AppSettings,
     settings_path: PathBuf,
     pub(crate) home_dir: Option<PathBuf>,
@@ -271,7 +275,10 @@ pub(crate) struct AppStore {
     pub(crate) revisions: StoreRevisions,
     pub(crate) error: Option<String>,
     collecting_startup_errors: bool,
-    daemon_disconnected: bool,
+    pub(crate) daemon_disconnected: bool,
+    pub(crate) daemon_notice: Option<runner_app::lifecycle::DaemonNotice>,
+    pub(crate) stopped_session_count: usize,
+    pub(crate) restarted_sessions: Option<usize>,
 }
 
 impl AppStore {
@@ -330,7 +337,7 @@ impl AppStore {
         let (event_tx, mut event_rx) = futures::channel::mpsc::unbounded::<(
             StoreRefreshKind,
             EntityRefreshKind,
-            Option<Option<String>>,
+            Option<DaemonEvent>,
         )>();
         #[cfg(not(test))]
         let client = host.client.clone();
@@ -343,18 +350,26 @@ impl AppStore {
                     Ok(event) if event.name == "daemon/disconnected" => Some((
                         StoreRefreshKind::All,
                         EntityRefreshKind::All,
-                        Some(Some(
-                            event
-                                .payload
-                                .get("message")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("runnerd stopped")
-                                .into(),
+                        Some(DaemonEvent::Disconnected(
+                            if event.payload["restart_limit"].as_bool().unwrap_or(false) {
+                                runner_app::lifecycle::DaemonNotice::Repeated
+                            } else {
+                                runner_app::lifecycle::DaemonNotice::Stopped
+                            },
                         )),
                     )),
-                    Ok(event) if event.name == "daemon/reconnected" => {
-                        Some((StoreRefreshKind::All, EntityRefreshKind::All, Some(None)))
-                    }
+                    Ok(event) if event.name == "daemon/reconnected" => Some((
+                        StoreRefreshKind::All,
+                        EntityRefreshKind::All,
+                        Some(DaemonEvent::Reconnected),
+                    )),
+                    Ok(event) if event.name == "daemon/restarted" => Some((
+                        StoreRefreshKind::All,
+                        EntityRefreshKind::All,
+                        Some(DaemonEvent::Restarted(
+                            event.payload["count"].as_u64().unwrap_or(0) as usize,
+                        )),
+                    )),
                     Ok(event) => StoreRefreshKind::for_event(&event)
                         .map(|store| (store, EntityRefreshKind::for_event(&event), None)),
                     Err(runner_core::protocol::EventError::Lagged(_)) => {
@@ -369,20 +384,45 @@ impl AppStore {
         })
         .detach();
         cx.spawn(async move |weak, cx| {
-            while let Some((mut refresh, mut entity_refresh, mut notice)) = event_rx.next().await {
+            while let Some((mut refresh, mut entity_refresh, event)) = event_rx.next().await {
+                let mut daemon_events = event.into_iter().collect::<Vec<_>>();
                 while let Ok(next) = event_rx.try_recv() {
                     refresh = refresh.merge(next.0);
                     entity_refresh = entity_refresh.merge(next.1);
-                    if next.2.is_some() {
-                        notice = next.2;
-                    }
+                    daemon_events.extend(next.2);
                 }
                 if weak
                     .update(cx, |this, cx| {
-                        if let Some(notice) = notice {
-                            this.daemon_disconnected = notice.is_some();
-                            this.error = notice;
-                            this.revisions.error = this.revisions.error.wrapping_add(1);
+                        for event in daemon_events {
+                            match event {
+                                DaemonEvent::Disconnected(notice) => {
+                                    this.daemon_disconnected = true;
+                                    this.daemon_notice = Some(notice);
+                                    this.error = None;
+                                    this.revisions.error = this.revisions.error.wrapping_add(1);
+                                }
+                                DaemonEvent::Reconnected => {
+                                    this.daemon_disconnected = false;
+                                    if this.daemon_notice
+                                        == Some(runner_app::lifecycle::DaemonNotice::Repeated)
+                                    {
+                                        this.daemon_notice = None;
+                                        this.error = None;
+                                    } else if this.daemon_notice
+                                        == Some(runner_app::lifecycle::DaemonNotice::Stopped)
+                                    {
+                                        this.error =
+                                            Some(runner_app::lifecycle::crash_recovery_message(
+                                                this.stopped_session_count,
+                                            ));
+                                    }
+                                    this.revisions.error = this.revisions.error.wrapping_add(1);
+                                }
+                                DaemonEvent::Restarted(count) => {
+                                    this.restarted_sessions = Some(count);
+                                    this.revisions.restart = this.revisions.restart.wrapping_add(1);
+                                }
+                            }
                         }
                         this.refresh(refresh, cx);
                         if entity_refresh.roles() {
@@ -421,6 +461,9 @@ impl AppStore {
             missions: Vec::new(),
             session_statuses: BTreeMap::new(),
             session_activity: BTreeMap::new(),
+            #[cfg(any(windows, test))]
+            mission_agent_ids: Default::default(),
+            live_session_count: 0,
             settings,
             settings_path,
             home_dir,
@@ -435,6 +478,9 @@ impl AppStore {
             error: None,
             collecting_startup_errors: true,
             daemon_disconnected: false,
+            daemon_notice: None,
+            stopped_session_count: 0,
+            restarted_sessions: None,
         };
         if let Some(error) = settings_error {
             store.record_error(error);
@@ -481,6 +527,11 @@ impl AppStore {
                 let _ = weak.update(cx, |this, cx| {
                     match result {
                         Ok(missions) => {
+                            #[cfg(any(windows, test))]
+                            match mission_agent_ids(&core, &missions) {
+                                Ok(ids) => this.mission_agent_ids = ids,
+                                Err(error) => this.record_error(error.to_string()),
+                            }
                             this.missions = missions;
                             this.revisions.missions = this.revisions.missions.wrapping_add(1);
                         }
@@ -681,6 +732,11 @@ impl AppStore {
     fn refresh_missions_blocking_inner(&mut self) {
         match self.client.mission_list_summary_impl(None) {
             Ok(missions) => {
+                #[cfg(any(windows, test))]
+                match mission_agent_ids(&self.client, &missions) {
+                    Ok(ids) => self.mission_agent_ids = ids,
+                    Err(error) => self.record_error(error.to_string()),
+                }
                 self.missions = missions;
                 self.revisions.missions = self.revisions.missions.wrapping_add(1);
             }
@@ -688,7 +744,33 @@ impl AppStore {
         }
     }
 
+    #[cfg(any(windows, test))]
+    pub(crate) fn working_agent_count(&self) -> usize {
+        self.session_statuses
+            .iter()
+            .filter(|(id, status)| {
+                status.lifecycle == runner_core::protocol::status::Lifecycle::Running
+                    && status.observation.activity
+                        == runner_core::protocol::status::Activity::Working
+                    && (self
+                        .session_details
+                        .get(*id)
+                        .is_some_and(|entry| entry.agent_runtime != "shell")
+                        || self.mission_agent_ids.contains(*id))
+            })
+            .count()
+    }
+
     fn refresh_activity_inner(&mut self) {
+        match self.client.live_session_counts() {
+            Ok(counts) => {
+                self.live_session_count = counts.values().sum();
+                if !self.daemon_disconnected {
+                    self.stopped_session_count = self.live_session_count;
+                }
+            }
+            Err(_) => self.live_session_count = 0,
+        }
         self.session_activity = self.client.session_activity_snapshot().unwrap_or_default();
         match self.client.session_status_snapshot() {
             Ok(statuses) => {
@@ -717,6 +799,7 @@ impl AppStore {
             tracing::debug!("refresh while runnerd disconnected: {error}");
             return;
         }
+        self.daemon_notice = None;
         if self.collecting_startup_errors {
             if let Some(current) = &mut self.error {
                 current.push('\n');
@@ -729,6 +812,22 @@ impl AppStore {
         }
         self.revisions.error = self.revisions.error.wrapping_add(1);
     }
+}
+
+#[cfg(any(windows, test))]
+fn mission_agent_ids(
+    client: &DaemonClient,
+    missions: &[MissionSummary],
+) -> runner_core::protocol::ClientResult<std::collections::BTreeSet<String>> {
+    let mut ids = std::collections::BTreeSet::new();
+    for mission in missions {
+        for row in client.session_list(&mission.mission.id)? {
+            if row.runtime != "shell" {
+                ids.insert(row.session.id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -774,6 +873,33 @@ pub(crate) fn global_app_store(cx: &App) -> Entity<AppStore> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn working_count_excludes_busy_shells_and_uses_effective_mission_runtime() {
+        use gpui::TestAppContext;
+        use runner_core::protocol::status::{Activity, Lifecycle};
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            assert!(store.error.is_none(), "{:?}", store.error);
+            assert_eq!(store.working_agent_count(), 2);
+            store
+                .session_statuses
+                .get_mut("direct-agent")
+                .unwrap()
+                .observation
+                .activity = Activity::Idle;
+            assert_eq!(store.working_agent_count(), 1);
+            store
+                .session_statuses
+                .get_mut("mission-agent")
+                .unwrap()
+                .lifecycle = Lifecycle::Stopped;
+            assert_eq!(store.working_agent_count(), 0);
+        });
+    }
+
     fn event(name: &'static str) -> AppEvent {
         AppEvent {
             name: name.to_owned(),
@@ -816,23 +942,43 @@ mod tests {
         let before = store.read_with(&cx, |store, _| store.revisions.error);
         events.emit(
             "daemon/disconnected",
-            &serde_json::json!({"message":"restart limit reached; see runnerd.log"}),
+            &serde_json::json!({"restart_limit":true}),
         );
         cx.run_until_parked();
         store.update(&mut cx, |store, _| {
             store.record_error("connection closed".into())
         });
         store.read_with(&cx, |store, _| {
+            assert!(store.error.is_none());
             assert_eq!(
-                store.error.as_deref(),
-                Some("restart limit reached; see runnerd.log")
+                store.daemon_notice,
+                Some(runner_app::lifecycle::DaemonNotice::Repeated)
             );
             assert!(store.revisions.error > before);
         });
         events.emit("daemon/reconnected", &serde_json::Value::Null);
         cx.run_until_parked();
         store.read_with(&cx, |store, _| {
-            assert!(!store.daemon_disconnected && store.error.is_none())
+            assert!(!store.daemon_disconnected);
+            assert!(store.error.is_none() && store.daemon_notice.is_none());
+        });
+        store.update(&mut cx, |store, _| {
+            store.live_session_count = 6;
+            store.stopped_session_count = 6;
+        });
+        events.emit("daemon/disconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        store.read_with(&cx, |store, _| {
+            assert!(store.daemon_disconnected && store.error.is_none());
+        });
+        events.emit("daemon/reconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        store.read_with(&cx, |store, _| {
+            assert!(!store.daemon_disconnected);
+            assert_eq!(
+                store.error.as_deref(),
+                Some("Background service restarted · 6 sessions stopped")
+            );
         });
     }
 
@@ -1081,6 +1227,94 @@ mod tests {
         assert_ne!(
             ShellSettingsSnapshot::from(&before),
             ShellSettingsSnapshot::from(&after)
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DaemonEvent {
+    Disconnected(runner_app::lifecycle::DaemonNotice),
+    Reconnected,
+    Restarted(usize),
+}
+
+#[cfg(test)]
+pub(crate) fn test_lifecycle_store(
+    cx: &mut gpui::TestAppContext,
+    root: &std::path::Path,
+) -> gpui::Entity<crate::app_store::AppStore> {
+    use gpui::AppContext as _;
+    use runner_daemon::{db, session, shell_path};
+    use std::sync::RwLock;
+    let env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+    let discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+    let core = crate::test_support::core(
+        Arc::new(db::open_pool(&root.join("runner.db")).unwrap()),
+        root.to_owned(),
+        session::SessionManager::new(
+            env.clone(),
+            discovery.clone(),
+            Arc::new(session::pty_runtime::PtyRuntime::new()),
+        ),
+        env,
+        discovery,
+    );
+    let store = cx.new(|cx| {
+        crate::app_store::AppStore::new(
+            core,
+            None,
+            None,
+            root.join("settings.json"),
+            Default::default(),
+            None,
+            cx,
+        )
+    });
+    cx.update(|cx| {
+        cx.set_global(crate::app_store::GlobalAppStore(store.clone()));
+        cx.set_global(crate::WindowLayoutCheckpoint::default());
+        cx.set_global(runner_app::lifecycle::QuitState::default());
+        #[cfg(not(windows))]
+        let updater = cx.new(|cx| crate::Updater::new(false, cx));
+        #[cfg(windows)]
+        let updater = cx.new(|cx| crate::Updater::new(false, root.join("updates"), cx));
+        cx.set_global(crate::GlobalUpdater(updater));
+    });
+    store
+}
+
+#[cfg(test)]
+pub(crate) fn seed_mixed_working_sessions(store: &mut AppStore) {
+    use runner_core::protocol::status::{Activity, AgentObservation, AgentStatus, Lifecycle};
+    store.test_core.db.get().unwrap().execute_batch(
+        "INSERT INTO roles (id, handle, display_name, runtime, command, created_at, updated_at)
+         VALUES ('test-shell-role', 'test-shell-role', 'Shell', 'shell', 'shell', '2026-10-06T00:00:00Z', '2026-10-06T00:00:00Z');
+         INSERT INTO crews (id, name, created_at, updated_at) VALUES ('test-crew', 'Test', '2026-10-06T00:00:00Z', '2026-10-06T00:00:00Z');
+         INSERT INTO missions (id, crew_id, title, status, started_at) VALUES ('test-mission', 'test-crew', 'Test', 'running', '2026-10-06T00:00:00Z');
+         INSERT INTO sessions (id, role_id, mission_id, status, agent_runtime, agent_command)
+         VALUES ('direct-agent', 'test-shell-role', NULL, 'running', 'codex', 'codex'),
+                ('busy-shell', 'test-shell-role', NULL, 'running', 'shell', 'shell'),
+                ('mission-agent', 'test-shell-role', 'test-mission', 'running', 'codex', 'codex'),
+                ('mission-shell', 'test-shell-role', 'test-mission', 'running', 'shell', 'shell');"
+    ).unwrap();
+    store.refresh_sessions_inner();
+    store.refresh_missions_blocking_inner();
+    for id in [
+        "direct-agent",
+        "busy-shell",
+        "mission-agent",
+        "mission-shell",
+    ] {
+        store.session_statuses.insert(
+            id.into(),
+            AgentStatus {
+                lifecycle: Lifecycle::Running,
+                observation: AgentObservation {
+                    activity: Activity::Working,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
         );
     }
 }
