@@ -7,38 +7,26 @@ use crate::session::state::CTRL_C_INTERRUPT;
 #[cfg(test)]
 use crate::session::state::ESCAPE_INTERRUPT;
 #[cfg(test)]
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
-#[cfg(test)]
-use std::sync::atomic::Ordering;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use crate::error::Result;
 
-#[cfg(test)]
-use crate::session::hook_feed::script_path;
+pub(crate) use crate::session::hook_feed::clear_leftovers;
 use crate::session::hook_feed::HookFeed;
-pub(crate) use crate::session::hook_feed::{clear_leftovers, hook_command, status_path};
 #[cfg(test)]
 use crate::session::runtime::SessionActivityState;
 use crate::session::status::{TurnOutcome, WaitReason};
 
 #[cfg(test)]
 use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
-pub(crate) const PATH_ENV: &str = "RUNNER_CLAUDE_STATUS_PATH";
-pub(crate) const GENERATION_ENV: &str = "RUNNER_CLAUDE_STATUS_GENERATION";
 pub(crate) const HOOK_TIMEOUT_SECS: u64 = 2;
 
 // Runner-owned per-invocation helper follows cmux's hook bridge shape
 // (manaflow-ai/cmux, GPL-3.0-or-later); the status records are Runner's.
-const APPEND_SCRIPT: &str = r#"#!/bin/sh
-payload=$(mktemp "$1.XXXXXXXX") || { cat >/dev/null; exit 0; }
-cat >"$payload" || { rm -f "$payload"; exit 0; }
-printf '{"generation":"%s","hook_event_name":"%s","payload_file":"%s"}\n' "$RUNNER_CLAUDE_STATUS_GENERATION" "$2" "${payload##*/}" >> "$1" 2>/dev/null || rm -f "$payload"
-exit 0
-"#;
 
 #[derive(Debug, Default, Deserialize)]
 struct StatusReport {
@@ -400,22 +388,31 @@ pub(crate) struct ClaudeStatusWatcher {
     read_transcript: bool,
 }
 impl ClaudeStatusWatcher {
-    pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
-        Ok(Self {
-            feed: HookFeed::start(path, generation, APPEND_SCRIPT)?,
+    pub(crate) fn from_receiver(receiver: crate::session::hook_queue::HookReceiver) -> Self {
+        Self {
+            feed: HookFeed::from_receiver(receiver),
             parser: Default::default(),
             transcript: None,
             read_transcript: false,
-        })
+        }
     }
     pub(crate) fn drain_events(
         &mut self,
         cancel: u8,
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
-        _session_start: impl FnMut(String),
+        mut session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(cancel != 0, |report| {
+        self.feed.drain(|report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if report.hook_event_name == "SessionStart" && report.agent_id.is_none() {
+                    if let Some(id) = report
+                        .session_id
+                        .as_deref()
+                        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                    {
+                        session_start(id.to_owned());
+                    }
+                }
                 if let Some(events) = self.parser.hook(report) {
                     let feedback = emit(AgentEvent::Batch {
                         runtime: Runtime::ClaudeCode,
@@ -535,13 +532,12 @@ impl ClaudeObservation {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
-    #[cfg(unix)]
-    use std::process::{Command, Stdio};
 
     use super::*;
 
     struct TestWatcher {
         inner: ClaudeStatusWatcher,
+        hooks: crate::session::hook_queue::TestHookRoute,
         observation: ClaudeObservation,
         cancel: u8,
     }
@@ -557,12 +553,15 @@ mod tests {
         }
     }
     impl TestWatcher {
-        fn start(path: &Path, generation: String) -> Result<Self> {
-            Ok(Self {
-                inner: ClaudeStatusWatcher::start(path, generation)?,
+        fn new(generation: String) -> Self {
+            let (hooks, receiver) =
+                crate::session::hook_queue::TestHookRoute::new(Runtime::ClaudeCode, generation);
+            Self {
+                inner: ClaudeStatusWatcher::from_receiver(receiver),
+                hooks,
                 observation: Default::default(),
                 cancel: 0,
-            })
+            }
         }
         fn drain_with_session_starts(
             &mut self,
@@ -625,30 +624,12 @@ mod tests {
         }
     }
 
-    fn report(event: &str, notification: Option<&str>, generation: &str) -> String {
+    fn report(event: &str, notification: Option<&str>, generation: &str) -> serde_json::Value {
         serde_json::json!({
             "generation": generation,
             "hook_event_name": event,
             "notification_type": notification,
         })
-        .to_string()
-    }
-
-    #[cfg(unix)]
-    fn run_hook(path: &Path, event: &str, payload: &[u8]) {
-        let mut child = Command::new("/bin/sh")
-            .args(["-c", &hook_command(path, event)])
-            .env(GENERATION_ENV, "current")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(payload).unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "{event}: {output:?}");
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
     }
 
     fn observe(
@@ -778,9 +759,9 @@ mod tests {
         let transcript = root.path().join("transcript.jsonl");
         let mut transcript_file = File::create(&transcript).unwrap();
         writeln!(transcript_file, "{}", "x".repeat(1024 * 1024 + 10)).unwrap();
-        let path = status_path(root.path(), "question");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+
+        let mut watcher = TestWatcher::new("current".into());
+
         for payload in [
             serde_json::json!({"hook_event_name":"SessionStart","session_id":"main","transcript_path":transcript}),
             serde_json::json!({"hook_event_name":"UserPromptSubmit","prompt_id":"turn"}),
@@ -788,7 +769,7 @@ mod tests {
         ] {
             let mut payload = payload;
             payload["generation"] = "current".into();
-            writeln!(file, "{payload}").unwrap();
+            watcher.hooks.admit(payload).unwrap();
         }
         let mut observations = Vec::new();
         watcher
@@ -804,7 +785,7 @@ mod tests {
 
         let result = serde_json::json!({"type":"user","sessionId":"main","promptId":"turn","isSidechain":false,"toolDenialKind":"user-rejected","message":{"content":[{"type":"tool_result","tool_use_id":"question","is_error":true}]}}).to_string();
         write!(transcript_file, "{}", &result[..20]).unwrap();
-        watcher.feed.dirty.store(false, Ordering::Release);
+
         watcher
             .drain_status(|value, _| observations.push(value))
             .unwrap();
@@ -841,13 +822,11 @@ mod tests {
                 Some(TurnOutcome::Interrupted)
             );
         }
-        writeln!(
-            file,
-            "{}",
-            report("Notification", Some("permission_prompt"), "current")
-        )
-        .unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        watcher
+            .hooks
+            .admit(report("Notification", Some("permission_prompt"), "current"))
+            .unwrap();
+
         watcher
             .drain_status(|value, _| observations.push(value))
             .unwrap();
@@ -940,8 +919,8 @@ mod tests {
         assert_eq!(answered.activity, Activity::Working);
 
         let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "missing-transcript");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+
+        let mut watcher = TestWatcher::new("current".into());
         watcher.observation = model;
         watcher.observation.transcript_path = Some(root.path().join("missing.jsonl"));
         observe(
@@ -951,9 +930,9 @@ mod tests {
         );
         watcher.drain_status(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"PostToolUse","tool_use_id":"next"})).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+
+        watcher.hooks.admit(serde_json::json!({"generation":"current","hook_event_name":"PostToolUse","tool_use_id":"next"})).unwrap();
+
         watcher.drain_status(|_, _| {}).unwrap();
         assert!(!watcher.observation.value.needs_you());
         assert_eq!(watcher.observation.value.source, ObservationSource::Hook);
@@ -1336,13 +1315,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn approval_hook_is_immediate_and_escape_uses_the_question_resolution_path() {
         let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "approval");
+
         let transcript = root.path().join("claude.jsonl");
         let mut file = File::create(&transcript).unwrap();
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::new("current".into());
         for (event, fields) in [
             (
                 "SessionStart",
@@ -1361,7 +1339,7 @@ mod tests {
                 serde_json::json!({"session_id":"main","prompt_id":"turn","tool_name":"Bash","tool_input":{"command":"curl https://example.com"}}),
             ),
         ] {
-            run_hook(&path, event, fields.to_string().as_bytes());
+            watcher.hooks.admit_event(event, fields).unwrap();
         }
         watcher.drain_status(|_, _| {}).unwrap();
         assert_eq!(
@@ -1391,14 +1369,20 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_payload_is_skipped_without_losing_the_next_record_or_bridge() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "session");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"Stop","payload_file":"session.ndjson.missing"})).unwrap();
-        writeln!(file, "{}", report("UserPromptSubmit", None, "current")).unwrap();
-        writeln!(file, "{}", report("Stop", None, "current")).unwrap();
+    fn invalid_report_is_rejected_without_losing_the_next_record_or_bridge() {
+        let mut watcher = TestWatcher::new("current".into());
+        assert!(watcher
+            .hooks
+            .admit(serde_json::json!({"hook_event_name":42}))
+            .is_err());
+        watcher
+            .hooks
+            .admit(report("UserPromptSubmit", None, "current"))
+            .unwrap();
+        watcher
+            .hooks
+            .admit(report("Stop", None, "current"))
+            .unwrap();
         let mut observations = Vec::new();
         watcher
             .drain_status(|value, _| observations.push(value))
@@ -1406,9 +1390,10 @@ mod tests {
         assert_eq!(observations.len(), 2);
         assert_eq!(observations[0].activity, Activity::Working);
         assert_eq!(observations[1].activity, Activity::Ready);
-        assert!(watcher.feed.pending.is_empty());
-        fs::remove_file(&path).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        watcher
+            .drain_status(|_, _| panic!("records must not replay"))
+            .unwrap();
+        watcher.hooks.retire();
         assert!(watcher.drain_status(|_, _| {}).is_err());
     }
 
@@ -1638,17 +1623,13 @@ mod tests {
 
     #[test]
     fn interrupt_preserves_dialog_until_correlated_resolution_and_never_completes() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "dialog");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"question"}}"#).unwrap();
-        writeln!(
-            file,
-            "{}",
-            report("Notification", Some("permission_prompt"), "current")
-        )
-        .unwrap();
+        let mut watcher = TestWatcher::new("current".into());
+
+        watcher.hooks.admit_json(r#"{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"question"}"#).unwrap();
+        watcher
+            .hooks
+            .admit(report("Notification", Some("permission_prompt"), "current"))
+            .unwrap();
         watcher.cancel = ESCAPE_INTERRUPT;
         let mut observations = Vec::new();
         watcher
@@ -1658,8 +1639,11 @@ mod tests {
         assert!(interrupted.needs_you());
         assert_eq!(interrupted.outcome, Some(TurnOutcome::Interrupted));
         assert_eq!(interrupted.activity, Activity::Unavailable);
-        writeln!(file, "{}", report("Stop", None, "current")).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        watcher
+            .hooks
+            .admit(report("Stop", None, "current"))
+            .unwrap();
+
         watcher
             .drain_status(|value, _| observations.push(value))
             .unwrap();
@@ -1691,7 +1675,12 @@ mod tests {
             ("unknown", None, None),
         ] {
             assert_eq!(
-                parse_transition(report(event, notification, "current").as_bytes(), "current"),
+                parse_transition(
+                    report(event, notification, "current")
+                        .to_string()
+                        .as_bytes(),
+                    "current"
+                ),
                 expected,
                 "{event} {notification:?}"
             );
@@ -1699,7 +1688,9 @@ mod tests {
         assert_eq!(parse_transition(b"not JSON\n", "current"), None);
         assert_eq!(
             parse_transition(
-                report("Notification", Some("idle_prompt"), "old").as_bytes(),
+                report("Notification", Some("idle_prompt"), "old")
+                    .to_string()
+                    .as_bytes(),
                 "current"
             ),
             None
@@ -1707,42 +1698,29 @@ mod tests {
     }
 
     #[test]
-    fn watcher_preserves_partial_lines_and_skips_stale_or_invalid_records() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "session");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            format!(
-                "{}\n",
-                report("Notification", Some("idle_prompt"), "current")
-            ),
-        )
-        .unwrap();
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        let prompt = report("UserPromptSubmit", None, "current");
-        write!(file, "{}", &prompt[..10]).unwrap();
+    fn watcher_waits_for_admission_and_skips_stale_or_invalid_records() {
+        let mut watcher = TestWatcher::new("current".into());
+        let pending = watcher
+            .hooks
+            .admit(report("UserPromptSubmit", None, "current"))
+            .unwrap();
         let mut states = Vec::new();
         watcher.drain(|state, _| states.push(state)).unwrap();
         assert!(states.is_empty());
-
-        writeln!(file, "{}", &prompt[10..]).unwrap();
-        writeln!(file, "broken").unwrap();
-        writeln!(
-            file,
-            "{}",
-            report("Notification", Some("idle_prompt"), "old")
-        )
-        .unwrap();
-        writeln!(file, "{}", report("Stop", None, "current")).unwrap();
-        writeln!(
-            file,
-            "{}",
-            report("Notification", Some("idle_prompt"), "current")
-        )
-        .unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        drop(pending);
+        assert!(watcher.hooks.admit_json("broken").is_err());
+        assert!(watcher
+            .hooks
+            .admit(report("Notification", Some("idle_prompt"), "old"))
+            .is_err());
+        watcher
+            .hooks
+            .admit(report("Stop", None, "current"))
+            .unwrap();
+        watcher
+            .hooks
+            .admit(report("Notification", Some("idle_prompt"), "current"))
+            .unwrap();
         watcher.drain(|state, _| states.push(state)).unwrap();
         assert_eq!(
             states,
@@ -1752,23 +1730,16 @@ mod tests {
                 SessionActivityState::Idle
             ]
         );
-        watcher.feed.dirty.store(true, Ordering::Release);
         watcher.drain(|state, _| states.push(state)).unwrap();
         assert_eq!(states.len(), 3);
-        drop(file);
-        drop(watcher);
-        assert!(!path.exists());
-        assert!(!script_path(&path).exists());
     }
 
     #[test]
     fn ordinary_interrupt_recovers_idle_without_a_transcript_or_completion_hook() {
         for kind in [ESCAPE_INTERRUPT, CTRL_C_INTERRUPT] {
-            let root = tempfile::tempdir().unwrap();
-            let path = status_path(root.path(), "early-interrupt");
-            let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-            writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"turn"})).unwrap();
+            let mut watcher = TestWatcher::new("current".into());
+
+            watcher.hooks.admit(serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"turn"})).unwrap();
             watcher.cancel = kind;
             let mut observations = Vec::new();
             watcher
@@ -1786,8 +1757,8 @@ mod tests {
                 .drain_status(|_, _| panic!("repeated interrupt must preserve Idle"))
                 .unwrap();
             for event in ["PostToolUse", "PostToolUseFailure", "Notification", "Stop"] {
-                writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":event,"prompt_id":"turn","tool_use_id":"late","is_interrupt":event == "PostToolUseFailure","notification_type":"permission_prompt"})).unwrap();
-                watcher.feed.dirty.store(true, Ordering::Release);
+                watcher.hooks.admit(serde_json::json!({"generation":"current","hook_event_name":event,"prompt_id":"turn","tool_use_id":"late","is_interrupt":event == "PostToolUseFailure","notification_type":"permission_prompt"})).unwrap();
+
                 watcher
                     .drain_status(|value, _| {
                         assert_eq!(value.activity, Activity::Ready);
@@ -1796,8 +1767,8 @@ mod tests {
                     })
                     .unwrap();
             }
-            writeln!(file, "{}", serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"next"})).unwrap();
-            watcher.feed.dirty.store(true, Ordering::Release);
+            watcher.hooks.admit(serde_json::json!({"generation":"current","hook_event_name":"UserPromptSubmit","prompt_id":"next"})).unwrap();
+
             watcher
                 .drain_status(|value, _| observations.push(value))
                 .unwrap();
@@ -1816,13 +1787,14 @@ mod tests {
                 StatusSource::InputInterrupt,
             ),
         ] {
-            let root = tempfile::tempdir().unwrap();
-            let path = status_path(root.path(), "interrupt");
-            let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+            let mut watcher = TestWatcher::new("current".into());
             watcher.drain(|_, _| panic!("no records yet")).unwrap();
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-            writeln!(file, "{}", report("PreToolUse", None, "current")).unwrap();
-            watcher.feed.dirty.store(false, Ordering::Release);
+
+            watcher
+                .hooks
+                .admit(report("PreToolUse", None, "current"))
+                .unwrap();
+
             watcher.cancel = kind;
             let mut transitions = Vec::new();
             watcher
@@ -1835,8 +1807,11 @@ mod tests {
                     (SessionActivityState::Idle, source)
                 ]
             );
-            writeln!(file, "{}", report("PreToolUse", None, "current")).unwrap();
-            watcher.feed.dirty.store(true, Ordering::Release);
+            watcher
+                .hooks
+                .admit(report("PreToolUse", None, "current"))
+                .unwrap();
+
             watcher
                 .drain(|state, source| transitions.push((state, source)))
                 .unwrap();
@@ -1849,11 +1824,8 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn notification_script_uses_payload_type_even_when_matcher_is_bypassed() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "notifications");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+    fn notification_uses_payload_type_even_when_matcher_is_bypassed() {
+        let mut watcher = TestWatcher::new("current".into());
         for kind in [
             None,
             Some(""),
@@ -1872,9 +1844,9 @@ mod tests {
                 serde_json::to_string(&payload).unwrap(),
                 serde_json::to_string_pretty(&payload).unwrap(),
             ] {
-                run_hook(&path, "Notification", text.as_bytes());
+                watcher.hooks.admit_json(&text).unwrap();
                 let mut observations = Vec::new();
-                watcher.feed.dirty.store(true, Ordering::Release);
+
                 watcher
                     .drain_status(|value, _| observations.push(value))
                     .unwrap();
@@ -1887,13 +1859,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn stop_followed_by_pre_tool_use_ends_busy() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "continuation");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
+        let mut watcher = TestWatcher::new("current".into());
         for event in ["Stop", "PreToolUse"] {
-            run_hook(&path, event, b"{}");
+            watcher
+                .hooks
+                .admit_event(event, serde_json::json!({}))
+                .unwrap();
         }
         let mut states = Vec::new();
         watcher.drain(|state, _| states.push(state)).unwrap();
@@ -1904,12 +1876,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn tool_hooks_drain_payloads_larger_than_the_pipe_buffer() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "large-payload");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let payload = serde_json::json!({"tool_response": "x".repeat(2 * 1024 * 1024)}).to_string();
+    fn tool_hooks_drain_large_admitted_payloads() {
+        let mut watcher = TestWatcher::new("current".into());
+        let payload = serde_json::json!({"tool_response": "x".repeat(2 * 1024 * 1024)});
         for event in [
             "UserPromptSubmit",
             "PreToolUse",
@@ -1917,19 +1886,48 @@ mod tests {
             "Stop",
             "StopFailure",
         ] {
-            run_hook(&path, event, payload.as_bytes());
+            watcher.hooks.admit_event(event, payload.clone()).unwrap();
         }
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 5);
         let mut observations = Vec::new();
         watcher
             .drain_status(|value, _| observations.push(value))
             .unwrap();
         assert_eq!(observations.len(), 5);
-        // A failed bridge setup leaves no helper; the command must still consume stdin.
-        run_hook(
-            &status_path(root.path(), "missing-helper"),
+        watcher.hooks.retire();
+        assert!(watcher.hooks.admit_event("PostToolUse", payload).is_err());
+    }
+
+    #[test]
+    fn admitted_hook_events_preserve_delivery_order() {
+        let mut watcher = TestWatcher::new("current".into());
+        for event in [
+            "UserPromptSubmit",
+            "PreToolUse",
             "PostToolUse",
-            payload.as_bytes(),
+            "Notification",
+            "Stop",
+            "StopFailure",
+        ] {
+            watcher
+                .hooks
+                .admit_event(
+                    event,
+                    serde_json::json!({"notification_type":"idle_prompt"}),
+                )
+                .unwrap();
+        }
+        let mut states = Vec::new();
+        watcher.drain(|state, _| states.push(state)).unwrap();
+        assert_eq!(
+            states,
+            [
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Busy,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
+                SessionActivityState::Idle,
+            ]
         );
     }
 
@@ -1937,197 +1935,17 @@ mod tests {
     fn startup_clears_status_files_left_by_a_crash() {
         let root = tempfile::tempdir().unwrap();
         clear_leftovers(root.path()).unwrap();
-        let path = status_path(root.path(), "stale");
+        let path = root.path().join("session-status/stale.ndjson");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, b"stale report").unwrap();
-        fs::write(script_path(&path), APPEND_SCRIPT).unwrap();
-        fs::write(path.with_extension("sh.tmp"), APPEND_SCRIPT).unwrap();
+        fs::write(path.with_extension("sh"), "stale reporter").unwrap();
+        fs::write(path.with_extension("sh.tmp"), "stale reporter").unwrap();
         let unremovable = path.with_file_name("directory.sh");
         fs::create_dir(&unremovable).unwrap();
         clear_leftovers(root.path()).unwrap();
         assert!(unremovable.is_dir());
         assert!(!path.exists());
-        assert!(!script_path(&path).exists());
+        assert!(!path.with_extension("sh").exists());
         assert!(!path.with_extension("sh.tmp").exists());
-    }
-
-    #[test]
-    fn failed_setup_removes_its_helper() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "bad-file");
-        fs::create_dir_all(&path).unwrap();
-        assert!(TestWatcher::start(&path, "current".into()).is_err());
-        assert!(!script_path(&path).exists());
-        assert!(!path.with_extension("sh.tmp").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn injected_commands_append_silently_and_fail_open() {
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(&root.path().join("Jason's status $dir"), "session");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        for event in [
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PostToolUse",
-            "Notification",
-            "Stop",
-            "StopFailure",
-        ] {
-            run_hook(&path, event, br#"{"notification_type":"idle_prompt"}"#);
-        }
-        let records = fs::read_to_string(&path).unwrap();
-        let mut states = Vec::new();
-        watcher.drain(|state, _| states.push(state)).unwrap();
-        assert_eq!(records.lines().count(), 6);
-        assert_eq!(
-            states,
-            [
-                SessionActivityState::Busy,
-                SessionActivityState::Busy,
-                SessionActivityState::Busy,
-                SessionActivityState::Idle,
-                SessionActivityState::Idle,
-                SessionActivityState::Idle,
-            ]
-        );
-
-        let output = std::process::Command::new("/bin/sh")
-            .args(["-c", &hook_command(root.path(), "Stop")])
-            .env(GENERATION_ENV, "current")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
-    }
-
-    /// Git for Windows' `sh`, the shell Claude Code runs hooks under on Windows.
-    #[cfg(windows)]
-    fn git_sh() -> Option<PathBuf> {
-        let probe = |sh: &Path| {
-            std::process::Command::new(sh)
-                .args(["-c", "exit 0"])
-                .output()
-                .is_ok_and(|output| output.status.success())
-        };
-        if let Some(sh) =
-            crate::runtime_status::find_executable("sh", &std::env::var("PATH").unwrap_or_default())
-        {
-            if probe(&sh) {
-                return Some(sh);
-            }
-        }
-        let exec_path = std::process::Command::new("git")
-            .arg("--exec-path")
-            .output()
-            .ok()?;
-        let exec_path = PathBuf::from(String::from_utf8(exec_path.stdout).ok()?.trim());
-        let sh = exec_path.ancestors().nth(3)?.join("usr/bin/sh.exe");
-        probe(&sh).then_some(sh)
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn git_sh_hooks_consume_large_payloads_without_git_tools_on_inherited_path() {
-        let Some(sh) = git_sh() else {
-            eprintln!("skipping: Git for Windows sh is not on PATH or beside git");
-            return;
-        };
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(root.path(), "no-git-path");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "tool_response": format!("你好 {}", "x".repeat(256 * 1024)),
-        }))
-        .unwrap();
-        let child_path = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32");
-        let run = || {
-            let mut child = std::process::Command::new(&sh)
-                .args(["-c", &hook_command(&path, "Stop")])
-                .env("PATH", &child_path)
-                .env(GENERATION_ENV, "current")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            child.stdin.take().unwrap().write_all(&payload).unwrap();
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success(), "{output:?}");
-            assert!(output.stdout.is_empty(), "{output:?}");
-            assert!(output.stderr.is_empty(), "{output:?}");
-        };
-        run();
-        let mut states = Vec::new();
-        watcher.drain(|state, _| states.push(state)).unwrap();
-        assert_eq!(states, [SessionActivityState::Idle]);
-        drop(watcher);
-        run();
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn git_sh_runs_the_injected_commands_with_forward_slash_feeds() {
-        let Some(sh) = git_sh() else {
-            eprintln!("skipping: Git for Windows sh is not on PATH or beside git");
-            return;
-        };
-        let root = tempfile::tempdir().unwrap();
-        let path = status_path(&root.path().join("Jason's status $dir"), "session");
-        let path = PathBuf::from(crate::session::hook_feed::hook_path(&path));
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let run = |path: &Path, event: &str, payload: &[u8]| {
-            let mut child = std::process::Command::new(&sh)
-                .args(["-c", &hook_command(path, event)])
-                .env(GENERATION_ENV, "current")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            child.stdin.take().unwrap().write_all(payload).unwrap();
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success(), "{event}: {output:?}");
-            assert!(output.stdout.is_empty(), "{event}: {output:?}");
-            assert!(output.stderr.is_empty(), "{event}: {output:?}");
-        };
-        let large = serde_json::json!({
-            "notification_type": "idle_prompt",
-            "tool_response": format!("你好 {}", "x".repeat(256 * 1024)),
-        });
-        let large = serde_json::to_vec_pretty(&large).unwrap();
-        for event in [
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PostToolUse",
-            "Notification",
-            "Stop",
-            "StopFailure",
-        ] {
-            run(&path, event, &large);
-        }
-        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 6);
-        let mut states = Vec::new();
-        watcher.drain(|state, _| states.push(state)).unwrap();
-        assert_eq!(
-            states,
-            [
-                SessionActivityState::Busy,
-                SessionActivityState::Busy,
-                SessionActivityState::Busy,
-                SessionActivityState::Idle,
-                SessionActivityState::Idle,
-                SessionActivityState::Idle,
-            ]
-        );
-        fs::remove_file(script_path(&path)).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
-        assert!(watcher.drain(|_, _| {}).is_err());
-        drop(watcher);
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
-        run(&path, "Stop", &large);
     }
 }

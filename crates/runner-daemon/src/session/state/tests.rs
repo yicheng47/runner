@@ -105,6 +105,51 @@ fn rule_3_bridge_failure_publishes_the_last_baseline() {
 }
 
 #[test]
+fn recovered_identity_clears_agent_state_and_returns_to_baseline() {
+    use agent::AgentEvent;
+    let mut model = SessionModel::default();
+    transition(
+        &mut model,
+        SessionActivityState::Busy,
+        StatusSource::Forwarder,
+    );
+    for event in [
+        AgentEvent::TurnStarted,
+        AgentEvent::ToolStarted {
+            count: 2,
+            question: None,
+        },
+        AgentEvent::InteractionOpened {
+            reason: super::super::status::WaitReason::Answer,
+            owners: vec!["old-owner".into()],
+        },
+    ] {
+        model.apply(SessionEvent::Agent { event, live: true }, now());
+    }
+    assert!(!model.agent.value.interactions.is_empty());
+    model.apply(
+        SessionEvent::Agent {
+            event: AgentEvent::Batch {
+                runtime: crate::model::Runtime::Codex,
+                events: vec![AgentEvent::ConversationRecovered],
+            },
+            live: true,
+        },
+        now(),
+    );
+    assert_eq!(model.agent.value, agent::TurnState::default());
+    assert_eq!(
+        model.status().observation.source,
+        ObservationSource::Baseline
+    );
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(model.status().observation.interactions.is_empty());
+    assert_eq!(model.status().observation.outcome, None);
+    assert!(!model.hook_status_armed);
+    assert!(!model.completion_armed);
+}
+
+#[test]
 fn rule_4_legacy_interrupts_disarm_and_provisional_escape_settles() {
     for source in [StatusSource::InputInterrupt, StatusSource::InputEscape] {
         let mut model = SessionModel::default();

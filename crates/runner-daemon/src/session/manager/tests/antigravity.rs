@@ -114,20 +114,14 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
             crate::runtimes::antigravity::agy_status::workspace_context(&project)
         );
         assert_eq!(
-            fresh.env[crate::runtimes::antigravity::agy_status::PATH_ENV],
-            crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                app_data.path(),
-                &spawned.id
-            ))
+            fresh.env[runner_core::protocol::hook::SESSION_ENV],
+            spawned.id
         );
-        assert!(uuid::Uuid::parse_str(
-            &fresh.env[crate::runtimes::antigravity::agy_status::GENERATION_ENV]
-        )
-        .is_ok());
+        assert!(
+            uuid::Uuid::parse_str(&fresh.env[runner_core::protocol::hook::GENERATION_ENV]).is_ok()
+        );
     } else {
-        assert!(!fresh
-            .env
-            .contains_key(crate::runtimes::antigravity::agy_status::PATH_ENV));
+        assert!(!fresh.env.contains_key("RUNNER_ANTIGRAVITY_STATUS_PATH"));
     }
     expected.extend(["-i", "persona first turn"]);
     assert_eq!(fresh.args, expected);

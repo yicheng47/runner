@@ -51,6 +51,16 @@ macro_rules! variant {
     };
 }
 variant!(Activity => Self::Working);
+record!(HookReport {
+    bridge_unavailable,
+    version,
+    runtime,
+    session_id,
+    generation,
+    event,
+    payload,
+    caller_thread_id
+});
 record!(AgentObservation {
     activity,
     source,

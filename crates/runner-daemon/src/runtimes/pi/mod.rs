@@ -154,7 +154,7 @@ impl RuntimeAdapter for Pi {
         &[("PI_SKIP_VERSION_CHECK", "1")]
     }
     fn key_capture(&self) -> KeyCapture {
-        KeyCapture::RekeyDrop
+        KeyCapture::Hook
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
@@ -230,6 +230,15 @@ impl RuntimeAdapter for Pi {
 
 struct Hooks;
 impl StatusHooks for Hooks {
+    fn start_receiver(
+        &self,
+        _spec: &SpawnSpec,
+        receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        Some(Box::new(pi_status::PiStatusWatcher::from_receiver(
+            receiver,
+        )))
+    }
     fn supported(&self, _windows: bool) -> bool {
         true
     }
@@ -243,49 +252,14 @@ impl StatusHooks for Hooks {
     fn env(
         &self,
         _role_args: &[String],
-        plan: &ResumePlan,
+        _plan: &ResumePlan,
         app_data_dir: &Path,
         spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String> {
         if !(self.supported(cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
-        let mut env = status_env(
-            pi_status::PATH_ENV,
-            pi_status::GENERATION_ENV,
-            app_data_dir,
-            &spec.session_id,
-        );
-        let session_key = plan
-            .assigned_key
-            .as_ref()
-            .expect("pi spawn plan must assign --session-id");
-        env.insert(pi_status::SESSION_KEY_ENV.into(), session_key.clone());
-        env.insert(
-            pi_status::REKEY_PATH_ENV.into(),
-            crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
-                app_data_dir,
-                &spec.session_id,
-            )),
-        );
-        env
-    }
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
-        if !self.supported(cfg!(windows)) {
-            return None;
-        }
-        let path = spec.env.get(pi_status::PATH_ENV)?;
-        let generation = spec.env.get(pi_status::GENERATION_ENV)?;
-        match pi_status::PiStatusWatcher::start(Path::new(path), generation.clone()) {
-            Ok(watcher) => Some(Box::new(watcher)),
-            Err(error) => {
-                log::warn!(
-                    "pi status bridge unavailable for {}: {error}",
-                    spec.session_id
-                );
-                None
-            }
-        }
+        hook_env(app_data_dir, &spec.session_id)
     }
 }
 

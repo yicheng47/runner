@@ -646,12 +646,12 @@ pub struct SessionManager {
     /// iteration so queued slots do not keep firing into a stopped or
     /// archived mission. See `cancel_pending_mission_spawns`.
     pending_mission_cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
-    claude_session_key_watcher: Mutex<Option<super::claude_rekey::ClaudeSessionKeyWatcher>>,
     /// Underlying terminal runtime. Every spawn / resume / kill /
     /// inject_stdin / resize routes through this trait — the manager
     /// owns DB + event-buffer state but never reads/writes a PTY
     /// directly.
     runtime: Arc<dyn SessionRuntime>,
+    hook_endpoint: RwLock<Option<runner_core::app_paths::IpcEndpoint>>,
     shutdown: RwLock<bool>,
     resize_settle_ms: AtomicU64,
     resize_generation: AtomicU64,
@@ -766,6 +766,16 @@ fn compute_gate_wait(last: Option<Instant>, now: Instant, grace: Duration) -> Du
 }
 
 impl SessionManager {
+    pub(crate) fn set_hook_endpoint(&self, endpoint: runner_core::app_paths::IpcEndpoint) {
+        *self.hook_endpoint.write().unwrap() = Some(endpoint);
+    }
+
+    pub(crate) fn admit_hook(
+        &self,
+        report: runner_core::protocol::HookReport,
+    ) -> Result<super::hook_queue::Admission> {
+        self.runtime.admit_hook(report)
+    }
     pub fn new(
         shell_env: crate::runtime_status::SharedShellEnv,
         discovery_state: crate::runtime_status::SharedDiscoveryState,
@@ -778,8 +788,8 @@ impl SessionManager {
             discovery_state,
             claude_launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
-            claude_session_key_watcher: Mutex::new(None),
             runtime,
+            hook_endpoint: RwLock::new(None),
             shutdown: RwLock::new(false),
             resize_settle_ms: AtomicU64::new(RESIZE_SETTLE_MS),
             resize_generation: AtomicU64::new(0),
@@ -800,7 +810,7 @@ impl SessionManager {
         self: &Arc<Self>,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
+        _events: Arc<dyn SessionEvents>,
     ) -> Result<()> {
         for runtime in Runtime::ALL {
             if let Some(hooks) = crate::runtimes::adapter(runtime).status_hooks() {
@@ -819,13 +829,6 @@ impl SessionManager {
                 crate::runtimes::antigravity::agy_capture::clear_orphans(app_data_dir, &pool);
             }
         }
-        let watcher = super::claude_rekey::ClaudeSessionKeyWatcher::start(
-            app_data_dir,
-            pool,
-            events,
-            Arc::downgrade(self),
-        )?;
-        *self.claude_session_key_watcher.lock().unwrap() = Some(watcher);
         Ok(())
     }
 
@@ -1533,6 +1536,7 @@ impl SessionManager {
             .collect()
     }
 
+    #[cfg(test)]
     fn publish_agent_event(
         &self,
         session_id: &str,
@@ -1546,10 +1550,21 @@ impl SessionManager {
         )
     }
 
+    #[cfg(test)]
     fn publish_model_event(
         &self,
         session_id: &str,
+        event: SessionEvent,
+        events: &dyn SessionEvents,
+    ) -> super::state::agent::AdapterFeedback {
+        self.publish_model_event_for_launch(session_id, event, None, events)
+    }
+
+    fn publish_model_event_for_launch(
+        &self,
+        session_id: &str,
         mut event: SessionEvent,
+        launch: Option<&Arc<AtomicBool>>,
         events: &dyn SessionEvents,
     ) -> super::state::agent::AdapterFeedback {
         let Some(session) = self.session_state(session_id) else {
@@ -1557,6 +1572,15 @@ impl SessionManager {
         };
         let (status, sink, effects) = {
             let mut session = session.lock().unwrap();
+            if launch.is_some_and(|launch| {
+                launch.load(Ordering::Acquire)
+                    || session
+                        .handle
+                        .as_ref()
+                        .is_none_or(|handle| !Arc::ptr_eq(launch, &handle.stop))
+            }) {
+                return Default::default();
+            }
             let is_live = session.handle.is_some() && !session.killed;
             match &mut event {
                 SessionEvent::Agent { live, .. } | SessionEvent::BridgeFailed { live } => {
@@ -1606,6 +1630,7 @@ impl SessionManager {
         );
     }
 
+    #[cfg(test)]
     fn status_bridge_failed(&self, session_id: &str, events: &dyn SessionEvents) {
         self.publish_model_event(
             session_id,

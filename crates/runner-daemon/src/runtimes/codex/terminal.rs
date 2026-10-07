@@ -109,6 +109,14 @@ impl TerminalAdapter for CodexTerminal {
         }
     }
     fn accept_event(&mut self, event: &AgentEvent) -> bool {
+        if matches!(event, AgentEvent::ConversationRecovered)
+            || matches!(event, AgentEvent::Batch { events, .. } if !events.is_empty() && events.iter().all(|event| matches!(event, AgentEvent::ConversationRecovered)))
+        {
+            self.hook_owned = false;
+            self.title.reset();
+            self.startup = None;
+            return true;
+        }
         if self
             .startup
             .as_ref()
@@ -327,6 +335,25 @@ mod tests {
     use super::*;
     fn osc_title(title: &str) -> Vec<u8> {
         format!("\x1b]0;{title}\x07").into_bytes()
+    }
+
+    #[test]
+    fn recovered_identity_with_a_valid_boundary_retains_hook_authority() {
+        for boundary in [
+            AgentEvent::TurnStarted,
+            AgentEvent::Outcome {
+                outcome: crate::session::status::TurnOutcome::Interrupted,
+            },
+        ] {
+            let mut terminal = CodexTerminal::new(true);
+            assert!(terminal.accept_event(&AgentEvent::Batch {
+                runtime: crate::model::Runtime::Codex,
+                events: vec![AgentEvent::ConversationRecovered, boundary],
+            }));
+            for title in ["⠙ project", "⠹ project", "project"] {
+                assert!(terminal.on_output(&osc_title(title)).is_none());
+            }
+        }
     }
 
     #[test]

@@ -141,6 +141,7 @@ impl Identity {
 
 async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) -> Result<()> {
     let mut listener = IpcListener::bind(&config.endpoint)?;
+    core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
     #[cfg(windows)]
@@ -451,8 +452,14 @@ impl ConnectionWindows {
 }
 
 async fn read_frame(read: &mut (impl tokio::io::AsyncRead + Unpin)) -> std::io::Result<Frame> {
+    read_frame_bounded(read, wire::MAX_FRAME).await
+}
+async fn read_frame_bounded(
+    read: &mut (impl tokio::io::AsyncRead + Unpin),
+    maximum: usize,
+) -> std::io::Result<Frame> {
     let len = read.read_u32_le().await? as usize;
-    if !(1..=wire::MAX_FRAME).contains(&len) {
+    if !(1..=maximum).contains(&len) {
         return Err(wire::invalid("invalid frame length"));
     }
     let kind = read.read_u8().await?;
@@ -501,6 +508,22 @@ async fn connection(
             shutdown.cancel();
         }
         return Ok(());
+    }
+    if hello.client == "hook" {
+        return tokio::select! {
+            _ = shutdown.cancelled() => Ok(()),
+            result = tokio::time::timeout(runner_core::protocol::hook::DEADLINE, async {
+                let frame = read_frame_bounded(&mut read, runner_core::protocol::hook::MAX_ENVELOPE_BYTES + 1024).await?;
+                if frame.kind != wire::REQUEST { anyhow::bail!("expected hook request"); }
+                let call: wire::Call = frame.decode()?;
+                let Request::hook_report { report } = call.request else { anyhow::bail!("expected hook admission"); };
+                let admission = core.sessions.admit_hook(report);
+                let response = Response::hook_report(admission.as_ref().map(|_| ()).map_err(|error| ClientError::msg(error.to_string())));
+                write_frame(&mut write, Frame::json(wire::RESPONSE, &wire::Reply { id: call.id, response })?).await?;
+                drop(admission);
+                Ok(())
+            }) => result?,
+        };
     }
     let _connected = Connected { core: core.clone() };
     core.usage.client_connected(core.clone());

@@ -3,15 +3,10 @@ use crate::runtimes::test_support::*;
 
 #[cfg(windows)]
 #[test]
-fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
+fn claude_settings_on_windows_quote_the_native_reporter_for_bash() {
     let root = Path::new(r"C:\Users\Jason Wang\it's runner app");
     let args = claude_settings_args_for(Runtime::ClaudeCode.key(), &[], root, "session");
     let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-    let status_path = crate::runtimes::claude_code::claude_status::status_path(root, "session");
-    let rekey = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        .as_str()
-        .unwrap();
-    assert!(rekey.contains(r"C:\Users\Jason Wang"), "{rekey}");
     for event in [
         "SessionStart",
         "PermissionRequest",
@@ -35,14 +30,12 @@ fn claude_settings_on_windows_carry_sh_status_hooks_with_forward_slash_feeds() {
         assert_eq!(
             status,
             format!(
-                "(PATH=/usr/bin:/bin:$PATH; export PATH; sh 'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.sh' \
-                     'C:/Users/Jason Wang/it'\\''s runner app/session-status/session.ndjson' \
-                     '{event}' || cat >/dev/null) 2>/dev/null; exit 0"
+                "'C:/Users/Jason Wang/it'\\''s runner app/bin/runner.exe' hook report --runtime claude-code --event {event} 2>/dev/null || :"
             ),
         );
         assert_eq!(
             status,
-            crate::runtimes::claude_code::claude_status::hook_command(&status_path, event)
+            hook_report_command(root, Runtime::ClaudeCode, event, false)
         );
     }
 }
@@ -198,17 +191,15 @@ fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
     let command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, "runner-session-one");
-    let temp_path = drop_path.with_extension("json.tmp");
     assert_eq!(
         command,
-        format!(
-            "cat > {} && mv {} {}",
-            crate::session::launch::shell_quote(&temp_path.to_string_lossy()),
-            crate::session::launch::shell_quote(&temp_path.to_string_lossy()),
-            crate::session::launch::shell_quote(&drop_path.to_string_lossy()),
-        )
+        hook_report_command(app_data_dir, Runtime::ClaudeCode, "SessionStart", false)
     );
+    assert_eq!(
+        settings["hooks"]["SessionStart"].as_array().unwrap().len(),
+        1
+    );
+    assert!(!command.contains("session-keys"));
     assert_eq!(
         settings["hooks"]["SessionStart"][0]["hooks"][0]["type"],
         "command"
@@ -220,8 +211,7 @@ fn claude_settings_injects_fullscreen_and_per_spawn_session_start_hook() {
         app_data_dir,
         "runner-session-two",
     );
-    assert_ne!(args[1], other[1]);
-    assert!(other[1].contains("runner-session-two.json"));
+    assert_eq!(args[1], other[1]);
 }
 
 #[test]
@@ -297,12 +287,9 @@ fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
         let hook = &settings["hooks"][event][0]["hooks"][0];
         assert_eq!(hook["type"], "command", "{event}");
         assert_eq!(hook["timeout"], 2, "{event}");
-        if event != "SessionStart" {
-            assert!(
-                hook["command"].as_str().unwrap().ends_with("exit 0"),
-                "{event}"
-            );
-        }
+        assert!(hook["command"].as_str().unwrap().contains(&format!(
+            "hook report --runtime claude-code --event {event}"
+        )));
     }
     assert_eq!(
         settings["hooks"]["Notification"][0]["matcher"],

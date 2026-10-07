@@ -8,10 +8,12 @@
 // has been retired — see docs/impls/archive/0011-pty-host-terminal-runtime.md
 // for the rationale.
 
+#[cfg(test)]
 pub(crate) mod claude_rekey;
 pub(crate) mod clock;
 pub mod codex_capture;
 pub(crate) mod hook_feed;
+pub mod hook_queue;
 pub mod launch;
 pub mod manager;
 pub(crate) mod process;

@@ -15,6 +15,7 @@ pub struct AdapterFeedback {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    ConversationRecovered,
     EditorDraft {
         drafting: bool,
     },
@@ -54,6 +55,7 @@ pub enum AgentEvent {
         transcript: bool,
     },
     CompactionStarted,
+    ManualCompactionStarted,
     CompactionEnded,
     PermissionRequested {
         reason: WaitReason,
@@ -99,6 +101,11 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
+    pub(crate) fn conversation_recovered(&self) -> bool {
+        matches!(self, Self::ConversationRecovered)
+            || matches!(self, Self::Batch { events, .. } if events.iter().any(Self::conversation_recovered))
+    }
+
     pub(crate) fn needs_feedback(&self) -> bool {
         matches!(
             self,
@@ -210,6 +217,13 @@ impl AgentModel {
     }
 
     fn apply(&mut self, event: AgentEvent, runtime: Runtime, now: i64) -> bool {
+        if matches!(event, AgentEvent::ConversationRecovered) {
+            *self = Self {
+                runtime: Some(runtime),
+                ..Default::default()
+            };
+            return false;
+        }
         if runtime == Runtime::Antigravity
             && self.interrupted_invocation
             && !matches!(event, AgentEvent::TurnStarted)
@@ -224,6 +238,7 @@ impl AgentModel {
                         | AgentEvent::StartupReady
                         | AgentEvent::SessionEnded
                         | AgentEvent::AbortSettled
+                        | AgentEvent::ManualCompactionStarted
                 )
             {
                 return false;
@@ -238,6 +253,7 @@ impl AgentModel {
             }
         }
         match event {
+            AgentEvent::ConversationRecovered => unreachable!(),
             AgentEvent::EditorDraft { .. } => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
@@ -302,7 +318,7 @@ impl AgentModel {
                 }
                 self.update_detail(runtime);
             }
-            AgentEvent::CompactionStarted => {
+            AgentEvent::CompactionStarted | AgentEvent::ManualCompactionStarted => {
                 if !self.compacting {
                     self.compaction_resume = Some((self.value.activity, self.value.outcome));
                 }

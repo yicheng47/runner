@@ -59,22 +59,18 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     let args = fresh_spec.args;
     let fresh_generation = fresh_spec
         .env
-        .get(crate::runtimes::copilot::copilot_status::GENERATION_ENV)
+        .get(runner_core::protocol::hook::GENERATION_ENV)
         .cloned();
     let plugin_dir = crate::runtimes::copilot::copilot_status::plugin_dir(app_data.path())
         .to_string_lossy()
         .into_owned();
     assert_eq!(
-        fresh_spec.env[crate::runtimes::copilot::copilot_status::PATH_ENV],
-        crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-            app_data.path(),
-            &spawned.id
-        ))
+        fresh_spec.env[runner_core::protocol::hook::SESSION_ENV],
+        fresh_spec.session_id
     );
-    assert!(uuid::Uuid::parse_str(
-        &fresh_spec.env[crate::runtimes::copilot::copilot_status::GENERATION_ENV]
-    )
-    .is_ok());
+    assert!(
+        uuid::Uuid::parse_str(&fresh_spec.env[runner_core::protocol::hook::GENERATION_ENV]).is_ok()
+    );
     let expected = vec![
         "--user-flag".to_owned(),
         "kept".to_owned(),
@@ -102,8 +98,7 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     .unwrap();
     let resumed_spec = fake.last_spawn_spec().unwrap();
     let args = resumed_spec.args;
-    let resumed_generation =
-        &resumed_spec.env[crate::runtimes::copilot::copilot_status::GENERATION_ENV];
+    let resumed_generation = &resumed_spec.env[runner_core::protocol::hook::GENERATION_ENV];
     assert!(uuid::Uuid::parse_str(resumed_generation).is_ok());
     assert_ne!(
         fresh_generation.as_deref(),

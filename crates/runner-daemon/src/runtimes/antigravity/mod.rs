@@ -154,6 +154,15 @@ impl RuntimeAdapter for Antigravity {
 
 struct Hooks;
 impl StatusHooks for Hooks {
+    fn start_receiver(
+        &self,
+        _spec: &SpawnSpec,
+        receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        Some(Box::new(agy_status::AgyStatusWatcher::from_receiver(
+            receiver,
+        )))
+    }
     fn supported(&self, windows: bool) -> bool {
         !windows
     }
@@ -174,12 +183,7 @@ impl StatusHooks for Hooks {
         if !(self.supported(cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
-        let mut env = status_env(
-            agy_status::PATH_ENV,
-            agy_status::GENERATION_ENV,
-            app_data_dir,
-            &spec.session_id,
-        );
+        let mut env = hook_env(app_data_dir, &spec.session_id);
         if let Some(cwd) = spec.cwd.as_deref() {
             env.insert(
                 agy_status::WORKSPACE_CONTEXT_ENV.into(),
@@ -187,23 +191,6 @@ impl StatusHooks for Hooks {
             );
         }
         env
-    }
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
-        if !self.supported(cfg!(windows)) {
-            return None;
-        }
-        let path = spec.env.get(agy_status::PATH_ENV)?;
-        let generation = spec.env.get(agy_status::GENERATION_ENV)?;
-        match agy_status::AgyStatusWatcher::start(Path::new(path), generation.clone()) {
-            Ok(watcher) => Some(Box::new(watcher)),
-            Err(error) => {
-                log::warn!(
-                    "Antigravity status bridge unavailable for {}: {error}",
-                    spec.session_id
-                );
-                None
-            }
-        }
     }
 }
 

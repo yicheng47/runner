@@ -72,6 +72,7 @@ const RESIZE_GRACE: Duration = Duration::from_millis(500);
 /// Public constructor. Holds no external state — the runtime is purely
 /// in-memory and the per-session resources tear down with their handles.
 pub struct PtyRuntime {
+    hooks: Arc<super::hook_queue::HookRoutes>,
     sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
     readers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
@@ -79,6 +80,7 @@ pub struct PtyRuntime {
 impl PtyRuntime {
     pub fn new() -> Self {
         Self {
+            hooks: Arc::new(super::hook_queue::HookRoutes::default()),
             sessions: Mutex::new(HashMap::new()),
             readers: Mutex::new(Vec::new()),
         }
@@ -125,6 +127,12 @@ struct SessionHandle {
 const EXIT_UNSET: i32 = i32::MIN;
 
 impl SessionRuntime for PtyRuntime {
+    fn admit_hook(
+        &self,
+        report: runner_core::protocol::HookReport,
+    ) -> crate::error::Result<super::hook_queue::Admission> {
+        self.hooks.admit(report)
+    }
     fn drain_workers(&self) {
         let workers = std::mem::take(&mut *self.readers.lock().unwrap());
         for worker in workers {
@@ -211,7 +219,19 @@ impl SessionRuntime for PtyRuntime {
         let hook_status = spec
             .agent_runtime
             .and_then(|runtime| crate::runtimes::adapter(runtime).status_hooks())
-            .and_then(|hooks| hooks.start_watcher(&spec));
+            .and_then(|hooks| {
+                if let Some(generation) = spec.env.get(runner_core::protocol::hook::GENERATION_ENV)
+                {
+                    let receiver = self.hooks.register(
+                        spec.agent_runtime.unwrap(),
+                        spec.session_id.clone(),
+                        generation.clone(),
+                    );
+                    hooks.start_receiver(&spec, receiver)
+                } else {
+                    None
+                }
+            });
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -319,6 +339,7 @@ impl SessionRuntime for PtyRuntime {
     #[cfg(unix)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
+        self.hooks.retire(&session.session_id);
         let mut killer = handle.killer.lock().expect("killer poisoned");
         let child = handle.child.lock().expect("child slot poisoned").take();
         // Snapshot before SIGHUP: once the agent is gone its children are
@@ -371,6 +392,7 @@ impl SessionRuntime for PtyRuntime {
     #[cfg(windows)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
+        self.hooks.retire(&session.session_id);
         let child = handle.child.lock().expect("child slot poisoned").take();
         match child {
             Some(mut child) => {
@@ -1312,11 +1334,33 @@ mod tests {
     use super::super::process::distinct_foreground_process;
     use super::*;
     #[cfg(unix)]
-    use crate::runtimes::claude_code::claude_status::{GENERATION_ENV, PATH_ENV};
-    #[cfg(unix)]
-    use crate::runtimes::{antigravity::agy_status, pi::pi_status};
-    use crate::runtimes::{codex::codex_status, copilot::copilot_status};
+    use runner_core::protocol::hook::GENERATION_ENV;
     use std::collections::BTreeMap;
+
+    fn admit_hook(
+        rt: &PtyRuntime,
+        session: &str,
+        runtime: crate::model::Runtime,
+        event: &str,
+        payload: serde_json::Value,
+    ) {
+        let caller_thread_id = (runtime == crate::model::Runtime::Codex)
+            .then(|| payload["session_id"].as_str().unwrap().to_owned());
+        drop(
+            rt.hooks
+                .admit(runner_core::protocol::hook::HookReport {
+                    bridge_unavailable: false,
+                    version: runner_core::protocol::hook::VERSION,
+                    runtime,
+                    session_id: session.into(),
+                    generation: "current".into(),
+                    event: event.into(),
+                    payload,
+                    caller_thread_id,
+                })
+                .unwrap(),
+        );
+    }
 
     #[test]
     #[cfg(unix)]
@@ -1950,7 +1994,10 @@ mod tests {
         );
     }
 
-    fn replay_codex_title_fixture(bridge_failure: bool) -> Vec<(u64, SessionActivityState)> {
+    fn replay_codex_title_fixture(
+        bridge_failure: bool,
+        recovery: bool,
+    ) -> Vec<(u64, SessionActivityState)> {
         use base64::Engine as _;
 
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1975,29 +2022,103 @@ mod tests {
                 }
             ));
         }
-        detector.hooks_unavailable();
+        let mut model = super::super::state::SessionModel::default();
+        let now = super::super::clock::state_now();
+        model.apply(
+            super::super::state::SessionEvent::Transition {
+                state: SessionActivityState::Busy,
+                source: super::super::state::StatusSource::Forwarder,
+                live: true,
+            },
+            now,
+        );
+        if bridge_failure {
+            model.apply(
+                super::super::state::SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::TurnStarted,
+                    live: true,
+                },
+                now,
+            );
+        }
+        if recovery {
+            let event = super::super::state::agent::AgentEvent::Batch {
+                runtime: crate::model::Runtime::Codex,
+                events: vec![super::super::state::agent::AgentEvent::ConversationRecovered],
+            };
+            assert!(detector.accept_event(&event));
+            model.apply(
+                super::super::state::SessionEvent::Agent { event, live: true },
+                now,
+            );
+            assert_eq!(
+                model.status().observation.source,
+                super::super::status::ObservationSource::Baseline
+            );
+            assert!(!model.completion_armed());
+        } else {
+            detector.hooks_unavailable();
+            model.apply(
+                super::super::state::SessionEvent::BridgeFailed { live: true },
+                now,
+            );
+        }
         let mut transitions = Vec::new();
         for output in &outputs {
             let at = start + Duration::from_millis(output.ms);
             if let Some(state) = detector.tick_at(at) {
                 transitions.push((output.ms, state));
+                model.apply(
+                    super::super::state::SessionEvent::Transition {
+                        state,
+                        source: super::super::state::StatusSource::Forwarder,
+                        live: true,
+                    },
+                    now,
+                );
             }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&output.data)
                 .unwrap();
             if let Some(state) = detector.on_output_at(&bytes, false, at) {
                 transitions.push((output.ms, state));
+                model.apply(
+                    super::super::state::SessionEvent::Transition {
+                        state,
+                        source: super::super::state::StatusSource::Forwarder,
+                        live: true,
+                    },
+                    now,
+                );
             }
         }
         assert_eq!(detector.current, SessionActivityState::Idle);
+        assert_eq!(
+            model.status().observation.activity,
+            super::super::status::Activity::Idle
+        );
+        assert_eq!(
+            model.status().observation.source,
+            super::super::status::ObservationSource::Baseline
+        );
         transitions
+    }
+
+    #[test]
+    fn identity_only_recovery_releases_title_authority_through_detector_and_model() {
+        for previously_hook_owned in [false, true] {
+            assert_eq!(
+                replay_codex_title_fixture(previously_hook_owned, true),
+                vec![(7_428, SessionActivityState::Idle)]
+            );
+        }
     }
 
     #[test]
     fn recorded_codex_title_fixture_overrides_idle_redraw_with_and_without_bridge_failure() {
         for bridge_failure in [false, true] {
             assert_eq!(
-                replay_codex_title_fixture(bridge_failure),
+                replay_codex_title_fixture(bridge_failure, false),
                 if bridge_failure {
                     vec![(7_428, SessionActivityState::Idle)]
                 } else {
@@ -2073,39 +2194,20 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn codex_hook_runtime_events_bridge_failure_and_teardown() {
-        use super::super::{
-            hook_feed,
-            status::{Activity, TurnOutcome},
-        };
-        let root = tempfile::tempdir().unwrap();
-        let path = hook_feed::status_path(root.path(), "codex-hooks");
+        use super::super::status::{Activity, TurnOutcome};
         let rt = PtyRuntime::new();
         let mut spawn = spec("codex-hooks", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::Codex);
-        spawn.env.insert(
-            codex_status::PATH_ENV.into(),
-            path.to_string_lossy().into_owned(),
-        );
-        spawn
-            .env
-            .insert(codex_status::GENERATION_ENV.into(), "current".into());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
         for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
-            let command = codex_status::hook_command(&path, event);
-            let mut child = std::process::Command::new("sh")
-                .args(["-c", &command])
-                .env(codex_status::GENERATION_ENV, "current")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(br#"{"session_id":"main","turn_id":"one"}"#)
-                .unwrap();
-            assert!(child.wait().unwrap().success());
+            admit_hook(
+                &rt,
+                "codex-hooks",
+                crate::model::Runtime::Codex,
+                event,
+                serde_json::json!({"session_id":"main","turn_id":"one"}),
+            );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
@@ -2116,7 +2218,7 @@ mod tests {
                 values.push(value);
             }
         }
-        std::fs::remove_file(&path).unwrap();
+        rt.hooks.retire(&session.session_id);
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut failed = false;
         while !failed && Instant::now() < deadline {
@@ -2149,39 +2251,16 @@ mod tests {
             values.last().unwrap().outcome,
             Some(TurnOutcome::Interrupted)
         );
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            0
-        );
     }
 
     #[test]
     #[cfg(unix)]
     fn copilot_hook_runtime_uses_shared_reporter_interrupt_and_bridge_fallback() {
-        use super::super::{
-            hook_feed,
-            status::{Activity, TurnOutcome},
-        };
-        let root = tempfile::tempdir().unwrap();
-        copilot_status::install_plugin(root.path()).unwrap();
-        let path = hook_feed::status_path(root.path(), "copilot-hooks");
+        use super::super::status::{Activity, TurnOutcome};
         let rt = PtyRuntime::new();
         let mut spawn = spec("copilot-hooks", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::Copilot);
-        spawn.env.insert(
-            copilot_status::PATH_ENV.into(),
-            path.to_string_lossy().into_owned(),
-        );
-        spawn
-            .env
-            .insert(copilot_status::GENERATION_ENV.into(), "current".into());
-        spawn.env.insert(
-            "COPILOT_HOME".into(),
-            root.path()
-                .join("copilot-home")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
         for (event, payload) in [
             ("UserPromptSubmit", serde_json::json!({"session_id":"main"})),
@@ -2198,22 +2277,13 @@ mod tests {
                 }),
             ),
         ] {
-            let mut child = std::process::Command::new("sh")
-                .arg(copilot_status::reporter_path(root.path()))
-                .arg(&path)
-                .arg(event)
-                .env(copilot_status::GENERATION_ENV, "current")
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::null())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(&serde_json::to_vec(&payload).unwrap())
-                .unwrap();
-            assert!(child.wait().unwrap().success());
+            admit_hook(
+                &rt,
+                "copilot-hooks",
+                crate::model::Runtime::Copilot,
+                event,
+                payload,
+            );
         }
         rt.send_bytes(&session, b"\x1b").unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -2225,7 +2295,7 @@ mod tests {
                 values.push(value);
             }
         }
-        std::fs::remove_file(copilot_status::reporter_path(root.path())).unwrap();
+        rt.hooks.retire(&session.session_id);
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut failed = false;
         while !failed && Instant::now() < deadline {
@@ -2255,44 +2325,26 @@ mod tests {
         assert_eq!(values[2].activity, Activity::Working);
         assert_eq!(values[3].activity, Activity::Ready);
         assert_eq!(values[3].outcome, Some(TurnOutcome::Interrupted));
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            0
-        );
     }
 
     #[test]
     #[cfg(unix)]
     fn antigravity_escape_releases_working_without_a_stop_hook() {
-        use super::super::{
-            hook_feed,
-            status::{Activity, TurnOutcome},
-        };
+        use super::super::status::{Activity, TurnOutcome};
 
-        let root = tempfile::tempdir().unwrap();
-        agy_status::install_hooks(root.path()).unwrap();
-        let path = hook_feed::status_path(root.path(), "agy-interrupt");
         let rt = PtyRuntime::new();
         let mut spawn = spec("agy-interrupt", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::Antigravity);
-        spawn.env.insert(
-            agy_status::PATH_ENV.into(),
-            path.to_string_lossy().into_owned(),
-        );
-        spawn
-            .env
-            .insert(agy_status::GENERATION_ENV.into(), "current".into());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
 
-        let mut feed = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
-        )
-        .unwrap();
+        admit_hook(
+            &rt,
+            "agy-interrupt",
+            crate::model::Runtime::Antigravity,
+            "PreInvocation",
+            serde_json::json!({}),
+        );
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             assert!(Instant::now() < deadline, "missing agy Working hook");
@@ -2325,28 +2377,12 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
-        use super::super::{
-            hook_feed,
-            status::{Activity, TurnOutcome},
-        };
-        let root = tempfile::tempdir().unwrap();
-        pi_status::install_extension(root.path()).unwrap();
-        let path = hook_feed::status_path(root.path(), "pi-hooks");
+        use super::super::status::{Activity, TurnOutcome};
         let rt = PtyRuntime::new();
         let mut spawn = spec("pi-hooks", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::Pi);
-        spawn.env.insert(
-            pi_status::PATH_ENV.into(),
-            path.to_string_lossy().into_owned(),
-        );
-        spawn
-            .env
-            .insert(pi_status::GENERATION_ENV.into(), "current".into());
+        spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
         for report in [
             serde_json::json!({
                 "generation":"current",
@@ -2368,7 +2404,13 @@ mod tests {
                 "hook_event_name":"agent_settled",
             }),
         ] {
-            writeln!(file, "{report}").unwrap();
+            admit_hook(
+                &rt,
+                "pi-hooks",
+                crate::model::Runtime::Pi,
+                report["hook_event_name"].as_str().unwrap(),
+                report.clone(),
+            );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut values = Vec::new();
@@ -2379,7 +2421,7 @@ mod tests {
                 values.push(value);
             }
         }
-        std::fs::remove_file(pi_status::extension_path(root.path())).unwrap();
+        rt.hooks.retire(&session.session_id);
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut failed = false;
         while !failed && Instant::now() < deadline {
@@ -2407,23 +2449,14 @@ mod tests {
             [Activity::Idle, Activity::Working, Activity::Ready]
         );
         assert_eq!(values[2].outcome, Some(TurnOutcome::Completed));
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            0
-        );
     }
 
     #[test]
     #[cfg(unix)]
-    fn claude_hook_file_feeds_runtime_output_and_closes_on_exit() {
-        let root = tempfile::tempdir().unwrap();
-        let path = crate::runtimes::claude_code::claude_status::status_path(root.path(), "hooks");
+    fn claude_hook_admission_feeds_runtime_output_and_closes_on_exit() {
         let rt = PtyRuntime::new();
         let mut spawn = spec("hooks", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
-        spawn
-            .env
-            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
         spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
         for event in [
@@ -2433,20 +2466,13 @@ mod tests {
             "StopFailure",
             "Notification",
         ] {
-            let command = crate::runtimes::claude_code::claude_status::hook_command(&path, event);
-            let mut child = std::process::Command::new("/bin/sh")
-                .args(["-c", &command])
-                .env(GENERATION_ENV, "current")
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(br#"{"notification_type":"idle_prompt"}"#)
-                .unwrap();
-            assert!(child.wait().unwrap().success());
+            admit_hook(
+                &rt,
+                "hooks",
+                crate::model::Runtime::ClaudeCode,
+                event,
+                serde_json::json!({"notification_type":"idle_prompt"}),
+            );
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut statuses = Vec::new();
@@ -2490,17 +2516,11 @@ mod tests {
                 break;
             }
         }
-        assert!(!path.exists());
     }
 
     #[test]
     #[cfg(unix)]
     fn claude_interrupt_keys_go_idle_without_a_hook_and_allow_dialog_recovery() {
-        use std::fs::OpenOptions;
-
-        let root = tempfile::tempdir().unwrap();
-        let path =
-            crate::runtimes::claude_code::claude_status::status_path(root.path(), "interrupt");
         let rt = PtyRuntime::new();
         let mut spawn = spec(
             "interrupt",
@@ -2508,9 +2528,6 @@ mod tests {
             &["-c", "trap '' INT; printf ready; exec cat"],
         );
         spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
-        spawn
-            .env
-            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
         spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
         let mut ready = Vec::new();
@@ -2557,14 +2574,19 @@ mod tests {
                 }
             }
         };
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         for (interrupt, source) in [
             (b"\x03".as_slice(), "input-interrupt"),
             (b"\x1b", "input-escape"),
             (b"\x1b[99;5u", "input-interrupt"),
             (b"\x1b[27u", "input-escape"),
         ] {
-            writeln!(file, r#"{{"generation":"current","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}}"#).unwrap();
+            admit_hook(
+                &rt,
+                "interrupt",
+                crate::model::Runtime::ClaudeCode,
+                "PreToolUse",
+                serde_json::json!({"tool_name":"AskUserQuestion"}),
+            );
             wait_for_status(SessionActivityState::Busy, "hook");
             for bytes in [
                 b"\x1b[A".as_slice(),
@@ -2594,11 +2616,13 @@ mod tests {
             wait_for_status(SessionActivityState::Idle, source);
         }
         // Cancelling a dialog can continue the turn without another prompt.
-        writeln!(
-            file,
-            r#"{{"generation":"current","hook_event_name":"PreToolUse"}}"#
-        )
-        .unwrap();
+        admit_hook(
+            &rt,
+            "interrupt",
+            crate::model::Runtime::ClaudeCode,
+            "PreToolUse",
+            serde_json::json!({}),
+        );
         wait_for_status(SessionActivityState::Busy, "hook");
         rt.stop(&session).unwrap();
     }
@@ -2607,21 +2631,20 @@ mod tests {
     #[cfg(unix)]
     fn claude_streamed_kitty_escape_without_stop_allows_a_recovery_turn() {
         use super::super::status::{Activity, TurnOutcome};
-        use std::fs::OpenOptions;
 
-        let root = tempfile::tempdir().unwrap();
-        let path = crate::runtimes::claude_code::claude_status::status_path(root.path(), "stream");
         let rt = PtyRuntime::new();
         let mut spawn = spec("stream", "/bin/cat", &[]);
         spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
-        spawn
-            .env
-            .insert(PATH_ENV.into(), path.to_string_lossy().into_owned());
         spawn.env.insert(GENERATION_ENV.into(), "current".into());
         let (session, stream) = rt.spawn(spawn).unwrap();
-        let mut feed = OpenOptions::new().append(true).open(&path).unwrap();
         // The live #783 stream ended after UserPromptSubmit with no Stop or tool record.
-        writeln!(feed, r#"{{"generation":"current","hook_event_name":"UserPromptSubmit","session_id":"main","prompt_id":"stream"}}"#).unwrap();
+        admit_hook(
+            &rt,
+            "stream",
+            crate::model::Runtime::ClaudeCode,
+            "UserPromptSubmit",
+            serde_json::json!({"session_id":"main","prompt_id":"stream"}),
+        );
         rt.send_bytes(&session, b"\x1b[27u").unwrap();
         let read_observations = || {
             let deadline = Instant::now() + Duration::from_secs(3);
@@ -2644,7 +2667,13 @@ mod tests {
         assert_eq!(values[1].detail, None);
 
         for event in ["UserPromptSubmit", "Stop"] {
-            writeln!(feed, "{}", serde_json::json!({"generation":"current","hook_event_name":event,"session_id":"main","prompt_id":"recovery"})).unwrap();
+            admit_hook(
+                &rt,
+                "stream",
+                crate::model::Runtime::ClaudeCode,
+                event,
+                serde_json::json!({"session_id":"main","prompt_id":"recovery"}),
+            );
         }
         let values = read_observations();
         assert_eq!(values[0].activity, Activity::Working);
@@ -3381,17 +3410,13 @@ mod tests {
         assert!(process_exists(pid as i32));
     }
 
-    /// Spawns a quiet ConPTY child carrying the status env, runs `hooks` from
-    /// separate processes, and returns what the monitor thread observed before
-    /// `bridge` was removed. Asserts bridge loss and a closed stream on stop.
     #[cfg(windows)]
     fn windows_hook_bridge(
         runtime: crate::model::Runtime,
         id: &str,
         env: &[(&str, String)],
-        hooks: impl FnOnce(),
+        hooks: impl FnOnce(&PtyRuntime),
         expected: usize,
-        bridge: &std::path::Path,
     ) -> Vec<super::super::status::AgentObservation> {
         let rt = PtyRuntime::new();
         let mut spawn = spec(id, "cmd", &["/d", "/c", "ping -n 30 127.0.0.1 >nul"]);
@@ -3408,7 +3433,7 @@ mod tests {
             }
             other => Some(other),
         };
-        hooks();
+        hooks(&rt);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut values = Vec::new();
         while values.len() < expected && Instant::now() < deadline {
@@ -3418,7 +3443,7 @@ mod tests {
                 values.push(value);
             }
         }
-        std::fs::remove_file(bridge).unwrap();
+        rt.hooks.retire(id);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut failed = false;
         while !failed && Instant::now() < deadline {
@@ -3443,35 +3468,27 @@ mod tests {
 
     #[test]
     #[cfg(windows)]
-    fn codex_powershell_hooks_bridge_failure_and_teardown_windows() {
-        use super::super::{
-            hook_feed,
-            status::{Activity, TurnOutcome},
-        };
-        let root = tempfile::tempdir().unwrap();
-        let path = hook_feed::status_path(&root.path().join("Jason's app data"), "codex-hooks");
-        let feed = hook_feed::hook_path(&path);
+    fn codex_admitted_hooks_bridge_failure_and_teardown_windows() {
+        use super::super::status::{Activity, TurnOutcome};
         let values = windows_hook_bridge(
             crate::model::Runtime::Codex,
             "codex-hooks",
-            &[
-                (codex_status::PATH_ENV, feed.clone()),
-                (codex_status::GENERATION_ENV, "current".into()),
-            ],
-            || {
+            &[(
+                runner_core::protocol::hook::GENERATION_ENV,
+                "current".into(),
+            )],
+            |rt| {
                 for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
-                    let output = hook_feed::run_powershell(
-                        "pwsh",
-                        &codex_status::hook_command(std::path::Path::new(&feed), event),
-                        &[(codex_status::GENERATION_ENV, "current")],
-                        br#"{"session_id":"main","turn_id":"one"}"#,
-                    )
-                    .expect("pwsh is required for the Codex Windows bridge");
-                    assert!(output.status.success(), "{output:?}");
+                    admit_hook(
+                        rt,
+                        "codex-hooks",
+                        crate::model::Runtime::Codex,
+                        event,
+                        serde_json::json!({"session_id":"main","turn_id":"one"}),
+                    );
                 }
             },
             4,
-            &hook_feed::powershell_script_path(&path),
         );
         assert_eq!(
             values.iter().map(|v| v.activity).collect::<Vec<_>>(),
@@ -3486,40 +3503,21 @@ mod tests {
             values.last().unwrap().outcome,
             Some(TurnOutcome::Interrupted)
         );
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            0
-        );
     }
 
     #[test]
     #[cfg(windows)]
-    fn copilot_powershell_plugin_hooks_bridge_failure_and_teardown_windows() {
-        use super::super::{hook_feed, status::Activity};
-        let root = tempfile::tempdir().unwrap();
-        copilot_status::install_plugin(root.path()).unwrap();
-        let hooks: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(copilot_status::plugin_dir(root.path()).join("hooks/hooks.json"))
-                .unwrap(),
-        )
-        .unwrap();
-        let path = hook_feed::status_path(root.path(), "copilot-hooks");
-        let env = [
-            (copilot_status::PATH_ENV, hook_feed::hook_path(&path)),
-            (copilot_status::GENERATION_ENV, "current".into()),
-            (
-                "COPILOT_HOME",
-                root.path()
-                    .join("copilot-home")
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-        ];
+    fn copilot_admitted_hooks_bridge_failure_and_teardown_windows() {
+        use super::super::status::Activity;
+        let env = [(
+            runner_core::protocol::hook::GENERATION_ENV,
+            "current".into(),
+        )];
         let values = windows_hook_bridge(
             crate::model::Runtime::Copilot,
             "copilot-hooks",
             &env,
-            || {
+            |rt| {
                 for (event, payload) in [
                     ("UserPromptSubmit", serde_json::json!({"session_id":"main"})),
                     (
@@ -3535,32 +3533,20 @@ mod tests {
                         }),
                     ),
                 ] {
-                    let env = env
-                        .iter()
-                        .map(|(k, v)| (*k, v.as_str()))
-                        .collect::<Vec<_>>();
-                    let output = hook_feed::run_powershell(
-                        "pwsh",
-                        hooks["hooks"][event][0]["hooks"][0]["powershell"]
-                            .as_str()
-                            .unwrap(),
-                        &env,
-                        &serde_json::to_vec(&payload).unwrap(),
-                    )
-                    .expect("pwsh is required for the Copilot Windows bridge");
-                    assert!(output.status.success(), "{output:?}");
+                    admit_hook(
+                        rt,
+                        "copilot-hooks",
+                        crate::model::Runtime::Copilot,
+                        event,
+                        payload,
+                    );
                 }
             },
             3,
-            &copilot_status::reporter_path(root.path()),
         );
         assert_eq!(
             values.iter().map(|v| v.activity).collect::<Vec<_>>(),
             [Activity::Working, Activity::Ready, Activity::Working]
-        );
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            0
         );
     }
 

@@ -380,6 +380,10 @@ impl SessionModel {
                 if !live {
                     return effects;
                 }
+                if event.conversation_recovered() {
+                    effects = self.apply(SessionEvent::BridgeFailed { live }, now);
+                    self.completion_armed = false;
+                }
                 if let agent::AgentEvent::EditorDraft { drafting } = event {
                     effects.input_cleared = !drafting
                         && self

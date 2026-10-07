@@ -16,23 +16,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -40,9 +42,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -60,32 +63,35 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]"
       ],
       "env_keys": [
         "CODEX_HOME",
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -109,32 +115,35 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]"
       ],
       "env_keys": [
         "CODEX_HOME",
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -158,32 +167,35 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]"
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]"
       ],
       "env_keys": [
         "CODEX_HOME",
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -234,23 +246,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -258,9 +272,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -283,23 +298,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -307,9 +324,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -332,23 +350,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -356,9 +376,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -381,23 +402,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -405,9 +428,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -430,23 +454,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID1>.sh' '<TMP>/session-status/<ID1>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "GOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID1> -->"
       ],
       "env_keys": [
@@ -454,9 +480,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -485,23 +512,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -510,11 +539,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -544,23 +574,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -569,11 +601,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -603,23 +636,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -628,11 +663,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -662,23 +698,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -687,11 +725,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -717,23 +756,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -742,11 +783,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -772,23 +814,25 @@
         "hooks",
         "--dangerously-bypass-hook-trust",
         "-c",
-        "hooks.SessionStart=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "mcp_servers.runner_hooks={command=\"<TMP>/bin/runner\",args=[\"hook\",\"serve\"],env_vars=[\"RUNNER_HOOK_ENDPOINT\",\"RUNNER_HOOK_SESSION\",\"RUNNER_HOOK_GENERATION\"],required=false}",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Stop=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
         "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Interrupt' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
         "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command='''((sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionEnd' || cat >/dev/null) 2>/dev/null; exit 0); printf '{}\\n'; exit 0''',timeout=2}]}]",
+        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
+        "-c",
+        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n\n\n<!-- runner-codex-session-key-capture:<ID2> -->"
       ],
       "env_keys": [
@@ -797,11 +841,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CODEX_STATUS_GENERATION",
-        "RUNNER_CODEX_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -821,7 +866,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "GOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -831,9 +876,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -848,7 +894,7 @@
         "--session-id",
         "<ID1>",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}"
       ],
       "env_keys": [
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
@@ -857,9 +903,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -878,7 +925,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}"
       ],
       "env_keys": [
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
@@ -887,9 +934,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -908,7 +956,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}"
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}"
       ],
       "env_keys": [
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
@@ -917,9 +965,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -968,7 +1017,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "GOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -978,9 +1027,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1000,7 +1050,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "GOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1010,9 +1060,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1032,7 +1083,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "GOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1042,9 +1093,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1064,7 +1116,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "GOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1074,9 +1126,10 @@
         "COPILOT_HOME",
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1098,7 +1151,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1109,11 +1162,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1136,7 +1190,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]},\"skipDangerousModePermissionPrompt\":true}",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
       ],
       "env_keys": [
@@ -1147,11 +1201,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1174,7 +1229,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1185,11 +1240,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1212,7 +1268,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
       ],
       "env_keys": [
@@ -1223,11 +1279,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1248,7 +1305,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
       ],
       "env_keys": [
@@ -1259,11 +1316,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1284,7 +1342,7 @@
         "--effort",
         "High",
         "--settings",
-        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"cat > '<TMP>/session-keys/<ID2>.json.tmp' && mv '<TMP>/session-keys/<ID2>.json.tmp' '<TMP>/session-keys/<ID2>.json'\",\"timeout\":2}]},{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'SessionStart' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionRequest' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PermissionDenied' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUseFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Elicitation' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'ElicitationResult' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'UserPromptSubmit' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostToolUse' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PreCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'PostCompact' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Notification' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'Stop' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"(sh '<TMP>/session-status/<ID2>.sh' '<TMP>/session-status/<ID2>.ndjson' 'StopFailure' || cat >/dev/null) 2>/dev/null; exit 0\",\"timeout\":2}]}]}}",
+        "{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event SessionStart 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionRequest\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionRequest 2>/dev/null || :\",\"timeout\":2}]}],\"PermissionDenied\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PermissionDenied 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUseFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUseFailure 2>/dev/null || :\",\"timeout\":2}]}],\"Elicitation\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Elicitation 2>/dev/null || :\",\"timeout\":2}]}],\"ElicitationResult\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event ElicitationResult 2>/dev/null || :\",\"timeout\":2}]}],\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event UserPromptSubmit 2>/dev/null || :\",\"timeout\":2}]}],\"PreToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PostToolUse\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostToolUse 2>/dev/null || :\",\"timeout\":2}]}],\"PreCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PreCompact 2>/dev/null || :\",\"timeout\":2}]}],\"PostCompact\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event PostCompact 2>/dev/null || :\",\"timeout\":2}]}],\"Notification\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Notification 2>/dev/null || :\",\"timeout\":2}],\"matcher\":\"^(idle_prompt|permission_prompt|elicitation_dialog)$\"}],\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event Stop 2>/dev/null || :\",\"timeout\":2}]}],\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook report --runtime claude-code --event StopFailure 2>/dev/null || :\",\"timeout\":2}]}]}}",
         "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
       ],
       "env_keys": [
@@ -1295,11 +1353,12 @@
         "DISABLE_INSTALLATION_CHECKS",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_CLAUDE_STATUS_GENERATION",
-        "RUNNER_CLAUDE_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1328,10 +1387,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1353,10 +1413,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1384,10 +1445,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1415,10 +1477,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1444,10 +1507,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1474,10 +1538,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1504,10 +1569,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1534,10 +1600,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1564,10 +1631,11 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1598,12 +1666,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1635,12 +1704,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1671,12 +1741,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1707,12 +1778,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1743,12 +1815,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1779,12 +1852,13 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -1815,10 +1889,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1842,10 +1915,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1875,10 +1947,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1908,10 +1979,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1939,10 +2009,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -1971,10 +2040,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2003,10 +2071,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2035,10 +2102,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2067,10 +2133,9 @@
         "PI_CODING_AGENT_DIR",
         "PI_SKIP_VERSION_CHECK",
         "RUNNER_HANDLE",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2103,11 +2168,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2142,11 +2206,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2179,11 +2242,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2218,11 +2280,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2255,11 +2316,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2294,11 +2354,10 @@
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
-        "RUNNER_PI_REKEY_PATH",
-        "RUNNER_PI_SESSION_KEY",
-        "RUNNER_PI_STATUS_GENERATION",
-        "RUNNER_PI_STATUS_PATH",
         "TERM"
       ]
     }
@@ -2327,9 +2386,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2352,9 +2412,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2381,9 +2442,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2410,9 +2472,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2439,9 +2502,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2469,9 +2533,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2499,9 +2564,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2529,9 +2595,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2559,9 +2626,10 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "TERM"
       ]
     }
@@ -2593,11 +2661,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -2630,11 +2699,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -2666,11 +2736,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -2702,11 +2773,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -2738,11 +2810,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]
@@ -2774,11 +2847,12 @@
         "COPILOT_HOME",
         "MISSION_CWD",
         "PI_CODING_AGENT_DIR",
-        "RUNNER_COPILOT_STATUS_GENERATION",
-        "RUNNER_COPILOT_STATUS_PATH",
         "RUNNER_CREW_ID",
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
         "TERM"
       ]

@@ -63,7 +63,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
 
 #[test]
 fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides() {
-    use crate::runtimes::codex::codex_status::{GENERATION_ENV, PATH_ENV};
+    use runner_core::protocol::hook::{GENERATION_ENV, SESSION_ENV};
     let root = tempfile::tempdir().unwrap();
     for args in [
         vec![],
@@ -100,7 +100,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
             assert_eq!(spec.env["CODEX_HOME"], "user home");
             assert_eq!(spec.pending_turn, Some(key.is_none()));
             let injected = args.is_empty();
-            assert_eq!(spec.env.contains_key(PATH_ENV), injected);
+            assert_eq!(spec.env.contains_key(SESSION_ENV), injected);
             assert_eq!(spec.env.contains_key(GENERATION_ENV), injected);
             assert_eq!(
                 spec.args
@@ -108,20 +108,12 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                     .any(|arg| arg.starts_with("hooks.UserPromptSubmit=")),
                 injected
             );
-            assert!(!spec
-                .env
-                .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
+            assert!(!spec.env.contains_key("RUNNER_CLAUDE_STATUS_PATH"));
             if injected {
                 let generation = spec.env[GENERATION_ENV].clone();
                 assert!(uuid::Uuid::parse_str(&generation).is_ok());
                 generations.push(generation);
-                assert_eq!(
-                    spec.env[PATH_ENV],
-                    crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                        root.path(),
-                        "codex-spawn"
-                    ))
-                );
+                assert_eq!(spec.env[SESSION_ENV], "codex-spawn");
             }
             assert_eq!(
                 spec.args.iter().any(|arg| arg == "first turn"),
@@ -141,7 +133,6 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
 #[test]
 fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
     use crate::runtimes::codex::codex_status::CodexStatusWatcher;
-    use std::io::Write;
     let core = crate::test_support::test_core();
     core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('codex-status', 'running', 'codex')", []).unwrap();
     install_test_session_handle(&core.sessions, "codex-status");
@@ -150,8 +141,9 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
         SessionActivityState::Busy,
         crate::session::state::StatusSource::Forwarder,
     );
-    let path = core.app_data_dir.join("codex-delivery.ndjson");
-    let mut watcher = CodexStatusWatcher::start(&path, "current".into()).unwrap();
+    let (hooks, receiver) =
+        crate::session::hook_queue::TestHookRoute::new(Runtime::Codex, "current".into());
+    let mut watcher = CodexStatusWatcher::from_receiver(receiver);
     for event in [
         "UserPromptSubmit",
         "PreToolUse",
@@ -160,7 +152,7 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
         "PostToolUse",
         "Stop",
     ] {
-        writeln!(std::fs::OpenOptions::new().append(true).open(&path).unwrap(), "{}", serde_json::json!({"generation":"current","hook_event_name":event,"session_id":"main","turn_id":"one","tool_name":"request_user_input","tool_use_id":"question"})).unwrap();
+        hooks.admit(serde_json::json!({"generation":"current","hook_event_name":event,"session_id":"main","turn_id":"one","tool_name":"request_user_input","tool_use_id":"question"})).unwrap();
     }
     let events = core.session_events();
     let mut count = 0;
@@ -246,7 +238,7 @@ fn codex_redraw_role(root: &Path) -> Role {
         r#"#!/bin/sh
 stty raw -echo
 printf '%s\n' "$@" > "$FIXTURE_ROOT/args"
-printf '%s' "$RUNNER_CODEX_STATUS_GENERATION" > "$FIXTURE_ROOT/generation"
+printf '%s' "$RUNNER_HOOK_GENERATION" > "$FIXTURE_ROOT/generation"
 cat "$FIXTURE_ROOT/readiness"
 i=0
 while [ "$i" -lt 200 ]; do
@@ -292,19 +284,40 @@ fn fixture_generation(root: &Path) -> String {
 }
 
 #[cfg(unix)]
-fn append_codex_fixture_hook(root: &Path, id: &str, event: &str, turn: &str) {
-    use std::io::Write;
-    let generation = fixture_generation(root);
-    let path = crate::session::hook_feed::status_path(root, id);
-    writeln!(
-        std::fs::OpenOptions::new().append(true).open(path).unwrap(),
-        "{}",
-        serde_json::json!({
-            "generation": generation, "session_id": "fixture-conversation", "turn_id": turn,
+fn codex_fixture_report(
+    root: &Path,
+    id: &str,
+    event: &str,
+    turn: &str,
+) -> runner_core::protocol::hook::HookReport {
+    runner_core::protocol::hook::HookReport {
+        bridge_unavailable: false,
+        version: runner_core::protocol::hook::VERSION,
+        runtime: Runtime::Codex,
+        session_id: id.into(),
+        generation: fixture_generation(root),
+        event: event.into(),
+        caller_thread_id: Some("fixture-conversation".into()),
+        payload: serde_json::json!({
+            "session_id": "fixture-conversation", "turn_id": turn,
             "hook_event_name": event, "source": "startup"
-        })
-    )
-    .unwrap();
+        }),
+    }
+}
+
+#[cfg(unix)]
+fn admit_codex_fixture_hook(
+    manager: &SessionManager,
+    root: &Path,
+    id: &str,
+    event: &str,
+    turn: &str,
+) {
+    drop(
+        manager
+            .admit_hook(codex_fixture_report(root, id, event, turn))
+            .unwrap(),
+    );
 }
 
 #[cfg(unix)]
@@ -400,12 +413,14 @@ fn codex_pre_hook_startup_ignores_continuing_idle_redraw() {
         wait_for_output_event(&events, &spawned.id);
         thread::sleep(Duration::from_millis(2300));
         let observation = manager.agent_status(&spawned.id).observation;
-        let hook_bytes = std::fs::metadata(crate::session::hook_feed::status_path(
-            app_data.path(),
-            &spawned.id,
-        ))
-        .unwrap()
-        .len();
+        assert!(
+            !app_data
+                .path()
+                .join("session-status")
+                .join(format!("{}.ndjson", spawned.id))
+                .exists(),
+            "obsolete hook feed must not be created: {launch}"
+        );
         let armed = manager
             .session_state(&spawned.id)
             .unwrap()
@@ -415,7 +430,6 @@ fn codex_pre_hook_startup_ignores_continuing_idle_redraw() {
             .hook_status_armed();
         let args = std::fs::read_to_string(app_data.path().join("args")).unwrap();
         manager.kill(&spawned.id).unwrap();
-        assert_eq!(hook_bytes, 0, "{launch}");
         assert!(!armed, "{launch}");
         assert_eq!(observation.source, ObservationSource::Baseline, "{launch}");
         assert_eq!(observation.activity, Activity::Idle, "{launch}");
@@ -501,7 +515,7 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
             _ => manager.inject_paste(id, b"automatic paste").unwrap(),
         }
         wait_for_observation(&manager, id, Activity::Working, ObservationSource::Baseline);
-        append_codex_fixture_hook(app_data.path(), id, "SessionStart", "one");
+        admit_codex_fixture_hook(&manager, app_data.path(), id, "SessionStart", "one");
         std::fs::write(app_data.path().join("quiet"), "").unwrap();
         thread::sleep(Duration::from_millis(150));
         assert_eq!(
@@ -512,7 +526,7 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
             manager.agent_status(id).observation.source,
             ObservationSource::Baseline
         );
-        append_codex_fixture_hook(app_data.path(), id, "UserPromptSubmit", "one");
+        admit_codex_fixture_hook(&manager, app_data.path(), id, "UserPromptSubmit", "one");
         wait_for_observation(&manager, id, Activity::Working, ObservationSource::Hook);
         thread::sleep(Duration::from_millis(2300));
         assert_eq!(
@@ -520,7 +534,7 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
             Activity::Working
         );
         std::fs::remove_file(app_data.path().join("quiet")).unwrap();
-        append_codex_fixture_hook(app_data.path(), id, "Stop", "one");
+        admit_codex_fixture_hook(&manager, app_data.path(), id, "Stop", "one");
         wait_for_observation(&manager, id, Activity::Ready, ObservationSource::Hook);
         assert_eq!(
             manager.agent_status(id).observation.outcome,
@@ -529,9 +543,9 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
         manager
             .inject_direct_stdin(id, b"\r", events.as_ref())
             .unwrap();
-        append_codex_fixture_hook(app_data.path(), id, "UserPromptSubmit", "two");
+        admit_codex_fixture_hook(&manager, app_data.path(), id, "UserPromptSubmit", "two");
         wait_for_observation(&manager, id, Activity::Working, ObservationSource::Hook);
-        append_codex_fixture_hook(app_data.path(), id, "Interrupt", "two");
+        admit_codex_fixture_hook(&manager, app_data.path(), id, "Interrupt", "two");
         wait_for_observation(&manager, id, Activity::Unavailable, ObservationSource::Hook);
         assert_eq!(
             manager.agent_status(id).observation.outcome,
@@ -544,7 +558,6 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
 #[cfg(unix)]
 #[test]
 fn codex_pre_hook_early_escape_accepts_interrupt_as_first_hook() {
-    use std::io::Write;
     let app_data = tempfile::tempdir().unwrap();
     let role = codex_redraw_role(app_data.path());
     let pool = pool_with_schema();
@@ -584,18 +597,14 @@ fn codex_pre_hook_early_escape_accepts_interrupt_as_first_hook() {
         .unwrap();
     let transcript = app_data.path().join("rollout.jsonl");
     std::fs::write(&transcript, "").unwrap();
-    let feed = crate::session::hook_feed::status_path(app_data.path(), id);
-    assert_eq!(std::fs::metadata(&feed).unwrap().len(), 0);
-    let generation = fixture_generation(app_data.path());
-    writeln!(
-        std::fs::OpenOptions::new().append(true).open(feed).unwrap(),
-        "{}",
-        serde_json::json!({
-            "generation": generation, "session_id": "fixture-conversation", "turn_id": "one",
-            "hook_event_name": "Interrupt", "transcript_path": transcript,
-        })
-    )
-    .unwrap();
+    assert!(!app_data
+        .path()
+        .join("session-status")
+        .join(format!("{id}.ndjson"))
+        .exists());
+    let mut report = codex_fixture_report(app_data.path(), id, "Interrupt", "one");
+    report.payload["transcript_path"] = serde_json::json!(transcript);
+    drop(manager.admit_hook(report).unwrap());
     wait_for_observation(&manager, id, Activity::Unavailable, ObservationSource::Hook);
     assert_eq!(
         manager.agent_status(id).observation.outcome,
@@ -614,7 +623,7 @@ fn codex_pre_hook_early_escape_accepts_interrupt_as_first_hook() {
     let observation = manager.agent_status(id).observation;
     assert_eq!(observation.activity, Activity::Ready);
     assert_eq!(observation.outcome, Some(TurnOutcome::Interrupted));
-    append_codex_fixture_hook(app_data.path(), id, "UserPromptSubmit", "two");
+    admit_codex_fixture_hook(&manager, app_data.path(), id, "UserPromptSubmit", "two");
     wait_for_observation(&manager, id, Activity::Working, ObservationSource::Hook);
     manager.kill(id).unwrap();
 }
@@ -647,18 +656,30 @@ fn codex_pre_hook_automatic_mission_turn_stays_working() {
             .unwrap();
         wait_for_output_event(&events, &spawned.id);
         std::fs::write(app_data.path().join("quiet"), "").unwrap();
-        append_codex_fixture_hook(app_data.path(), &spawned.id, "SessionStart", "one");
+        admit_codex_fixture_hook(
+            &manager,
+            app_data.path(),
+            &spawned.id,
+            "SessionStart",
+            "one",
+        );
         thread::sleep(Duration::from_millis(2300));
         let observation = manager.agent_status(&spawned.id).observation;
         let args = std::fs::read_to_string(app_data.path().join("args")).unwrap();
-        append_codex_fixture_hook(app_data.path(), &spawned.id, "UserPromptSubmit", "one");
+        admit_codex_fixture_hook(
+            &manager,
+            app_data.path(),
+            &spawned.id,
+            "UserPromptSubmit",
+            "one",
+        );
         wait_for_observation(
             &manager,
             &spawned.id,
             Activity::Working,
             ObservationSource::Hook,
         );
-        append_codex_fixture_hook(app_data.path(), &spawned.id, "Stop", "one");
+        admit_codex_fixture_hook(&manager, app_data.path(), &spawned.id, "Stop", "one");
         wait_for_observation(
             &manager,
             &spawned.id,
@@ -724,8 +745,9 @@ fn codex_pre_hook_native_commands_and_failed_bridges_use_output_fallback() {
             .unwrap();
         wait_for_observation(&manager, id, Activity::Working, ObservationSource::Baseline);
         if mode == "failed" {
-            std::fs::remove_file(crate::session::hook_feed::status_path(app_data.path(), id))
-                .unwrap();
+            let mut report = codex_fixture_report(app_data.path(), id, "bridge_unavailable", "one");
+            report.bridge_unavailable = true;
+            drop(manager.admit_hook(report).unwrap());
         }
         std::fs::write(app_data.path().join("quiet"), "").unwrap();
         wait_for_observation(&manager, id, Activity::Idle, ObservationSource::Baseline);

@@ -11,6 +11,218 @@ use runner_core::protocol::terminal::TerminalFrame;
 use runner_core::protocol::wire::Hello;
 use runner_core::protocol::{DaemonClient, ProjectScope};
 
+#[test]
+fn persistent_hook_reporter_delivers_to_real_isolated_daemon() {
+    use runner_core::protocol::hook;
+    use serde_json::{json, Value};
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut daemon = Daemon::new();
+    let transport = daemon.start();
+    let client = DaemonClient::new(transport);
+    let routing = daemon.root.path().join("routing.txt");
+    #[cfg(windows)]
+    let (command, args) = {
+        let script = daemon.root.path().join("fixture.ps1");
+        std::fs::write(&script, "[IO.File]::WriteAllLines($env:FIXTURE_ROUTE, @($env:RUNNER_HOOK_GENERATION,$env:RUNNER_HOOK_ENDPOINT,$env:RUNNER_HOOK_SESSION), [Text.UTF8Encoding]::new($false))\nStart-Sleep -Seconds 60\n").unwrap();
+        (
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".to_owned(),
+            vec![
+                "-NoProfile".to_owned(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                script.to_string_lossy().into_owned(),
+            ],
+        )
+    };
+    #[cfg(unix)]
+    let (command, args) = {
+        let script = daemon.root.path().join("fixture.sh");
+        std::fs::write(&script, "printf '%s\\n' \"$RUNNER_HOOK_GENERATION\" \"$RUNNER_HOOK_ENDPOINT\" \"$RUNNER_HOOK_SESSION\" > \"$FIXTURE_ROUTE\"\nsleep 60\n").unwrap();
+        (
+            "/bin/sh".to_owned(),
+            vec![script.to_string_lossy().into_owned()],
+        )
+    };
+    let role = client.role_create(serde_json::from_value(json!({
+        "handle":"hook-fixture", "display_name":"Hook fixture", "runtime":"codex", "command":command, "args":args,
+        "env":{"FIXTURE_ROUTE":routing},
+    })).unwrap()).unwrap();
+    let spawned = client
+        .session_start_direct(
+            role.id,
+            None,
+            None,
+            None,
+            ProjectScope::Root,
+            Some(daemon.root.path().to_string_lossy().into()),
+            Some(80),
+            Some(24),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let fields = loop {
+        let fields = std::fs::read_to_string(&routing)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if fields.len() == 3 {
+            break fields;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not publish routing: {:?}",
+            client.session_get_with_status(&spawned.id)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(fields[1], daemon.launch.daemon_endpoint.0.to_string_lossy());
+    assert_eq!(fields[2], spawned.id);
+    let mut adapter = Command::new(env!("CARGO_BIN_EXE_runner-agent-cli"))
+        .args(["hook", "serve"])
+        .env(hook::GENERATION_ENV, &fields[0])
+        .env(hook::ENDPOINT_ENV, &fields[1])
+        .env(hook::SESSION_ENV, &fields[2])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let adapter_pid = adapter.id();
+    #[cfg(windows)]
+    let job = {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        assert!(
+            !handle.is_null(),
+            "create fixture process accounting job: {}",
+            std::io::Error::last_os_error()
+        );
+        let job = unsafe { OwnedHandle::from_raw_handle(handle) };
+        assert_ne!(
+            unsafe { AssignProcessToJobObject(job.as_raw_handle(), adapter.as_raw_handle()) },
+            0
+        );
+        job
+    };
+    let mut input = adapter.stdin.take().unwrap();
+    let output = BufReader::new(adapter.stdout.take().unwrap());
+    let (replies, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in output.lines() {
+            if replies.send(line.unwrap()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut call = |request: Value| {
+        let started = Instant::now();
+        writeln!(input, "{request}").unwrap();
+        input.flush().unwrap();
+        let line = received
+            .recv_timeout(Duration::from_secs(3))
+            .expect("hook adapter response timeout");
+        let elapsed = started.elapsed();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], request["id"]);
+        (reply, elapsed)
+    };
+    let (initialized, _) = call(
+        json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}),
+    );
+    assert_eq!(initialized["result"]["serverInfo"]["name"], "runner-hooks");
+    let pool =
+        runner_daemon::db::open_pool(&daemon.launch.paths.app_data_dir.join("runner.db")).unwrap();
+    let mut timings = Vec::new();
+    for number in 1..=100 {
+        let key = format!("11111111-1111-4111-8111-{number:012}");
+        let (reply, elapsed) = call(
+            json!({"jsonrpc":"2.0","id":number,"method":"tools/call","params":{
+                "name":"report", "_meta":{"threadId":key},
+                "arguments":{"hook_event_name":"UserPromptSubmit","session_id":key,"turn_id":format!("turn-{number}"),"transcript_path":null},
+            }}),
+        );
+        assert_eq!(reply["result"]["content"][0]["text"], "{}");
+        assert_eq!(reply["result"]["isError"], false);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let row = runner_daemon::repo::session::get_row(&pool.get().unwrap(), &spawned.id)
+                .unwrap()
+                .unwrap();
+            if row.agent_session_key.as_deref() == Some(key.as_str()) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "report {number} was not consumed"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        timings.push(elapsed.as_secs_f64() * 1000.0);
+        assert_eq!(adapter.id(), adapter_pid);
+    }
+    timings.sort_by(f64::total_cmp);
+    eprintln!("797 native stdio -> daemon: accepted=100 adapters=1 median_ms={:.3} p95_ms={:.3} max_ms={:.3}", timings[49], timings[94], timings[99]);
+    drop(input);
+    let result = adapter.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert!(result.status.success());
+    assert!(result.stderr.is_empty());
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+        };
+        let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        assert_ne!(
+            unsafe {
+                QueryInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectBasicAccountingInformation,
+                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                    std::mem::size_of_val(&accounting) as u32,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            accounting.TotalProcesses, 1,
+            "no shell or reporter child may start during hook calls"
+        );
+        eprintln!(
+            "797 Windows job accounting: total_processes={} for 100 accepted calls",
+            accounting.TotalProcesses
+        );
+    }
+    client.session_stop(&spawned.id).unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let late = hook::HookReport {
+        bridge_unavailable: false,
+        version: hook::VERSION,
+        runtime: runner_core::protocol::Runtime::Codex,
+        session_id: spawned.id,
+        generation: fields[0].clone(),
+        event: "Stop".into(),
+        payload: json!({"session_id":"root","turn_id":"old"}),
+        caller_thread_id: Some("root".into()),
+    };
+    assert!(rt
+        .block_on(runner_cli::hook::deliver(
+            std::path::Path::new(&fields[1]),
+            late
+        ))
+        .is_err());
+}
+
 struct Daemon {
     root: tempfile::TempDir,
     launch: Launch,
@@ -246,11 +458,14 @@ fn shell_echo_two_clients_and_identical_reattach_snapshot() {
         assert!(Instant::now() < deadline, "shell startup did not settle");
         std::thread::sleep(Duration::from_millis(10));
     };
-    client
-        .input(&shell.id, b"echo SOCKET_ECHO_645\r\n")
-        .unwrap();
-    let first = output_until(&mut a.frames, b"SOCKET_ECHO_645");
-    let second = output_until(&mut b.frames, b"SOCKET_ECHO_645");
+    let (first, second) = std::thread::scope(|scope| {
+        let first = scope.spawn(|| output_until(&mut a.frames, b"SOCKET_ECHO_645"));
+        let second = scope.spawn(|| output_until(&mut b.frames, b"SOCKET_ECHO_645"));
+        client
+            .input(&shell.id, b"echo SOCKET_ECHO_645\r\n")
+            .unwrap();
+        (first.join().unwrap(), second.join().unwrap())
+    });
     assert_eq!(first, second);
     let mut expected = client.attach(&shell.id).unwrap().snapshot;
     drop((a, b, client, socket));

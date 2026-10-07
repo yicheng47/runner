@@ -1,6 +1,6 @@
 runtime=claude-code name=deferred-elicitation-result rules=[6,7,8] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
   busy@spawn [running/working/baseline]
   idle@hook [running/idle/hook]
 200 status=running/working/hook activity="busy" completion_armed=true

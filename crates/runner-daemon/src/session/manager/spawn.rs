@@ -338,6 +338,23 @@ fn delete_session_row(pool: &DbPool, session_id: &str) -> Result<()> {
 }
 
 impl SessionManager {
+    fn spawn_runtime(
+        &self,
+        mut spec: SpawnSpec,
+    ) -> super::super::runtime::RuntimeResult<(RuntimeSession, OutputStream)> {
+        if spec
+            .env
+            .contains_key(runner_core::protocol::hook::GENERATION_ENV)
+        {
+            if let Some(endpoint) = self.hook_endpoint.read().unwrap().as_ref() {
+                spec.env.insert(
+                    runner_core::protocol::hook::ENDPOINT_ENV.into(),
+                    endpoint.0.to_string_lossy().into_owned(),
+                );
+            }
+        }
+        self.runtime.spawn(spec)
+    }
     fn resolve_role_executable(&self, role: &Role, pool: &DbPool) -> Result<Role> {
         let Some(definition) = crate::runtimes::for_key(&role.runtime).catalog() else {
             return Ok(role.clone());
@@ -537,7 +554,7 @@ impl SessionManager {
         if *spawning {
             return Err(Error::msg("runnerd is stopping"));
         }
-        let (rt_session, output) = self.runtime.spawn(spec)?;
+        let (rt_session, output) = self.spawn_runtime(spec)?;
         let stop = output.stop_flag();
         self.install_handle(
             &session_id,
@@ -626,20 +643,8 @@ impl SessionManager {
         } else {
             first_turn
         };
-        match adapter.key_capture() {
-            crate::runtimes::KeyCapture::RekeyDrop => {
-                let _ = std::fs::remove_file(crate::session::claude_rekey::drop_path(
-                    app_data_dir,
-                    &spec.session_id,
-                ));
-            }
-            crate::runtimes::KeyCapture::LogTail => {
-                crate::runtimes::antigravity::agy_capture::prepare_log(
-                    app_data_dir,
-                    &spec.session_id,
-                )
-            }
-            _ => {}
+        if let crate::runtimes::KeyCapture::LogTail = adapter.key_capture() {
+            crate::runtimes::antigravity::agy_capture::prepare_log(app_data_dir, &spec.session_id)
         }
         if let Some(hooks) = adapter.status_hooks() {
             let env = hooks.env(&role.args, plan, app_data_dir, spec);
@@ -1069,7 +1074,7 @@ impl SessionManager {
         if *spawning {
             return Err(Error::msg("runnerd is stopping"));
         }
-        let (rt_session, output) = match self.runtime.spawn(spec) {
+        let (rt_session, output) = match self.spawn_runtime(spec) {
             Ok(spawned) => spawned,
             Err(error) => {
                 crate::session::system_prompt::remove(&app_data_dir, &session_id);
@@ -1671,7 +1676,7 @@ impl SessionManager {
         if *spawning {
             return Err(Error::msg("runnerd is stopping"));
         }
-        let (rt_session, output) = match self.runtime.spawn(spec) {
+        let (rt_session, output) = match self.spawn_runtime(spec) {
             Ok(p) => p,
             Err(e) => {
                 let _ = delete_session_row(&pool, &session_id);
@@ -2091,7 +2096,7 @@ impl SessionManager {
                 if *spawning {
                     return Err(Error::msg("runnerd is stopping"));
                 }
-                let (rt_session, output) = match self.runtime.spawn(spec) {
+                let (rt_session, output) = match self.spawn_runtime(spec) {
                     Ok(spawned) => spawned,
                     Err(error) => {
                         log::info!(
@@ -2826,7 +2831,7 @@ impl SessionManager {
         if *spawning {
             return Err(Error::msg("runnerd is stopping"));
         }
-        let (rt_session, output) = match self.runtime.spawn(spec) {
+        let (rt_session, output) = match self.spawn_runtime(spec) {
             Ok(p) => p,
             Err(e) => {
                 // Roll the row back to stopped so the user can retry.

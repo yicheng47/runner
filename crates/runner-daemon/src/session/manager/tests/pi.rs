@@ -86,27 +86,17 @@ fn pi_direct_spawn_and_relocated_agent_dir_resume_use_live_prompt_file_and_never
         Some("1")
     );
     assert_eq!(
-        fresh.env[crate::runtimes::pi::pi_status::PATH_ENV],
-        crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-            app_data.path(),
-            &spawned.id
-        ))
+        fresh.env[runner_core::protocol::hook::SESSION_ENV],
+        fresh.session_id
     );
-    assert!(
-        uuid::Uuid::parse_str(&fresh.env[crate::runtimes::pi::pi_status::GENERATION_ENV]).is_ok()
-    );
-    assert_eq!(
-        fresh.env[crate::runtimes::pi::pi_status::SESSION_KEY_ENV],
-        key
-    );
-    assert_eq!(
-        fresh.env[crate::runtimes::pi::pi_status::REKEY_PATH_ENV],
-        crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
-            app_data.path(),
-            &spawned.id
-        ))
-    );
-    let fresh_generation = fresh.env[crate::runtimes::pi::pi_status::GENERATION_ENV].clone();
+    assert!(uuid::Uuid::parse_str(&fresh.env[runner_core::protocol::hook::GENERATION_ENV]).is_ok());
+    assert!(!fresh
+        .env
+        .contains_key(crate::runtimes::pi::pi_status::SESSION_KEY_ENV));
+    assert!(!fresh
+        .env
+        .contains_key(crate::runtimes::pi::pi_status::REKEY_PATH_ENV));
+    let fresh_generation = fresh.env[runner_core::protocol::hook::GENERATION_ENV].clone();
     assert!(!fresh.args.iter().any(|arg| arg == "--approve"));
     assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), "PERSONA_V1");
 
@@ -147,23 +137,21 @@ fn pi_direct_spawn_and_relocated_agent_dir_resume_use_live_prompt_file_and_never
         "-e",
         extension_path.to_str().unwrap()
     ));
+    assert!(!resumed
+        .env
+        .contains_key(crate::runtimes::pi::pi_status::SESSION_KEY_ENV));
     assert_eq!(
-        resumed.env[crate::runtimes::pi::pi_status::SESSION_KEY_ENV],
-        key
+        resumed.env[runner_core::protocol::hook::SESSION_ENV],
+        resumed.session_id
     );
-    assert_eq!(
-        resumed.env[crate::runtimes::pi::pi_status::PATH_ENV],
-        fresh.env[crate::runtimes::pi::pi_status::PATH_ENV]
-    );
-    assert_eq!(
-        resumed.env[crate::runtimes::pi::pi_status::REKEY_PATH_ENV],
-        fresh.env[crate::runtimes::pi::pi_status::REKEY_PATH_ENV]
-    );
+    assert!(!resumed
+        .env
+        .contains_key(crate::runtimes::pi::pi_status::REKEY_PATH_ENV));
     assert_ne!(
-        resumed.env[crate::runtimes::pi::pi_status::GENERATION_ENV],
+        resumed.env[runner_core::protocol::hook::GENERATION_ENV],
         fresh_generation
     );
-    assert!(!stale_rekey.exists());
+    assert!(stale_rekey.exists());
     assert!(!resumed.args.iter().any(|arg| arg == "--"));
     assert!(!resumed.args.iter().any(|arg| arg == "--approve"));
     assert_eq!(std::fs::read_to_string(&prompt_path).unwrap(), "PERSONA_V2");
@@ -272,28 +260,19 @@ fn pi_lead_and_worker_split_prompt_channels_and_approve_only_the_slot() {
                 .to_str()
                 .unwrap()
         ));
-        assert_eq!(
-            spec.env[crate::runtimes::pi::pi_status::SESSION_KEY_ENV],
-            key
-        );
+        assert!(!spec
+            .env
+            .contains_key(crate::runtimes::pi::pi_status::SESSION_KEY_ENV));
         assert!(
-            uuid::Uuid::parse_str(&spec.env[crate::runtimes::pi::pi_status::GENERATION_ENV])
-                .is_ok()
+            uuid::Uuid::parse_str(&spec.env[runner_core::protocol::hook::GENERATION_ENV]).is_ok()
         );
         assert_eq!(
-            spec.env[crate::runtimes::pi::pi_status::PATH_ENV],
-            crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                app_data.path(),
-                &spawned.id
-            ))
+            spec.env[runner_core::protocol::hook::SESSION_ENV],
+            spec.session_id
         );
-        assert_eq!(
-            spec.env[crate::runtimes::pi::pi_status::REKEY_PATH_ENV],
-            crate::session::hook_feed::hook_path(&crate::session::claude_rekey::drop_path(
-                app_data.path(),
-                &spawned.id
-            ))
-        );
+        assert!(!spec
+            .env
+            .contains_key(crate::runtimes::pi::pi_status::REKEY_PATH_ENV));
         let prompt_path = crate::session::system_prompt::path(app_data.path(), &spawned.id);
         assert!(has_arg_pair(
             &spec.args,

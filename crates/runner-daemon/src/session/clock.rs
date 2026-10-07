@@ -17,11 +17,6 @@ pub(crate) fn timestamp_millis() -> i64 {
 }
 
 #[cfg(test)]
-pub(crate) fn replaying() -> bool {
-    REPLAY_TIME.with_borrow(|time| time.is_some())
-}
-
-#[cfg(test)]
 thread_local! {
     static REPLAY_TIME: std::cell::RefCell<Option<(Instant, i64)>> = const { std::cell::RefCell::new(None) };
 }

@@ -161,8 +161,12 @@ impl SessionManager {
                         event,
                         feedback: reply,
                     }) => {
-                        let feedback =
-                            manager_t.publish_agent_event(&session_id, event, events.as_ref());
+                        let feedback = manager_t.publish_model_event_for_launch(
+                            &session_id,
+                            SessionEvent::Agent { event, live: true },
+                            Some(&stop),
+                            events.as_ref(),
+                        );
                         if let Some(reply) = reply {
                             let _ = reply.send(feedback);
                         }
@@ -204,7 +208,12 @@ impl SessionManager {
                         }
                     }
                     Ok(RuntimeOutput::StatusBridgeFailed) => {
-                        manager_t.status_bridge_failed(&session_id, events.as_ref())
+                        manager_t.publish_model_event_for_launch(
+                            &session_id,
+                            SessionEvent::BridgeFailed { live: true },
+                            Some(&stop),
+                            events.as_ref(),
+                        );
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {

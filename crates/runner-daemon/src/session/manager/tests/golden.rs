@@ -83,43 +83,17 @@ impl Normalizer {
             .iter()
             .map(|(name, value)| (name.clone(), self.text(value, root)))
             .collect();
-        let watcher = [
-            (
-                "claude-code",
-                crate::runtimes::claude_code::claude_status::PATH_ENV,
-                crate::runtimes::claude_code::claude_status::GENERATION_ENV,
-            ),
-            (
-                "codex",
-                crate::runtimes::codex::codex_status::PATH_ENV,
-                crate::runtimes::codex::codex_status::GENERATION_ENV,
-            ),
-            (
-                "pi",
-                crate::runtimes::pi::pi_status::PATH_ENV,
-                crate::runtimes::pi::pi_status::GENERATION_ENV,
-            ),
-            (
-                "antigravity",
-                crate::runtimes::antigravity::agy_status::PATH_ENV,
-                crate::runtimes::antigravity::agy_status::GENERATION_ENV,
-            ),
-            (
-                "copilot",
-                crate::runtimes::copilot::copilot_status::PATH_ENV,
-                crate::runtimes::copilot::copilot_status::GENERATION_ENV,
-            ),
-        ]
-        .into_iter()
-        .find_map(|(runtime, path, generation)| {
-            (spec.agent_runtime == Runtime::parse(runtime)
-                && adapter
+        let watcher = spec
+            .agent_runtime
+            .filter(|_| {
+                adapter
                     .status_hooks()
                     .is_some_and(|hooks| hooks.supported(cfg!(windows)))
-                && spec.env.contains_key(path)
-                && spec.env.contains_key(generation))
-            .then_some(runtime)
-        });
+                    && spec
+                        .env
+                        .contains_key(runner_core::protocol::hook::GENERATION_ENV)
+            })
+            .map(Runtime::key);
         // The fixture shares its agent home and app-data root; capture paths represent the home.
         let capture = match adapter.key_capture_for_spawn(&spec) {
             crate::runtimes::KeyCapture::RolloutScan {
@@ -128,12 +102,21 @@ impl Normalizer {
                 json!({"mechanism": "rollout-scan", "sessions_root": self.text(&path.to_string_lossy(), root).replace("<TMP>", "<HOME>")})
             }
             crate::runtimes::KeyCapture::LogTail => json!({"mechanism": "log-tail"}),
-            crate::runtimes::KeyCapture::RekeyDrop => json!({"mechanism": "rekey-drop"}),
+            crate::runtimes::KeyCapture::Hook => json!({"mechanism": "hook"}),
             _ => json!({"mechanism": "none"}),
         };
+        let routes = Arc::new(crate::session::hook_queue::HookRoutes::default());
         let interrupt = adapter
             .status_hooks()
-            .and_then(|hooks| hooks.start_watcher(&spec))
+            .and_then(|hooks| {
+                let generation = spec.env.get(runner_core::protocol::hook::GENERATION_ENV)?;
+                let receiver = routes.register(
+                    spec.agent_runtime?,
+                    spec.session_id.clone(),
+                    generation.clone(),
+                );
+                hooks.start_receiver(&spec, receiver)
+            })
             .map(|_| {
                 matches!(
                     spec.agent_runtime.unwrap(),

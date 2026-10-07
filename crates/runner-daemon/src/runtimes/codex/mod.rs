@@ -89,24 +89,54 @@ pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
 pub(crate) fn codex_status_args(
     role_args: &[String],
     app_data_dir: &Path,
-    session_id: &str,
+    _session_id: &str,
 ) -> Vec<String> {
     if !inject_codex_hooks(role_args, cfg!(windows)) {
         return Vec::new();
     }
-    let path = crate::session::hook_feed::status_path(app_data_dir, session_id);
+    use runner_core::protocol::hook;
     let mut args = vec![
         "--enable".into(),
         "hooks".into(),
         "--dangerously-bypass-hook-trust".into(),
     ];
+    let executable =
+        toml_edit::Value::from(hook_executable(app_data_dir).to_string_lossy().as_ref());
+    args.extend([
+        "-c".into(),
+        format!("mcp_servers.runner_hooks={{command={executable},args=[\"hook\",\"serve\"],env_vars=[\"{}\",\"{}\",\"{}\"],required=false}}", hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV),
+    ]);
     for event in crate::runtimes::codex::codex_status::EVENTS {
-        let command = toml_edit::Value::from(crate::runtimes::codex::codex_status::hook_command(
-            &path, event,
-        ));
+        if *event == "SessionEnd" {
+            let command = toml_edit::Value::from(hook_report_command(
+                app_data_dir,
+                Runtime::Codex,
+                event,
+                cfg!(windows),
+            ));
+            args.extend([
+                "-c".into(),
+                format!(
+                    "hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=1}}]}}]"
+                ),
+            ]);
+            continue;
+        }
+        let mut input = toml_edit::InlineTable::new();
+        for field in ["hook_event_name", "session_id", "transcript_path"] {
+            input.insert(field, format!("${{{field}}}").into());
+        }
+        if *event == "SessionStart" {
+            input.insert("source", "${source}".into());
+        } else {
+            input.insert("turn_id", "${turn_id}".into());
+        }
+        if matches!(*event, "PreCompact" | "PostCompact") {
+            input.insert("trigger", "${trigger}".into());
+        }
         args.extend([
             "-c".into(),
-            format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=2}}]}}]"),
+            format!("hooks.{event}=[{{hooks=[{{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={input},timeout=2}}]}}]"),
         ]);
     }
     args
@@ -230,6 +260,15 @@ impl RuntimeAdapter for Codex {
 
 struct Hooks;
 impl StatusHooks for Hooks {
+    fn start_receiver(
+        &self,
+        _spec: &SpawnSpec,
+        receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        Some(Box::new(codex_status::CodexStatusWatcher::from_receiver(
+            receiver,
+        )))
+    }
     fn supported(&self, _windows: bool) -> bool {
         true
     }
@@ -246,29 +285,7 @@ impl StatusHooks for Hooks {
         if !(inject_codex_hooks(role_args, cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
-        status_env(
-            codex_status::PATH_ENV,
-            codex_status::GENERATION_ENV,
-            app_data_dir,
-            &spec.session_id,
-        )
-    }
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
-        if !self.supported(cfg!(windows)) {
-            return None;
-        }
-        let path = spec.env.get(codex_status::PATH_ENV)?;
-        let generation = spec.env.get(codex_status::GENERATION_ENV)?;
-        match codex_status::CodexStatusWatcher::start(Path::new(path), generation.clone()) {
-            Ok(watcher) => Some(Box::new(watcher)),
-            Err(error) => {
-                log::warn!(
-                    "Codex status bridge unavailable for {}: {error}",
-                    spec.session_id
-                );
-                None
-            }
-        }
+        hook_env(app_data_dir, &spec.session_id)
     }
 }
 

@@ -41,16 +41,11 @@ pub(crate) fn inject_claude_settings(role_args: &[String]) -> bool {
 pub(crate) fn claude_settings_args(
     role_args: &[String],
     app_data_dir: &Path,
-    runner_session_id: &str,
+    _runner_session_id: &str,
 ) -> Vec<String> {
     if !inject_claude_settings(role_args) {
         return Vec::new();
     }
-    let drop_path = crate::session::claude_rekey::drop_path(app_data_dir, runner_session_id);
-    let temp_path = drop_path.with_extension("json.tmp");
-    let temp_path = crate::session::launch::shell_quote(&temp_path.to_string_lossy());
-    let drop_path = crate::session::launch::shell_quote(&drop_path.to_string_lossy());
-    let hook_command = format!("cat > {temp_path} && mv {temp_path} {drop_path}");
     // Runner's terminal answers the background-colour query with the
     // live palette, so `auto` is the one theme value that never fights
     // the app: Claude Code paints light on Runner Light and dark on
@@ -58,18 +53,8 @@ pub(crate) fn claude_settings_args(
     let mut settings = serde_json::json!({
         "tui": "fullscreen",
         "theme": "auto",
-        "hooks": {
-            "SessionStart": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_command,
-                    "timeout": crate::runtimes::claude_code::claude_status::HOOK_TIMEOUT_SECS,
-                }],
-            }],
-        },
+        "hooks": {},
     });
-    let status_path =
-        crate::runtimes::claude_code::claude_status::status_path(app_data_dir, runner_session_id);
     for event in [
         "SessionStart",
         "PermissionRequest",
@@ -95,7 +80,7 @@ pub(crate) fn claude_settings_args(
         let mut entry = serde_json::json!({
             "hooks": [{
                 "type": "command",
-                "command": crate::runtimes::claude_code::claude_status::hook_command(&status_path, event),
+                "command": hook_report_command(app_data_dir, Runtime::ClaudeCode, event, false),
                 "timeout": crate::runtimes::claude_code::claude_status::HOOK_TIMEOUT_SECS,
             }],
         });
@@ -189,7 +174,7 @@ impl RuntimeAdapter for ClaudeCode {
         Some(CLAUDE_LAUNCH_GATE_GRACE)
     }
     fn key_capture(&self) -> KeyCapture {
-        KeyCapture::RekeyDrop
+        KeyCapture::Hook
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
@@ -288,6 +273,15 @@ impl RuntimeAdapter for ClaudeCode {
 
 struct Hooks;
 impl StatusHooks for Hooks {
+    fn start_receiver(
+        &self,
+        _spec: &SpawnSpec,
+        receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        Some(Box::new(claude_status::ClaudeStatusWatcher::from_receiver(
+            receiver,
+        )))
+    }
     fn supported(&self, _windows: bool) -> bool {
         true
     }
@@ -306,29 +300,7 @@ impl StatusHooks for Hooks {
         if !(self.supported(cfg!(windows)) && inject_claude_settings(role_args)) {
             return std::collections::BTreeMap::new();
         }
-        status_env(
-            claude_status::PATH_ENV,
-            claude_status::GENERATION_ENV,
-            app_data_dir,
-            &spec.session_id,
-        )
-    }
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
-        if !self.supported(cfg!(windows)) {
-            return None;
-        }
-        let path = spec.env.get(claude_status::PATH_ENV)?;
-        let generation = spec.env.get(claude_status::GENERATION_ENV)?;
-        match claude_status::ClaudeStatusWatcher::start(Path::new(path), generation.clone()) {
-            Ok(watcher) => Some(Box::new(watcher)),
-            Err(error) => {
-                log::warn!(
-                    "Claude status bridge unavailable for {}: {error}",
-                    spec.session_id
-                );
-                None
-            }
-        }
+        hook_env(app_data_dir, &spec.session_id)
     }
 }
 

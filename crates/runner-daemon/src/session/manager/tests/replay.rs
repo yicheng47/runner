@@ -110,20 +110,31 @@ impl router::SessionDeliveryListener for DeliveryEvents {
     }
 }
 
-fn watcher(runtime: &str, feed: &Path, home: &Path, generation: &str) -> Box<dyn HookWatcher> {
+fn watcher(
+    runtime: &str,
+    routes: &Arc<crate::session::hook_queue::HookRoutes>,
+    home: &Path,
+    generation: &str,
+) -> Box<dyn HookWatcher> {
     use crate::runtimes::{
         antigravity::agy_status::AgyStatusWatcher, claude_code::claude_status::ClaudeStatusWatcher,
         codex::codex_status::CodexStatusWatcher, copilot::copilot_status::CopilotStatusWatcher,
         pi::pi_status::PiStatusWatcher,
     };
+    let receiver = routes.register(
+        Runtime::parse(runtime).unwrap(),
+        ID.into(),
+        generation.into(),
+    );
     match runtime {
-        "claude-code" => Box::new(ClaudeStatusWatcher::start(feed, generation.into()).unwrap()),
-        "codex" => Box::new(CodexStatusWatcher::start(feed, generation.into()).unwrap()),
-        "copilot" => Box::new(
-            CopilotStatusWatcher::start(feed, generation.into(), home.join(".copilot")).unwrap(),
-        ),
-        "pi" => Box::new(PiStatusWatcher::start(feed, generation.into()).unwrap()),
-        "antigravity" => Box::new(AgyStatusWatcher::start(feed, generation.into()).unwrap()),
+        "claude-code" => Box::new(ClaudeStatusWatcher::from_receiver(receiver)),
+        "codex" => Box::new(CodexStatusWatcher::from_receiver(receiver)),
+        "copilot" => Box::new(CopilotStatusWatcher::from_receiver(
+            receiver,
+            home.join(".copilot"),
+        )),
+        "pi" => Box::new(PiStatusWatcher::from_receiver(receiver)),
+        "antigravity" => Box::new(AgyStatusWatcher::from_receiver(receiver)),
         _ => panic!("unknown scenario runtime {runtime}"),
     }
 }
@@ -301,21 +312,13 @@ fn replay(path: &Path) -> Value {
     std::os::unix::fs::symlink(home.join("project"), home.join("project-alias")).unwrap();
     #[cfg(windows)]
     fs::create_dir_all(home.join("alias")).unwrap();
-    let feed = root.path().join("session-status/feed.ndjson");
+    let routes = Arc::new(crate::session::hook_queue::HookRoutes::default());
     let transcript = home.join("transcript.jsonl");
     fs::write(&transcript, "").unwrap();
-    for reporter in [
-        crate::runtimes::copilot::copilot_status::reporter_path(root.path()),
-        crate::runtimes::pi::pi_status::extension_path(root.path()),
-        crate::runtimes::antigravity::agy_status::reporter_path(root.path()),
-    ] {
-        fs::create_dir_all(reporter.parent().unwrap()).unwrap();
-        fs::write(reporter, "").unwrap();
-    }
     let mut spawn_generation = 1;
     let mut generation = format!("spawn-{spawn_generation}");
     let mut current_start = START.to_owned();
-    let mut watcher = Some(watcher(&header.runtime, &feed, &home, &generation));
+    let mut watcher = Some(watcher(&header.runtime, &routes, &home, &generation));
     let fake = fake_runtime();
     let manager = mgr_with_fake(None, fake);
     let events = capture();
@@ -393,7 +396,22 @@ fn replay(path: &Path) -> Value {
                         if report["transcript_path"] == "<TRANSCRIPT>" {
                             report["transcript_path"] = json!(transcript);
                         }
-                        append(&feed, &report);
+                        let caller = report
+                            .get("agent_id")
+                            .and_then(Value::as_str)
+                            .or_else(|| report.get("session_id").and_then(Value::as_str))
+                            .map(str::to_owned);
+                        let report = runner_core::protocol::hook::HookReport {
+                            bridge_unavailable: false,
+                            version: runner_core::protocol::hook::VERSION,
+                            runtime: Runtime::parse(&header.runtime).unwrap(),
+                            session_id: ID.into(),
+                            generation: report["generation"].as_str().unwrap().into(),
+                            event: report["hook_event_name"].as_str().unwrap().into(),
+                            payload: report,
+                            caller_thread_id: caller,
+                        };
+                        drop(routes.admit(report));
                     }
                     Event::Record { record } => append(&transcript, &record),
                     Event::Observation { observation } => {
@@ -490,7 +508,7 @@ fn replay(path: &Path) -> Value {
                             params![ID, current_start],
                         )
                         .unwrap();
-                        watcher = Some(self::watcher(&header.runtime, &feed, &home, &generation));
+                        watcher = Some(self::watcher(&header.runtime, &routes, &home, &generation));
                         install_replay_handle(&manager, &conn, events.as_ref(), &log);
                         detector = IdleDetector::with_adapter_at(
                             Duration::from_secs(2),

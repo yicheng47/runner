@@ -132,13 +132,11 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
             None,
             None,
         );
+        assert!(!spec.env.contains_key("RUNNER_CLAUDE_STATUS_PATH"));
         assert!(!spec
             .env
-            .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
-        assert!(!spec
-            .env
-            .contains_key(crate::runtimes::claude_code::claude_status::GENERATION_ENV));
-        assert!(!stale_rekey.exists());
+            .contains_key(runner_core::protocol::hook::GENERATION_ENV));
+        assert!(stale_rekey.exists());
     }
 }
 
@@ -171,25 +169,12 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             None,
         );
         if runtime == "claude-code" {
-            let generation =
-                spec.env[crate::runtimes::claude_code::claude_status::GENERATION_ENV].clone();
+            let generation = spec.env[runner_core::protocol::hook::GENERATION_ENV].clone();
             assert!(uuid::Uuid::parse_str(&generation).is_ok());
             assert_eq!(
-                spec.env[crate::runtimes::claude_code::claude_status::PATH_ENV],
-                crate::session::hook_feed::hook_path(
-                    &crate::runtimes::claude_code::claude_status::status_path(
-                        &fixture_tmp_dir().join("runner-app-data"),
-                        "settings-argv",
-                    )
-                ),
+                spec.env[runner_core::protocol::hook::SESSION_ENV],
+                spec.session_id
             );
-        } else {
-            assert!(!spec
-                .env
-                .contains_key(crate::runtimes::claude_code::claude_status::PATH_ENV));
-            assert!(!spec
-                .env
-                .contains_key(crate::runtimes::claude_code::claude_status::GENERATION_ENV));
         }
         spec.args
     };

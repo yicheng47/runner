@@ -11,6 +11,7 @@ macro_rules! daemon_api {
     ($consumer:ident) => { $consumer! {
 
         app_version() -> String [true] => |core: &crate::AppCore| { Ok(core.app_version.clone()) };
+        hook_report(report: HookReport => HookReport = { report }) -> () [true] => |_core: &crate::AppCore, _report: HookReport| { Err(crate::error::Error::msg("hook admission requires a reporter connection")) };
         mission_list(crew_id: Option<String> => Option<String> = { crew_id }) -> Vec<Mission> [false] => |core: &crate::AppCore, crew_id: Option<String>| { crate::ops::mission::mission_list(core, crew_id) };
         mission_feed(args: MissionFeedArgs => MissionFeedArgs = { args }) -> MissionFeed [false] => |core: &crate::AppCore, args: MissionFeedArgs| { crate::ops::mission::feed::mission_feed(core, args) };
         mission_status(id: &str => String = { id.to_owned() }) -> MissionStatusSnapshot [false] => |core: &crate::AppCore, id: String| { crate::ops::mission::feed::mission_status(core, &id) };

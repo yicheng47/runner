@@ -223,22 +223,61 @@ pub(super) fn trust_cwd<'a>(
     cwd
 }
 
-pub(super) fn status_env(
-    path_env: &str,
-    generation_env: &str,
+pub(super) fn hook_executable(app_data_dir: &Path) -> PathBuf {
+    app_data_dir
+        .join("bin")
+        .join(runner_core::cli_install::AGENT_DEST_BIN_NAME)
+}
+
+pub(super) fn hook_env(
     app_data_dir: &Path,
     session_id: &str,
 ) -> std::collections::BTreeMap<String, String> {
+    use runner_core::protocol::hook;
     std::collections::BTreeMap::from([
+        (hook::SESSION_ENV.into(), session_id.into()),
         (
-            path_env.into(),
-            crate::session::hook_feed::hook_path(&crate::session::hook_feed::status_path(
-                app_data_dir,
-                session_id,
-            )),
+            hook::GENERATION_ENV.into(),
+            uuid::Uuid::new_v4().to_string(),
         ),
-        (generation_env.into(), uuid::Uuid::new_v4().to_string()),
+        (
+            hook::EXECUTABLE_ENV.into(),
+            hook_executable(app_data_dir).to_string_lossy().into_owned(),
+        ),
     ])
+}
+
+pub(super) fn hook_report_command(
+    app_data_dir: &Path,
+    runtime: Runtime,
+    event: &str,
+    powershell: bool,
+) -> String {
+    let executable = hook_executable(app_data_dir)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if powershell {
+        format!(
+            "try{{& '{}' hook report --runtime {} --event '{event}'}}catch{{}};exit 0",
+            executable.replace('\'', "''"),
+            runtime.key()
+        )
+    } else {
+        let fallback = if runtime == Runtime::Antigravity {
+            if event == "PreInvocation" {
+                "{ if [ -n \"$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT\" ]; then printf '%s\\n' \"$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT\"; else printf '{}\\n'; fi; }"
+            } else {
+                "printf '{}\\n'"
+            }
+        } else {
+            ":"
+        };
+        format!(
+            "{} hook report --runtime {} --event {event} 2>/dev/null || {fallback}",
+            crate::session::launch::shell_quote(&executable),
+            runtime.key()
+        )
+    }
 }
 
 pub(super) fn config_home(env_name: Option<&str>, relative: &str) -> Option<PathBuf> {

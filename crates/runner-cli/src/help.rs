@@ -134,9 +134,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_guide_names_every_real_top_level_command_and_no_others() {
+    fn agent_guide_names_every_visible_top_level_command_and_no_others() {
         let clap = crate::command::Cli::command()
             .get_subcommands()
+            .filter(|command| !command.is_hide_set())
             .map(|command| command.get_name().to_owned())
             .collect::<BTreeSet<_>>();
         let guide = AGENT_TOP_LEVEL_COMMANDS
@@ -144,6 +145,10 @@ mod tests {
             .map(|command| (*command).to_owned())
             .collect::<BTreeSet<_>>();
         assert_eq!(guide, clap);
+        assert!(crate::command::Cli::command()
+            .find_subcommand("hook")
+            .unwrap()
+            .is_hide_set());
         for command in guide {
             assert!(
                 AGENT_GUIDE.contains(&format!("runner {command}")),

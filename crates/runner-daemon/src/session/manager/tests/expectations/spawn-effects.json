@@ -8,9 +8,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -35,9 +36,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID1>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -62,9 +64,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -86,9 +89,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -135,9 +139,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -163,9 +168,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -191,9 +197,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -219,9 +226,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -247,9 +255,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID2>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -276,11 +285,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -308,11 +318,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -340,11 +351,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -372,11 +384,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -404,11 +417,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -436,11 +450,12 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
@@ -468,16 +483,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -493,16 +509,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -518,16 +535,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -543,16 +561,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -575,7 +594,7 @@
       "watcher": null,
       "interrupt": null,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -592,16 +611,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -618,16 +638,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -644,16 +665,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -670,16 +692,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -697,11 +720,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -709,7 +733,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -727,11 +751,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -739,7 +764,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -757,11 +782,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -769,7 +795,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -787,11 +813,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -799,7 +826,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -817,11 +844,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -829,7 +857,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -847,11 +875,12 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID3>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
@@ -859,7 +888,7 @@
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -873,10 +902,11 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -897,10 +927,11 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -921,10 +952,11 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -945,10 +977,11 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -969,15 +1002,16 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -994,15 +1028,16 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1019,15 +1054,16 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1044,15 +1080,16 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1069,15 +1106,16 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID2>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID1>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1095,18 +1133,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1124,18 +1163,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1153,18 +1193,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1182,18 +1223,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1211,18 +1253,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1240,18 +1283,19 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_ANTIGRAVITY_STATUS_GENERATION": "<ID3>",
-        "RUNNER_ANTIGRAVITY_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT": "{\"injectSteps\":[{\"ephemeralMessage\":\"The session working directory is <TMP>. Use it as the default for task files and terminal commands unless the user explicitly chooses another directory. The antigravity-hooks workspace contains Runner infrastructure only.\"}]}",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "antigravity",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "log-tail"
       },
@@ -1269,17 +1313,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
       "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1295,17 +1338,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
       "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1321,17 +1363,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
       "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1347,17 +1388,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
       "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1373,17 +1413,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1400,17 +1439,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1427,17 +1465,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1454,17 +1491,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1481,17 +1517,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID3>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1511,18 +1546,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1542,18 +1576,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1573,18 +1606,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1604,18 +1636,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1635,18 +1666,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1666,18 +1696,17 @@
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_MISSION_ID": "<ID3>",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID2>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID1>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_MISSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -1691,9 +1720,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1714,9 +1744,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1737,9 +1768,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1760,9 +1792,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1783,14 +1816,15 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1807,14 +1841,15 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1831,14 +1866,15 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1855,14 +1891,15 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1879,14 +1916,15 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID2>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID2>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1904,17 +1942,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1932,17 +1971,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1960,17 +2000,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -1988,17 +2029,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -2016,17 +2058,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },
@@ -2044,17 +2087,18 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "MISSION_CWD": "<TMP>",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_COPILOT_STATUS_GENERATION": "<ID3>",
-        "RUNNER_COPILOT_STATUS_PATH": "<TMP>/session-status/<ID4>.ndjson",
         "RUNNER_CREW_ID": "c",
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "copilot",
-      "interrupt": null,
+      "interrupt": true,
       "key_capture": {
         "mechanism": "none"
       },

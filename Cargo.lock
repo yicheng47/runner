@@ -5248,6 +5248,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml_edit 0.25.11+spec-1.1.0",
  "ulid",
  "windows-sys 0.61.2",
 ]

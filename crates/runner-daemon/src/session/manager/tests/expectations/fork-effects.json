@@ -9,16 +9,17 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CLAUDE_STATUS_GENERATION": "<ID4>",
-        "RUNNER_CLAUDE_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "claude-code",
       "interrupt": true,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }
@@ -31,9 +32,10 @@
         "COLORTERM": "truecolor",
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
-        "RUNNER_CODEX_STATUS_GENERATION": "<ID4>",
-        "RUNNER_CODEX_STATUS_PATH": "<TMP>/session-status/<ID2>.ndjson",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID3>",
+        "RUNNER_HOOK_SESSION": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -56,17 +58,16 @@
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "PI_SKIP_VERSION_CHECK": "1",
         "RUNNER_HANDLE": "tester",
-        "RUNNER_PI_REKEY_PATH": "<TMP>/session-keys/<ID3>.json",
-        "RUNNER_PI_SESSION_KEY": "<ID2>",
-        "RUNNER_PI_STATUS_GENERATION": "<ID4>",
-        "RUNNER_PI_STATUS_PATH": "<TMP>/session-status/<ID3>.ndjson",
+        "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
+        "RUNNER_HOOK_GENERATION": "<ID4>",
+        "RUNNER_HOOK_SESSION": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
       "watcher": "pi",
-      "interrupt": null,
+      "interrupt": false,
       "key_capture": {
-        "mechanism": "rekey-drop"
+        "mechanism": "hook"
       },
       "rollout": null
     }

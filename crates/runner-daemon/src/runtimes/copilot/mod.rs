@@ -138,6 +138,17 @@ impl RuntimeAdapter for Copilot {
 
 struct Hooks;
 impl StatusHooks for Hooks {
+    fn start_receiver(
+        &self,
+        spec: &SpawnSpec,
+        receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        let home =
+            copilot_trust::copilot_home(spec.env.get("COPILOT_HOME").map(String::as_str)).ok()?;
+        Some(Box::new(
+            copilot_status::CopilotStatusWatcher::from_receiver(receiver, home),
+        ))
+    }
     fn supported(&self, _windows: bool) -> bool {
         true
     }
@@ -158,41 +169,7 @@ impl StatusHooks for Hooks {
         if !(self.supported(cfg!(windows))) {
             return std::collections::BTreeMap::new();
         }
-        status_env(
-            copilot_status::PATH_ENV,
-            copilot_status::GENERATION_ENV,
-            app_data_dir,
-            &spec.session_id,
-        )
-    }
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>> {
-        if !self.supported(cfg!(windows)) {
-            return None;
-        }
-        let path = spec.env.get(copilot_status::PATH_ENV)?;
-        let generation = spec.env.get(copilot_status::GENERATION_ENV)?;
-        let home =
-            match copilot_trust::copilot_home(spec.env.get("COPILOT_HOME").map(String::as_str)) {
-                Ok(home) => home,
-                Err(error) => {
-                    log::warn!(
-                        "Copilot status transcript unavailable for {}: {error}",
-                        spec.session_id
-                    );
-                    return None;
-                }
-            };
-        match copilot_status::CopilotStatusWatcher::start(Path::new(path), generation.clone(), home)
-        {
-            Ok(watcher) => Some(Box::new(watcher)),
-            Err(error) => {
-                log::warn!(
-                    "Copilot status bridge unavailable for {}: {error}",
-                    spec.session_id
-                );
-                None
-            }
-        }
+        hook_env(app_data_dir, &spec.session_id)
     }
 }
 

@@ -132,122 +132,86 @@ fn codex_hook_overrides_and_opt_out_preserve_the_invocation() {
     }
 }
 
-#[cfg(unix)]
 #[test]
-fn codex_injection_roundtrips_toml_and_shell_metacharacters() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir
-        .path()
-        .join("spaces \"double\" triple ''' dollar $ backtick `");
-    let args = codex_status_args_for(Runtime::Codex.key(), &[], &root, "session");
+fn codex_injection_uses_structured_stdio_and_schema_guaranteed_projections() {
+    use runner_core::protocol::hook;
+    let root = Path::new("C:/Users/空 格 triple ''' dollar $ backtick `/runner");
+    let args = codex_status_args_for(Runtime::Codex.key(), &[], root, "session");
     assert_eq!(
         &args[..3],
         &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
     );
-    for (pair, event) in args[3..]
-        .chunks_exact(2)
-        .zip(crate::runtimes::codex::codex_status::EVENTS)
-    {
+    assert_eq!(args.len(), 5 + 2 * codex_status::EVENTS.len());
+    let config = args[4].parse::<toml_edit::DocumentMut>().unwrap();
+    let server = &config["mcp_servers"]["runner_hooks"];
+    assert_eq!(
+        server["command"].as_str(),
+        Some(hook_executable(root).to_string_lossy().as_ref())
+    );
+    assert_eq!(server["required"].as_bool(), Some(false));
+    assert!(server.get("startup_timeout_sec").is_none());
+    assert_eq!(
+        server["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["hook", "serve"]
+    );
+    assert_eq!(
+        server["env_vars"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV]
+    );
+    for (pair, event) in args[5..].chunks_exact(2).zip(codex_status::EVENTS) {
         assert_eq!(pair[0], "-c");
         let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
         let groups = config["hooks"][event].as_array().unwrap();
-        assert_eq!(groups.len(), 1);
-        let handlers = groups.get(0).unwrap().as_inline_table().unwrap()["hooks"]
-            .as_array()
-            .unwrap();
-        assert_eq!(handlers.len(), 1);
-        let hook = handlers.get(0).unwrap().as_inline_table().unwrap();
-        assert_eq!(hook["timeout"].as_integer(), Some(2));
-        let command = hook["command"].as_str().unwrap();
-        let path = crate::session::hook_feed::status_path(&root, "session");
-        assert_eq!(
-            command,
-            crate::runtimes::codex::codex_status::hook_command(&path, event)
-        );
-        let result = std::process::Command::new("sh")
-            .args(["-c", command])
-            .output()
-            .unwrap();
-        assert!(result.status.success());
-        assert_eq!(result.stdout, b"{}\n");
-        assert!(result.stderr.is_empty());
-    }
-    assert!(!root.exists());
-}
-
-#[cfg(windows)]
-#[test]
-fn codex_injection_on_windows_calls_the_session_reporter_script() {
-    use crate::runtimes::codex::codex_status::{self, EVENTS};
-    use crate::session::hook_feed::{hook_path, powershell_script_path, status_path};
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("spaces triple ''' dollar $ backtick `");
-    let args = codex_status_args_for(Runtime::Codex.key(), &[], &root, "session");
-    assert_eq!(
-        &args[..3],
-        &["--enable", "hooks", "--dangerously-bypass-hook-trust"]
-    );
-    assert_eq!(args.len(), 3 + 2 * EVENTS.len());
-    let path = status_path(&root, "session");
-    let quote = |path: &std::path::Path| hook_path(path).replace('\'', "''");
-    for (pair, event) in args[3..].chunks_exact(2).zip(EVENTS) {
-        assert_eq!(pair[0], "-c");
-        let command = codex_status::hook_command(&path, event);
-        assert_eq!(
-            command,
-            format!(
-                "try{{& ([ScriptBlock]::Create([IO.File]::ReadAllText('{}'))) '{}' '{event}'}}\
-                     catch{{[Console]::OpenStandardInput().CopyTo([IO.Stream]::Null)}};'{{}}'",
-                quote(&powershell_script_path(&path)),
-                quote(&path),
-            )
-        );
-        assert_eq!(
-            pair[1],
-            format!(
-                "hooks.{event}=[{{hooks=[{{type=\"command\",command={},timeout=2}}]}}]",
-                toml_edit::Value::from(command.clone())
-            )
-        );
-        let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
-        let hook = config["hooks"][event]
-            .as_array()
-            .unwrap()
-            .get(0)
-            .unwrap()
-            .as_inline_table()
-            .unwrap()["hooks"]
+        let handler = groups.get(0).unwrap().as_inline_table().unwrap()["hooks"]
             .as_array()
             .unwrap()
             .get(0)
             .unwrap()
             .as_inline_table()
             .unwrap();
-        assert_eq!(hook["command"].as_str(), Some(command.as_str()));
-        assert!(!command.contains('"') && !command.contains('\\'));
-    }
-    // Without its script (setup failed or the session ended) the hook drains stdin.
-    let command = codex_status::hook_command(&path, "Stop");
-    for shell in crate::session::hook_feed::POWERSHELLS {
-        if let Some(output) =
-            crate::session::hook_feed::run_powershell(shell, &command, &[], &vec![b'x'; 256 * 1024])
-        {
-            assert!(output.status.success(), "{shell}: {output:?}");
-            assert_eq!(output.stdout, b"{}\r\n");
-            assert!(output.stderr.is_empty(), "{shell}: {output:?}");
+        if *event == "SessionEnd" {
+            assert_eq!(handler["type"].as_str(), Some("command"));
+            assert_eq!(handler["timeout"].as_integer(), Some(1));
+            assert_eq!(
+                handler["command"].as_str(),
+                Some(hook_report_command(root, Runtime::Codex, event, cfg!(windows)).as_str())
+            );
+            assert!(handler.get("server").is_none());
+            assert!(handler.get("input").is_none());
+            continue;
+        }
+        assert_eq!(handler["type"].as_str(), Some("mcp_tool"));
+        assert_eq!(handler["server"].as_str(), Some("runner_hooks"));
+        assert_eq!(handler["tool"].as_str(), Some("report"));
+        assert!(handler.get("command").is_none());
+        let input = handler["input"].as_inline_table().unwrap();
+        let mut fields = vec!["hook_event_name", "session_id", "transcript_path"];
+        if *event == "SessionStart" {
+            fields.push("source");
+        } else {
+            fields.push("turn_id");
+        }
+        if matches!(*event, "PreCompact" | "PostCompact") {
+            fields.push("trigger");
+        }
+        assert_eq!(input.len(), fields.len());
+        for field in fields {
+            assert_eq!(
+                input[field].as_str(),
+                Some(format!("${{{field}}}").as_str())
+            );
         }
     }
-    assert!(!root.exists());
-
-    let app_data = std::path::Path::new(
-        r"C:\Users\Jason Wang (Runner Windows Smoke)\AppData\Roaming\com.wycstudios.runner-dev",
-    );
-    let args = codex_status_args_for(
-        Runtime::Codex.key(),
-        &[],
-        app_data,
-        "01M2NCJRAFFVFJQBA0NGDWMDXR",
-    );
     let line = args.iter().map(|arg| arg.len() + 3).sum::<usize>();
     assert!(line < 8191, "Codex hook argv is {line} characters");
 }

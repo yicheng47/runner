@@ -26,7 +26,6 @@ impl SessionManager {
                 queue.close();
             }
         }
-        self.claude_session_key_watcher.lock().unwrap().take();
         for worker in workers {
             let _ = worker.join();
         }

@@ -14,16 +14,16 @@ use crate::session::status::{TurnOutcome, WaitReason};
 
 #[cfg(test)]
 use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
-pub(crate) const PATH_ENV: &str = "RUNNER_PI_STATUS_PATH";
-pub(crate) const GENERATION_ENV: &str = "RUNNER_PI_STATUS_GENERATION";
+#[cfg(test)]
 pub(crate) const SESSION_KEY_ENV: &str = "RUNNER_PI_SESSION_KEY";
+#[cfg(test)]
 pub(crate) const REKEY_PATH_ENV: &str = "RUNNER_PI_REKEY_PATH";
 
 const EXTENSION_DIR: &str = "pi-hooks";
 const EXTENSION_FILE: &str = "runner-status.ts";
 
-const EXTENSION_SOURCE: &str = r#"import fs from "node:fs";
-import path from "node:path";
+const EXTENSION_SOURCE: &str = r#"import net from "node:net";
+import { setTimeout as deadlineTimeout, clearTimeout as clearDeadline } from "node:timers";
 
 const minimumVersion = [0, 84, 4];
 
@@ -42,35 +42,77 @@ export default async function (pi) {
     if (versionIsTooOld(VERSION)) return;
   } catch {}
 
-  const statusPath = process.env.RUNNER_PI_STATUS_PATH;
-  const generation = process.env.RUNNER_PI_STATUS_GENERATION;
-  if (!statusPath || !generation) return;
+  const endpoint = process.env.RUNNER_HOOK_ENDPOINT;
+  const generation = process.env.RUNNER_HOOK_GENERATION;
+  const session = process.env.RUNNER_HOOK_SESSION;
+  if (!endpoint || !generation || !session) return;
 
-  const sessionKey = process.env.RUNNER_PI_SESSION_KEY || "";
-  const rekeyPath = process.env.RUNNER_PI_REKEY_PATH || "";
-  let lastReportedSessionId = sessionKey;
-  let rekeySequence = 0;
+  let pending = Promise.resolve();
+  let pendingCount = 0;
+  let pendingBytes = 0;
+  let bridgeFailed = false;
   let stopEditorTracking = () => {};
 
-  function append(event, fields = {}) {
-    try {
-      fs.appendFileSync(statusPath, JSON.stringify({
-        generation,
-        hook_event_name: event.type,
-        ...fields,
-      }) + "\n", { flag: fs.constants.O_WRONLY | fs.constants.O_APPEND });
-    } catch {}
+  function frame(kind, value) {
+    const payload = Buffer.from(JSON.stringify(value), "utf8");
+    const header = Buffer.alloc(5);
+    header.writeUInt32LE(payload.length + 1);
+    header[4] = kind;
+    return Buffer.concat([header, payload]);
   }
 
-  function rekey(sessionId) {
-    if (!rekeyPath || !sessionId || sessionId === lastReportedSessionId) return;
+  function deliver(report, expires) {
+    return new Promise((resolve) => {
+      const remaining = expires - performance.now();
+      if (remaining <= 0) { resolve(); return; }
+      const socket = new net.Socket();
+      let buffer = Buffer.alloc(0);
+      let welcomed = false;
+      const done = () => { clearDeadline(timer); socket.destroy(); resolve(); };
+      const timer = deadlineTimeout(done, remaining);
+      socket.on("error", done);
+      socket.on("close", done);
+      socket.on("data", (bytes) => {
+        buffer = Buffer.concat([buffer, bytes]);
+        if (buffer.length < 4) return;
+        const length = buffer.readUInt32LE(0);
+        if (length < 1 || length > 65536) { done(); return; }
+        if (buffer.length < length + 4) return;
+        const kind = buffer[4];
+        if (!welcomed && kind === 2) {
+          welcomed = true;
+          buffer = Buffer.alloc(0);
+          socket.write(frame(5, { id: 1, request: { hook_report: { report } } }));
+        } else {
+          // Admission (including a lost reply) is single-use; never replay.
+          done();
+        }
+      });
+      socket.connect(endpoint, () => socket.write(frame(1, { exe_sha256: "", client: "hook" })));
+    });
+  }
+
+  function append(event, fields = {}) {
+    if (bridgeFailed) return;
     try {
-      fs.mkdirSync(path.dirname(rekeyPath), { recursive: true });
-      rekeySequence += 1;
-      const temporary = `${rekeyPath}.${process.pid}.${rekeySequence}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify({ session_id: sessionId }));
-      fs.renameSync(temporary, rekeyPath);
-      lastReportedSessionId = sessionId;
+      const report = {
+        version: 1, runtime: "pi", session_id: session, generation,
+        event: event.type, payload: { hook_event_name: event.type, ...fields }, caller_thread_id: null,
+      };
+      const bytes = Buffer.byteLength(JSON.stringify(report), "utf8");
+      if (bytes > 8 * 1024 * 1024) return;
+      if (pendingCount >= 64 || pendingBytes + bytes > 16 * 1024 * 1024) {
+        bridgeFailed = true;
+        return deliver({ ...report, event: "bridge_unavailable", payload: {}, bridge_unavailable: true }, performance.now() + 250).catch(() => {});
+      }
+      const expires = performance.now() + 250;
+      pendingCount += 1;
+      pendingBytes += bytes;
+      pending = pending.then(() => bridgeFailed ? undefined : deliver(report, expires)).catch(() => {}).finally(() => {
+        pendingCount -= 1;
+        pendingBytes -= bytes;
+      });
+      return pending;
     } catch {}
   }
 
@@ -100,51 +142,50 @@ export default async function (pi) {
     sample();
   }
 
-  pi.on("session_start", (event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     stopEditorTracking();
     if (ctx.mode !== "tui") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId();
-      append(event, { reason: event.reason, session_id: sessionId });
-      rekey(sessionId);
+      await append(event, { reason: event.reason, session_id: sessionId });
     } catch {}
     trackEditor(ctx);
   });
 
   pi.on("agent_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event);
+    return append(event);
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
+    return append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
+    return append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
   });
 
   pi.on("session_before_compact", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event, { reason: event.reason });
+    return append(event, { reason: event.reason });
   });
 
   pi.on("session_compact", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event);
+    return append(event);
   });
 
   pi.on("session_compact_failed", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event);
+    return append(event);
   });
 
   pi.on("message_end", (event, ctx) => {
     if (ctx.mode !== "tui") return;
     if (event.message?.role !== "assistant") return;
-    append(event, {
+    return append(event, {
       stopReason: event.message.stopReason,
       errorMessage: typeof event.message.errorMessage === "string"
         ? event.message.errorMessage.slice(0, 512)
@@ -154,23 +195,23 @@ export default async function (pi) {
 
   pi.on("agent_settled", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event);
+    return append(event);
   });
 
   pi.on("ui_prompt_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event, { kind: event.kind, title: event.title });
+    return append(event, { kind: event.kind, title: event.title });
   });
 
   pi.on("ui_prompt_end", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    append(event, { kind: event.kind, title: event.title });
+    return append(event, { kind: event.kind, title: event.title });
   });
 
   pi.on("session_shutdown", (event, ctx) => {
     stopEditorTracking();
     if (ctx.mode !== "tui") return;
-    append(event, { reason: event.reason });
+    return append(event, { reason: event.reason });
   });
 }
 "#;
@@ -315,24 +356,29 @@ pub(crate) struct PiStatusWatcher {
     parser: PiParser,
 }
 impl PiStatusWatcher {
-    pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
-        let app_data_dir = path
-            .parent()
-            .and_then(Path::parent)
-            .expect("status file is under app data");
-        Ok(Self {
-            feed: HookFeed::start_external(path, generation, &extension_path(app_data_dir))?,
+    pub(crate) fn from_receiver(receiver: crate::session::hook_queue::HookReceiver) -> Self {
+        Self {
+            feed: HookFeed::from_receiver(receiver),
             parser: Default::default(),
-        })
+        }
     }
     pub(crate) fn drain_events(
         &mut self,
-        cancel: u8,
+        _cancel: u8,
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
-        _session_start: impl FnMut(String),
+        mut session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(cancel != 0, |report| {
+        self.feed.drain(|report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
+                if report.hook_event_name == "session_start" {
+                    if let Some(id) = report
+                        .session_id
+                        .as_deref()
+                        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                    {
+                        session_start(id.to_owned());
+                    }
+                }
                 if let Some(events) = self.parser.hook(report) {
                     if let [AgentEvent::EditorDraft { drafting }] = events.as_slice() {
                         emit(AgentEvent::EditorDraft {
@@ -398,10 +444,8 @@ impl PiObservation {
 }
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, OpenOptions};
-    use std::io::Write;
+    use std::fs;
     use std::process::Command;
-    use std::sync::atomic::Ordering;
 
     use serde_json::{json, Value};
 
@@ -409,6 +453,7 @@ mod tests {
 
     struct TestWatcher {
         inner: PiStatusWatcher,
+        hooks: crate::session::hook_queue::TestHookRoute,
         observation: PiObservation,
         cancel: u8,
     }
@@ -424,12 +469,15 @@ mod tests {
         }
     }
     impl TestWatcher {
-        fn start(path: &Path, generation: String) -> Result<Self> {
-            Ok(Self {
-                inner: PiStatusWatcher::start(path, generation)?,
+        fn new(generation: String) -> Self {
+            let (hooks, receiver) =
+                crate::session::hook_queue::TestHookRoute::new(Runtime::Pi, generation);
+            Self {
+                inner: PiStatusWatcher::from_receiver(receiver),
+                hooks,
                 observation: Default::default(),
                 cancel: 0,
-            })
+            }
         }
         fn drain_with_session_starts(
             &mut self,
@@ -763,22 +811,14 @@ mod tests {
     }
 
     #[test]
-    fn watcher_ignores_wrong_generation_malformed_lines_and_reports_bridge_loss() {
-        let root = tempfile::tempdir().unwrap();
-        install_extension(root.path()).unwrap();
-        let path = crate::session::hook_feed::status_path(root.path(), "pi-status");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(file, "not json").unwrap();
-        writeln!(
-            file,
-            "{}",
-            json!({
-                "generation":"old",
-                "hook_event_name":"agent_start",
-            })
-        )
-        .unwrap();
+    fn watcher_rejects_wrong_generation_malformed_reports_and_reports_bridge_loss() {
+        let mut watcher = TestWatcher::new("current".into());
+
+        assert!(watcher.hooks.admit_json("not json").is_err());
+        assert!(watcher
+            .hooks
+            .admit(json!({"generation":"old","hook_event_name":"agent_start"}))
+            .is_err());
         for value in [
             json!({
                 "generation":"current",
@@ -795,9 +835,9 @@ mod tests {
             }),
             json!({"generation":"current","hook_event_name":"agent_settled"}),
         ] {
-            writeln!(file, "{value}").unwrap();
+            watcher.hooks.admit(value).unwrap();
         }
-        watcher.feed.dirty.store(true, Ordering::Release);
+
         let mut values = Vec::new();
         watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.len(), 3);
@@ -805,11 +845,127 @@ mod tests {
         assert_eq!(values[0].source, ObservationSource::Hook);
         assert_eq!(values[1].activity, Activity::Working);
         assert_eq!(values[2].outcome, Some(TurnOutcome::Failed));
-        fs::remove_file(extension_path(root.path())).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        watcher.hooks.retire();
+
         assert!(watcher.drain_status(|_, _| {}).is_err());
         drop(watcher);
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+    }
+
+    const IPC_FIXTURE: &str = r#"import net from "node:net";
+import fs from "node:fs";
+const reports = [];
+const envelopes = [];
+const endpoint = process.platform === "win32" ? `\\\\.\\pipe\\runner-pi-fixture-${process.pid}` : `${process.cwd()}/pi-${process.pid}.sock`;
+const encode = (kind, value) => {
+  const payload = Buffer.from(JSON.stringify(value));
+  const header = Buffer.alloc(5); header.writeUInt32LE(payload.length + 1); header[4] = kind;
+  return Buffer.concat([header, payload]);
+};
+const server = net.createServer(socket => {
+  let buffered = Buffer.alloc(0);
+  socket.on("data", bytes => {
+    buffered = Buffer.concat([buffered, bytes]);
+    while (buffered.length >= 4 && buffered.length >= buffered.readUInt32LE(0) + 4) {
+      const length = buffered.readUInt32LE(0);
+      const kind = buffered[4];
+      const value = JSON.parse(buffered.subarray(5, length + 4));
+      buffered = buffered.subarray(length + 4);
+      if (kind === 1) socket.write(encode(2, {}));
+      else if (kind === 5) {
+        const report = value.request.hook_report.report;
+        if (report.runtime !== "pi" || report.session_id !== "runner" || report.generation !== "current") throw new Error("routing");
+        reports.push(report.payload);
+        envelopes.push(report);
+        if (report.bridge_unavailable && process.env.STALL_CONTROL) return;
+        socket.end(encode(6, { id: 1, result: { hook_report: null } }));
+      } else throw new Error(`frame ${kind}`);
+    }
+  });
+});
+await new Promise(resolve => server.listen(endpoint, resolve));
+process.env.RUNNER_HOOK_ENDPOINT = endpoint;
+process.env.RUNNER_HOOK_SESSION = "runner";
+process.env.RUNNER_HOOK_GENERATION = "current";
+const finish = async () => {
+  await new Promise(resolve => server.close(resolve));
+  if (process.env.CAPTURE_REPORTS) fs.writeFileSync(process.env.CAPTURE_REPORTS, JSON.stringify(reports));
+  if (process.env.CAPTURE_ENVELOPES) fs.writeFileSync(process.env.CAPTURE_ENVELOPES, JSON.stringify(envelopes));
+};
+"#;
+
+    #[test]
+    fn embedded_extension_overflow_fails_closed_and_signals_once() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("runner-status.mjs"), EXTENSION_SOURCE).unwrap();
+        let driver = root.path().join("overflow.mjs");
+        fs::write(&driver, format!("{IPC_FIXTURE}{}", r#"
+import assert from "node:assert/strict";
+import extension from "./runner-status.mjs";
+const handlers = new Map();
+await extension({ on(name, handler) { handlers.set(name, handler); } });
+const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, { mode: "tui" });
+let connects = 0;
+const connect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function(...args) { connects += 1; return connect.apply(this, args); };
+await fire("agent_start");
+if (process.env.ABSENT_CONTROL) await new Promise(resolve => server.close(resolve));
+const started = performance.now();
+const queued = [];
+const bytes = process.env.OVERFLOW === "bytes";
+for (let index = 0; index < (bytes ? 3 : 65); index += 1) {
+  queued.push(fire("tool_execution_start", { toolCallId: String(index), toolName: bytes ? "你".repeat(2 * 1024 * 1024) : "bash" }));
+}
+await Promise.all(queued);
+await fire("agent_settled");
+await fire("agent_start");
+await fire("session_shutdown", { reason: "quit" });
+assert.equal(connects, 2, "one ordinary report and one control attempt only");
+assert.ok(performance.now() - started < 1500, "overflow must remain bounded and neutral");
+if (!process.env.ABSENT_CONTROL) {
+  assert.equal(envelopes.length, 2);
+  assert.equal(envelopes[1].bridge_unavailable, true);
+  assert.deepEqual(envelopes[1].payload, {});
+  await finish();
+} else {
+  assert.equal(envelopes.length, 1);
+}
+"#)).unwrap();
+        for mode in ["count", "bytes", "stalled", "absent"] {
+            let capture = root.path().join(format!("{mode}.json"));
+            let mut command = Command::new("node");
+            command
+                .arg(&driver)
+                .current_dir(root.path())
+                .env("OVERFLOW", mode)
+                .env("CAPTURE_ENVELOPES", &capture);
+            if mode == "stalled" {
+                command.env("STALL_CONTROL", "1");
+            }
+            if mode == "absent" {
+                command.env("ABSENT_CONTROL", "1");
+            }
+            let output = command
+                .output()
+                .expect("Node is required for pi producer regression");
+            assert!(output.status.success(), "{mode}: {output:?}");
+            assert!(
+                output.stdout.is_empty() && output.stderr.is_empty(),
+                "{mode}: {output:?}"
+            );
+            if mode == "absent" {
+                continue;
+            }
+            let reports: Vec<runner_core::protocol::hook::HookReport> =
+                serde_json::from_slice(&fs::read(capture).unwrap()).unwrap();
+            let routes = std::sync::Arc::new(crate::session::hook_queue::HookRoutes::default());
+            let mut receiver = routes.register(Runtime::Pi, "runner".into(), "current".into());
+            for report in reports {
+                drop(routes.admit(report).unwrap());
+            }
+            assert!(receiver
+                .drain(|_| panic!("overflowed telemetry reached the parser"))
+                .is_err());
+        }
     }
 
     #[test]
@@ -820,10 +976,8 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("runner-status.mjs"), EXTENSION_SOURCE).unwrap();
-        let feed = root.path().join("status.ndjson");
-        fs::write(&feed, "").unwrap();
         let driver = root.path().join("driver.mjs");
-        fs::write(&driver, r#"import fs from "node:fs";
+        fs::write(&driver, format!("{IPC_FIXTURE}{}", r#"
 import assert from "node:assert/strict";
 import extension from "./runner-status.mjs";
 const intervals = new Map();
@@ -855,8 +1009,8 @@ const ui = {
 };
 const ctx = { mode: "tui", ui, sessionManager: { getSessionId: () => "probe-session" } };
 const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
-const drafts = () => fs.readFileSync(process.env.RUNNER_PI_STATUS_PATH, "utf8")
-  .trim().split("\n").map(JSON.parse).filter(report => report.hook_event_name === "editor_draft");
+const drafts = () => reports.filter(report => report.hook_event_name === "editor_draft");
+const settle = () => fire("agent_settled");
 const flush = () => {
   const callbacks = [...deferred.values()];
   deferred.clear();
@@ -864,27 +1018,35 @@ const flush = () => {
 };
 const poll = () => [...intervals.values()].forEach(callback => callback());
 await fire("session_start", { reason: "startup" });
+await settle();
 assert.deepEqual(drafts().map(report => report.drafting), [false]);
 listener("x");
+await settle();
 assert.equal(drafts().length, 1);
 text = "x";
 flush();
+await settle();
 assert.deepEqual(drafts().map(report => report.drafting), [false, true]);
 listener("more"); text += "more"; flush(); poll();
+await settle();
 assert.equal(drafts().length, 2);
 listener("backspace"); text = ""; flush(); poll();
+await settle();
 assert.deepEqual(drafts().map(report => report.drafting), [false, true, false]);
 text = "pasted\ntext"; poll();
 text = ""; poll();
+await settle();
 assert.deepEqual(drafts().map(report => report.drafting), [false, true, false, true, false]);
 listener("pending");
 await fire("session_start", { reason: "reload" });
 assert.equal(unsubscribed, 1);
 assert.equal(intervals.size, 1);
 assert.equal(deferred.size, 0);
+await settle();
 assert.equal(drafts().length, 6);
 text = "submitted prompt"; poll();
 listener("return"); text = ""; flush();
+await settle();
 assert.deepEqual(drafts().slice(-2).map(report => report.drafting), [true, false]);
 listener("pending shutdown");
 await fire("session_shutdown", { reason: "quit" });
@@ -892,8 +1054,10 @@ assert.equal(unsubscribed, 2);
 assert.equal(intervals.size, 0);
 assert.equal(deferred.size, 0);
 assert.equal(listener, undefined);
+await settle();
 const count = drafts().length;
 text = "after shutdown"; poll(); flush();
+await settle();
 assert.equal(drafts().length, count);
 await fire("session_start", { reason: "new" });
 ctx.mode = "print";
@@ -908,15 +1072,15 @@ for (const missing of [{}, { getEditorText: ui.getEditorText }, { onTerminalInpu
   assert.equal(intervals.size, 0);
   assert.equal(deferred.size, 0);
 }
+await settle();
 assert.equal(drafts().length, count + 1);
-assert.ok(drafts().every(report => Object.keys(report).sort().join() === "drafting,generation,hook_event_name"));
-"#).unwrap();
+await settle();
+assert.ok(drafts().every(report => Object.keys(report).sort().join() === "drafting,hook_event_name"));
+await finish();
+"#)).unwrap();
         let output = Command::new("node")
             .arg(&driver)
-            .env(PATH_ENV, &feed)
-            .env(GENERATION_ENV, "current")
-            .env_remove(SESSION_KEY_ENV)
-            .env_remove(REKEY_PATH_ENV)
+            .current_dir(root.path())
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
@@ -951,13 +1115,13 @@ assert.ok(drafts().every(report => Object.keys(report).sort().join() === "drafti
         let driver = root.path().join("driver.mjs");
         fs::write(
             &driver,
-            r#"import fs from "node:fs";
+            format!("{IPC_FIXTURE}{}", r#"
 import extension from "./runner-status.mjs";
 const handlers = new Map();
 await extension({ on(name, handler) { handlers.set(name, handler); } });
 const expected = Number(process.env.EXPECT_HANDLERS || "12");
 if (handlers.size !== expected) throw new Error(`handlers ${handlers.size}, expected ${expected}`);
-if (handlers.size === 0) process.exit(0);
+if (handlers.size === 0) { await finish(); process.exit(0); }
 let sessionId = process.env.TEST_SESSION_ID;
 const ctx = {
   mode: "print",
@@ -967,7 +1131,6 @@ await handlers.get("agent_start")({ type: "agent_start" }, ctx);
 ctx.mode = "tui";
 const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
 await fire("session_start", { reason: "startup" });
-if (fs.existsSync(process.env.RUNNER_PI_REKEY_PATH)) throw new Error("startup rekeyed");
 await fire("agent_start");
 await fire("tool_execution_start", { toolCallId: "call-one", toolName: "bash" });
 await fire("tool_execution_end", { toolCallId: "call-one", toolName: "bash" });
@@ -982,28 +1145,23 @@ await fire("session_shutdown", { reason: "quit" });
 if (process.env.NEXT_SESSION_ID) {
   sessionId = process.env.NEXT_SESSION_ID;
   await fire("session_start", { reason: "new" });
-  const report = JSON.parse(fs.readFileSync(process.env.RUNNER_PI_REKEY_PATH, "utf8"));
-  if (report.session_id !== sessionId) throw new Error(`new rekey ${report.session_id}`);
 }
 if (process.env.RETURN_SESSION_ID) {
   sessionId = process.env.RETURN_SESSION_ID;
   await fire("session_start", { reason: "resume" });
 }
-"#,
+await finish();
+"#),
         )
         .unwrap();
 
         let session_key = "11111111-1111-4111-8111-111111111111";
         let new_key = "22222222-2222-4222-8222-222222222222";
-        let drop_path = crate::session::claude_rekey::drop_path(&app_data, "runner-session");
-        let feed_path = crate::session::hook_feed::status_path(&app_data, "extension-e2e");
-        let mut watcher = TestWatcher::start(&feed_path, "current".into()).unwrap();
+        let capture = root.path().join("reports.json");
         let output = Command::new("node")
             .arg(&driver)
-            .env(PATH_ENV, &feed_path)
-            .env(GENERATION_ENV, "current")
-            .env(SESSION_KEY_ENV, session_key)
-            .env(REKEY_PATH_ENV, &drop_path)
+            .current_dir(root.path())
+            .env("CAPTURE_REPORTS", &capture)
             .env("TEST_SESSION_ID", session_key)
             .env("NEXT_SESSION_ID", new_key)
             .env("RETURN_SESSION_ID", session_key)
@@ -1011,11 +1169,7 @@ if (process.env.RETURN_SESSION_ID) {
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
-        let reports: Vec<Value> = fs::read_to_string(&feed_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let reports: Vec<Value> = serde_json::from_slice(&fs::read(&capture).unwrap()).unwrap();
         assert_eq!(reports.len(), 13);
         assert_eq!(reports[0]["hook_event_name"], "session_start");
         assert_eq!(reports[0]["session_id"], session_key);
@@ -1026,13 +1180,16 @@ if (process.env.RETURN_SESSION_ID) {
             .find(|report| report["hook_event_name"] == "message_end")
             .unwrap();
         assert_eq!(error["errorMessage"].as_str().unwrap().len(), 512);
-        assert_eq!(
-            serde_json::from_slice::<Value>(&fs::read(&drop_path).unwrap()).unwrap(),
-            json!({"session_id":session_key})
-        );
-        watcher.feed.dirty.store(true, Ordering::Release);
+        let mut watcher = TestWatcher::new("current".into());
+        for payload in reports {
+            watcher.hooks.admit(payload).unwrap();
+        }
         let mut values = Vec::new();
-        watcher.drain_status(|value, _| values.push(value)).unwrap();
+        let mut keys = Vec::new();
+        watcher
+            .drain_with_session_starts(|value, _| values.push(value), |key| keys.push(key))
+            .unwrap();
+        assert_eq!(keys, [session_key, new_key, session_key]);
         assert_eq!(values.first().unwrap().activity, Activity::Idle);
         assert_eq!(values.first().unwrap().source, ObservationSource::Hook);
         assert_eq!(values[1].activity, Activity::Working);
@@ -1042,21 +1199,6 @@ if (process.env.RETURN_SESSION_ID) {
         assert_eq!(values.last().unwrap().activity, Activity::Idle);
         assert_eq!(values.last().unwrap().outcome, None);
 
-        fs::remove_file(&drop_path).unwrap();
-        let matching_feed = crate::session::hook_feed::status_path(&app_data, "matching-key");
-        let _matching_watcher = TestWatcher::start(&matching_feed, "matching".into()).unwrap();
-        let output = Command::new("node")
-            .arg(&driver)
-            .env(PATH_ENV, &matching_feed)
-            .env(GENERATION_ENV, "matching")
-            .env(SESSION_KEY_ENV, session_key)
-            .env(REKEY_PATH_ENV, &drop_path)
-            .env("TEST_SESSION_ID", session_key)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        assert!(!drop_path.exists());
-
         fs::write(
             package.join("index.js"),
             "export const VERSION = '0.84.3';\n",
@@ -1065,15 +1207,11 @@ if (process.env.RETURN_SESSION_ID) {
         let output = Command::new("node")
             .arg(&driver)
             .env("EXPECT_HANDLERS", "0")
-            .env(PATH_ENV, &matching_feed)
-            .env(GENERATION_ENV, "old")
-            .env(SESSION_KEY_ENV, session_key)
-            .env(REKEY_PATH_ENV, &drop_path)
+            .current_dir(root.path())
             .env("TEST_SESSION_ID", new_key)
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
-        assert!(!drop_path.exists());
     }
 }

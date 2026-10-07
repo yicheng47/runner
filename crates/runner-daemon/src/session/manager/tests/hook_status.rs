@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn queued_old_launch_events_cannot_mutate_a_replacement_model() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    install_test_session_handle(&manager, "hooks");
+    let old = manager
+        .session_state("hooks")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    install_test_session_handle(&manager, "hooks");
+    let current = manager
+        .session_state("hooks")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    let events = Capture::default();
+    for token in [&old, &current] {
+        if Arc::ptr_eq(token, &current) {
+            current.store(true, Ordering::Release);
+        }
+        for event in [
+            SessionEvent::Agent {
+                event: crate::session::state::agent::AgentEvent::TurnStarted,
+                live: true,
+            },
+            SessionEvent::BridgeFailed { live: true },
+        ] {
+            manager.publish_model_event_for_launch("hooks", event, Some(token), &events);
+        }
+    }
+    assert!(events.status.lock().unwrap().is_empty());
+    assert!(!manager
+        .session_state("hooks")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .model
+        .completion_armed());
+    current.store(false, Ordering::Release);
+    manager.publish_model_event_for_launch(
+        "hooks",
+        SessionEvent::Agent {
+            event: crate::session::state::agent::AgentEvent::TurnStarted,
+            live: true,
+        },
+        Some(&current),
+        &events,
+    );
+    assert_eq!(events.status.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn ordered_interrupt_is_idle_only_for_a_busy_hook_session() {
     let manager = mgr_with_fake(None, fake_runtime());
     for session_id in ["hooks", "baseline"] {

@@ -37,6 +37,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    #[command(hide = true)]
+    Hook {
+        #[command(subcommand)]
+        command: runner_cli::hook::Command,
+    },
     /// Inspect or stop the local daemon.
     Daemon {
         #[command(subcommand)]
@@ -538,6 +543,9 @@ impl Caller for SocketClient {
 }
 
 pub fn run(cli: Cli) -> i32 {
+    if let Command::Hook { command } = &cli.command {
+        return runner_cli::hook::run(command);
+    }
     if let Command::Help { topic } = &cli.command {
         help::print(topic.as_deref());
         return 0;
@@ -585,7 +593,7 @@ fn output_view(command: &Command) -> output::View {
     use output::View;
 
     match command {
-        Command::Daemon { .. } => View::Generic,
+        Command::Daemon { .. } | Command::Hook { .. } => View::Generic,
         Command::Status => View::Status,
         Command::Project { command } => match command {
             ProjectCommand::List => View::ProjectList,
@@ -961,7 +969,7 @@ async fn run_connected(
     context: &BusContext,
 ) -> Result<ToolResponse, CliError> {
     match &cli.command {
-        Command::Daemon { .. } => unreachable!(),
+        Command::Daemon { .. } | Command::Hook { .. } => unreachable!(),
         Command::Status => unreachable!(),
         Command::Project { command } => run_project(client, command).await,
         Command::Role { command } => run_role(client, command).await,

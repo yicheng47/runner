@@ -7,8 +7,7 @@ use crate::session::state::StatusSource;
 // Every spawn loads `--add-dir <app data>/antigravity-hooks`, a Runner-owned
 // folder whose `.agents/hooks.json` agy reads for that launch only, next to
 // the user's global hooks. Nothing is written into `~/.gemini`. The hooks
-// call one reporter script that appends to the session's `hook_feed` through
-// the per-session env vars below.
+// call the bundled reporter, which sends hook reports to the launch's IPC route.
 //
 // agy reads a JSON reply from every hook's stdout, and a `PreToolUse` reply is
 // a permission decision (`{}` denied every tool in the probe), so Runner
@@ -32,31 +31,11 @@ use crate::session::status::TurnOutcome;
 
 #[cfg(test)]
 use crate::session::status::{Activity, AgentObservation, ObservationSource};
-pub(crate) const PATH_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_PATH";
-pub(crate) const GENERATION_ENV: &str = "RUNNER_ANTIGRAVITY_STATUS_GENERATION";
 pub(crate) const WORKSPACE_CONTEXT_ENV: &str = "RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT";
 pub(crate) const EVENTS: &[&str] = &["PreInvocation", "PostToolUse", "PostInvocation", "Stop"];
 
 const HOOKS_DIR: &str = "antigravity-hooks";
 const HOOK_NAME: &str = "runner-status";
-const REPORTER: &str = "report.sh";
-const REPORTER_SCRIPT: &str = r#"#!/bin/sh
-if [ -n "$1" ] && payload=$(mktemp "$1.XXXXXXXX" 2>/dev/null); then
-  if cat >"$payload" 2>/dev/null; then
-    printf '{"generation":"%s","hook_event_name":"%s","payload_file":"%s"}\n' "$RUNNER_ANTIGRAVITY_STATUS_GENERATION" "$2" "${payload##*/}" >> "$1" 2>/dev/null || rm -f "$payload"
-  else
-    rm -f "$payload"
-  fi
-else
-  cat >/dev/null 2>&1
-fi
-if [ "$2" = PreInvocation ] && [ -n "$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT" ]; then
-  printf '%s\n' "$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"
-else
-  printf '{}\n'
-fi
-exit 0
-"#;
 
 pub(crate) fn workspace_context(cwd: &Path) -> String {
     let cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
@@ -75,16 +54,12 @@ pub(crate) fn hooks_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(HOOKS_DIR)
 }
 
-pub(crate) fn reporter_path(app_data_dir: &Path) -> PathBuf {
-    hooks_dir(app_data_dir).join(REPORTER)
-}
-
 fn hooks_path(app_data_dir: &Path) -> PathBuf {
     hooks_dir(app_data_dir).join(".agents/hooks.json")
 }
 
 pub(crate) fn hooks_available(app_data_dir: &Path) -> bool {
-    reporter_path(app_data_dir).is_file() && hooks_path(app_data_dir).is_file()
+    hooks_path(app_data_dir).is_file()
 }
 
 fn write_hooks_file(path: &Path, contents: &[u8]) -> Result<()> {
@@ -96,13 +71,11 @@ fn write_hooks_file(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 fn hooks_json(app_data_dir: &Path) -> serde_json::Value {
-    let reporter =
-        crate::session::launch::shell_quote(&reporter_path(app_data_dir).to_string_lossy());
     let mut events = serde_json::Map::new();
     for event in EVENTS {
         let handler = serde_json::json!({
             "type": "command",
-            "command": format!("sh {reporter} \"${PATH_ENV}\" {event}"),
+            "command": crate::runtimes::helpers::hook_report_command(app_data_dir, Runtime::Antigravity, event, false),
             "timeout": 2,
         });
         // Tool events wrap their handlers in a matcher group; the others
@@ -119,7 +92,6 @@ fn hooks_json(app_data_dir: &Path) -> serde_json::Value {
 
 pub(crate) fn install_hooks(app_data_dir: &Path) -> Result<()> {
     fs::create_dir_all(hooks_dir(app_data_dir).join(".agents"))?;
-    write_hooks_file(&reporter_path(app_data_dir), REPORTER_SCRIPT.as_bytes())?;
     write_hooks_file(
         &hooks_path(app_data_dir),
         &serde_json::to_vec_pretty(&hooks_json(app_data_dir))?,
@@ -165,15 +137,11 @@ pub(crate) struct AgyStatusWatcher {
     parser: AgyParser,
 }
 impl AgyStatusWatcher {
-    pub(crate) fn start(path: &Path, generation: String) -> Result<Self> {
-        let app_data_dir = path
-            .parent()
-            .and_then(Path::parent)
-            .expect("status file is under app data");
-        Ok(Self {
-            feed: HookFeed::start_external(path, generation, &reporter_path(app_data_dir))?,
-            parser: Default::default(),
-        })
+    pub(crate) fn from_receiver(receiver: crate::session::hook_queue::HookReceiver) -> Self {
+        Self {
+            feed: HookFeed::from_receiver(receiver),
+            parser: AgyParser,
+        }
     }
     pub(crate) fn drain_events(
         &mut self,
@@ -181,7 +149,7 @@ impl AgyStatusWatcher {
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
         _session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(cancel != 0, |report| {
+        self.feed.drain(|report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
                 if let Some(events) = self.parser.hook(report) {
                     emit(AgentEvent::Batch {
@@ -254,6 +222,7 @@ mod tests {
 
     struct TestWatcher {
         inner: AgyStatusWatcher,
+        hooks: crate::session::hook_queue::TestHookRoute,
         observation: AgyObservation,
         cancel: u8,
     }
@@ -269,12 +238,15 @@ mod tests {
         }
     }
     impl TestWatcher {
-        fn start(path: &Path, generation: String) -> Result<Self> {
-            Ok(Self {
-                inner: AgyStatusWatcher::start(path, generation)?,
+        fn new(generation: String) -> Self {
+            let (hooks, receiver) =
+                crate::session::hook_queue::TestHookRoute::new(Runtime::Antigravity, generation);
+            Self {
+                inner: AgyStatusWatcher::from_receiver(receiver),
+                hooks,
                 observation: Default::default(),
                 cancel: 0,
-            })
+            }
         }
         fn drain_with_session_starts(
             &mut self,
@@ -354,8 +326,6 @@ mod tests {
             .unwrap()
             .contains("PreToolUse"));
 
-        let reporter =
-            crate::session::launch::shell_quote(&reporter_path(root.path()).to_string_lossy());
         for event in EVENTS {
             let handler = if *event == "PostToolUse" {
                 assert_eq!(events[*event][0]["matcher"], "*");
@@ -367,16 +337,17 @@ mod tests {
             assert_eq!(handler["timeout"], 2);
             assert_eq!(
                 handler["command"],
-                format!("sh {reporter} \"${PATH_ENV}\" {event}")
+                crate::runtimes::helpers::hook_report_command(
+                    root.path(),
+                    Runtime::Antigravity,
+                    event,
+                    false
+                )
             );
         }
 
-        fs::write(reporter_path(root.path()), "broken").unwrap();
         install_hooks(root.path()).unwrap();
-        assert_eq!(
-            fs::read_to_string(reporter_path(root.path())).unwrap(),
-            REPORTER_SCRIPT
-        );
+        assert!(!hooks_dir(root.path()).join("report.sh").exists());
     }
 
     #[test]
@@ -389,60 +360,6 @@ mod tests {
         assert!(message.contains(cwd.to_str().unwrap()));
         assert!(message.contains("unless the user explicitly chooses another directory"));
         assert!(reply.get("decision").is_none());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn reporter_injects_context_only_before_invocation_and_keeps_reporting_status() {
-        use std::process::{Command, Stdio};
-
-        let root = tempfile::tempdir().unwrap();
-        install_hooks(root.path()).unwrap();
-        let feed = root.path().join("feed");
-        let context = workspace_context(Path::new("/work/工作 'quoted' \"double\"\nfolder"));
-        for (event, context_env) in EVENTS
-            .iter()
-            .map(|event| (*event, Some(context.as_str())))
-            .chain([("PreInvocation", None)])
-        {
-            fs::write(&feed, "").unwrap();
-            let mut command = Command::new("sh");
-            command
-                .arg(reporter_path(root.path()))
-                .arg(&feed)
-                .arg(event)
-                .env(GENERATION_ENV, "generation")
-                .env_remove(WORKSPACE_CONTEXT_ENV)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped());
-            if let Some(context) = context_env {
-                command.env(WORKSPACE_CONTEXT_ENV, context);
-            }
-            let mut child = command.spawn().unwrap();
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(br#"{"conversationId":"test","fullyIdle":true}"#)
-                .unwrap();
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success());
-            let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
-            if event == "PreInvocation" && context_env.is_some() {
-                assert_eq!(reply, serde_json::from_str::<Value>(&context).unwrap());
-            } else {
-                assert_eq!(reply, json!({}));
-            }
-            let pointer: Value =
-                serde_json::from_str(fs::read_to_string(&feed).unwrap().trim()).unwrap();
-            assert_eq!(pointer["generation"], "generation");
-            assert_eq!(pointer["hook_event_name"], event);
-            let payload = feed.with_file_name(pointer["payload_file"].as_str().unwrap());
-            assert_eq!(
-                fs::read_to_string(payload).unwrap(),
-                r#"{"conversationId":"test","fullyIdle":true}"#
-            );
-        }
     }
 
     #[test]
@@ -486,11 +403,8 @@ mod tests {
     fn interrupted_invocation_without_stop_returns_to_ready() {
         use crate::session::state::ESCAPE_INTERRUPT;
 
-        let root = tempfile::tempdir().unwrap();
-        install_hooks(root.path()).unwrap();
-        let path = crate::session::hook_feed::status_path(root.path(), "agy");
-        let mut watcher = TestWatcher::start(&path, "current".into()).unwrap();
-        let mut feed = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut watcher = TestWatcher::new("current".into());
+
         let mut transitions = Vec::new();
         fn drain(
             watcher: &mut TestWatcher,
@@ -503,11 +417,10 @@ mod tests {
                 .unwrap();
         }
 
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
-        )
-        .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"PreInvocation"}"#)
+            .unwrap();
         drain(&mut watcher, &mut transitions);
         watcher.cancel = ESCAPE_INTERRUPT;
         drain(&mut watcher, &mut transitions);
@@ -523,11 +436,10 @@ mod tests {
             ]
         );
 
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PostToolUse"}}"#
-        )
-        .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"PostToolUse"}"#)
+            .unwrap();
         drain(&mut watcher, &mut transitions);
         assert_eq!(transitions.len(), 2);
         assert_eq!(watcher.observation.value.activity, Activity::Ready);
@@ -536,11 +448,10 @@ mod tests {
             Some(TurnOutcome::Interrupted)
         );
 
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
-        )
-        .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"PreInvocation"}"#)
+            .unwrap();
         drain(&mut watcher, &mut transitions);
         watcher.cancel = CTRL_C_INTERRUPT;
         drain(&mut watcher, &mut transitions);
@@ -557,16 +468,14 @@ mod tests {
             )
         );
 
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PostInvocation"}}"#
-        )
-        .unwrap();
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"Stop","fullyIdle":true}}"#
-        )
-        .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"PostInvocation"}"#)
+            .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"Stop","fullyIdle":true}"#)
+            .unwrap();
         drain(&mut watcher, &mut transitions);
         assert_eq!(transitions.len(), 4);
         assert_eq!(watcher.observation.value.activity, Activity::Ready);
@@ -575,16 +484,14 @@ mod tests {
             Some(TurnOutcome::Interrupted)
         );
 
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"PreInvocation"}}"#
-        )
-        .unwrap();
-        writeln!(
-            feed,
-            r#"{{"generation":"current","hook_event_name":"Stop","fullyIdle":true}}"#
-        )
-        .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"PreInvocation"}"#)
+            .unwrap();
+        watcher
+            .hooks
+            .admit_json(r#"{"generation":"current","hook_event_name":"Stop","fullyIdle":true}"#)
+            .unwrap();
         watcher.cancel = ESCAPE_INTERRUPT;
         drain(&mut watcher, &mut transitions);
         assert_eq!(
@@ -600,60 +507,5 @@ mod tests {
             )
         );
         assert_eq!(transitions.len(), 6);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn reporter_answers_empty_json_and_appends_a_payload_pointer() {
-        use std::process::{Command, Stdio};
-
-        let root = tempfile::tempdir().unwrap();
-        install_hooks(root.path()).unwrap();
-        let feed = crate::session::hook_feed::status_path(root.path(), "agy");
-        fs::create_dir_all(feed.parent().unwrap()).unwrap();
-        fs::write(&feed, "").unwrap();
-
-        let run = |feed_env: Option<&Path>| {
-            let mut command = Command::new("sh");
-            command
-                .arg("-c")
-                .arg(format!(
-                    "sh {} \"${PATH_ENV}\" Stop",
-                    crate::session::launch::shell_quote(
-                        &reporter_path(root.path()).to_string_lossy()
-                    )
-                ))
-                .env_remove(PATH_ENV)
-                .env(GENERATION_ENV, "gen-1")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped());
-            if let Some(feed) = feed_env {
-                command.env(PATH_ENV, feed);
-            }
-            let mut child = command.spawn().unwrap();
-            {
-                use std::io::Write as _;
-                let mut stdin = child.stdin.take().unwrap();
-                stdin
-                    .write_all(br#"{"conversationId":"c","fullyIdle":true}"#)
-                    .unwrap();
-            }
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success());
-            String::from_utf8(output.stdout).unwrap()
-        };
-
-        assert_eq!(run(Some(&feed)), "{}\n");
-        let pointer: Value =
-            serde_json::from_str(fs::read_to_string(&feed).unwrap().trim()).unwrap();
-        assert_eq!(pointer["generation"], "gen-1");
-        assert_eq!(pointer["hook_event_name"], "Stop");
-        let payload = feed.with_file_name(pointer["payload_file"].as_str().unwrap());
-        assert_eq!(
-            fs::read_to_string(payload).unwrap(),
-            r#"{"conversationId":"c","fullyIdle":true}"#
-        );
-
-        assert_eq!(run(None), "{}\n");
     }
 }

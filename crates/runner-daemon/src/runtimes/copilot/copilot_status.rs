@@ -15,8 +15,6 @@ use crate::session::status::{TurnOutcome, WaitReason};
 
 #[cfg(test)]
 use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
-pub(crate) const PATH_ENV: &str = "RUNNER_COPILOT_STATUS_PATH";
-pub(crate) const GENERATION_ENV: &str = "RUNNER_COPILOT_STATUS_GENERATION";
 pub(crate) const EVENTS: &[&str] = &[
     "SessionStart",
     "SessionEnd",
@@ -34,24 +32,9 @@ pub(crate) const EVENTS: &[&str] = &[
 ];
 
 const PLUGIN_DIR: &str = "copilot-hooks";
-const REPORTER: &str = "report.sh";
-const REPORTER_SCRIPT: &str = r#"#!/bin/sh
-if [ -z "$1" ]; then
-  cat >/dev/null
-  exit 0
-fi
-payload=$(mktemp "$1.XXXXXXXX") || { cat >/dev/null; exit 0; }
-cat >"$payload" || { rm -f "$payload"; exit 0; }
-printf '{"generation":"%s","hook_event_name":"%s","payload_file":"%s"}\n' "$RUNNER_COPILOT_STATUS_GENERATION" "$2" "${payload##*/}" >> "$1" 2>/dev/null || rm -f "$payload"
-exit 0
-"#;
 
 pub(crate) fn plugin_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(PLUGIN_DIR)
-}
-
-pub(crate) fn reporter_path(app_data_dir: &Path) -> PathBuf {
-    plugin_dir(app_data_dir).join(REPORTER)
 }
 
 fn hooks_path(app_data_dir: &Path) -> PathBuf {
@@ -61,7 +44,6 @@ fn hooks_path(app_data_dir: &Path) -> PathBuf {
 pub(crate) fn plugin_available(app_data_dir: &Path) -> bool {
     [
         plugin_dir(app_data_dir).join("plugin.json"),
-        reporter_path(app_data_dir),
         hooks_path(app_data_dir),
     ]
     .iter()
@@ -77,16 +59,6 @@ fn write_plugin_file(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 // Copilot runs this slot instead of `command` on Windows.
-fn powershell_command(event: &str) -> String {
-    format!(
-        "{};exit 0",
-        crate::session::hook_feed::powershell_reporter(
-            &format!("$env:{PATH_ENV}"),
-            GENERATION_ENV,
-            &crate::session::hook_feed::powershell_quote(event),
-        )
-    )
-}
 
 pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
     let plugin_dir = plugin_dir(app_data_dir);
@@ -99,18 +71,19 @@ pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
             "description": "Runner session status hooks",
         }))?,
     )?;
-    write_plugin_file(&reporter_path(app_data_dir), REPORTER_SCRIPT.as_bytes())?;
-
-    let reporter =
-        crate::session::launch::shell_quote(&reporter_path(app_data_dir).to_string_lossy());
     let mut hooks = serde_json::Map::new();
     for event in EVENTS {
-        let command = format!("sh {reporter} \"${PATH_ENV}\" {event}");
+        let command = crate::runtimes::helpers::hook_report_command(
+            app_data_dir,
+            Runtime::Copilot,
+            event,
+            false,
+        );
         let mut entry = serde_json::json!({
             "hooks": [{
                 "type": "command",
                 "command": command,
-                "powershell": powershell_command(event),
+                "powershell": crate::runtimes::helpers::hook_report_command(app_data_dir, Runtime::Copilot, event, true),
                 "timeout": 2,
             }],
         });
@@ -164,7 +137,7 @@ fn canonical_tool_name(name: &str) -> String {
     match compact.as_str() {
         "askuser" | "askuserquestion" => "ask_user".into(),
         "applypatch" | "edit" => "edit".into(),
-        "bash" | "shell" => "bash".into(),
+        "bash" | "shell" | "powershell" => "bash".into(),
         _ => compact,
     }
 }
@@ -501,17 +474,16 @@ pub(crate) struct CopilotStatusWatcher {
     copilot_home: PathBuf,
 }
 impl CopilotStatusWatcher {
-    pub(crate) fn start(path: &Path, generation: String, copilot_home: PathBuf) -> Result<Self> {
-        let app_data_dir = path
-            .parent()
-            .and_then(Path::parent)
-            .expect("status file is under app data");
-        Ok(Self {
-            feed: HookFeed::start_external(path, generation, &reporter_path(app_data_dir))?,
+    pub(crate) fn from_receiver(
+        receiver: crate::session::hook_queue::HookReceiver,
+        copilot_home: PathBuf,
+    ) -> Self {
+        Self {
+            feed: HookFeed::from_receiver(receiver),
             parser: Default::default(),
             transcript: None,
             copilot_home,
-        })
+        }
     }
     pub(crate) fn drain_events(
         &mut self,
@@ -519,7 +491,7 @@ impl CopilotStatusWatcher {
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
         mut session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(cancel != 0, |report| {
+        self.feed.drain(|report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
                 if report.hook_event_name == "SessionStart" && report.agent_id.is_none() {
                     if let Some(id) = report.session_id.as_deref() {
@@ -665,9 +637,6 @@ impl CopilotObservation {
 mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write;
-    #[cfg(unix)]
-    use std::process::{Command, Stdio};
-    use std::sync::atomic::Ordering;
 
     use serde_json::json;
 
@@ -675,6 +644,7 @@ mod tests {
 
     struct TestWatcher {
         inner: CopilotStatusWatcher,
+        hooks: crate::session::hook_queue::TestHookRoute,
         observation: CopilotObservation,
         cancel: u8,
     }
@@ -690,12 +660,15 @@ mod tests {
         }
     }
     impl TestWatcher {
-        fn start(path: &Path, generation: String, copilot_home: PathBuf) -> Result<Self> {
-            Ok(Self {
-                inner: CopilotStatusWatcher::start(path, generation, copilot_home)?,
+        fn new(generation: String, copilot_home: PathBuf) -> Self {
+            let (hooks, receiver) =
+                crate::session::hook_queue::TestHookRoute::new(Runtime::Copilot, generation);
+            Self {
+                inner: CopilotStatusWatcher::from_receiver(receiver, copilot_home),
+                hooks,
                 observation: Default::default(),
                 cancel: 0,
-            })
+            }
         }
         fn drain_with_session_starts(
             &mut self,
@@ -778,14 +751,12 @@ mod tests {
     #[test]
     fn changed_root_session_start_rekeys_after_prompt_but_not_duplicate_child_or_stale_reports() {
         let root = tempfile::tempdir().unwrap();
-        install_plugin(root.path()).unwrap();
-        let path = crate::session::hook_feed::status_path(root.path(), "copilot-rekey");
-        let mut watcher =
-            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
+
+        let mut watcher = TestWatcher::new("current".into(), root.path().join("copilot-home"));
         let first = "11111111-1111-4111-8111-111111111111";
         let next = "22222222-2222-4222-8222-222222222222";
         let child = "33333333-3333-4333-8333-333333333333";
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+
         for value in [
             json!({"generation":"current","hook_event_name":"UserPromptSubmit","session_id":first}),
             json!({"generation":"current","hook_event_name":"SessionStart","session_id":first}),
@@ -795,9 +766,13 @@ mod tests {
             json!({"generation":"current","hook_event_name":"SessionStart","session_id":next}),
             json!({"generation":"current","hook_event_name":"SessionStart","session_id":next}),
         ] {
-            writeln!(file, "{value}").unwrap();
+            if value["generation"] == "old" {
+                assert!(watcher.hooks.admit(value).is_err());
+            } else {
+                watcher.hooks.admit(value).unwrap();
+            }
         }
-        watcher.feed.dirty.store(true, Ordering::Release);
+
         let conn = crate::db::test_connection().unwrap();
         let mut row = crate::repo::session::SessionRowDb::new_running("copilot-rekey".into());
         row.agent_session_key = Some(first.into());
@@ -897,13 +872,9 @@ mod tests {
         let app_data = root.path().join("runner app data");
         install_plugin(&app_data).unwrap();
         assert!(plugin_available(&app_data));
-        fs::write(reporter_path(&app_data), "broken").unwrap();
         fs::write(hooks_path(&app_data), "{}").unwrap();
         install_plugin(&app_data).unwrap();
-        assert_eq!(
-            fs::read_to_string(reporter_path(&app_data)).unwrap(),
-            REPORTER_SCRIPT
-        );
+        assert!(!plugin_dir(&app_data).join("report.sh").exists());
         let plugin: Value =
             serde_json::from_slice(&fs::read(plugin_dir(&app_data).join("plugin.json")).unwrap())
                 .unwrap();
@@ -920,18 +891,23 @@ mod tests {
             assert_eq!(entry["hooks"][0]["timeout"], 2);
             assert_eq!(
                 entry["hooks"][0]["command"],
-                format!(
-                    "sh {} \"${PATH_ENV}\" {event}",
-                    crate::session::launch::shell_quote(
-                        &reporter_path(&app_data).to_string_lossy()
-                    )
+                crate::runtimes::helpers::hook_report_command(
+                    &app_data,
+                    Runtime::Copilot,
+                    event,
+                    false
                 )
             );
             let powershell = entry["hooks"][0]["powershell"].as_str().unwrap();
-            assert_eq!(powershell, powershell_command(event));
-            assert!(powershell.starts_with(&format!(
-                "$ErrorActionPreference='Stop';$f=$env:{PATH_ENV};$g=$env:{GENERATION_ENV};"
-            )));
+            assert_eq!(
+                powershell,
+                crate::runtimes::helpers::hook_report_command(
+                    &app_data,
+                    Runtime::Copilot,
+                    event,
+                    true
+                )
+            );
             assert!(powershell.ends_with(";exit 0"));
             assert!(powershell.contains(&format!("'{event}'")));
             assert!(!powershell.contains('"'));
@@ -942,7 +918,7 @@ mod tests {
         );
         let incomplete = root.path().join("incomplete");
         fs::create_dir_all(plugin_dir(&incomplete)).unwrap();
-        fs::write(reporter_path(&incomplete), REPORTER_SCRIPT).unwrap();
+        fs::write(plugin_dir(&incomplete).join("report.sh"), "stale reporter").unwrap();
         assert!(!plugin_available(&incomplete));
     }
 
@@ -1386,7 +1362,7 @@ mod tests {
     #[test]
     fn input_interrupt_keeps_the_wait_until_transcript_completion() {
         let root = tempfile::tempdir().unwrap();
-        install_plugin(root.path()).unwrap();
+
         let home = root.path().join("copilot-home");
         let transcript = home.join("session-state/main/events.jsonl");
         fs::create_dir_all(transcript.parent().unwrap()).unwrap();
@@ -1406,18 +1382,18 @@ mod tests {
             ),
         )
         .unwrap();
-        let path = crate::session::hook_feed::status_path(root.path(), "session");
-        let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+
+        let mut watcher = TestWatcher::new("current".into(), home);
+
         for value in [
             report("UserPromptSubmit"),
             pre_tool("AskUserQuestion", json!({"message":"Choose"})),
         ] {
             let mut value = value;
             value["generation"] = json!("current");
-            writeln!(file, "{value}").unwrap();
+            watcher.hooks.admit(value).unwrap();
         }
-        watcher.feed.dirty.store(true, Ordering::Release);
+
         watcher.drain_status(|_, _| {}).unwrap();
         assert!(watcher.observation.value.needs_you());
         watcher.cancel = crate::session::state::ESCAPE_INTERRUPT;
@@ -1450,7 +1426,7 @@ mod tests {
             [(false, true), (false, false), (true, true)]
         {
             let root = tempfile::tempdir().unwrap();
-            install_plugin(root.path()).unwrap();
+
             let home = root.path().join("copilot-home");
             let transcript = home.join("session-state/main/events.jsonl");
             fs::create_dir_all(transcript.parent().unwrap()).unwrap();
@@ -1461,21 +1437,21 @@ mod tests {
                 "type":"tool.execution_start",
                 "data":{"toolCallId":"wait-call","toolName":"bash","arguments":input,"turnId":"0"},
             }))).unwrap();
-            let path = crate::session::hook_feed::status_path(root.path(), "session");
-            let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
-            let mut feed = OpenOptions::new().append(true).open(&path).unwrap();
+
+            let mut watcher = TestWatcher::new("current".into(), home);
+
             let approval = [
                 json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}}),
                 json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"}),
             ];
             for mut value in [report("UserPromptSubmit"), pre_tool("Bash", input.clone())] {
                 value["generation"] = json!("current");
-                writeln!(feed, "{value}").unwrap();
+                watcher.hooks.admit(value).unwrap();
             }
             if !completion_before_hooks {
                 for mut value in approval.clone() {
                     value["generation"] = json!("current");
-                    writeln!(feed, "{value}").unwrap();
+                    watcher.hooks.admit(value).unwrap();
                 }
             }
             watcher.drain_status(|_, _| {}).unwrap();
@@ -1501,9 +1477,9 @@ mod tests {
             if completion_before_hooks {
                 for mut value in approval {
                     value["generation"] = json!("current");
-                    writeln!(feed, "{value}").unwrap();
+                    watcher.hooks.admit(value).unwrap();
                 }
-                watcher.feed.dirty.store(true, Ordering::Release);
+
                 watcher.drain_status(|_, _| {}).unwrap();
                 assert!(
                     !watcher.observation.value.needs_you(),
@@ -1547,9 +1523,9 @@ mod tests {
                 json!({"hook_event_name":"Stop","session_id":"main","stop_reason":"end_turn"}),
             ] {
                 value["generation"] = json!("current");
-                writeln!(feed, "{value}").unwrap();
+                watcher.hooks.admit(value).unwrap();
             }
-            watcher.feed.dirty.store(true, Ordering::Release);
+
             watcher.drain_status(|_, _| {}).unwrap();
             assert_eq!(watcher.observation.value.activity, Activity::Ready);
             assert_eq!(
@@ -1562,52 +1538,81 @@ mod tests {
 
     #[test]
     fn permission_completion_resolves_only_the_correlated_approval() {
-        let mut state = CopilotObservation::default();
-        observe(&mut state, report("UserPromptSubmit"));
-        for (call_id, command) in [("one", "sleep 60"), ("two", "sleep 30")] {
-            let input = json!({"command":command});
-            observe(&mut state, pre_tool("Bash", input.clone()));
+        for (native_name, commands) in [
+            ("bash", ["sleep 60", "sleep 30"]),
+            (
+                "powershell",
+                ["Start-Sleep -Seconds 60", "Start-Sleep -Seconds 30"],
+            ),
+        ] {
+            let mut state = CopilotObservation::default();
+            observe(&mut state, report("UserPromptSubmit"));
+            for (call_id, command) in [("one", commands[0]), ("two", commands[1])] {
+                let input =
+                    json!({"command":command,"description":"Bounded wait","initial_wait":45});
+                observe(&mut state, pre_tool("Bash", input.clone()));
+                observe(
+                    &mut state,
+                    json!({"hook_event_name":"PermissionRequest","hookName":"permissionRequest","sessionId":"main","toolName":native_name,"toolInput":{"command":command}}),
+                );
+                state.observe_transcript(&json!({"type":"tool.execution_start","data":{"toolCallId":call_id,"toolName":native_name,"arguments":input}}));
+            }
+            assert!(!state.value.needs_you());
             observe(
                 &mut state,
-                json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":input}),
+                json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"}),
             );
-            state.observe_transcript(&json!({"type":"tool.execution_start","data":{"toolCallId":call_id,"toolName":"bash","arguments":input}}));
+            assert!(state.value.needs_you());
+            assert_eq!(state.transcript_calls.len(), 2);
+            let second = state.transcript_calls["two"].clone();
+            state.wait(
+                crate::session::clock::timestamp_millis(),
+                WaitReason::Answer,
+                vec![state.transcript_calls["one"].clone()],
+            );
+            let before = state.value.clone();
+            for record in [
+                json!({"type":"permission.completed","data":{"toolCallId":"unknown"}}),
+                json!({"type":"permission.completed","data":{"toolCallId":"one","agentId":"worker"}}),
+            ] {
+                assert!(state.observe_transcript(&record).is_none());
+                assert_eq!(state.value, before);
+            }
+            let value = state.observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one","result":{"kind":"approved"}}})).unwrap();
+            assert_eq!(value.interactions.len(), 2);
+            assert_eq!(value.interactions[0].reason, WaitReason::Approval);
+            assert_eq!(value.interactions[0].owners, std::slice::from_ref(&second));
+            assert_eq!(value.interactions[1].reason, WaitReason::Answer);
+            assert_eq!(
+                value.interactions[1].owners,
+                std::slice::from_ref(&state.transcript_calls["one"])
+            );
+            assert_eq!(state.permission_owners, std::slice::from_ref(&second));
+            assert_eq!(state.tools.len(), 2);
+            assert!(observe(&mut state, json!({"hook_event_name":"PermissionRequest","hookName":"permissionRequest","sessionId":"main","toolName":native_name,"toolInput":{"command":commands[0]}})).is_none());
+            assert!(observe(&mut state, json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"})).is_none());
+            assert_eq!(state.value.published(), value);
+            assert!(state
+                .observe_transcript(
+                    &json!({"type":"permission.completed","data":{"toolCallId":"one"}})
+                )
+                .is_none());
+            let value = state.observe_transcript(&json!({"type":"tool.execution_complete","data":{"toolCallId":"one","success":true}})).unwrap();
+            assert_eq!(state.tools.len(), 1);
+            assert_eq!(state.tools[0].id, second);
+            assert_eq!(value.interactions.len(), 1);
+            assert_eq!(value.interactions[0].owners, std::slice::from_ref(&second));
+            observe(
+                &mut state,
+                post_tool(
+                    "Bash",
+                    json!({"command":commands[0],"description":"Bounded wait","initial_wait":45}),
+                ),
+            );
+            assert_eq!(state.tools.len(), 1);
+            assert_eq!(state.tools[0].id, second);
+            assert!(state.value.needs_you());
         }
-        observe(
-            &mut state,
-            json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"}),
-        );
-        let second = state.transcript_calls["two"].clone();
-        state.wait(
-            crate::session::clock::timestamp_millis(),
-            WaitReason::Answer,
-            vec![state.transcript_calls["one"].clone()],
-        );
-        let before = state.value.clone();
-        for record in [
-            json!({"type":"permission.completed","data":{"toolCallId":"unknown"}}),
-            json!({"type":"permission.completed","data":{"toolCallId":"one","agentId":"worker"}}),
-        ] {
-            assert!(state.observe_transcript(&record).is_none());
-            assert_eq!(state.value, before);
-        }
-        let value = state.observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one","result":{"kind":"approved"}}})).unwrap();
-        assert_eq!(value.interactions.len(), 2);
-        assert_eq!(value.interactions[0].reason, WaitReason::Approval);
-        assert_eq!(value.interactions[0].owners, std::slice::from_ref(&second));
-        assert_eq!(value.interactions[1].reason, WaitReason::Answer);
-        assert_eq!(
-            value.interactions[1].owners,
-            std::slice::from_ref(&state.transcript_calls["one"])
-        );
-        assert_eq!(state.permission_owners, [second]);
-        assert_eq!(state.tools.len(), 2);
-        assert!(observe(&mut state, json!({"hook_event_name":"PermissionRequest","session_id":"main","tool_name":"bash","tool_input":{"command":"sleep 60"}})).is_none());
-        assert!(observe(&mut state, json!({"hook_event_name":"Notification","session_id":"main","notification_type":"permission_prompt"})).is_none());
-        assert_eq!(state.value.published(), value);
-        assert!(state
-            .observe_transcript(&json!({"type":"permission.completed","data":{"toolCallId":"one"}}))
-            .is_none());
     }
 
     #[test]
@@ -1623,117 +1628,51 @@ mod tests {
     }
 
     #[test]
-    fn malformed_partial_generation_and_session_reports_are_isolated() {
+    fn malformed_unacknowledged_generation_and_session_reports_are_isolated() {
         let root = tempfile::tempdir().unwrap();
-        install_plugin(root.path()).unwrap();
         let home = root.path().join("copilot-home");
-        let path = crate::session::hook_feed::status_path(root.path(), "session");
-        let mut watcher = TestWatcher::start(&path, "current".into(), home).unwrap();
-        fs::write(&path, "not json\n").unwrap();
-        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(
-            file,
-            "{}",
-            json!({
-                "generation":"old",
-                "hook_event_name":"UserPromptSubmit",
-                "session_id":"main",
-            })
-        )
-        .unwrap();
-        let current = format!(
-            "{}\n",
-            json!({
-                "generation":"current",
-                "hook_event_name":"UserPromptSubmit",
-                "session_id":"main",
-            })
-        );
-        file.write_all(&current.as_bytes()[..20]).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        let mut watcher = TestWatcher::new("current".into(), home);
+        assert!(watcher.hooks.admit_json("not json").is_err());
+        assert!(watcher
+            .hooks
+            .admit(
+                json!({"generation":"old","hook_event_name":"UserPromptSubmit","session_id":"main"})
+            )
+            .is_err());
+        let pending = watcher.hooks.admit(json!({"generation":"current","hook_event_name":"UserPromptSubmit","session_id":"main"})).unwrap();
         watcher
-            .drain_status(|_, _| panic!("partial report"))
+            .drain_status(|_, _| panic!("unacknowledged report"))
             .unwrap();
-        file.write_all(&current.as_bytes()[20..]).unwrap();
-        let foreign = json!({
-            "generation":"current",
-            "hook_event_name":"Stop",
-            "session_id":"foreign",
-            "stop_reason":"end_turn",
-        });
-        writeln!(file, "{foreign}").unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        drop(pending);
+        watcher.hooks.admit(json!({"generation":"current","hook_event_name":"Stop","session_id":"foreign","stop_reason":"end_turn"})).unwrap();
         let mut values = Vec::new();
         watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].activity, Activity::Working);
     }
 
-    #[cfg(unix)]
-    fn run_reporter(
-        reporter: &Path,
-        path: &Path,
-        event: &str,
-        payload: &[u8],
-    ) -> std::process::Output {
-        let mut child = Command::new("sh")
-            .arg(reporter)
-            .arg(path)
-            .arg(event)
-            .env(GENERATION_ENV, "current")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(payload).unwrap();
-        child.wait_with_output().unwrap()
-    }
-
-    #[cfg(unix)]
     #[test]
-    fn reporter_drains_missing_path_handles_spaces_large_payload_and_teardown() {
+    fn admitted_large_payload_preserves_status_and_reports_bridge_loss() {
         let root = tempfile::tempdir().unwrap();
-        let app_data = root.path().join("runner app data");
-        install_plugin(&app_data).unwrap();
-        let reporter = reporter_path(&app_data);
-        let missing = run_reporter(&reporter, Path::new(""), "Stop", &vec![b'x'; 256 * 1024]);
-        assert!(missing.status.success());
-        assert!(missing.stdout.is_empty());
-        assert!(missing.stderr.is_empty());
-
-        let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
-        let mut watcher =
-            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
+        let mut watcher = TestWatcher::new("current".into(), root.path().join("copilot-home"));
         let mut payload = report("UserPromptSubmit");
         payload["prompt"] = json!("x\n".repeat(128 * 1024));
-        let output = run_reporter(
-            &reporter,
-            &path,
-            "UserPromptSubmit",
-            &serde_json::to_vec_pretty(&payload).unwrap(),
-        );
-        assert!(output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        watcher
+            .hooks
+            .admit_json(&serde_json::to_string_pretty(&payload).unwrap())
+            .unwrap();
         let mut values = Vec::new();
         watcher.drain_status(|value, _| values.push(value)).unwrap();
         assert_eq!(values.last().unwrap().activity, Activity::Working);
-
-        fs::remove_file(&reporter).unwrap();
-        watcher.feed.dirty.store(true, Ordering::Release);
+        watcher.hooks.retire();
         assert!(watcher.drain_status(|_, _| {}).is_err());
-        drop(watcher);
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
     }
 
     #[test]
     fn disabled_hooks_leave_the_baseline_unlatched() {
         let root = tempfile::tempdir().unwrap();
-        install_plugin(root.path()).unwrap();
-        let path = crate::session::hook_feed::status_path(root.path(), "disabled");
-        let mut watcher =
-            TestWatcher::start(&path, "current".into(), root.path().join("copilot-home")).unwrap();
+
+        let mut watcher = TestWatcher::new("current".into(), root.path().join("copilot-home"));
         let mut transitions = 0;
         watcher.drain_status(|_, _| transitions += 1).unwrap();
         assert_eq!(transitions, 0);
@@ -1741,71 +1680,5 @@ mod tests {
             watcher.observation.value.source,
             ObservationSource::Unavailable
         );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn powershell_entry_drains_missing_path_handles_spaces_large_payload_and_teardown() {
-        use crate::session::hook_feed::{hook_path, run_powershell, POWERSHELLS};
-        for shell in POWERSHELLS {
-            let root = tempfile::tempdir().unwrap();
-            let app_data = root.path().join("Jason's runner app data");
-            install_plugin(&app_data).unwrap();
-            let hooks: Value =
-                serde_json::from_slice(&fs::read(hooks_path(&app_data)).unwrap()).unwrap();
-            let command = |event: &str| {
-                hooks["hooks"][event][0]["hooks"][0]["powershell"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned()
-            };
-            let Some(missing) = run_powershell(
-                shell,
-                &command("Stop"),
-                &[(PATH_ENV, ""), (GENERATION_ENV, "current")],
-                &vec![b'x'; 256 * 1024],
-            ) else {
-                continue;
-            };
-            assert!(missing.status.success(), "{shell}: {missing:?}");
-            assert!(missing.stdout.is_empty() && missing.stderr.is_empty());
-
-            let path = crate::session::hook_feed::status_path(&app_data, "session with spaces");
-            let path = PathBuf::from(hook_path(&path));
-            let mut watcher =
-                TestWatcher::start(&path, "current".into(), root.path().join("copilot-home"))
-                    .unwrap();
-            let mut payload = report("UserPromptSubmit");
-            payload["prompt"] = json!(format!("你好 {}", "x\n".repeat(128 * 1024)));
-            let env = [
-                (PATH_ENV, hook_path(&path)),
-                (GENERATION_ENV, "current".into()),
-            ];
-            let env = env
-                .iter()
-                .map(|(k, v)| (*k, v.as_str()))
-                .collect::<Vec<_>>();
-            let output = run_powershell(
-                shell,
-                &command("UserPromptSubmit"),
-                &env,
-                &serde_json::to_vec_pretty(&payload).unwrap(),
-            )
-            .unwrap();
-            assert!(output.status.success(), "{shell}: {output:?}");
-            assert!(output.stdout.is_empty() && output.stderr.is_empty());
-            let mut values = Vec::new();
-            watcher.drain_status(|value, _| values.push(value)).unwrap();
-            assert_eq!(values.last().unwrap().activity, Activity::Working);
-
-            fs::remove_file(reporter_path(&app_data)).unwrap();
-            watcher.feed.dirty.store(true, Ordering::Release);
-            assert!(watcher.drain_status(|_, _| {}).is_err());
-            drop(watcher);
-            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
-            let late = run_powershell(shell, &command("Stop"), &env, b"{}").unwrap();
-            assert!(late.status.success());
-            assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
-        }
     }
 }

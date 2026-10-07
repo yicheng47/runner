@@ -111,7 +111,7 @@ pub enum KeyCapture {
     None,
     RolloutScan { sessions_root: Option<PathBuf> },
     LogTail,
-    RekeyDrop,
+    Hook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,6 +142,13 @@ pub trait TerminalAdapter: Send {
 }
 
 pub trait StatusHooks: Send + Sync {
+    fn start_receiver(
+        &self,
+        _spec: &SpawnSpec,
+        _receiver: crate::session::hook_queue::HookReceiver,
+    ) -> Option<Box<dyn HookWatcher>> {
+        None
+    }
     fn supported(&self, windows: bool) -> bool;
     fn install(&self, _app_data_dir: &Path) {}
     fn cleanup(&self, _app_data_dir: &Path) {}
@@ -155,7 +162,6 @@ pub trait StatusHooks: Send + Sync {
         app_data_dir: &Path,
         spec: &SpawnSpec,
     ) -> std::collections::BTreeMap<String, String>;
-    fn start_watcher(&self, spec: &SpawnSpec) -> Option<Box<dyn HookWatcher>>;
 }
 
 pub use runner_core::protocol::runtime::RuntimeCapabilities;

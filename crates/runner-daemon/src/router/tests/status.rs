@@ -187,11 +187,22 @@ fn directed_wake_synthesizes_busy_and_idle_clears_it() {
     // exact regression issue #32 calls out.
     let direct_followup = log.append(message("lead", Some("impl"), "next")).unwrap();
     router.handle_event(&direct_followup);
-    wait_until(Duration::from_secs(1), || busy_for_impl(&log) == 2);
+    wait_until(Duration::from_secs(1), || {
+        busy_for_impl(&log) == 2
+            && matches!(
+                router.state.lock().unwrap().status.get("impl"),
+                Some(super::SessionActivityState::Busy),
+            )
+    });
     assert_eq!(
         busy_for_impl(&log),
         2,
         "wake after idle must re-synthesize busy",
+    );
+    assert_eq!(
+        injector.activity_for("S-IMPL"),
+        Some(super::SessionActivityState::Busy),
+        "follow-up busy must update the session-side activity store",
     );
     assert!(matches!(
         router.state.lock().unwrap().status.get("impl"),
