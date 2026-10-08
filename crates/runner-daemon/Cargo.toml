@@ -15,6 +15,7 @@ fs2 = { workspace = true }
 runner-terminal = { path = "../runner-terminal" }
 runner-core = { path = "../runner-core", features = ["schemars"] }
 log = "0.4"
+md-5 = "0.10"
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 base64 = "0.22"

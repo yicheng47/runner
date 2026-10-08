@@ -278,6 +278,10 @@
       "client": "Trae"
     },
     {
+      "runtime": "cursor",
+      "client": null
+    },
+    {
       "runtime": "shell",
       "client": null
     }

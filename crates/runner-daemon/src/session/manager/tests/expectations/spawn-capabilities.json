@@ -126,6 +126,27 @@
     "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
   },
   {
+    "runtime": "cursor",
+    "hooks_unix": true,
+    "hooks_windows": false,
+    "launch_gate": false,
+    "markers": [
+      {
+        "body_len": null,
+        "marker": null
+      },
+      {
+        "body_len": 4,
+        "marker": null
+      },
+      {
+        "body_len": 32768,
+        "marker": null
+      }
+    ],
+    "env": "{\"COLORTERM\":\"truecolor\",\"TERM\":\"xterm-256color\"}"
+  },
+  {
     "runtime": "shell",
     "hooks_unix": false,
     "hooks_windows": false,

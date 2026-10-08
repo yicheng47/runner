@@ -9,6 +9,8 @@ use crate::error::Result;
 const STATUS_DIR: &str = "session-status";
 
 pub trait HookWatcher: Send {
+    fn spawned(&mut self, _pid: u32) {}
+
     fn drain_events(
         &mut self,
         cancel: u8,
@@ -104,7 +106,7 @@ mod tests {
                     matches!(
                         runtime,
                         Runtime::ClaudeCode | Runtime::Codex | Runtime::Copilot | Runtime::Pi
-                    ) || (runtime == Runtime::Antigravity && !windows),
+                    ) || (matches!(runtime, Runtime::Antigravity | Runtime::Cursor) && !windows),
                     "{runtime:?} windows={windows}"
                 );
             }

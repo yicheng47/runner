@@ -99,6 +99,11 @@
     "commands": []
   },
   {
+    "runtime": "cursor",
+    "supported": false,
+    "commands": []
+  },
+  {
     "runtime": "shell",
     "supported": false,
     "commands": []

@@ -5,6 +5,7 @@ pub(crate) mod catalog;
 pub(crate) mod claude_code;
 pub(crate) mod codex;
 pub(crate) mod copilot;
+pub(crate) mod cursor_agent;
 mod helpers;
 pub(crate) mod pi;
 #[cfg(test)]
@@ -340,6 +341,7 @@ pub fn adapter(runtime: Runtime) -> &'static dyn RuntimeAdapter {
         Runtime::Pi => &pi::Pi,
         Runtime::Copilot => &copilot::Copilot,
         Runtime::Trae => &trae::Trae,
+        Runtime::Cursor => &cursor_agent::CursorAgent,
         Runtime::Shell => &NoAgent,
     }
 }

@@ -585,6 +585,98 @@
     "inferred": "bypass"
   },
   {
+    "runtime": "cursor",
+    "mode": "default",
+    "stored": [
+      "--keep",
+      "--ask-for-approval",
+      "never",
+      "--permission-mode",
+      "auto",
+      "--dangerously-skip-permissions",
+      "--allow-tool",
+      "write",
+      "shell",
+      "--allow-all",
+      "--allow-all-tools",
+      "--allow-all-paths",
+      "--allow-all-urls",
+      "-mode=accept-edits",
+      "-dangerously-skip-permissions=true",
+      "--tail"
+    ],
+    "inferred": "default"
+  },
+  {
+    "runtime": "cursor",
+    "mode": "accept_edits",
+    "stored": [
+      "--keep",
+      "--ask-for-approval",
+      "never",
+      "--permission-mode",
+      "auto",
+      "--dangerously-skip-permissions",
+      "--allow-tool",
+      "write",
+      "shell",
+      "--allow-all",
+      "--allow-all-tools",
+      "--allow-all-paths",
+      "--allow-all-urls",
+      "-mode=accept-edits",
+      "-dangerously-skip-permissions=true",
+      "--tail"
+    ],
+    "inferred": "default"
+  },
+  {
+    "runtime": "cursor",
+    "mode": "auto",
+    "stored": [
+      "--keep",
+      "--ask-for-approval",
+      "never",
+      "--permission-mode",
+      "auto",
+      "--dangerously-skip-permissions",
+      "--allow-tool",
+      "write",
+      "shell",
+      "--allow-all",
+      "--allow-all-tools",
+      "--allow-all-paths",
+      "--allow-all-urls",
+      "-mode=accept-edits",
+      "-dangerously-skip-permissions=true",
+      "--tail"
+    ],
+    "inferred": "default"
+  },
+  {
+    "runtime": "cursor",
+    "mode": "bypass",
+    "stored": [
+      "--keep",
+      "--ask-for-approval",
+      "never",
+      "--permission-mode",
+      "auto",
+      "--dangerously-skip-permissions",
+      "--allow-tool",
+      "write",
+      "shell",
+      "--allow-all",
+      "--allow-all-tools",
+      "--allow-all-paths",
+      "--allow-all-urls",
+      "-mode=accept-edits",
+      "-dangerously-skip-permissions=true",
+      "--tail"
+    ],
+    "inferred": "default"
+  },
+  {
     "runtime": "shell",
     "mode": "default",
     "stored": [

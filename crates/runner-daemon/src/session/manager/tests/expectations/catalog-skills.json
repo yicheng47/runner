@@ -288,6 +288,53 @@
     ]
   },
   {
+    "runtime": "cursor",
+    "roots": [
+      "<HOME>/.cursor/skills",
+      "<HOME>/.agents/skills"
+    ],
+    "entries": [
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      },
+      {
+        "name": "golden-skill",
+        "manual": true,
+        "hidden": false,
+        "global": "On",
+        "marker": "SKILL.md",
+        "problem": null
+      }
+    ],
+    "writes": [
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": false,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      },
+      {
+        "enabled": true,
+        "error": "global skill on/off is only supported for Claude Code, Codex and GitHub Copilot CLI",
+        "files": {}
+      }
+    ]
+  },
+  {
     "runtime": "shell",
     "roots": null
   }

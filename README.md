@@ -125,26 +125,27 @@ runner mission stop "$mission"
 
 ## Supported agents
 
-| | Codex | Claude Code | Antigravity CLI | pi | GitHub Copilot CLI |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ | ✓ |
-| In-session conversation change updates Runner's resume key | ✓ | ✓ | ✓ | ✓ | — |
-| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² | ✓ |
-| Fork a chat | ✓ | ✓ | — | ✓ | — |
-| Working / Idle from the agent's hooks | ✓ | ✓ | macOS only | ✓ | ✓ |
-| Needs you: approval and question dialogs shown | — | ✓ | — | from extensions only | ✓ |
-| Model list read from the CLI | ✓ | ✓ | ✓ | ✓ | — |
-| Update from Settings → Agents | ✓ | ✓ | — | ✓ | ✓ |
-| Weekly usage pill and detailed popover | ✓ | ✓ | ✓ | — | — |
-| Mission access | Bypass | Bypass | Bypass | trusted workspace | Bypass |
-| Skills pane | catalog + on/off | catalog + on/off | catalog | catalog | catalog + on/off |
-| Runner skill installed | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Terminal rendering covered by fixtures | ✓ | ✓ | ✓ | — | — |
+| | Codex | Claude Code | Antigravity CLI | pi | GitHub Copilot CLI | Cursor |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: |
+| Chats, missions, resume after relaunch | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| In-session conversation change updates Runner's resume key | ✓ | ✓ | ✓ | ✓ | — | macOS/Linux only |
+| Runs on Windows | ✓ | ✓ | ✓ ¹ | ✓ ² | ✓ | — ³ |
+| Fork a chat | ✓ | ✓ | — | ✓ | — | — |
+| Working / Idle from the agent's hooks | ✓ | ✓ | macOS only | ✓ | ✓ | — (terminal baseline) |
+| Needs you: approval and question dialogs shown | — | ✓ | — | from extensions only | ✓ | — |
+| Model list read from the CLI | ✓ | ✓ | ✓ | ✓ | — | ✓ |
+| Update from Settings → Agents | ✓ | ✓ | — | ✓ | ✓ | — |
+| Weekly usage pill and detailed popover | ✓ | ✓ | ✓ | — | — | — |
+| Mission access | Bypass | Bypass | Bypass | trusted workspace | Bypass | Bypass |
+| Skills pane | catalog + on/off | catalog + on/off | catalog | catalog | catalog + on/off | catalog |
+| Runner skill installed | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Terminal rendering covered by fixtures | ✓ | ✓ | ✓ | — | — | — |
 
 ¹ Antigravity CLI has not been smoke-tested on Windows yet.
 ² pi runs natively on Windows but has not been smoke-tested there yet; its bash tool requires Git for Windows.
+³ Cursor has not been verified on Windows yet.
 
-Claude Code, Codex and Antigravity CLI are the primary agents. Claude Code and Codex have tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. Antigravity CLI signs in with a Google account and updates itself when it starts, so it has no **Update** button. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
+Claude Code, Codex and Antigravity CLI are the primary agents. Claude Code and Codex have tuned launch and nudge timing. GitHub Copilot CLI needs a Copilot subscription. pi brings your own configured model provider. Antigravity CLI signs in with a Google account and updates itself when it starts, so it has no **Update** button. Cursor is default-off; see the [Cursor spec](./docs/features/723-cursor-agent-runtime.md) for its current capabilities. [Issues](https://github.com/yicheng47/runner/issues) are welcome.
 
 Runner detects each CLI on `PATH`, with a per-agent executable override in **Settings → Agents**, which also shows each CLI's version and, when a newer one is published, an **Update** button that runs the CLI's own updater in a terminal. PowerShell 7 is optional on Windows. Agents run natively on Windows, without WSL.
 

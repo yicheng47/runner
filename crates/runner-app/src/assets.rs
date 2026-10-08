@@ -145,6 +145,9 @@ const COPILOT: &[u8] = br#"<svg fill="currentColor" fill-rule="evenodd" viewBox=
 // Source: https://pi.dev/logo.svg (traced as the one-colour favicon silhouette)
 const PI: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 28 28" fill="currentColor"><path d="M0 0h18v12h-6v6H6v6H0zM6 6v6h6V6zM18 12h6v12h-6z"/></svg>"#;
 
+// Source: https://cursor.com/favicon.svg (brand path, without the favicon tile)
+const CURSOR: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 28 28" fill="currentColor"><path transform="translate(-4 -4) scale(.0625)" d="m415.035 156.35-151.503-87.4695c-4.865-2.8094-10.868-2.8094-15.733 0l-151.4969 87.4695c-4.0897 2.362-6.6146 6.729-6.6146 11.459v176.383c0 4.73 2.5249 9.097 6.6146 11.458l151.5039 87.47c4.865 2.809 10.868 2.809 15.733 0l151.504-87.47c4.089-2.361 6.614-6.728 6.614-11.458v-176.383c0-4.73-2.525-9.097-6.614-11.459zm-9.516 18.528-146.255 253.32c-.988 1.707-3.599 1.01-3.599-.967v-165.872c0-3.314-1.771-6.379-4.644-8.044l-143.645-82.932c-1.707-.988-1.01-3.599.968-3.599h292.509c4.154 0 6.75 4.503 4.673 8.101h-.007z"/></svg>"#;
+
 const ASSETS: &[(&str, &[u8])] = &[
     ("app-icon.png", APP_ICON),
     ("antigravity-icon.png", ANTIGRAVITY_ICON),
@@ -213,6 +216,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("trae.svg", TRAE),
     ("copilot.svg", COPILOT),
     ("pi.svg", PI),
+    ("cursor.svg", CURSOR),
     ("message-square-plus.svg", MESSAGE_SQUARE_PLUS),
     ("columns-2.svg", COLUMNS_2),
     ("pin.svg", PIN),
@@ -423,6 +427,7 @@ mod tests {
             "trae.svg",
             "copilot.svg",
             "pi.svg",
+            "cursor.svg",
         ] {
             let bytes = Assets.load(path).unwrap().expect("bundled provider mark");
             let svg = std::str::from_utf8(&bytes).unwrap();

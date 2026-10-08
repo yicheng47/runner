@@ -172,7 +172,12 @@ mod tests {
         assert_eq!(root_runtimes(".claude/skills"), &[Runtime::ClaudeCode]);
         assert_eq!(
             root_runtimes(".agents/skills"),
-            &[Runtime::Codex, Runtime::Copilot, Runtime::Pi]
+            &[
+                Runtime::Codex,
+                Runtime::Copilot,
+                Runtime::Cursor,
+                Runtime::Pi
+            ]
         );
         assert_eq!(root_runtimes(".trae/skills"), &[Runtime::Trae]);
         assert_eq!(

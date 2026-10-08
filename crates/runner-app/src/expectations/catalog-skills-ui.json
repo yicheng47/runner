@@ -30,6 +30,11 @@
     "global_toggle": false
   },
   {
+    "runtime": "cursor",
+    "caption": "Skills in ~/.cursor/skills and ~/.agents/skills are available to Cursor; Runner does not toggle them. Uses the separately installed Cursor Agent CLI. Click a row to read a skill, hover it to edit.",
+    "global_toggle": false
+  },
+  {
     "runtime": "shell",
     "caption": "Every skill in these roots loads in every new session; Runner does not toggle skills for this agent. Click a row to read a skill, hover it to edit.",
     "global_toggle": false

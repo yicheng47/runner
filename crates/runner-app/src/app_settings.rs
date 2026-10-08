@@ -896,6 +896,16 @@ mod tests {
     }
 
     #[test]
+    fn cursor_model_discovery_follows_explicit_enablement() {
+        let mut settings = AppSettings::default();
+        assert!(!settings.model_runtimes().contains(&Runtime::Cursor));
+        settings.enabled_agents.insert("cursor".into());
+        assert!(settings.model_runtimes().contains(&Runtime::Cursor));
+        settings.disabled_agents.insert("cursor".into());
+        assert!(!settings.model_runtimes().contains(&Runtime::Cursor));
+    }
+
+    #[test]
     fn app_font_is_inter_with_the_platform_fallback_chain() {
         let inter = app_font();
         assert_eq!(inter.family.as_ref(), "Inter");

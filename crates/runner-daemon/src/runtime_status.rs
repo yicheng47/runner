@@ -160,8 +160,13 @@ pub fn effective_runtime_command(
     let checking = discovery
         .read()
         .map_err(|_| Error::msg("runtime discovery lock poisoned"))?
-        .checking;
-    effective_runtime_command_on_path(runtime, &overrides, &direct_chat_path(&shell_env), checking)
+        .clone();
+    effective_runtime_command_on_path(
+        runtime,
+        &overrides,
+        &direct_chat_path(&shell_env),
+        checking.checking,
+    )
 }
 
 fn effective_runtime_command_on_path(
@@ -451,6 +456,7 @@ mod tests {
                 (Runtime::Pi, "pi", "pi"),
                 (Runtime::Copilot, "GitHub Copilot CLI", "copilot"),
                 (Runtime::Trae, "TRAE CLI", "traecli"),
+                (Runtime::Cursor, "Cursor", "cursor-agent"),
             ],
         );
     }
@@ -567,6 +573,32 @@ mod tests {
                 .code,
             "not_executable"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cursor_detection_uses_only_cursor_agent_and_override_wins() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let custom = executable(bin.path(), "agent");
+        let path = bin.path().to_str().unwrap();
+        let command = || {
+            effective_runtime_command_on_path(
+                Runtime::Cursor,
+                &db::runtime_overrides(&pool).unwrap(),
+                path,
+                false,
+            )
+        };
+        assert!(command().is_err());
+        let detected = executable(bin.path(), "cursor-agent");
+        assert_eq!(command().unwrap().command, detected.display().to_string());
+        assert_eq!(command().unwrap().source, RuntimeCommandSource::Detected);
+        db::set_runtime_override(&pool, "cursor", Some(custom.to_str().unwrap())).unwrap();
+        assert_eq!(command().unwrap().command, custom.display().to_string());
+        assert_eq!(command().unwrap().source, RuntimeCommandSource::Override);
+        db::set_runtime_override(&pool, "cursor", None).unwrap();
+        assert_eq!(command().unwrap().command, detected.display().to_string());
     }
 
     #[test]

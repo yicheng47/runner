@@ -934,10 +934,10 @@ impl SessionManager {
                 effect.key.as_deref().expect("capture reports a key"),
                 &effect.generation,
             )?),
-            KeyOrigin::Rekeyed => Ok(crate::repo::session::rekey_agent_session_key(
+            KeyOrigin::Rekeyed => Ok(crate::repo::session::set_live_agent_session_key(
                 conn,
                 session_id,
-                effect.key.as_deref().expect("rekey reports a key"),
+                effect.key.as_deref(),
                 &effect.generation,
             )?),
         }

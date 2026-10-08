@@ -2572,12 +2572,24 @@ impl SessionManager {
         );
         let adapter = crate::runtimes::for_key(&role.runtime);
         let missing = adapter.missing_conversation();
+        let mut probe_env = role.env.clone();
+        if role.runtime == Runtime::Cursor.key() {
+            probe_env = self
+                .shell_env
+                .read()
+                .expect("runtime shell environment lock poisoned")
+                .vars
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            probe_env.extend(role.env.clone());
+        }
         let conversation_missing = snap.agent_session_key.as_deref().is_some_and(|key| {
             adapter.conversation_exists(
                 key,
                 &crate::runtimes::ProbeContext {
                     cwd: resolved_cwd_for_check.as_deref(),
-                    role_env: &role.env,
+                    role_env: &probe_env,
                 },
             ) == Some(false)
         });

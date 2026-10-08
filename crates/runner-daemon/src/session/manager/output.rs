@@ -177,7 +177,7 @@ impl SessionManager {
                             let updated = manager_t.report_key(
                                 &session_id,
                                 PersistKey {
-                                    key: Some(key),
+                                    key: (!key.is_empty()).then_some(key),
                                     generation: row_started_at.clone(),
                                     origin: KeyOrigin::Rekeyed,
                                 },

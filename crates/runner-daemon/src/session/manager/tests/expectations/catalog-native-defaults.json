@@ -36,6 +36,12 @@
     "effort": null
   },
   {
+    "runtime": "cursor",
+    "seeded": false,
+    "model": null,
+    "effort": null
+  },
+  {
     "runtime": "shell",
     "seeded": false,
     "model": null,
@@ -76,6 +82,12 @@
     "seeded": true,
     "model": "trae-model",
     "effort": "max"
+  },
+  {
+    "runtime": "cursor",
+    "seeded": true,
+    "model": null,
+    "effort": null
   },
   {
     "runtime": "shell",

@@ -30,6 +30,10 @@
     "files": {}
   },
   {
+    "runtime": "cursor",
+    "files": {}
+  },
+  {
     "runtime": "shell",
     "files": {}
   },

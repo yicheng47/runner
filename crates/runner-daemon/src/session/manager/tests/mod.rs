@@ -2,6 +2,7 @@ mod antigravity;
 mod attention;
 mod codex;
 mod copilot;
+mod cursor_agent;
 mod fork;
 mod forwarder;
 #[cfg(unix)]

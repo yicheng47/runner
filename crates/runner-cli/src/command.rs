@@ -2365,7 +2365,7 @@ fn crew_create_fields(fields: &CrewCreateFields) -> Result<Value, CliError> {
 
 fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
     runner_core::Runtime::parse(runtime).and_then(runner_core::Runtime::command).ok_or_else(|| CliError::usage(format!(
-        "unknown role runtime {runtime:?}; expected codex, claude-code, antigravity, pi, copilot, or trae"
+        "unknown role runtime {runtime:?}; expected codex, claude-code, antigravity, pi, copilot, trae, or cursor"
     )))
 }
 
@@ -3414,6 +3414,8 @@ mod tests {
             "traecli"
         );
         assert_eq!(runtime_command("antigravity").unwrap(), "agy");
+        assert_eq!(runtime_command("cursor").unwrap(), "cursor-agent");
+        assert!(runtime_command("agent").is_err());
         let update = role_fields(&fields, true).unwrap();
         assert_eq!(update["model"], json!(""));
         assert_eq!(update["effort"], json!(""));

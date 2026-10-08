@@ -3,7 +3,8 @@
     "codex",
     "claude-code",
     "pi",
-    "antigravity"
+    "antigravity",
+    "cursor"
   ],
   "runtimes": [
     {
@@ -137,6 +138,31 @@
         "config_home": null
       },
       "commands": []
+    },
+    {
+      "runtime": "cursor",
+      "override_home": false,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.cursor"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 15000
+        }
+      ]
     },
     {
       "runtime": "shell",
@@ -280,6 +306,31 @@
         "config_home": null
       },
       "commands": []
+    },
+    {
+      "runtime": "cursor",
+      "override_home": true,
+      "supported": true,
+      "source": {
+        "command": "/golden/agent",
+        "executable": null,
+        "config_home": "<HOME>/.cursor"
+      },
+      "commands": [
+        {
+          "command": "/golden/agent",
+          "args": [
+            "models"
+          ],
+          "env": {
+            "GOLDEN_ENV": "value",
+            "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+          },
+          "cwd": "<HOME>",
+          "stdin": null,
+          "timeout_ms": 15000
+        }
+      ]
     },
     {
       "runtime": "shell",

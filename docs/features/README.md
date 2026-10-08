@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [723 — Cursor Agent CLI runtime](./723-cursor-agent-runtime.md) — `cursor` chats, crews, dynamic models and explicit resume; macOS backend smoke tested, Windows unverified. Cursor only; Grok remains separate.
 - [826 — Targeted crew messaging that scales past three agents](./826-targeted-messaging.md) — a message wakes only its recipients (repeatable `--to`, leading `@mentions`), the wake-up carries the message itself with a catch-up digest, the reconciliation tick re-delivers to idle slots, and `msg read` returns unread by default ([#826](https://github.com/yicheng47/runner/issues/826), P2, 0.14; draft).
 - [795 — Separate shell lifecycle from agent orchestration](./795-shell-agent-boundary.md) — shell sessions traverse agent launch and conversation policy through no-op adapters; keep shared process lifecycle while making the shell/agent boundary explicit ([#795](https://github.com/yicheng47/runner/issues/795), P1, 0.16 with remote machines; part of the [#645](https://github.com/yicheng47/runner/issues/645) session host design since 2026-10-04).
 - [748 — Mission updates reach the chat that started the mission](./748-mission-watch-delivery.md) — Runner types a one-line notice into the starting chat for messages to the person, broadcasts, questions, failures and the end, through the slot delivery gate, so Codex chats watch missions with no host facility ([#748](https://github.com/yicheng47/runner/issues/748), P1, 0.14; spec under review).

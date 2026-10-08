@@ -270,6 +270,50 @@
       "weekly_percent": 27.0
     },
     {
+      "runtime": "cursor",
+      "unavailable": [
+        "Checking…",
+        "Sign in to Claude Code to see usage.",
+        "Runner was not allowed to read Claude Code's sign-in from the Keychain.",
+        "Couldn't read Claude Code's sign-in from the Keychain.",
+        "Couldn't reach Anthropic.",
+        "Codex didn't answer.",
+        "Antigravity CLI didn't answer.",
+        "Couldn't reach Anthropic."
+      ],
+      "sections": [
+        {
+          "runtime": "cursor",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "window": "Week",
+          "group": null,
+          "label": "Week"
+        },
+        {
+          "window": "Gemini Models · Week used",
+          "group": null,
+          "label": "Gemini Models · Week used"
+        },
+        {
+          "window": "Claude and GPT models · 5 hours used",
+          "group": null,
+          "label": "Claude and GPT models · 5 hours used"
+        },
+        {
+          "runtime": "cursor",
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
+        },
+        {
+          "checking_spinner": "usage-codex-checking"
+        }
+      ],
+      "weekly_percent": 27.0
+    },
+    {
       "runtime": "shell",
       "unavailable": [
         "Checking…",

@@ -566,5 +566,31 @@
         "description": "Extra reasoning depth for complex problems."
       }
     ]
+  },
+  {
+    "name": "cursor",
+    "display_name": "Cursor",
+    "command": "cursor-agent",
+    "native_fork": false,
+    "description": "Cursor Agent CLI",
+    "install_url": "https://cursor.com/docs/cli/installation",
+    "default_enabled": false,
+    "available": false,
+    "default_model": null,
+    "default_effort": null,
+    "models": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default model."
+      }
+    ],
+    "efforts": [
+      {
+        "value": "",
+        "label": "default",
+        "description": "Use the agent's own default effort; no flag passed."
+      }
+    ]
   }
 ]

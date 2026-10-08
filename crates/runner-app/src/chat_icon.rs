@@ -113,6 +113,7 @@ mod tests {
                 ("trae", "trae.svg", gpui::rgb(0x32f08c).into()),
                 ("copilot", "copilot.svg", gpui::rgb(0x8534f3).into()),
                 ("pi", "pi.svg", theme::text()),
+                ("cursor", "cursor.svg", theme::text()),
                 ("antigravity", "antigravity-icon.png", theme::text()),
             ] {
                 let icon = ChatIcon::for_runtime(runtime);

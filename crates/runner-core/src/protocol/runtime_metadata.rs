@@ -641,6 +641,55 @@ pub mod trae {
         RuntimeCapabilities::default()
     }
 }
+pub mod cursor_agent {
+    use super::super::runtime_options::*;
+    use super::*;
+
+    pub const SKILL_DIRS: &[&str] = &[".cursor/skills", ".agents/skills"];
+    pub static PERMISSIONS: Permissions = Permissions {
+        offered: &[],
+        strip_flags: &[
+            ("--force", false),
+            ("-f", false),
+            ("--yolo", false),
+            ("--sandbox", true),
+            ("--approve-mcps", false),
+            ("--trust", false),
+            ("--mode", true),
+            ("--plan", false),
+        ],
+        equals_on_bool: false,
+        variadic_flag: None,
+        args: |_| Vec::new(),
+        matches: |_, _| false,
+        mission_bypass: Some(&[
+            "--force",
+            "--sandbox",
+            "disabled",
+            "--approve-mcps",
+            "--trust",
+        ]),
+        strip_on_mission_resume: false,
+    };
+
+    pub fn catalog() -> Option<RuntimeCatalog> {
+        Some(RuntimeCatalog {
+            name: Runtime::Cursor,
+            display_name: Runtime::Cursor.display_name(),
+            command: Runtime::Cursor.command().unwrap(),
+            capabilities: RuntimeCapabilities::default(),
+            native_fork: false,
+            description: "Cursor Agent CLI",
+            install_url: "https://cursor.com/docs/cli/installation",
+            default_enabled: false,
+            models: vec![default_model_option()],
+            efforts: vec![default_effort()],
+            skills_dirs: SKILL_DIRS,
+            update_args: &[],
+            npm_package: None,
+        })
+    }
+}
 pub fn catalog_for(runtime: Runtime) -> Option<RuntimeCatalog> {
     match runtime {
         Runtime::Codex => codex::catalog(),
@@ -649,6 +698,7 @@ pub fn catalog_for(runtime: Runtime) -> Option<RuntimeCatalog> {
         Runtime::Copilot => copilot::catalog(),
         Runtime::Pi => pi::catalog(),
         Runtime::Trae => trae::catalog(),
+        Runtime::Cursor => cursor_agent::catalog(),
         Runtime::Shell => None,
     }
 }
@@ -675,6 +725,7 @@ impl RuntimeMetadata {
             Runtime::Copilot => &copilot::PERMISSIONS,
             Runtime::Pi => &pi::PERMISSIONS,
             Runtime::Trae => &trae::PERMISSIONS,
+            Runtime::Cursor => &cursor_agent::PERMISSIONS,
             Runtime::Shell => &NO_PERMISSIONS,
         }
     }
@@ -703,5 +754,6 @@ pub fn model_discovery_runtimes() -> Vec<Runtime> {
         Runtime::ClaudeCode,
         Runtime::Pi,
         Runtime::Antigravity,
+        Runtime::Cursor,
     ]
 }

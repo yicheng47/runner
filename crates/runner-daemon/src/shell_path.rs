@@ -38,6 +38,8 @@ const CAPTURED_VARS: &[&str] = &[
     "https_proxy",
     "all_proxy",
     "no_proxy",
+    "CURSOR_CONFIG_DIR",
+    "XDG_CONFIG_HOME",
 ];
 
 pub use runner_core::protocol::discovery::LoginShellEnv;
@@ -443,6 +445,18 @@ mod tests {
             Some("localhost,127.0.0.1,*.byted.org"),
         );
         assert!(!parsed.vars.contains_key("HTTP_PROXY"));
+    }
+
+    #[test]
+    fn captures_cursor_config_roots_from_login_shell() {
+        let stdout = block("CURSOR_CONFIG_DIR", "/profile/cursor")
+            + &block("XDG_CONFIG_HOME", "/profile/xdg");
+        let parsed = parse_login_shell_env(&stdout);
+        assert_eq!(
+            parsed.vars.get("CURSOR_CONFIG_DIR").unwrap(),
+            "/profile/cursor"
+        );
+        assert_eq!(parsed.vars.get("XDG_CONFIG_HOME").unwrap(), "/profile/xdg");
     }
 
     #[test]

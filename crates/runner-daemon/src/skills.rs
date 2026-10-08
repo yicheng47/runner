@@ -471,6 +471,47 @@ mod tests {
     }
 
     #[test]
+    fn cursor_managed_skill_is_installed_once_in_shared_root() {
+        let home = tempfile::tempdir().unwrap();
+        crate::agent_skill::install(home.path(), &home.path().join("runner-data"), false).unwrap();
+        let catalog = skill_catalog(Runtime::Cursor, home.path(), None).unwrap();
+        assert_eq!(Runtime::Cursor.managed_skill_root(), Some(".agents/skills"));
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].name, "runner");
+        assert_eq!(
+            catalog.entries[0].path,
+            home.path().join(".agents/skills/runner")
+        );
+        assert!(!home.path().join(".cursor/skills").exists());
+    }
+
+    #[test]
+    fn cursor_catalog_reads_both_personal_roots_without_global_toggles() {
+        let home = tempfile::tempdir().unwrap();
+        for (root, name) in [
+            (".cursor/skills", "cursor-skill"),
+            (".agents/skills", "shared-skill"),
+        ] {
+            let path = home.path().join(root).join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("SKILL.md"), "---\ndescription: demo\n---\nbody").unwrap();
+        }
+        let catalog = skill_catalog(Runtime::Cursor, home.path(), None).unwrap();
+        assert_eq!(
+            catalog.roots,
+            [
+                home.path().join(".cursor/skills"),
+                home.path().join(".agents/skills")
+            ]
+        );
+        assert_eq!(catalog.entries.len(), 2);
+        assert!(catalog
+            .entries
+            .iter()
+            .all(|entry| entry.global == GlobalState::On));
+    }
+
+    #[test]
     fn copilot_catalog_reads_disabled_skills_from_settings() {
         let home = tempfile::tempdir().unwrap();
         for (root, name) in [

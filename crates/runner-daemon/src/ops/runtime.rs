@@ -418,6 +418,7 @@ mod tests {
             Runtime::Pi,
             Runtime::Copilot,
             Runtime::Trae,
+            Runtime::Cursor,
         ];
         assert_eq!(
             definitions
@@ -426,7 +427,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        assert_eq!(&Runtime::ALL[..6], &expected);
+        assert_eq!(&Runtime::ALL[..7], &expected);
         assert_eq!(
             catalog
                 .iter()

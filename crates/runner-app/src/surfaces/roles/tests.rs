@@ -64,7 +64,8 @@ fn role_edit_restores_disabled_runtimes_in_selector_order() {
             "antigravity",
             "pi",
             "copilot",
-            "trae"
+            "trae",
+            "cursor"
         ]
     );
 }
@@ -903,7 +904,7 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
     assert_eq!(
         page.read(|root| root.role_surfaces.edit.as_ref().unwrap().error.clone()),
         Some(
-            "unknown runtime 'shell' — valid runtimes: codex, claude-code, antigravity, pi, copilot, trae"
+            "unknown runtime 'shell' — valid runtimes: codex, claude-code, antigravity, pi, copilot, trae, cursor"
                 .into()
         )
     );

@@ -337,6 +337,61 @@ printf 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\nclaude-sonnet-4-6\tClaud
     }
 
     #[test]
+    fn cursor_refreshes_account_models_and_keeps_cache_on_failure() {
+        let fixture = Fixture::new(
+            Runtime::Cursor,
+            r#"test "$1" = models || exit 1
+d="$(dirname "$0")"
+test ! -f "$d/fail" || exit 1
+cat "$d/catalog""#,
+        );
+        let path = fixture.dir.path().join("catalog");
+        std::fs::write(
+            &path,
+            "Available models\nauto - Auto (current, default)\nfirst-model - First Model\n",
+        )
+        .unwrap();
+        fixture.refresh(false);
+        let first = fixture.catalog().unwrap();
+        assert_eq!(first.models[1].value, "first-model");
+        assert_eq!(first.default_model.as_deref(), Some("auto"));
+        std::fs::write(&path, "Available models\nnew-model - New Model (default)\n").unwrap();
+        fixture.refresh(false);
+        assert_eq!(fixture.catalog(), Some(first));
+        fixture.refresh(true);
+        let updated = fixture.catalog().unwrap();
+        assert_eq!(updated.models.len(), 1);
+        assert_eq!(updated.models[0].value, "new-model");
+
+        let mut core = crate::test_support::test_core();
+        core.db = Arc::clone(&fixture.pool);
+        core.runtime_shell_env = Arc::clone(&fixture.env);
+        core.runtime_discovery = Arc::clone(&fixture.discovery);
+        let cursor = crate::ops::runtime::runtime_catalog(&core)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.name == Runtime::Cursor)
+            .unwrap();
+        assert_eq!(
+            cursor
+                .models
+                .iter()
+                .map(|model| model.value.as_str())
+                .collect::<Vec<_>>(),
+            ["", "new-model"]
+        );
+        assert_eq!(cursor.default_model.as_deref(), Some("new-model"));
+
+        std::fs::write(fixture.dir.path().join("fail"), "").unwrap();
+        fixture.refresh(true);
+        assert_eq!(fixture.catalog(), Some(updated.clone()));
+        assert_eq!(
+            read_cached(&fixture.pool, Runtime::Cursor).unwrap().catalog,
+            updated
+        );
+    }
+
+    #[test]
     fn claude_uses_control_only_query_and_unsupported_runtimes_are_skipped() {
         let body = format!("test \"$*\" = '-p --input-format stream-json --output-format stream-json --include-partial-messages --verbose --safe-mode --no-session-persistence' || exit 1\nread request\nprintf '%s' \"$request\" > \"$(dirname \"$0\")/request\"\nprintf '%s' '{}'", claude::STREAM);
         let fixture = Fixture::new(Runtime::ClaudeCode, &body);

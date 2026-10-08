@@ -3216,6 +3216,419 @@
     }
   },
   {
+    "runtime": "cursor",
+    "shape": "fresh",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "blank",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "resume",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "missing",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "direct-permission",
+    "mode": "default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "direct-permission",
+    "mode": "accept_edits",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "direct-permission",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "direct-permission",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--trust",
+        "--model",
+        "fixture-model",
+        "GOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-worker",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--force",
+        "--sandbox",
+        "disabled",
+        "--approve-mcps",
+        "--trust",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-lead",
+    "mode": "bypass",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--force",
+        "--sandbox",
+        "disabled",
+        "--approve-mcps",
+        "--trust",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-worker",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-lead",
+    "mode": "auto",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-worker",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.\n- `runner msg post --to <handle> \"<text>\"` — direct message to a specific handle. Valid handles: any slot in this crew.\n- `runner msg post \"<text>\"` — broadcast to the crew (no `--to`).\n- `runner signal ask_lead --payload '{\"question\":\"…\",\"context\":\"…\"}'` — escalate to the lead when a load-bearing decision is genuinely ambiguous.\n- Busy/idle is inferred from your terminal activity.\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
+    "runtime": "cursor",
+    "shape": "mission-lead",
+    "mode": "role-default",
+    "spawn": {
+      "command": "golden-agent",
+      "args": [
+        "--keep",
+        "--new-session-id",
+        "<ID1>",
+        "--model",
+        "fixture-model",
+        "You are `tester` (Tester), the lead of crew \"Golden crew\".\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA\n\n== Mission ==\nGoal: Golden goal\n\n== Coordination ==\n- You are the human's counterpart. Workers escalate to you via `ask_lead`.\n- Reply to a worker with `runner msg post --to <handle> \"…\"`; broadcasts omit `--to`.\n- The operator watches the terminals and types directly into a runner's pane.\n- Read your inbox with `runner msg read` — it's pull-based.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n- Busy/idle is inferred from your terminal activity.\n\n"
+      ],
+      "env_keys": [
+        "CODEX_HOME",
+        "COLORTERM",
+        "COPILOT_HOME",
+        "MISSION_CWD",
+        "PI_CODING_AGENT_DIR",
+        "RUNNER_CREW_ID",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_HANDLE",
+        "RUNNER_HOOK_EXECUTABLE",
+        "RUNNER_HOOK_GENERATION",
+        "RUNNER_HOOK_SESSION",
+        "RUNNER_MISSION_ID",
+        "TERM"
+      ]
+    }
+  },
+  {
     "runtime": "shell",
     "shape": "fresh",
     "spawn": {

@@ -426,6 +426,15 @@ pub fn rekey_agent_session_key(
     agent_session_key: &str,
     expected_row_started_at: &str,
 ) -> rusqlite::Result<bool> {
+    set_live_agent_session_key(conn, id, Some(agent_session_key), expected_row_started_at)
+}
+
+pub(crate) fn set_live_agent_session_key(
+    conn: &Connection,
+    id: &str,
+    agent_session_key: Option<&str>,
+    expected_row_started_at: &str,
+) -> rusqlite::Result<bool> {
     conn.execute(
         "UPDATE sessions
             SET agent_session_key = ?2

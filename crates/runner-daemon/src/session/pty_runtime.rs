@@ -216,7 +216,7 @@ impl SessionRuntime for PtyRuntime {
         launch::adapt_windows_batch_command(&mut cmd)
             .map_err(|error| RuntimeError::Msg(error.to_string()))?;
 
-        let hook_status = spec
+        let mut hook_status = spec
             .agent_runtime
             .and_then(|runtime| crate::runtimes::adapter(runtime).status_hooks())
             .and_then(|hooks| {
@@ -242,6 +242,9 @@ impl SessionRuntime for PtyRuntime {
         drop(pair.slave);
 
         let pid = child.process_id().map(|p| p as i32);
+        if let (Some(watcher), Some(pid)) = (hook_status.as_mut(), child.process_id()) {
+            watcher.spawned(pid);
+        }
         let mut process_tree = match child.process_id().map(ProcessTree::adopt).transpose() {
             Ok(tree) => tree,
             Err(error) => {
@@ -963,7 +966,11 @@ fn idle_monitor_thread(
                     Default::default()
                 },
                 &mut |id| {
-                    let _ = tx.send(RuntimeOutput::ConversationStart(id));
+                    if !id.is_empty()
+                        || (!stop.load(Ordering::Acquire) && !done.load(Ordering::Acquire))
+                    {
+                        let _ = tx.send(RuntimeOutput::ConversationStart(id));
+                    }
                 },
             ) {
                 log::warn!("read agent status: {error}");
@@ -3656,5 +3663,40 @@ mod tests {
         let temporary = std::path::PathBuf::from(&out).with_extension("tmp");
         std::fs::write(&temporary, serde_json::to_vec(&args).unwrap()).unwrap();
         std::fs::rename(temporary, out).unwrap();
+    }
+    #[test]
+    #[cfg(unix)]
+    fn conversation_update_finishing_after_eof_is_not_forwarded() {
+        struct ClosingWatcher(Arc<AtomicBool>);
+        impl HookWatcher for ClosingWatcher {
+            fn drain_events(
+                &mut self,
+                _cancel: u8,
+                _emit: &mut dyn FnMut(
+                    crate::session::state::agent::AgentEvent,
+                )
+                    -> crate::session::state::agent::AdapterFeedback,
+                session_start: &mut dyn FnMut(String),
+            ) -> crate::error::Result<()> {
+                self.0.store(true, Ordering::Release);
+                session_start(String::new());
+                Ok(())
+            }
+        }
+        let done = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        idle_monitor_thread(
+            Arc::new(Mutex::new(IdleDetector::new_at(
+                DEFAULT_IDLE_THRESHOLD,
+                Instant::now(),
+            ))),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            done.clone(),
+            Some(Box::new(ClosingWatcher(done))),
+        );
+        assert!(rx
+            .try_iter()
+            .all(|event| !matches!(event, RuntimeOutput::ConversationStart(_))));
     }
 }
