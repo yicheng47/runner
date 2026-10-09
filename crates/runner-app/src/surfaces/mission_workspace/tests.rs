@@ -10,6 +10,161 @@ use super::*;
 use crate::surfaces::*;
 use crate::*;
 
+struct MissionComposerInputTest {
+    workspace: Entity<MissionWorkspace>,
+}
+
+impl gpui::Render for MissionComposerInputTest {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(600.))
+            .child(self.workspace.update(cx, |workspace, cx| {
+                workspace.render_mission_composer(window, cx)
+            }))
+    }
+}
+
+#[test]
+fn composer_tracks_keyboard_and_mouse_caret_moves_and_completes_without_resetting_input() {
+    use gpui::{EntityInputHandler, MouseButton, TestAppContext, VisualTestContext, WeakEntity};
+    use runner_daemon::{db, session, shell_path};
+    use std::sync::RwLock;
+
+    let temp = tempfile::tempdir().unwrap();
+    let env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
+    let discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
+    let core = crate::test_support::core(
+        Arc::new(db::open_pool(&temp.path().join("runner.db")).unwrap()),
+        temp.path().to_owned(),
+        session::SessionManager::new(
+            env.clone(),
+            discovery.clone(),
+            Arc::new(session::pty_runtime::PtyRuntime::new()),
+        ),
+        env,
+        discovery,
+    );
+    let mut cx = TestAppContext::single();
+    let store = cx.new(|cx| {
+        AppStore::new(
+            core,
+            None,
+            None,
+            temp.path().join("settings.json"),
+            AppSettings::default(),
+            None,
+            cx,
+        )
+    });
+    let host = cx.add_window(|window, cx| {
+        window.set_rem_size(px(16.));
+        let workspace = cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "composer-test".into(),
+                WeakEntity::new_invalid(),
+                store,
+                window,
+                cx,
+            );
+            workspace.roster = vec![runner_core::protocol::model::SlotWithRole {
+                slot: runner_core::protocol::model::Slot {
+                    id: "slot".into(),
+                    crew_id: "crew".into(),
+                    role_id: "role".into(),
+                    slot_handle: "reviewer".into(),
+                    position: 0,
+                    lead: false,
+                    runtime_override: None,
+                    model_override: None,
+                    effort_override: None,
+                    codex_speed_override: None,
+                    added_at: Utc::now(),
+                },
+                role: runner_core::protocol::model::Role {
+                    id: "role".into(),
+                    handle: "reviewer".into(),
+                    display_name: "Reviewer".into(),
+                    runtime: "codex".into(),
+                    command: "codex".into(),
+                    args: Vec::new(),
+                    working_dir: None,
+                    system_prompt: None,
+                    env: Default::default(),
+                    model: None,
+                    effort: None,
+                    codex_speed: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+            }];
+            workspace
+                .composer_input
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx);
+            workspace
+        });
+        MissionComposerInputTest { workspace }
+    });
+    let workspace = host
+        .read_with(&cx, |host, _| host.workspace.clone())
+        .unwrap();
+    let input = workspace.read_with(&cx, |workspace, _| workspace.composer_input.clone());
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_input("please check @rev");
+    let query = |visual: &VisualTestContext| {
+        workspace.read_with(visual, |workspace, _| {
+            crate::surfaces::mission_composer::mention_query(&workspace.composer).map(str::to_owned)
+        })
+    };
+    assert_eq!(query(&visual).as_deref(), Some("rev"));
+    visual.simulate_keystrokes("left");
+    assert_eq!(query(&visual), None);
+    visual.simulate_keystrokes("right");
+    assert_eq!(query(&visual).as_deref(), Some("rev"));
+    visual.simulate_keystrokes("tab");
+    input.read_with(&visual, |input, _| {
+        assert_eq!(input.text(), "please check @reviewer ");
+        assert_eq!(input.caret_offset(), input.text().len());
+    });
+    assert_eq!(
+        workspace
+            .read_with(&visual, |workspace, _| workspace.composer.target.clone())
+            .as_deref(),
+        Some("reviewer")
+    );
+    visual.simulate_keystrokes(if cfg!(windows) { "ctrl-z" } else { "cmd-z" });
+    assert_eq!(
+        input.read_with(&visual, |input, _| input.text().to_owned()),
+        "please check @rev"
+    );
+    assert_eq!(query(&visual).as_deref(), Some("rev"));
+
+    let start = visual.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input
+                .bounds_for_range(0..0, gpui::Bounds::default(), window, cx)
+                .unwrap()
+                .origin
+        })
+    });
+    visual.simulate_mouse_down(
+        start + gpui::point(px(0.), px(4.)),
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    visual.simulate_mouse_up(
+        start + gpui::point(px(0.), px(4.)),
+        MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    assert_eq!(
+        workspace.read_with(&visual, |workspace, _| workspace.composer.caret),
+        0
+    );
+    assert_eq!(query(&visual), None);
+}
+
 fn signal(signal_type: &str, payload: serde_json::Value) -> Event {
     Event {
         id: signal_type.into(),

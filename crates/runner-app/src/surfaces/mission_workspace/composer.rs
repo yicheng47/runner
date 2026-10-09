@@ -6,7 +6,7 @@ use gpui::{canvas, div, px, rems, AnyElement, CursorStyle, FontWeight, Window};
 use super::*;
 use crate::surfaces::mission_composer::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
-    ComposerPost, ComposerState, RosterEntry as ComposerRosterEntry,
+    ComposerPost, ComposerState, DraftEdit, RosterEntry as ComposerRosterEntry,
 };
 use crate::*;
 
@@ -136,7 +136,11 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let roster = self.mission_composer_roster();
-        let options = mention_options(&self.composer, &roster);
+        let options = if self.composer_input.read(cx).is_composing() {
+            Vec::new()
+        } else {
+            mention_options(&self.composer, &roster)
+        };
         let picker_open = !options.is_empty();
         let target = self.composer.target.clone();
         let posting = self.composer_posting;
@@ -257,18 +261,18 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.composer_posting
+            || self.secondary_state(cx).secondary
+            || self.composer_input.read(cx).is_composing()
+        {
+            return;
+        }
         let transition =
             composer_key_down(&self.composer, &self.mission_composer_roster(), key, shift);
         if !transition.prevent_default {
             return;
         }
-        let draft_changed = transition.state.draft != self.composer.draft;
-        self.composer = transition.state;
-        if draft_changed {
-            let draft = self.composer.draft.clone();
-            self.composer_input
-                .update(cx, |input, input_cx| input.reset(draft, input_cx));
-        }
+        self.apply_mission_composer_state(transition.state, transition.edit, cx);
         if let Some(post) = transition.post {
             self.post_mission_composer(post, window, cx);
         } else {
@@ -280,18 +284,36 @@ impl MissionWorkspace {
         }
     }
 
+    fn apply_mission_composer_state(
+        &mut self,
+        state: ComposerState,
+        edit: Option<DraftEdit>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(edit) = edit {
+            if !self.composer_input.update(cx, |input, input_cx| {
+                input.replace_range(edit.range, &edit.text, input_cx)
+            }) {
+                return;
+            }
+        }
+        self.composer = state;
+    }
+
     fn select_mission_composer_target(
         &mut self,
         handle: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.composer_posting || self.secondary_state(cx).secondary {
+        if self.composer_posting
+            || self.secondary_state(cx).secondary
+            || self.composer_input.read(cx).is_composing()
+        {
             return;
         }
-        self.composer = select_composer_target(handle);
-        self.composer_input
-            .update(cx, |input, input_cx| input.reset("", input_cx));
+        let transition = select_composer_target(&self.composer, handle);
+        self.apply_mission_composer_state(transition.state, transition.edit, cx);
         self.composer_input
             .read(cx)
             .focus_handle()

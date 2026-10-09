@@ -90,11 +90,13 @@ impl MissionWorkspace {
             input.set_right_padding(0., input_cx);
         });
         let composer_subscription = cx.observe(&composer_input, |this, input, cx| {
-            let draft = input.read(cx).text().to_owned();
-            if draft != this.composer.draft {
-                this.composer = update_composer_draft(&this.composer, draft);
-                cx.notify();
+            let input = input.read(cx);
+            let draft = input.text().to_owned();
+            let caret = input.caret_offset();
+            if draft != this.composer.draft || caret != this.composer.caret {
+                this.composer = update_composer_draft(&this.composer, draft, caret);
             }
+            cx.notify();
         });
         let (mission_event_tx, mut mission_event_rx) =
             futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();

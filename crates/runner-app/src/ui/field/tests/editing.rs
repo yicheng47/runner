@@ -196,3 +196,52 @@ fn field_validation_exposes_only_error_messages() {
         theme::faint()
     );
 }
+
+#[test]
+fn range_replacement_preserves_unicode_text_and_is_one_undo_step() {
+    let cx = gpui::TestAppContext::single();
+    cx.update(|cx| {
+        let input =
+            cx.new(|cx| TextField::textarea(cx.focus_handle(), "请 👩‍💻 @rev 后续", "", 1, false));
+        input.update(cx, |input, cx| {
+            let start = "请 👩‍💻 ".len();
+            let caret = "请 👩‍💻 @rev".len();
+            input.buffer.move_to(caret, false);
+            assert!(input.replace_range(start..caret, "@reviewer ", cx));
+            assert_eq!(input.text(), "请 👩‍💻 @reviewer  后续");
+            assert_eq!(input.caret_offset(), "请 👩‍💻 @reviewer ".len());
+            assert!(input.edited());
+            assert!(input.buffer.undo());
+            assert_eq!(input.text(), "请 👩‍💻 @rev 后续");
+            assert_eq!(input.caret_offset(), caret);
+            assert!(!input.buffer.undo());
+            assert!(input.buffer.redo());
+            assert_eq!(input.text(), "请 👩‍💻 @reviewer  后续");
+            assert_eq!(input.caret_offset(), "请 👩‍💻 @reviewer ".len());
+        });
+    });
+}
+
+#[test]
+fn range_replacement_refuses_active_composition_invalid_ranges_and_disabled_input() {
+    let cx = gpui::TestAppContext::single();
+    cx.update(|cx| {
+        let input = cx.new(|cx| TextField::new(cx.focus_handle(), "请 @rev", "", false));
+        input.update(cx, |input, cx| {
+            input
+                .buffer
+                .replace_and_mark_text_in_range(None, "ni", Some(2..2));
+            let before = input.buffer.clone();
+            assert!(!input.replace_range("请 ".len().."请 @rev".len(), "@reviewer ", cx));
+            assert_eq!(input.buffer, before);
+            input.buffer.unmark_text();
+            let before = input.buffer.clone();
+            assert!(!input.replace_range(1..2, "", cx));
+            assert!(!input.replace_range(0..input.text().len() + 1, "", cx));
+            assert_eq!(input.buffer, before);
+            input.set_disabled(true, cx);
+            assert!(!input.replace_range(0..input.text().len(), "", cx));
+            assert_eq!(input.buffer, before);
+        });
+    });
+}

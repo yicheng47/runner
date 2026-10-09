@@ -142,6 +142,11 @@ impl TextField {
         &self.buffer.text
     }
 
+    /// The caret's UTF-8 byte offset in `text()`.
+    pub fn caret_offset(&self) -> usize {
+        self.buffer.selection.caret
+    }
+
     pub fn edited(&self) -> bool {
         self.buffer.edited
     }
@@ -191,6 +196,25 @@ impl TextField {
         self.vertical_goal = None;
         self.buffer.edited = true;
         cx.notify();
+    }
+
+    /// Replaces a UTF-8 byte range as one undo step, leaving the caret after
+    /// the inserted text. Refuses disabled input, active IME composition,
+    /// and ranges that are outside the text or split a character.
+    pub fn replace_range(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.disabled || !self.buffer.replace_range(range, text) {
+            return false;
+        }
+        self.vertical_goal = None;
+        self.caret_row_end = None;
+        self.reveal_caret();
+        cx.notify();
+        true
     }
 
     pub fn select_all(&mut self, cx: &mut Context<Self>) {

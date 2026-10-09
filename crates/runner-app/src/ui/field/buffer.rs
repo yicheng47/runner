@@ -129,6 +129,15 @@ impl TextBuffer {
         changed
     }
 
+    pub(super) fn replace_range(&mut self, range: Range<usize>, text: &str) -> bool {
+        if self.marked.is_some() || self.text.get(range.clone()).is_none() {
+            return false;
+        }
+        let text = normalize_input_text(text, self.multiline);
+        self.edit(range, &text, EditIntent::Atomic);
+        true
+    }
+
     /// Writes `new_text` over `range` and leaves the caret after it; the
     /// caller records the change.
     fn splice(&mut self, range: Range<usize>, new_text: &str) -> bool {
