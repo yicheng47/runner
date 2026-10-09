@@ -88,7 +88,6 @@ impl WorkspaceHeader {
             .items_center()
             .border_b_1()
             .border_color(theme::border())
-            .bg(theme::panel())
             .child(
                 div()
                     .flex_1()
@@ -108,5 +107,29 @@ impl WorkspaceHeader {
                             .children(self.trailing_actions)
                     })),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_has_no_fill_and_keeps_bottom_divider_in_both_materials() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+        ] {
+            theme::set_active_variant(variant);
+            for glass in [false, true] {
+                theme::set_glass(glass);
+                let mut header =
+                    WorkspaceHeader::new(px(16.), div().into_any_element(), "Chat").into_div();
+                assert_eq!(header.style().background, None);
+                assert_eq!(header.style().border_color, Some(theme::border()));
+                assert_eq!(header.style().border_widths.bottom, Some(px(1.).into()));
+            }
+        }
     }
 }

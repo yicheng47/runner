@@ -217,6 +217,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
     fn from(settings: &AppSettings) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::mem::discriminant(&settings.app_theme).hash(&mut hasher);
+        std::mem::discriminant(&settings.window_material).hash(&mut hasher);
         std::mem::discriminant(&settings.light_app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_app_theme).hash(&mut hasher);
         settings.app_zoom.to_bits().hash(&mut hasher);

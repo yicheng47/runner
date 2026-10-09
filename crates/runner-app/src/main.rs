@@ -1403,6 +1403,7 @@ fn run() -> Result<()> {
     let application = application.with_quit_mode(QuitMode::Explicit);
     application.on_reopen(handle_reopen);
     application.run(move |cx: &mut App| {
+        runner_app::appearance::install(cx);
         cx.text_system()
             .add_fonts(
                 INTER_FONTS
@@ -1773,6 +1774,11 @@ fn open_runner_window(
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(bounds),
+            window_background: runner_app::appearance::effective(
+                app_store.read(cx).settings.window_material,
+                cx,
+            )
+            .background(),
             #[cfg(target_os = "macos")]
             titlebar: Some(TitlebarOptions {
                 title: None,

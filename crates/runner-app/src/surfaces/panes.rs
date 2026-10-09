@@ -123,7 +123,11 @@ pub(crate) fn render_terminal_drawer_strip(
         .gap(rems(6. / 16.))
         .border_b_1()
         .border_color(theme::border())
-        .bg(theme::panel())
+        .map(|element| {
+            #[cfg(test)]
+            let element = crate::theme_snapshot::record_fill("DRAWER_HEADER", element);
+            element
+        })
         .children(chips)
         .child(
             IconButton::new(add_id, "plus.svg")
@@ -169,7 +173,7 @@ impl NativeRoot {
         let handle = detail.handle.clone();
         let root = cx.entity();
         let panel_root = root.clone();
-        let sidebar_toggle = self.render_open_sidebar_button(cx);
+        let sidebar_toggle = self.render_collapsed_titlebar_spacer();
         let sidebar_divider = self.sidebar_collapsed.then(|| {
             div()
                 .mx_1()
@@ -188,7 +192,10 @@ impl NativeRoot {
             .gap_2()
             .border_b_1()
             .border_color(theme::border())
-            .bg(theme::panel())
+            .rounded_tl(rems(11. / 16.))
+            .when(!self.settings(cx).chat_panel_open, |header| {
+                header.rounded_tr(rems(11. / 16.))
+            })
             .children(sidebar_toggle)
             .children(sidebar_divider)
             .child(
@@ -438,7 +445,15 @@ impl NativeRoot {
                             |drag: &DrawerResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
                         ),
                     )
-                    .child(drawer)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .pb(rems(8. / 16.))
+                            .child(drawer),
+                    )
             }))
             .on_drag_move::<DrawerResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<DrawerResizeDrag>, _, cx| {
@@ -833,7 +848,7 @@ impl NativeRoot {
             })
             .any(|session_id| self.session_lifecycle_disabled(session_id, cx));
         self.configure_chat_action_menu(layout, lifecycle_busy, cx);
-        let sidebar_toggle = self.render_open_sidebar_button(cx);
+        let sidebar_toggle = self.render_collapsed_titlebar_spacer();
         let root = cx.entity();
         let fork_root = root.clone();
         let drawer_root = root.clone();
@@ -988,8 +1003,18 @@ impl NativeRoot {
         )
         .into_div()
         .w_full()
+        .rounded_tl(rems(11. / 16.))
+        .when(
+            !side_panel_open(self.settings(cx).chat_panel_open, focused_shell),
+            |header| header.rounded_tr(rems(11. / 16.)),
+        )
         .when(cfg!(test), |header| {
             header.debug_selector(|| "CHAT_TAB_HEADER_CONTENT".into())
+        })
+        .map(|element| {
+            #[cfg(test)]
+            let element = crate::theme_snapshot::record_fill("CHAT_TAB_HEADER_CONTENT", element);
+            element
         });
         self.render_titlebar_drag_area("chat-titlebar-drag", header, cx)
             .into_any_element()
@@ -1041,6 +1066,12 @@ impl NativeRoot {
                 .justify_end()
                 .border_b_1()
                 .border_color(theme::border())
+                .rounded_tr(rems(11. / 16.))
+                .map(|element| {
+                    #[cfg(test)]
+                    let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
+                    element
+                })
                 .child(
                     IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip("Collapse side panel")
@@ -1093,16 +1124,24 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(theme::panel())
             .child(header)
             .child(
                 div()
-                    .id("chat-panel-scroll")
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_y_scroll()
-                    .p_5()
-                    .child(content),
+                    .flex()
+                    .flex_col()
+                    .pb(rems(8. / 16.))
+                    .child(
+                        div()
+                            .bg(theme::panel())
+                            .id("chat-panel-scroll")
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_y_scroll()
+                            .p_5()
+                            .child(content),
+                    ),
             );
         div()
             .id("chat-side-panel")
@@ -1112,7 +1151,6 @@ impl NativeRoot {
             .h_full()
             .flex_none()
             .overflow_hidden()
-            .bg(theme::panel())
             .when(border_on, |panel| {
                 panel.border_l_1().border_color(theme::border())
             })
@@ -1438,21 +1476,46 @@ impl NativeRoot {
         layout: &PaneLayout,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.render_card_pane_node(node, layout, !layout.drawer_open(), cx)
+    }
+
+    fn render_card_pane_node(
+        &mut self,
+        node: &PaneNode,
+        layout: &PaneLayout,
+        bottom_edge: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match node {
             PaneNode::Leaf(leaf) => {
                 let key = format!("pane:{}:{}", layout.id, leaf.id);
                 let leaf = leaf.clone();
                 let layout = layout.clone();
-                self.cached_region(
+                let pane = self.cached_region(
                     key,
                     gpui::StyleRefinement::default().size_full(),
                     move |root, window, cx| root.render_pane(&leaf, &layout, window, cx),
                     cx,
-                )
+                );
+                // GPUI clips to rectangles; keep cell fills clear of the card's bottom corners.
+                if bottom_edge {
+                    div()
+                        .size_full()
+                        .pb(rems(8. / 16.))
+                        .child(pane)
+                        .into_any_element()
+                } else {
+                    pane
+                }
             }
             PaneNode::Split(split) => {
-                let a = self.render_pane_node(&split.a, layout, cx);
-                let b = self.render_pane_node(&split.b, layout, cx);
+                let a = self.render_card_pane_node(
+                    &split.a,
+                    layout,
+                    bottom_edge && split.orientation == SplitOrientation::Row,
+                    cx,
+                );
+                let b = self.render_card_pane_node(&split.b, layout, bottom_edge, cx);
                 let first = split.sizes[0] / 100.;
                 let second = split.sizes[1] / 100.;
                 let split_id = split.id.clone();
@@ -2109,7 +2172,11 @@ impl NativeRoot {
                 .items_center()
                 .border_b_1()
                 .border_color(theme::border())
-                .bg(theme::panel())
+                .map(|element| {
+                    #[cfg(test)]
+                    let element = crate::theme_snapshot::record_fill("PANE_IDENTITY_LINE", element);
+                    element
+                })
                 .child(identity)
                 .child(grip)
                 .child(
@@ -3311,6 +3378,42 @@ mod tests {
             pinned: false,
             archived_at: None,
         }
+    }
+
+    #[test]
+    fn terminal_drawer_header_has_no_fill_of_its_own() {
+        use crate::theme;
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+        use gpui::prelude::*;
+        use gpui::{div, App, Context, Render, TestAppContext, VisualTestContext, Window};
+        use std::rc::Rc;
+
+        struct DrawerHeader;
+        impl Render for DrawerHeader {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .bg(theme::bg())
+                    .child(super::render_terminal_drawer_strip(
+                        "probe",
+                        &[],
+                        None,
+                        &[],
+                        super::TerminalDrawerCallbacks {
+                            activate: Rc::new(|_, _: &mut Window, _: &mut App| {}),
+                            close: Rc::new(|_, _, _| {}),
+                            add: Rc::new(|_, _| {}),
+                            hide: Rc::new(|_, _| {}),
+                        },
+                    ))
+            }
+        }
+        let _theme = ThemeGuard::new();
+        let mut cx = TestAppContext::single();
+        let host = cx.add_window(|_, _| DrawerHeader);
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+        assert_fill(&mut visual, "DRAWER_HEADER", None);
     }
 
     #[test]

@@ -3,10 +3,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-#[cfg(target_os = "macos")]
-use gpui::WeakEntity;
 use gpui::{
-    div, px, rems, svg, AnyElement, App, CursorStyle, DragMoveEvent, FontWeight, MouseButton,
+    div, px, rems, AnyElement, App, CursorStyle, DragMoveEvent, FontWeight, MouseButton,
     SharedString, Window, WindowControlArea,
 };
 use runner_app::ui::{
@@ -16,113 +14,28 @@ use runner_app::ui::{
 use runner_core::protocol::model::MissionStatus;
 
 use super::*;
-#[cfg(target_os = "macos")]
-use crate::surfaces::app_shell::{SIDEBAR_TOGGLE_GLYPH_INSET, SIDEBAR_TOGGLE_GLYPH_X};
 use crate::surfaces::*;
 use crate::*;
 
 impl MissionWorkspace {
     fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        #[cfg(target_os = "macos")]
-        {
-            if self.sidebar_collapsed && !window.is_fullscreen() {
-                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-            } else {
-                16. * self.settings(cx).app_zoom
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = window;
-            16. * self.settings(cx).app_zoom
+        let zoom = self.settings(cx).app_zoom;
+        if self.sidebar_collapsed {
+            platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
+        } else {
+            16. * zoom
         }
     }
 
-    fn render_open_sidebar_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.sidebar_collapsed {
-            return None;
-        }
-        let toggle = self.render_open_sidebar_toggle(cx);
-        #[cfg(target_os = "macos")]
-        {
-            let shell = self.shell.clone();
-            let (can_go_back, can_go_forward) = shell
-                .upgrade()
-                .map(|shell| shell.read(cx).page_navigation_state())
-                .unwrap_or((false, false));
-            let navigate = |shell: WeakEntity<NativeRoot>, direction: isize| {
-                move |window: &mut Window, cx: &mut App| {
-                    if let Some(shell) = shell.upgrade() {
-                        shell.update(cx, |shell, shell_cx| {
-                            shell.navigate_runtime_page(direction, window, shell_cx)
-                        });
-                    }
-                }
-            };
-            Some(
-                NativeRoot::titlebar_control_cluster("mission-titlebar-controls")
-                    .child(toggle)
-                    .child(
-                        IconButton::new("window-previous-page", "chevron-left.svg")
-                            .disabled(!can_go_back)
-                            .on_press(navigate(shell.clone(), -1)),
-                    )
-                    .child(
-                        IconButton::new("window-next-page", "chevron-right.svg")
-                            .disabled(!can_go_forward)
-                            .on_press(navigate(shell, 1)),
-                    )
-                    .into_any_element(),
-            )
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Some(toggle)
-        }
-    }
-
-    fn render_open_sidebar_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
-        {
+    fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
+        self.sidebar_collapsed.then(|| {
             div()
-                .id("open-sidebar")
-                .group("open-sidebar")
+                .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
                 .flex_none()
-                .w(px(28. * self.settings(cx).app_zoom))
-                .h(px(28. * self.settings(cx).app_zoom))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .cursor_pointer()
-                .text_color(theme::muted())
-                .hover(|button| button.bg(theme::raised()).text_color(theme::text()))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    svg()
-                        .path("panel-left-hidden.svg")
-                        .w(px(14. * self.settings(cx).app_zoom))
-                        .h(px(14. * self.settings(cx).app_zoom))
-                        .flex_none()
-                        .text_color(theme::muted())
-                        .group_hover("open-sidebar", |icon| icon.text_color(theme::text())),
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.sidebar_collapsed = false;
-                    if let Some(shell) = this.shell.upgrade() {
-                        cx.defer(move |cx| {
-                            shell.update(cx, |shell, shell_cx| {
-                                shell.set_sidebar_collapsed(false, true, shell_cx);
-                                shell.sidebar_preview_open = false;
-                                shell.sidebar_preview_peeking = false;
-                            });
-                        });
-                    }
-                    this.focus_active_mission_terminal(window, cx);
-                    cx.notify();
-                }))
+                .w(rems(92. / 16.))
+                .h(rems(28. / 16.))
                 .into_any_element()
-        }
+        })
     }
 
     fn render_titlebar_drag_area(
@@ -210,6 +123,7 @@ impl MissionWorkspace {
         });
         let center = div()
             .debug_selector(|| "MISSION_CONTENT_COLUMN".into())
+            .pb(rems(8. / 16.))
             .min_w(px(0.))
             .flex_1()
             .h_full()
@@ -268,12 +182,6 @@ impl MissionWorkspace {
             .min_w(px(0.))
             .h_full()
             .flex()
-            .bg(theme::bg())
-            .map(|element| {
-                #[cfg(test)]
-                let element = crate::theme_snapshot::record_fill("MISSION_BG", element);
-                element
-            })
             .child(center)
             .child(rail)
             .on_mouse_down(
@@ -459,11 +367,20 @@ impl MissionWorkspace {
             ChatIcon::mission().render(rems(15. / 16.), theme::accent(), true),
             title,
         )
-        .sidebar_toggle(self.render_open_sidebar_button(cx))
+        .sidebar_toggle(self.render_collapsed_titlebar_spacer())
         .title_actions(controls.into_iter().map(IntoElement::into_any_element))
         .trailing_actions(drawer_action.into_iter().chain(rail_action))
         .into_div()
-        .debug_selector(|| "MISSION_HEADER_ROW".into());
+        .rounded_tl(rems(11. / 16.))
+        .when(!self.settings(cx).mission_rail_open, |header| {
+            header.rounded_tr(rems(11. / 16.))
+        })
+        .debug_selector(|| "MISSION_HEADER_ROW".into())
+        .map(|element| {
+            #[cfg(test)]
+            let element = crate::theme_snapshot::record_fill("MISSION_HEADER_ROW", element);
+            element
+        });
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
     }

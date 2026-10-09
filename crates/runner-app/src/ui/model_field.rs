@@ -10,7 +10,7 @@ use runner_core::protocol::runtime::RuntimeCatalogOption;
 use crate::theme;
 use crate::ui::app_zoom;
 use crate::ui::field::TextField;
-use crate::ui::menu::{popup_layer_sized, DismissHandler, MenuKey};
+use crate::ui::menu::{DismissHandler, MenuKey};
 use crate::ui::scrollbar::Scrollbar;
 use crate::ui::select::{
     option_menu, option_menu_width, OptionMenuStyle, SelectAction, SelectOption, SelectState,
@@ -171,6 +171,29 @@ impl ModelField {
             cx.notify();
         }
     }
+    fn menu_content(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.state.is_open() {
+            return None;
+        }
+        let current = self.input.read(cx).text().to_owned();
+        let field_entity = cx.weak_entity();
+        let menu = option_menu(
+            &self.suggestions,
+            &current,
+            self.state.highlighted(),
+            OptionMenuStyle::default(),
+            &self.menu_scroll,
+            self.menu_scrollbar.clone(),
+            Rc::new(move |index, _, cx| {
+                let _ = field_entity.update(cx, |field, cx| field.choose(index, cx));
+            }),
+        );
+        Some(menu)
+    }
 }
 
 impl Render for ModelField {
@@ -250,25 +273,15 @@ impl Render for ModelField {
             );
 
         if let (true, Some(anchor)) = (open, self.anchor_bounds) {
-            let current = self.input.read(cx).text().to_owned();
-            let field_entity = cx.entity();
-            let menu = option_menu(
-                &self.suggestions,
-                &current,
-                self.state.highlighted(),
-                OptionMenuStyle::default(),
-                &self.menu_scroll,
-                self.menu_scrollbar.clone(),
-                Rc::new(move |index, _, cx| {
-                    field_entity.update(cx, |field, cx| field.choose(index, cx));
-                }),
-            );
+            let menu = self.menu_content(window, cx).unwrap();
             let dismiss_entity: Entity<Self> = cx.entity();
             let dismiss: DismissHandler = Rc::new(move |_, cx| {
                 dismiss_entity.update(cx, |field, cx| field.close(cx));
             });
             let width = option_menu_width(&self.suggestions, anchor.size.width, app_zoom(window));
-            root = root.child(popup_layer_sized(anchor, window, width, menu, dismiss));
+            root = root.child(crate::ui::menu::popup_layer_sized(
+                anchor, window, width, menu, dismiss,
+            ));
         }
         root
     }

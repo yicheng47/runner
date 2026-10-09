@@ -44,8 +44,8 @@ pub(super) fn workspace_new_chat_row(
         .border_color(gpui::transparent_black())
         .cursor_pointer()
         .hover(|row| {
-            row.border_color(theme::sidebar_selected_border())
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+            row.border_color(theme::chrome_selected_border())
+                .bg(theme::chrome_hover())
         })
         .child(
             svg()
@@ -160,11 +160,11 @@ pub(super) fn workspace_row(
         .rounded_sm()
         .border_1()
         .border_color(if active {
-            theme::sidebar_selected_border()
+            theme::chrome_selected_border()
         } else {
             gpui::transparent_black()
         })
-        .when(active, |row| row.bg(theme::sidebar_selected()).shadow_sm())
+        .when(active, |row| row.bg(theme::chrome_selected()).shadow_sm())
         .cursor_pointer()
         .text_size(theme::text_title())
         .font_weight(if active {
@@ -178,13 +178,13 @@ pub(super) fn workspace_row(
             theme::muted()
         })
         .hover(|row| {
-            row.border_color(theme::sidebar_selected_border())
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+            row.border_color(theme::chrome_selected_border())
+                .bg(theme::chrome_hover())
                 .text_color(theme::text())
         })
         .focus_visible(|row| {
-            row.border_color(theme::sidebar_selected_border())
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+            row.border_color(theme::chrome_selected_border())
+                .bg(theme::chrome_hover())
                 .text_color(theme::text())
         })
         .child(
@@ -238,11 +238,11 @@ pub(super) fn sidebar_row_shell(
         .rounded_sm()
         .border_1()
         .border_color(if selected {
-            theme::sidebar_selected_border()
+            theme::chrome_selected_border()
         } else {
             gpui::transparent_black()
         })
-        .when(selected, |row| row.bg(theme::sidebar_selected()))
+        .when(selected, |row| row.bg(theme::chrome_selected()))
         .when(accent_bar, |row| {
             row.child(
                 div()
@@ -263,8 +263,8 @@ pub(super) fn sidebar_row_shell(
             theme::muted()
         })
         .hover(|row| {
-            row.border_color(theme::sidebar_selected_border())
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.4))
+            row.border_color(theme::chrome_selected_border())
+                .bg(theme::chrome_hover())
                 .text_color(theme::text())
         })
 }

@@ -271,11 +271,6 @@ fn launch_dims_for(
     direct_sizes.get(session_id).copied().or(Some(mission_size))
 }
 
-fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
-    color.a = value;
-    color
-}
-
 #[derive(Clone, Copy)]
 enum SettingsSelection {
     DefaultCrew,
@@ -551,7 +546,6 @@ fn settings_content_column(
         .min_h(px(0.))
         .h_full()
         .flex_1()
-        .bg(theme::bg())
         .children(titlebar_drag_area)
         .child(
             div()
@@ -1148,7 +1142,7 @@ impl NativeRoot {
 
     pub(crate) fn render_settings_takeover(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
@@ -1173,12 +1167,13 @@ impl NativeRoot {
 
         div()
             .absolute()
+            .debug_selector(|| "SETTINGS_CHROME".into())
             .key_context("Settings")
             .track_focus(&self.settings_page.focus)
             .inset_0()
             .flex()
             .overflow_hidden()
-            .bg(theme::bg())
+            .bg(gpui::transparent_black())
             .occlude()
             .child(
                 div()
@@ -1188,14 +1183,12 @@ impl NativeRoot {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .bg(theme::sidebar())
-                    .border_r_1()
-                    .border_color(theme::border())
-                    .children(self.render_settings_titlebar_drag_area(
-                        "settings-sidebar-titlebar-drag",
-                        div().h(px(32. * self.settings(cx).app_zoom)).flex_none(),
-                        cx,
-                    ))
+                    .bg(if theme::is_glass() {
+                        gpui::transparent_black()
+                    } else {
+                        theme::sidebar()
+                    })
+                    .children(self.render_sidebar_titlebar(window, cx))
                     .child(
                         div()
                             .flex_none()
@@ -1214,8 +1207,8 @@ impl NativeRoot {
                                     .gap_2()
                                     .rounded(rems(6. / 16.))
                                     .border_1()
-                                    .border_color(theme::sidebar_selected_border())
-                                    .bg(theme::sidebar_selected())
+                                    .border_color(theme::chrome_selected_border())
+                                    .bg(theme::chrome_selected())
                                     .px(rems(10. / 16.))
                                     .child(
                                         svg()
@@ -1255,12 +1248,7 @@ impl NativeRoot {
                     ),
             )
             .child(
-                div()
-                    .min_w(px(0.))
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .flex_col()
+                runner_app::ui::work_card::work_card(false)
                     .children(self.render_daemon_banner(cx).map(|banner| {
                         div()
                             .flex_none()
@@ -1284,7 +1272,7 @@ impl NativeRoot {
                         zoom,
                     )),
             )
-            .child(self.render_sidebar_resize_handle(width - 0.5, cx))
+            .child(self.render_sidebar_resize_handle(width, cx))
             .when(active == SettingsPane::Skills, |takeover| {
                 takeover.children(
                     self.settings_page
@@ -1321,8 +1309,8 @@ impl NativeRoot {
             .text_color(theme::muted())
             .hover(|button| {
                 button
-                    .border_color(theme::sidebar_selected_border())
-                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                    .border_color(theme::chrome_selected_border())
+                    .bg(theme::chrome_hover())
                     .text_color(theme::text())
             })
             .child(
@@ -1387,12 +1375,12 @@ impl NativeRoot {
             .rounded_sm()
             .border_1()
             .border_color(if active {
-                theme::sidebar_selected_border()
+                theme::chrome_selected_border()
             } else {
                 gpui::transparent_black()
             })
             .bg(if active {
-                theme::sidebar_selected()
+                theme::chrome_selected()
             } else {
                 gpui::transparent_black()
             })
@@ -1411,8 +1399,8 @@ impl NativeRoot {
             .when(active, |row| row.shadow_sm())
             .when(!active, |row| {
                 row.hover(|row| {
-                    row.border_color(theme::sidebar_selected_border())
-                        .bg(alpha(theme::sidebar_selected(), 0.4))
+                    row.border_color(theme::chrome_selected_border())
+                        .bg(theme::chrome_hover())
                         .text_color(theme::text())
                 })
             })
@@ -2238,12 +2226,20 @@ impl NativeRoot {
                 "Appearance",
                 "Theme, and the app and terminal palettes for each mode.",
             ))
-            .child(SettingsCard::new(vec![SettingsRow::new(
-                "Theme",
-                self.render_theme_segmented(cx),
-            )
-            .subtitle("Match the OS, or pin to light or dark.")
-            .into_any_element()]))
+            .child(SettingsCard::new({
+                let rows = vec![SettingsRow::new("Theme", self.render_theme_segmented(cx))
+                    .subtitle("Match the OS, or pin to light or dark.")
+                    .into_any_element()];
+                #[cfg(target_os = "macos")]
+                let rows = {
+                    let mut rows = rows;
+                    rows.push(SettingsRow::new("Window material", self.render_material_segmented(cx))
+                        .subtitle("Glass adds depth to the sidebar and window chrome.")
+                        .into_any_element());
+                    rows
+                };
+                rows
+            }))
             .child(self.render_theme_preview(cx))
             .child(palette_section(
                 "Light",
@@ -2261,7 +2257,75 @@ impl NativeRoot {
                 self.settings_page.dark_terminal_theme.clone(),
                 "Terminal colours when the app is dark.",
             ))
+            .when(cfg!(target_os = "macos"), |page| page.child(
+                div().text_size(theme::text_ui()).text_color(theme::muted())
+                    .child("Runner follows macOS Reduce Transparency. When enabled, Glass uses the solid appearance."),
+            ))
             .into_any_element()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn render_material_segmented(&self, cx: &mut Context<Self>) -> AnyElement {
+        use runner_app::appearance::WindowMaterial;
+        let selected = self.settings(cx).window_material;
+        div()
+            .debug_selector(|| "SETTINGS_WINDOW_MATERIAL".into())
+            .flex()
+            .gap(rems(2. / 16.))
+            .p(rems(2. / 16.))
+            .rounded(rems(6. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::bg())
+            .children(
+                [
+                    (WindowMaterial::Glass, "Glass"),
+                    (WindowMaterial::Solid, "Solid"),
+                ]
+                .into_iter()
+                .map(|(material, label)| {
+                    let root = cx.entity();
+                    let key_root = root.clone();
+                    div()
+                        .id(SharedString::from(format!("settings-material-{label}")))
+                        .tab_index(0)
+                        .px(rems(12. / 16.))
+                        .py(rems(5. / 16.))
+                        .rounded(rems(4. / 16.))
+                        .text_size(theme::text_ui())
+                        .when(material == selected, |item| item.bg(theme::raised()))
+                        .cursor_pointer()
+                        .child(label)
+                        .on_click(move |_, _, cx| {
+                            root.update(cx, |this, cx| this.set_window_material(material, cx));
+                        })
+                        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.stop_propagation();
+                                key_root
+                                    .update(cx, |this, cx| this.set_window_material(material, cx));
+                            }
+                        })
+                }),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn set_window_material(
+        &self,
+        material: runner_app::appearance::WindowMaterial,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_app_settings(cx, true, |settings| {
+            if settings.window_material == material {
+                return false;
+            }
+            settings.window_material = material;
+            true
+        });
+        runner_app::appearance::configure(material, cx);
+        cx.refresh_windows();
     }
 
     /// Both panes are built from the picks, not from the active variant: the
@@ -2837,6 +2901,62 @@ mod tests {
     }
 
     #[test]
+    fn usage_stays_solid_and_settings_gear_opens_agents_in_both_materials() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+        use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
+        use runner_app::appearance::{Appearance, WindowMaterial};
+        use runner_core::protocol::model::Runtime;
+
+        let _theme = ThemeGuard::new();
+        for material in [WindowMaterial::Solid, WindowMaterial::Glass] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            cx.update(|cx| {
+                cx.set_global(Appearance {
+                    material,
+                    reduce_transparency: false,
+                })
+            });
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            store.update(&mut cx, |store, cx| {
+                store.settings.window_material = material;
+                cx.notify();
+            });
+            let host = cx.add_window(|window, cx| {
+                let mut root = NativeRoot::new(
+                    "usage-settings-gear".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                );
+                root.usage_installed = vec![Runtime::Codex];
+                root
+            });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(1200.), px(900.)));
+            visual.run_until_parked();
+            let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+            visual.simulate_click(usage.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_fill(&mut visual, "USAGE_POPOVER_PANEL", theme::colors().panel);
+            visual.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+            let gear = visual.debug_bounds("USAGE_AGENT_SETTINGS").unwrap();
+            visual.simulate_click(gear.center(), Modifiers::default());
+            visual.run_until_parked();
+            host.read_with(&visual, |root, _| {
+                assert!(!root.usage_open);
+                assert_eq!(root.route, AppRoute::Settings);
+                assert_eq!(root.settings_page.pane, SettingsPane::Agents);
+            })
+            .unwrap();
+            assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_none());
+        }
+    }
+
+    #[test]
     fn general_quit_menu_renders_a_right_hand_tick_for_each_choice() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{Modifiers, TestAppContext, VisualTestContext};
@@ -3034,6 +3154,10 @@ mod tests {
         for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
             assert!(window.debug_bounds(selector).is_some(), "{selector}");
         }
+        assert_eq!(
+            window.debug_bounds("SETTINGS_WINDOW_MATERIAL").is_some(),
+            cfg!(target_os = "macos")
+        );
 
         host.update(&mut window, |host, _, cx| {
             host.0.update(cx, |root, _| {
@@ -3357,7 +3481,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_back_button_clears_one_titlebar_allowance() {
+    fn settings_back_button_clears_window_navigation() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{size, TestAppContext, VisualTestContext};
 
@@ -3391,7 +3515,13 @@ mod tests {
                 cx.run_until_parked();
                 let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
                 assert!(
-                    back.top() >= px(32. * zoom) && back.top() < px(48. * zoom),
+                    back.top()
+                        >= visual
+                            .debug_bounds("WINDOW_TITLEBAR_CONTROLS")
+                            .unwrap()
+                            .bottom()
+                        && back.top() >= px((52. + if cfg!(windows) { 32. } else { 0. }) * zoom)
+                        && back.top() < px((68. + if cfg!(windows) { 32. } else { 0. }) * zoom),
                     "zoom {zoom} width {width}: {back:?}"
                 );
             }

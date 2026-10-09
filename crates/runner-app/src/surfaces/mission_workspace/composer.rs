@@ -26,6 +26,110 @@ impl MissionWorkspace {
             .collect()
     }
 
+    fn composer_popup_content(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let roster = self.mission_composer_roster();
+        let options = mention_options(&self.composer, &roster);
+        if options.is_empty() {
+            return None;
+        }
+        let active_index = self
+            .composer
+            .active_index
+            .min(options.len().saturating_sub(1));
+        let picker_root = cx.entity();
+        let rows = options.into_iter().enumerate().map(|(index, entry)| {
+            let option_root = picker_root.clone();
+            let handle = entry.handle.clone();
+            div()
+                .id(("mission-composer-option", index))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded_sm()
+                .border_1()
+                .border_color(if index == active_index {
+                    theme::border_strong()
+                } else {
+                    gpui::transparent_black()
+                })
+                .bg(if index == active_index {
+                    theme::raised()
+                } else {
+                    gpui::transparent_black()
+                })
+                .px_2()
+                .py_1()
+                .cursor_pointer()
+                .hover(|row| row.bg(theme::raised()))
+                .on_click(move |_, window, cx| {
+                    option_root.update(cx, |this, cx| {
+                        this.select_mission_composer_target(handle.clone(), window, cx)
+                    });
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(theme::UI_MONOSPACE_FONT)
+                        .text_size(theme::text_ui())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::accent())
+                        .child(format!("@{}", entry.handle)),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex_1()
+                        .truncate()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::muted())
+                        .child(format!("{} · {}", entry.role, entry.runtime)),
+                )
+                .children((index == active_index).then(|| {
+                    div()
+                        .ml_auto()
+                        .font_family(theme::UI_MONOSPACE_FONT)
+                        .text_size(theme::text_caption())
+                        .text_color(theme::faint())
+                        .child("↵")
+                }))
+        });
+        let menu = div()
+            .id("mission-composer-roster")
+            .relative()
+            .max_h(rems(240. / 16.))
+            .overflow_hidden()
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .bg(theme::panel())
+            .p_1()
+            .shadow_xl()
+            .child(
+                div()
+                    .px_2()
+                    .pt_1()
+                    .pb(rems(2. / 16.))
+                    .text_size(theme::text_caption())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::faint())
+                    .child("ROSTER"),
+            )
+            .child(
+                div()
+                    .id("mission-composer-roster-scroll")
+                    .max_h(rems(205. / 16.))
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+            .into_any_element();
+        Some(menu)
+    }
+
     pub(super) fn render_mission_composer(
         &mut self,
         window: &mut Window,
@@ -34,10 +138,6 @@ impl MissionWorkspace {
         let roster = self.mission_composer_roster();
         let options = mention_options(&self.composer, &roster);
         let picker_open = !options.is_empty();
-        let active_index = self
-            .composer
-            .active_index
-            .min(options.len().saturating_sub(1));
         let target = self.composer.target.clone();
         let posting = self.composer_posting;
         let can_send = !posting && !self.composer.draft.trim().is_empty();
@@ -121,93 +221,7 @@ impl MissionWorkspace {
             );
 
         if let (true, Some(anchor)) = (picker_open, self.composer_anchor) {
-            let picker_root = root.clone();
-            let rows = options.into_iter().enumerate().map(|(index, entry)| {
-                let option_root = picker_root.clone();
-                let handle = entry.handle.clone();
-                div()
-                    .id(("mission-composer-option", index))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(if index == active_index {
-                        theme::border_strong()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .bg(if index == active_index {
-                        theme::raised()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .px_2()
-                    .py_1()
-                    .cursor_pointer()
-                    .hover(|row| row.bg(theme::raised()))
-                    .on_click(move |_, window, cx| {
-                        option_root.update(cx, |this, cx| {
-                            this.select_mission_composer_target(handle.clone(), window, cx)
-                        });
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_ui())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::accent())
-                            .child(format!("@{}", entry.handle)),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .flex_1()
-                            .truncate()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .child(format!("{} · {}", entry.role, entry.runtime)),
-                    )
-                    .children((index == active_index).then(|| {
-                        div()
-                            .ml_auto()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_caption())
-                            .text_color(theme::faint())
-                            .child("↵")
-                    }))
-            });
-            let menu = div()
-                .id("mission-composer-roster")
-                .relative()
-                .max_h(rems(240. / 16.))
-                .overflow_hidden()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme::border_strong())
-                .bg(theme::panel())
-                .p_1()
-                .shadow_xl()
-                .child(
-                    div()
-                        .px_2()
-                        .pt_1()
-                        .pb(rems(2. / 16.))
-                        .text_size(theme::text_caption())
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::faint())
-                        .child("ROSTER"),
-                )
-                .child(
-                    div()
-                        .id("mission-composer-roster-scroll")
-                        .max_h(rems(205. / 16.))
-                        .overflow_y_scroll()
-                        .children(rows),
-                )
-                .into_any_element();
+            let menu = self.composer_popup_content(window, cx).unwrap();
             let dismiss_root = root.clone();
             let dismiss: runner_app::ui::menu::DismissHandler = Rc::new(move |_, cx| {
                 dismiss_root.update(cx, |this, cx| {

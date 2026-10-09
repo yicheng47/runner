@@ -5,20 +5,20 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use gpui::{Fill, InteractiveElement, Styled, VisualTestContext};
 
 thread_local! {
-    static FILLS: RefCell<HashMap<&'static str, Fill>> = RefCell::default();
+    static FILLS: RefCell<HashMap<&'static str, Option<Fill>>> = RefCell::default();
 }
 
 pub(crate) fn record_fill<T: Styled + InteractiveElement>(id: &'static str, mut element: T) -> T {
-    let fill = element
-        .style()
-        .background
-        .clone()
-        .expect("snapshot surface has a fill");
+    let fill = element.style().background.clone();
     FILLS.with_borrow_mut(|fills| fills.insert(id, fill));
     element.debug_selector(|| id.into())
 }
 
-pub(crate) fn assert_fill(window: &mut VisualTestContext, id: &'static str, color: u32) {
+pub(crate) fn assert_fill(
+    window: &mut VisualTestContext,
+    id: &'static str,
+    color: impl Into<Option<u32>>,
+) {
     let bounds = window
         .debug_bounds(id)
         .unwrap_or_else(|| panic!("missing surface {id}"));
@@ -26,13 +26,15 @@ pub(crate) fn assert_fill(window: &mut VisualTestContext, id: &'static str, colo
         bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.),
         "{id}: {bounds:?}"
     );
-    FILLS.with_borrow(|fills| assert_eq!(fills.get(id), Some(&gpui::rgb(color).into()), "{id}"));
+    let expected = color.into().map(|color| gpui::rgb(color).into());
+    FILLS.with_borrow(|fills| assert_eq!(fills.get(id), Some(&expected), "{id}"));
 }
 
 static THEME_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) struct ThemeGuard {
     previous: crate::theme::ThemeVariant,
+    glass: bool,
     _lock: MutexGuard<'static, ()>,
 }
 
@@ -42,6 +44,7 @@ impl ThemeGuard {
         FILLS.with_borrow_mut(HashMap::clear);
         Self {
             previous: crate::theme::active_variant(),
+            glass: crate::theme::is_glass(),
             _lock: lock,
         }
     }
@@ -50,6 +53,7 @@ impl ThemeGuard {
 impl Drop for ThemeGuard {
     fn drop(&mut self) {
         crate::theme::set_active_variant(self.previous);
+        crate::theme::set_glass(self.glass);
         FILLS.with_borrow_mut(HashMap::clear);
     }
 }

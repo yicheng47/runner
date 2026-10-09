@@ -31,6 +31,7 @@ impl MissionWorkspace {
         if !show_rail {
             return div()
                 .id("mission-rail")
+                .debug_selector(|| "MISSION_RAIL".into())
                 .relative()
                 .w(rems(visible_width / 16.))
                 .h_full()
@@ -51,6 +52,12 @@ impl MissionWorkspace {
             .items_center()
             .border_b_1()
             .border_color(theme::border())
+            .rounded_tr(rems(11. / 16.))
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
+                element
+            })
             .child(
                 div()
                     .flex()
@@ -109,14 +116,30 @@ impl MissionWorkspace {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(theme::panel())
-            .map(|element| {
-                #[cfg(test)]
-                let element = crate::theme_snapshot::record_fill("MISSION_PANEL", element);
-                element
-            })
             .child(header)
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .pb(rems(8. / 16.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .bg(theme::panel())
+                            .map(|element| {
+                                #[cfg(test)]
+                                let element =
+                                    crate::theme_snapshot::record_fill("MISSION_PANEL", element);
+                                element
+                            })
+                            .child(body),
+                    ),
+            )
             .child(
                 div()
                     .id("mission-rail-resize")
@@ -138,12 +161,12 @@ impl MissionWorkspace {
             );
         div()
             .id("mission-rail")
+            .debug_selector(|| "MISSION_RAIL".into())
             .relative()
             .w(rems(visible_width / 16.))
             .h_full()
             .flex_none()
             .overflow_hidden()
-            .bg(theme::panel())
             .when(border_on, |rail| {
                 rail.border_l_1().border_color(theme::border())
             })
@@ -171,6 +194,7 @@ impl MissionWorkspace {
             .to_owned();
         let mut list = div()
             .id("mission-roles-scroll")
+            .debug_selector(|| "MISSION_ROLES_SCROLL".into())
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -532,6 +556,7 @@ impl MissionWorkspace {
         let permission_mode = self.permission_mode();
         let mut panel = div()
             .id("mission-meta-scroll")
+            .debug_selector(|| "MISSION_META_SCROLL".into())
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
@@ -686,7 +711,13 @@ impl MissionWorkspace {
                     )
                     .child(format_relative_time(mission.started_at)),
             ))
-            .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))
+            .child(
+                div()
+                    .debug_selector(|| "MISSION_META_END".into())
+                    .h(rems(1. / 16.))
+                    .w_full()
+                    .bg(theme::border()),
+            )
             .into_any_element()
     }
 

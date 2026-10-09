@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use gpui::{rems, rgb, Hsla, Rems};
 use serde::{Deserialize, Serialize};
@@ -308,6 +308,82 @@ pub fn sidebar_selected_border() -> Hsla {
     color(colors().sidebar_selected_border)
 }
 
+static GLASS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_glass(glass: bool) {
+    GLASS.store(glass, Ordering::Relaxed);
+}
+
+pub fn is_glass() -> bool {
+    GLASS.load(Ordering::Relaxed)
+}
+
+pub fn chrome() -> Hsla {
+    if is_glass() {
+        with_alpha(
+            sidebar(),
+            if active_variant().is_light() {
+                0.90
+            } else {
+                0.88
+            },
+        )
+    } else {
+        sidebar()
+    }
+}
+
+pub fn chrome_border() -> Hsla {
+    if is_glass() {
+        with_alpha(
+            if active_variant().is_light() {
+                text()
+            } else {
+                gpui::white()
+            },
+            if active_variant().is_light() {
+                0.094
+            } else {
+                0.071
+            },
+        )
+    } else {
+        border()
+    }
+}
+
+pub fn chrome_selected() -> Hsla {
+    if is_glass() {
+        with_alpha(
+            if active_variant().is_light() {
+                text()
+            } else {
+                gpui::white()
+            },
+            if active_variant().is_light() {
+                0.047
+            } else {
+                0.071
+            },
+        )
+    } else {
+        sidebar_selected()
+    }
+}
+
+pub fn chrome_selected_border() -> Hsla {
+    if is_glass() {
+        chrome_border()
+    } else {
+        sidebar_selected_border()
+    }
+}
+
+pub fn chrome_hover() -> Hsla {
+    let selected = chrome_selected();
+    with_alpha(selected, selected.a * 0.4)
+}
+
 pub fn danger() -> Hsla {
     color(colors().danger)
 }
@@ -349,6 +425,35 @@ pub fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glass_changes_only_chrome() {
+        let _guard = crate::theme_snapshot::ThemeGuard::new();
+        for variant in [
+            ThemeVariant::Carbon,
+            ThemeVariant::RunnerLight,
+            ThemeVariant::CatppuccinMocha,
+            ThemeVariant::CatppuccinLatte,
+        ] {
+            set_active_variant(variant);
+            set_glass(false);
+            assert_eq!(chrome(), sidebar());
+            assert_eq!(chrome_selected(), sidebar_selected());
+            let opaque_bg = bg();
+            let opaque_panel = panel();
+            let opaque_raised = raised();
+            let opaque_selection = sidebar_selected();
+            set_glass(true);
+            assert_eq!(chrome().a, if variant.is_light() { 0.90 } else { 0.88 });
+            assert_eq!(bg(), opaque_bg);
+            assert_eq!(panel(), opaque_panel);
+            assert_eq!(raised(), opaque_raised);
+            assert_eq!(sidebar_selected(), opaque_selection);
+            assert_eq!(raised().a, 1.);
+            assert_eq!(bg().a, 1.);
+            assert_eq!(panel().a, 1.);
+        }
+    }
 
     #[test]
     fn resolves_auto_and_explicit_intents() {

@@ -39,7 +39,7 @@ pub fn sync_traffic_lights(window: &Window, zoom: f32) {
         return;
     };
 
-    let titlebar_height = 44. * zoom as f64;
+    let titlebar_height = 52. * zoom as f64;
     let close_frame = close.frame();
     let button_height = close_frame.size.height;
     let spacing = minimize.frame().origin.x - close_frame.origin.x;
@@ -50,8 +50,8 @@ pub fn sync_traffic_lights(window: &Window, zoom: f32) {
 
     for (index, button) in [close, minimize, maximize].into_iter().enumerate() {
         let mut frame = button.frame();
-        frame.origin.x = 16. + index as f64 * spacing;
-        frame.origin.y = (titlebar_height - button_height) / 2.;
+        frame.origin.x = 20. + index as f64 * spacing;
+        frame.origin.y = titlebar_height - 30. * zoom as f64 - button_height / 2.;
         button.setFrameOrigin(frame.origin);
     }
 }

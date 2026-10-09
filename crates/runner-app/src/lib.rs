@@ -6,9 +6,13 @@ mod theme_snapshot;
 
 actions!(runner_app_ui, [Copy, Cut, Paste, Redo, SelectAll, Undo]);
 
+pub mod appearance;
 pub mod bootstrap;
 pub mod lifecycle;
 pub mod logging;
+#[cfg(all(target_os = "macos", not(test)))]
+#[path = "platform_ui/material_macos.rs"]
+pub(crate) mod material_macos;
 pub mod pane_layout;
 #[cfg(target_os = "macos")]
 #[path = "platform_ui/fonts_macos.rs"]

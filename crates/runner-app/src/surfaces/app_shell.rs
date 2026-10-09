@@ -470,7 +470,10 @@ fn usage_popover_panel(
             offset: point(px(0.), px(4.)),
         }])
         .when(cfg!(test), |panel| {
-            panel.debug_selector(|| "USAGE_POPOVER_PANEL".into())
+            #[cfg(test)]
+            return crate::theme_snapshot::record_fill("USAGE_POPOVER_PANEL", panel);
+            #[cfg(not(test))]
+            panel
         })
         .child(div().flex_none().child(header))
         .child(
@@ -542,6 +545,7 @@ impl NativeRoot {
                     .into_any_element()
             });
         let update_dot = update_dot_visible(&self.agent_updates, self.settings(cx));
+        let owner = cx.weak_entity();
         let agent_settings = Tooltip::new(
             "usage-agent-settings-tooltip",
             if update_dot {
@@ -551,6 +555,7 @@ impl NativeRoot {
             },
             div()
                 .id("usage-agent-settings")
+                .debug_selector(|| "USAGE_AGENT_SETTINGS".into())
                 .relative()
                 .size(px(24.))
                 .flex()
@@ -559,10 +564,12 @@ impl NativeRoot {
                 .rounded_sm()
                 .cursor_pointer()
                 .hover(|button| button.bg(theme::sidebar_selected()))
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.usage_open = false;
-                    this.enter_settings_route(Some("agents"), window, cx);
-                }))
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        this.usage_open = false;
+                        this.enter_settings_route(Some("agents"), window, cx);
+                    });
+                })
                 .child(
                     svg()
                         .path("settings.svg")
@@ -623,6 +630,10 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_theme(window, cx);
+        runner_app::appearance::configure(self.settings(cx).window_material, cx);
+        window.set_background_appearance(
+            runner_app::appearance::effective(self.settings(cx).window_material, cx).background(),
+        );
         window.set_rem_size(px(16. * self.settings(cx).app_zoom));
         if let Some(error) = self.error.take() {
             self.show_toast(error, ToastTone::Error, cx);
@@ -664,19 +675,19 @@ impl NativeRoot {
             Vec::new()
         };
         let chrome = div()
+            .debug_selector(|| "APP_CHROME".into())
             .relative()
             .size_full()
             .flex()
             .children(sidebar)
             .child(
-                div()
+                runner_app::ui::work_card::work_card(self.sidebar_collapsed)
                     .when(cfg!(test), |column| {
                         column.debug_selector(|| "APP_CONTENT_COLUMN".into())
                     })
                     .relative()
                     .flex_1()
                     .min_w(px(0.))
-                    .h_full()
                     .flex()
                     .flex_col()
                     .children(self.render_main_titlebar_drag_area(cx))
@@ -692,8 +703,7 @@ impl NativeRoot {
                         .flatten()
                         .map(|banner| div().flex_none().pt(rems(44. / 16.)).child(banner)),
                     )
-                    .child(workspace)
-                    .children(self.render_entity_sidebar_toggle(window, cx)),
+                    .child(workspace),
             )
             .children(sidebar_resize)
             .children(preview_trigger)
@@ -722,10 +732,11 @@ impl NativeRoot {
             .overflow_hidden()
             .track_focus(&self.root_focus)
             .font(crate::app_settings::app_font())
-            .bg(theme::bg())
+            .bg(theme::chrome())
             .text_color(theme::text())
-            .child(chrome)
+            .children((self.route != AppRoute::Settings).then_some(chrome))
             .children(settings)
+            .children(self.render_window_navigation(window, cx))
             .children(modal)
             .children(mission_modal)
             .children(settings_confirm)
@@ -891,19 +902,21 @@ impl NativeRoot {
             .flex_none()
             .overflow_hidden()
             .opacity(visibility)
-            .bg(theme::sidebar())
+            .bg(if theme::is_glass() {
+                gpui::transparent_black()
+            } else {
+                theme::sidebar()
+            })
             .map(|element| {
                 #[cfg(test)]
                 let element = crate::theme_snapshot::record_fill("APP_SIDEBAR", element);
                 element
             })
-            .border_r_1()
-            .border_color(theme::border())
             .child(content);
-        // The 1px right border is the divider; the handle centres on it.
-        let divider = visible.then_some(width - 0.5);
+        let divider = visible.then_some(width);
         if preview {
             sidebar = sidebar
+                .bg(theme::chrome())
                 .absolute()
                 .left_0()
                 .top_0()
@@ -989,14 +1002,14 @@ impl NativeRoot {
             .text_color(theme::muted())
             .hover(|button| {
                 button
-                    .border_color(theme::sidebar_selected_border())
-                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                    .border_color(theme::chrome_selected_border())
+                    .bg(theme::chrome_hover())
                     .text_color(theme::text())
             })
             .focus_visible(|button| {
                 button
-                    .border_color(theme::sidebar_selected_border())
-                    .bg(alpha(theme::sidebar_selected(), 0.4))
+                    .border_color(theme::chrome_selected_border())
+                    .bg(theme::chrome_hover())
                     .text_color(theme::text())
             })
             .on_click(cx.listener(|this, _, window, cx| {
@@ -1089,7 +1102,7 @@ impl NativeRoot {
             let trigger = sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom)
                 .occlude()
                 .cursor_pointer()
-                .hover(|button| button.bg(alpha(theme::sidebar_selected(), 0.4)))
+                .hover(|button| button.bg(theme::chrome_hover()))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.usage_open = !this.usage_open;
@@ -1131,8 +1144,8 @@ impl NativeRoot {
                     .children([90., 270.].map(|angle| {
                         div().flex_1().h_full().bg(linear_gradient(
                             angle,
-                            linear_color_stop(alpha(theme::sidebar_selected_border(), 0.), 0.),
-                            linear_color_stop(theme::sidebar_selected_border(), 1.),
+                            linear_color_stop(alpha(theme::chrome_selected_border(), 0.), 0.),
+                            linear_color_stop(theme::chrome_selected_border(), 1.),
                         ))
                     })),
             )
@@ -1165,10 +1178,8 @@ impl NativeRoot {
                                 .justify_center()
                                 .rounded(px(4. * zoom))
                                 .cursor_pointer()
-                                .hover(|button| button.bg(alpha(theme::sidebar_selected(), 0.4)))
-                                .focus_visible(|button| {
-                                    button.bg(alpha(theme::sidebar_selected(), 0.4))
-                                })
+                                .hover(|button| button.bg(theme::chrome_hover()))
+                                .focus_visible(|button| button.bg(theme::chrome_hover()))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.enter_settings_route(None, window, cx);
@@ -1550,47 +1561,17 @@ impl NativeRoot {
         terminal_style_for(self.settings(cx))
     }
 
-    /// Chat panes and the mission workspace carry the open-sidebar cluster in
-    /// their own 44 px header rows; the entity pages have no header row, so the
-    /// shell pins the same cluster into a row of that height for them, level
-    /// with the traffic lights, painted after the page so nothing covers it.
-    fn render_entity_sidebar_toggle(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        if !matches!(
-            self.route,
-            AppRoute::Roles
-                | AppRoute::NewRole
-                | AppRoute::RoleDetail(_)
-                | AppRoute::Crews
-                | AppRoute::NewCrew
-                | AppRoute::CrewEditor(_)
-        ) {
-            return None;
-        }
-        let button = self.render_open_sidebar_button(cx)?;
-        Some(
+    pub(crate) fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
+        self.sidebar_collapsed.then(|| {
             div()
-                .when(cfg!(test), |toggle| {
-                    toggle.debug_selector(|| "ENTITY_SIDEBAR_TOGGLE".into())
-                })
-                .absolute()
-                .top_0()
-                .left(px(self.workspace_titlebar_padding(window, cx)))
-                .h(gpui::rems(runner_app::ui::WORKSPACE_HEADER_HEIGHT / 16.))
-                .flex()
-                .items_center()
-                .child(button)
-                .into_any_element(),
-        )
+                .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
+                .flex_none()
+                .w(rems(92. / 16.))
+                .h(rems(28. / 16.))
+                .into_any_element()
+        })
     }
 
-    /// Whether the window's previous / next page arrows are enabled. The
-    /// arrows live in the macOS title-bar clusters; Windows chrome computes
-    /// its own.
-    #[cfg(target_os = "macos")]
     pub(crate) fn page_navigation_state(&self) -> (bool, bool) {
         let in_settings = self.route == AppRoute::Settings;
         let can_go_back =
@@ -1603,18 +1584,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
-        #[cfg(target_os = "macos")]
-        {
-            if self.sidebar_collapsed && !window.is_fullscreen() {
-                SIDEBAR_TOGGLE_GLYPH_X - SIDEBAR_TOGGLE_GLYPH_INSET * self.settings(cx).app_zoom
-            } else {
-                16. * self.settings(cx).app_zoom
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = window;
-            16. * self.settings(cx).app_zoom
+        let zoom = self.settings(cx).app_zoom;
+        if self.sidebar_collapsed {
+            // The card's scaled inset and unscaled edge already consume part of the window anchor.
+            platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
+        } else {
+            16. * zoom
         }
     }
 
@@ -1784,6 +1759,26 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn toggle_window_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
+        let collapsed = !self.sidebar_collapsed;
+        self.set_sidebar_collapsed(collapsed, true, cx);
+        self.sidebar_preview_peeking = false;
+        if !collapsed {
+            self.sidebar_preview_open = false;
+            if matches!(self.route, AppRoute::Mission(_)) {
+                self.mission_workspace.update(cx, |workspace, cx| {
+                    workspace.focus_active_mission_terminal(window, cx);
+                });
+            } else if self.route == AppRoute::Chat {
+                self.focus_active_terminal(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
         if self.route == AppRoute::Settings {
             return;
@@ -1930,6 +1925,268 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+        use gpui::{size, TestAppContext, VisualTestContext};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let conn = store.test_core.db.get().unwrap();
+            let mut layout = runner_app::pane_layout::PaneLayout::single(
+                Some("direct-agent"),
+                &["direct-agent".into()],
+            );
+            let focused = layout.focused_pane_id.clone();
+            layout
+                .split(&focused, runner_app::pane_layout::SplitOrientation::Row)
+                .unwrap();
+            layout.focus_pane(&focused);
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
+        });
+        for path in [
+            "/chats/direct-agent",
+            "/missions/test-mission",
+            "/roles",
+            "/crews",
+            "/settings",
+        ] {
+            let host = cx.add_window(|window, cx| {
+                let mut root = NativeRoot::new(
+                    format!("card-{path}"),
+                    temp.path().join("logs"),
+                    Some(path.into()),
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                );
+                root.set_sidebar_collapsed(false, false, cx);
+                root.sidebar_visibility = SidebarVisibilityTransition::new(true);
+                root
+            });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(1440.), px(900.)));
+            visual.run_until_parked();
+            let (card_selector, chrome_selector) = if path == "/settings" {
+                ("WORK_CARD", "SETTINGS_CHROME")
+            } else {
+                ("APP_CONTENT_COLUMN", "APP_CHROME")
+            };
+            let card = visual.debug_bounds(card_selector).unwrap();
+            let chrome = visual.debug_bounds(chrome_selector).unwrap();
+            if path.starts_with("/chats/") {
+                assert_fill(&mut visual, "CHAT_TAB_HEADER_CONTENT", None);
+                assert_fill(&mut visual, "CHAT_PANEL_HEADER", None);
+                assert_fill(&mut visual, "PANE_IDENTITY_LINE", None);
+            } else if path.starts_with("/missions/") {
+                assert_fill(&mut visual, "MISSION_HEADER_ROW", None);
+                assert_fill(&mut visual, "MISSION_RAIL_HEADER", None);
+            }
+            assert_eq!(card.top(), chrome.top() + px(8.), "{path}");
+            assert_eq!(card.right(), chrome.right() - px(8.), "{path}");
+            assert_eq!(card.bottom(), chrome.bottom() - px(8.), "{path}");
+            assert_eq!(
+                card.left(),
+                chrome.left()
+                    + px(store.read_with(&visual, |store, _| store.settings.sidebar_width)),
+                "{path}"
+            );
+            for selector in if path.starts_with("/chats/") {
+                &["CHAT_TAB_HEADER", "CHAT_SIDE_PANEL"][..]
+            } else if path.starts_with("/missions/") {
+                &["MISSION_HEADER", "MISSION_RAIL"][..]
+            } else {
+                &[][..]
+            } {
+                let child = visual.debug_bounds(selector).unwrap();
+                assert!(
+                    child.left() > card.left() && child.right() < card.right(),
+                    "{path}: {selector} {child:?} in {card:?}"
+                );
+                assert_eq!(child.top(), card.top() + px(1.), "{path}: {selector}");
+                assert!(
+                    child.bottom() <= card.bottom() - px(1.),
+                    "{path}: {selector}"
+                );
+                if matches!(*selector, "CHAT_SIDE_PANEL" | "MISSION_RAIL") {
+                    assert_eq!(child.bottom(), card.bottom() - px(1.), "{path}: {selector}");
+                }
+            }
+            if path != "/settings" {
+                host.update(&mut visual, |root, _, cx| {
+                    root.set_sidebar_collapsed(true, false, cx);
+                })
+                .unwrap();
+                visual.run_until_parked();
+                // Finish the sidebar's bounded transition before checking its settled layout.
+                host.update(&mut visual, |root, _, cx| {
+                    root.sidebar_visibility = SidebarVisibilityTransition::new(false);
+                    cx.notify();
+                })
+                .unwrap();
+                visual.run_until_parked();
+                assert_eq!(
+                    visual.debug_bounds("APP_CONTENT_COLUMN").unwrap().left(),
+                    px(8.)
+                );
+            }
+            host.update(&mut visual, |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn window_navigation_aligns_with_card_and_stays_fixed_when_sidebar_animates() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
+        let _theme = ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let conn = store.test_core.db.get().unwrap();
+            let layout = runner_app::pane_layout::PaneLayout::single(
+                Some("direct-agent"),
+                &["direct-agent".into()],
+            );
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
+        });
+        for path in [
+            "/chats/direct-agent",
+            "/missions/test-mission",
+            "/roles",
+            "/crews",
+            "/settings",
+        ] {
+            let host = cx.add_window(|window, cx| {
+                let mut root = NativeRoot::new(
+                    format!("navigation-{path}"),
+                    temp.path().join("logs"),
+                    Some(path.into()),
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                );
+                root.set_sidebar_collapsed(false, false, cx);
+                root.sidebar_visibility = SidebarVisibilityTransition::new(true);
+                root
+            });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(1440.), px(900.)));
+            for zoom in [1., 1.5] {
+                host.update(&mut visual, |root, window, cx| {
+                    root.set_zoom(zoom, window, cx)
+                })
+                .unwrap();
+                visual.run_until_parked();
+                let selectors = [
+                    "WINDOW_SIDEBAR_TOGGLE",
+                    "WINDOW_PREVIOUS_PAGE",
+                    "WINDOW_NEXT_PAGE",
+                ];
+                let original = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
+                let caption_height = if cfg!(windows) { 32. * zoom } else { 0. };
+                for bounds in original {
+                    assert_eq!(
+                        bounds.center().y,
+                        px(caption_height + 30. * zoom),
+                        "{path} at {zoom}: {bounds:?}"
+                    );
+                    assert_eq!(
+                        bounds.size,
+                        size(px(28. * zoom), px(28. * zoom)),
+                        "{path} at {zoom}"
+                    );
+                }
+                let header_selector = if path.starts_with("/chats/") {
+                    Some("CHAT_TAB_HEADER_CONTENT")
+                } else if path.starts_with("/missions/") {
+                    Some("MISSION_HEADER_ROW")
+                } else {
+                    None
+                };
+                if let Some(selector) = header_selector {
+                    let header = visual.debug_bounds(selector).unwrap();
+                    assert!(
+                        (header.center().y - original[0].center().y).abs() <= px(1.),
+                        "{path} at {zoom}: {header:?} vs {:?}",
+                        original[0]
+                    );
+                }
+                visual.simulate_click(original[0].center(), Modifiers::default());
+                visual.run_until_parked();
+                host.read_with(&visual, |root, _| {
+                    assert_eq!(root.sidebar_collapsed, path != "/settings")
+                })
+                .unwrap();
+                for (selector, before) in selectors.into_iter().zip(original) {
+                    assert_eq!(
+                        visual.debug_bounds(selector).unwrap(),
+                        before,
+                        "{path} at {zoom}: collapse moved {selector}"
+                    );
+                }
+                if path != "/settings" {
+                    host.update(&mut visual, |root, _, cx| {
+                        root.sidebar_visibility = SidebarVisibilityTransition::new(false);
+                        cx.notify();
+                    })
+                    .unwrap();
+                    visual.run_until_parked();
+                    for (selector, before) in selectors.into_iter().zip(original) {
+                        assert_eq!(
+                            visual.debug_bounds(selector).unwrap(),
+                            before,
+                            "{path} at {zoom}: settled collapse moved {selector}"
+                        );
+                    }
+                    if header_selector.is_some() {
+                        let reserved = visual.debug_bounds("WINDOW_NAVIGATION_SPACE").unwrap();
+                        assert!(
+                            (reserved.left() - original[0].left()).abs() <= px(1.),
+                            "{path} at {zoom}: {reserved:?} vs {:?}",
+                            original[0]
+                        );
+                        assert!(
+                            reserved.right() >= original[2].right(),
+                            "{path} at {zoom}: title overlaps controls"
+                        );
+                    }
+                    visual.simulate_click(original[0].center(), Modifiers::default());
+                    visual.run_until_parked();
+                    host.read_with(&visual, |root, _| assert!(!root.sidebar_collapsed))
+                        .unwrap();
+                    for (selector, before) in selectors.into_iter().zip(original) {
+                        assert_eq!(
+                            visual.debug_bounds(selector).unwrap(),
+                            before,
+                            "{path} at {zoom}: expand moved {selector}"
+                        );
+                    }
+                    host.update(&mut visual, |root, _, cx| {
+                        root.sidebar_visibility = SidebarVisibilityTransition::new(true);
+                        cx.notify();
+                    })
+                    .unwrap();
+                    visual.run_until_parked();
+                }
+            }
+            host.update(&mut visual, |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
 
     struct RetryService {
         core: runner_daemon::daemon::InProcessTransport,
@@ -2220,9 +2477,9 @@ mod tests {
             let banner = visual.debug_bounds("PAGINATED_LIST_ERROR").unwrap();
             let content = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
             assert_eq!(banner.size.height, px(41.));
-            assert_eq!(banner.left(), content.left());
-            assert_eq!(banner.right(), content.right());
-            assert_eq!(banner.top(), content.top() + px(44.));
+            assert_eq!(banner.left(), content.left() + px(1.));
+            assert_eq!(banner.right(), content.right() - px(1.));
+            assert_eq!(banner.top(), content.top() + px(45.));
             assert!(visual.debug_bounds("DAEMON_CRASH_BANNER").is_none());
         }
     }
@@ -2298,7 +2555,7 @@ mod tests {
         let sidebar = chat_visual.debug_bounds("APP_SIDEBAR").unwrap();
         let panel = chat_visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
         assert_eq!(banner.top(), header.bottom());
-        assert_eq!(banner.left(), sidebar.right());
+        assert_eq!(banner.left(), sidebar.right() + px(1.));
         assert_eq!(banner.right(), panel.left());
         assert_eq!(banner.size.height, px(41.));
         let text = chat_visual.debug_bounds("DAEMON_CRASH_MESSAGE").unwrap();
@@ -2311,8 +2568,8 @@ mod tests {
         assert!(chat_visual.debug_bounds("GLOBAL_TOAST").is_none());
         let content = other_visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
         let other_banner = other_visual.debug_bounds("DAEMON_CRASH_BANNER").unwrap();
-        assert_eq!(other_banner.left(), content.left());
-        assert_eq!(other_banner.right(), content.right());
+        assert_eq!(other_banner.left(), content.left() + px(1.));
+        assert_eq!(other_banner.right(), content.right() - px(1.));
         for route in [
             AppRoute::Mission("test-mission".into()),
             AppRoute::Settings,
@@ -2333,8 +2590,8 @@ mod tests {
                 assert_eq!(banner.left(), center.left());
                 assert_eq!(banner.right(), center.right());
             } else {
-                assert_eq!(banner.left(), content.left());
-                assert_eq!(banner.right(), content.right());
+                assert_eq!(banner.left(), content.left() + px(1.));
+                assert_eq!(banner.right(), content.right() - px(1.));
                 if route == AppRoute::Settings {
                     let track = other_visual
                         .debug_bounds("SETTINGS_CONTENT_SCROLLBAR_TRACK")
@@ -2574,6 +2831,7 @@ mod tests {
             AppRoute::Settings
         );
         host.update(&mut visual, |root, _, cx| {
+            root.route = AppRoute::Roles;
             root.sidebar_collapsed = true;
             root.sidebar_preview_open = true;
             cx.notify();
@@ -3000,8 +3258,7 @@ mod tests {
         let bar = visual
             .debug_bounds("sidebar-resize-bar")
             .expect("resize bar");
-        // The divider is the sidebar's own 1px right border.
-        let inside = (sidebar.right() - px(1.)) - bar.left();
+        let inside = sidebar.right() - bar.left();
         let outside = bar.right() - sidebar.right();
         assert_eq!(
             bar.size.width,

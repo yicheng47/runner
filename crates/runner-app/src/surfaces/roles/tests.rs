@@ -555,10 +555,10 @@ fn role_page_columns_split_wide_and_stack_at_the_minimum_width() {
             );
         }
     }
-    assert!(
-        page.visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
-        "the shell must not add an open-sidebar cluster while the sidebar is open"
-    );
+    assert!(page
+        .visual
+        .debug_bounds("WINDOW_TITLEBAR_CONTROLS")
+        .is_some());
 }
 
 #[test]
@@ -585,41 +585,14 @@ fn entity_pages_keep_the_sidebar_cluster_when_it_collapses() {
         })
         .unwrap();
         page.visual.run_until_parked();
-        #[cfg(not(target_os = "macos"))]
-        assert!(
-            page.visual.debug_bounds("ENTITY_SIDEBAR_TOGGLE").is_none(),
-            "{route:?}: the platform chrome owns the sidebar toggle off macOS"
-        );
-        #[cfg(target_os = "macos")]
-        {
-            let toggle = page
-                .visual
-                .debug_bounds("ENTITY_SIDEBAR_TOGGLE")
-                .unwrap_or_else(|| {
-                    panic!("{route:?}: a collapsed sidebar leaves no open-sidebar cluster")
-                });
-            let padding = host
-                .update(&mut page.visual, |root, window, cx| {
-                    root.workspace_titlebar_padding(window, cx)
-                })
-                .unwrap();
-            let column = page.visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
-            assert_eq!(toggle.top(), column.top(), "{route:?}");
-            assert!(
-                (toggle.left() - column.left() - px(padding)).abs() <= px(1.),
-                "{route:?}: {toggle:?} vs column {column:?} and padding {padding}"
-            );
-            assert_eq!(
-                toggle.size.height,
-                px(runner_app::ui::WORKSPACE_HEADER_HEIGHT),
-                "{route:?}: the cluster row must match the pane header height"
-            );
-            assert!(
-                toggle.size.width > px(3. * 28.),
-                "{route:?}: the cluster must carry the page arrows beside the toggle, got {:?}",
-                toggle.size.width
-            );
-        }
+        let controls = page
+            .visual
+            .debug_bounds("WINDOW_TITLEBAR_CONTROLS")
+            .unwrap();
+        let chrome = page.visual.debug_bounds("APP_CHROME").unwrap();
+        assert_eq!(controls.center().y, chrome.top() + px(30.), "{route:?}");
+        assert_eq!(controls.size.width, px(92.), "{route:?}");
+        assert_eq!(controls.size.height, px(28.), "{route:?}");
     }
 }
 

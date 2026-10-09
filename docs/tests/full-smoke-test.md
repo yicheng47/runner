@@ -2,6 +2,8 @@
 
 Use this procedure when Jason asks for a complete live smoke test before a major refactor or important release. Select the cases from the [live regression suite](regression/README.md): active `smoke` rows for release smoke, or all active rows for a complete regression after a major refactor. Its runtime cases exercise every accessible runtime through real Runner terminals: Codex, Claude Code, Antigravity CLI, Copilot and pi. Test TRAE when access is available; otherwise record it as Skipped with the access limitation. Add feature-specific checks when the change affects them. List the required runtimes and platforms before starting; an unavailable required account, CLI or machine is a blocked check, not a pass. The suite includes terminal, workspace, mission, daemon, Settings and CLI cases as well as runtimes. Installation/update and other specialized checks need their stated authorized fixtures. Automated CI remains separate evidence.
 
+Ordinary feature QA follows [Test Scope](../../AGENTS.md#test-scope): test changed behavior and directly affected regressions, with broader coverage for major changes or an explicit request. Feature plans may reuse this procedure's candidate identity, isolation, native control, evidence and cleanup sections without adopting its full runtime or mission matrix. Apply only setup steps needed by the selected checks and authorized fixtures; a shell-only layout check does not require agent accounts or runtime startup missions.
+
 The first run is recorded in [#777 runtime adapter smoke](archive/777-runtime-adapter-smoke.md). Its findings informed the canonical-path setup and use of a single lead slot for startup checks below.
 
 ## Scope and setup

@@ -46,7 +46,9 @@ impl Sidebar {
                 .as_ref()
                 .is_some_and(|menu| menu.read(cx).anchor() == anchor)
         {
-            self.context_menu = None;
+            if let Some(menu) = self.context_menu.take() {
+                menu.update(cx, |menu, cx| menu.close(window, cx));
+            }
             self.schedule_shell_notify(cx);
             cx.notify();
             return;
@@ -61,6 +63,7 @@ impl Sidebar {
             .collect::<Vec<_>>();
         let root = cx.entity();
         let dismiss_root = root.clone();
+        let return_focus = window.focused(cx);
         let menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
             let menu = ContextMenu::new(
@@ -83,6 +86,7 @@ impl Sidebar {
                     });
                 }),
             )
+            .return_focus(return_focus)
             .width(px(width));
             match anchor {
                 Some(anchor) => menu.anchored_to(anchor),

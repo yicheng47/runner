@@ -250,6 +250,7 @@ impl FileLinkEditor {
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub app_theme: ThemeIntent,
+    pub window_material: runner_app::appearance::WindowMaterial,
     pub light_app_theme: LightTheme,
     pub dark_app_theme: DarkTheme,
     pub app_zoom: f32,
@@ -294,6 +295,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             app_theme: ThemeIntent::Auto,
+            window_material: Default::default(),
             light_app_theme: LightTheme::RunnerLight,
             dark_app_theme: DarkTheme::Runner,
             app_zoom: 1.,
@@ -992,6 +994,29 @@ mod quit_settings_tests {
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(value["quitBehavior"], behavior.key());
             assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        }
+    }
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+    use runner_app::appearance::WindowMaterial;
+
+    #[test]
+    fn existing_settings_get_the_platform_material_and_both_choices_round_trip() {
+        let old: AppSettings = serde_json::from_str(r#"{"appZoom":1.25}"#).unwrap();
+        assert_eq!(old.window_material, WindowMaterial::default());
+        for material in [WindowMaterial::Glass, WindowMaterial::Solid] {
+            let settings = AppSettings {
+                window_material: material,
+                ..old.clone()
+            };
+            let encoded = serde_json::to_string(&settings).unwrap();
+            assert_eq!(
+                serde_json::from_str::<AppSettings>(&encoded).unwrap(),
+                settings
+            );
         }
     }
 }

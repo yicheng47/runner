@@ -17,6 +17,7 @@ pub mod settings;
 pub mod surfaces;
 pub mod toggle;
 pub mod tooltip;
+pub mod work_card;
 pub mod workspace_header;
 
 use gpui::{Pixels, Window};

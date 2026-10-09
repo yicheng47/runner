@@ -635,7 +635,7 @@ impl MissionWorkspace {
         }
     }
 
-    pub(super) fn focus_active_mission_terminal(&self, window: &mut Window, cx: &mut App) {
+    pub(crate) fn focus_active_mission_terminal(&self, window: &mut Window, cx: &mut App) {
         if self.rename_modal.is_some() || self.stop_all_confirm || self.restart_confirm.is_some() {
             return;
         }

@@ -418,7 +418,7 @@ impl Sidebar {
                     .mt(rems(10. / 16.))
                     .h(px(1.))
                     .flex_none()
-                    .bg(theme::sidebar_selected_border()),
+                    .bg(theme::chrome_selected_border()),
             )
             .child(
                 sidebar_scroll_frame()

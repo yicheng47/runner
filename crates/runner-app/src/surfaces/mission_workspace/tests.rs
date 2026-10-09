@@ -188,8 +188,10 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         let colors = theme::colors_for(variant);
         assert_eq!(theme::active_variant(), variant);
         assert_fill(&mut visual, "APP_SIDEBAR", colors.sidebar);
-        assert_fill(&mut visual, "MISSION_BG", colors.bg);
         assert_fill(&mut visual, "MISSION_PANEL", colors.panel);
+        assert_fill(&mut visual, "MISSION_HEADER_ROW", None);
+        assert_fill(&mut visual, "MISSION_RAIL_HEADER", None);
+        assert_fill(&mut visual, "MISSION_TABS", None);
         assert_fill(&mut visual, "MISSION_ACCENT", colors.accent);
         let palette = app_settings::terminal_palette(&AppSettings::default(), variant);
         assert_eq!(bridge.session("direct").unwrap().palette(), palette);
@@ -543,6 +545,101 @@ fn cached_mission_header_tabs_and_feed_span_the_content_column() {
 
 struct MissionRailLayoutTest {
     workspace: Entity<MissionWorkspace>,
+}
+
+#[cfg(unix)]
+#[test]
+fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let mission = store.read_with(&cx, |store, _| {
+        runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
+    });
+    let host = cx.add_window(|window, cx| {
+        let workspace = cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "rail-scroll".into(),
+                WeakEntity::new_invalid(),
+                store,
+                window,
+                cx,
+            );
+            workspace.mission = Some(mission);
+            workspace.goal =
+                Some("A long goal that must remain reachable in a short window.\n".repeat(40));
+            workspace.sessions = (0..20)
+                .map(|index| SessionRow {
+                    session: runner_core::protocol::model::Session {
+                        id: format!("slot-{index}"),
+                        mission_id: Some("test-mission".into()),
+                        role_id: "test-shell-role".into(),
+                        slot_id: None,
+                        cwd: None,
+                        status: SessionStatus::Stopped,
+                        pid: None,
+                        started_at: None,
+                        stopped_at: None,
+                    },
+                    handle: format!("worker-{index}"),
+                    lead: index == 0,
+                    runtime: "shell".into(),
+                    live_title: None,
+                    agent_session_key: None,
+                })
+                .collect();
+            workspace
+        });
+        MissionRailLayoutTest { workspace }
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(960.), px(300.)));
+    visual.run_until_parked();
+    for (view, viewport_selector, final_selector) in [
+        (
+            MissionRailView::Roles,
+            "MISSION_ROLES_SCROLL",
+            "MISSION_CARD slot-19",
+        ),
+        (
+            MissionRailView::Meta,
+            "MISSION_META_SCROLL",
+            "MISSION_META_END",
+        ),
+    ] {
+        host.update(&mut visual, |host, _, cx| {
+            host.workspace
+                .update(cx, |workspace, _| workspace.rail_view = view);
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
+        let viewport = visual.debug_bounds(viewport_selector).unwrap();
+        assert_eq!(viewport.bottom(), rail.bottom() - px(8.));
+        let last = visual.debug_bounds(final_selector).unwrap();
+        assert!(
+            last.bottom() > viewport.bottom(),
+            "{view:?}: {last:?} {viewport:?}"
+        );
+        visual.simulate_event(ScrollWheelEvent {
+            position: viewport.center(),
+            delta: ScrollDelta::Lines(point(0., -1000.)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        let last = visual.debug_bounds(final_selector).unwrap();
+        assert!(
+            last.top() >= viewport.top() && last.bottom() <= viewport.bottom(),
+            "{view:?}: {last:?} {viewport:?}"
+        );
+    }
 }
 
 impl gpui::Render for MissionRailLayoutTest {

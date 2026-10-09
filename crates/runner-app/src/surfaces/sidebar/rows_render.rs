@@ -569,7 +569,7 @@ impl Sidebar {
                     .flex_col()
                     .gap(rems(2. / 16.))
                     .border_l_1()
-                    .border_color(theme::border())
+                    .border_color(theme::chrome_border())
                     .children(if nested.is_empty() {
                         if self.dragged_id.is_some() {
                             vec![self.render_empty_project_drop_area(node.id.clone(), cx)]

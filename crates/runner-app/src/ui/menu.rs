@@ -297,6 +297,7 @@ pub struct PopoverMenu {
     trigger_size: IconButtonSize,
     trigger_icon: SharedString,
     trigger_tooltip: Option<SharedString>,
+    return_focus: Option<FocusHandle>,
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
     on_activate: MenuHandler,
@@ -323,6 +324,7 @@ impl PopoverMenu {
             trigger_size: IconButtonSize::Md,
             trigger_icon: "more-horizontal.svg".into(),
             trigger_tooltip: Some("More actions".into()),
+            return_focus: None,
             menu_scroll,
             menu_scrollbar,
             on_activate,
@@ -372,11 +374,25 @@ impl PopoverMenu {
         cx.notify();
     }
 
-    fn toggle(&mut self, cx: &mut Context<Self>) {
+    fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.focus_handle.is_focused(window) {
+            if let Some(focus) = self.return_focus.take() {
+                focus.focus(window, cx);
+            }
+        }
+    }
+
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.restore_focus(window, cx);
+        self.close(cx);
+    }
+
+    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.items.is_empty() {
             return;
         }
         if self.state.open {
+            self.restore_focus(window, cx);
             self.state.close();
         } else {
             self.state.open(&self.items, 0);
@@ -396,294 +412,25 @@ impl PopoverMenu {
         };
         let Some(key) = key else { return };
         cx.stop_propagation();
-        if let MenuAction::Activate(index) = self.state.handle_key(key, &self.items) {
-            (self.on_activate)(index, window, cx);
-        }
-        cx.notify();
-    }
-}
-
-impl Render for PopoverMenu {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let zoom = app_zoom(window);
-        let entity = cx.entity();
-        let click_entity = entity.clone();
-        let trigger = IconButton::new("popover-trigger", self.trigger_icon.clone())
-            .size(self.trigger_size)
-            .focus_handle(self.focus_handle.clone())
-            .keyboard_activation(false)
-            .on_press(move |_, cx| {
-                click_entity.update(cx, |menu, cx| menu.toggle(cx));
-            });
-        let trigger = match self.trigger_tooltip.clone() {
-            Some(tooltip) => trigger.tooltip(tooltip),
-            None => trigger,
-        };
-        let mut root = div()
-            .id(self.id.clone())
-            .relative()
-            .size(rems(self.trigger_size.button_size() / 16.))
-            .flex_none()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(Self::on_key_down))
-            .child(trigger)
-            .child(
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, _, cx| {
-                        entity.update(cx, |menu, _| menu.anchor_bounds = Some(bounds));
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            );
-
-        if let (true, Some(anchor)) = (self.state.open, self.anchor_bounds) {
-            let menu_entity = cx.entity();
-            let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
-                let active = self.state.highlighted == index;
-                let click_entity = menu_entity.clone();
-                let hover_entity = menu_entity.clone();
-                let foreground = if item.destructive {
-                    theme::danger()
-                } else if item.disabled {
-                    theme::faint()
-                } else {
-                    theme::text()
-                };
-                let separator_before = item.separator_before;
-                let row = div()
-                    .id(("popover-item", index))
-                    .w_full()
-                    .px(rems(10. / 16.))
-                    .py(rems(if item.description.is_some() {
-                        8. / 16.
-                    } else {
-                        6. / 16.
-                    }))
-                    .flex()
-                    .items_center()
-                    .gap(rems(10. / 16.))
-                    .rounded(rems(4. / 16.))
-                    .opacity(if item.disabled { 0.5 } else { 1. })
-                    .when(active, |row| row.bg(theme::sidebar_selected()))
-                    .when(!item.disabled, |row| {
-                        row.cursor_pointer()
-                            .hover(|row| row.bg(theme::sidebar_selected()))
-                            .on_hover(move |hovered, _, cx| {
-                                if *hovered {
-                                    hover_entity.update(cx, |menu, cx| {
-                                        if menu.state.highlighted != index {
-                                            menu.state.highlighted = index;
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                            })
-                    })
-                    .children(item.icon.map(|icon| {
-                        svg()
-                            .flex_none()
-                            .path(icon)
-                            .size(rems(14. / 16.))
-                            .text_color(foreground)
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(theme::text_body())
-                                    .font_weight(FontWeight::NORMAL)
-                                    .text_color(foreground)
-                                    .child(item.label),
-                            )
-                            .children(item.description.map(|description| {
-                                div()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::faint())
-                                    .child(description)
-                            })),
-                    )
-                    .children(item.shortcut.map(|shortcut| {
-                        div()
-                            .flex_none()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::faint())
-                            .child(shortcut)
-                    }))
-                    .when_some(item.tooltip, |row, tooltip| {
-                        row.tooltip(move |_, cx| tooltip_view(tooltip.clone(), cx))
-                    })
-                    .when(!item.disabled, |row| {
-                        row.on_click(move |_, window, cx| {
-                            click_entity.update(cx, |menu, cx| {
-                                menu.state.close();
-                                (menu.on_activate)(index, window, cx);
-                                cx.notify();
-                            });
-                        })
-                    });
-                div()
-                    .w_full()
-                    .when(separator_before, |wrapper| {
-                        wrapper.child(
-                            div()
-                                .mx_1()
-                                .py_1()
-                                .child(div().h(px(1.)).w_full().bg(theme::border())),
-                        )
-                    })
-                    .child(row)
-            });
-            let menu = div()
-                .id("popover-menu-items")
-                .relative()
-                .max_h(rems(280. / 16.))
-                .overflow_hidden()
-                .rounded(rems(8. / 16.))
-                .border_1()
-                .border_color(theme::border())
-                .bg(theme::raised())
-                .shadow_2xl()
-                .child(
-                    div()
-                        .id("popover-menu-scroll")
-                        .max_h(rems(280. / 16.))
-                        .overflow_y_scroll()
-                        .scrollbar_width(px(0.))
-                        .track_scroll(&self.menu_scroll)
-                        .flex()
-                        .flex_col()
-                        .gap(rems(1. / 16.))
-                        .p(rems(6. / 16.))
-                        .children(rows),
-                )
-                .child(self.menu_scrollbar.clone())
-                .into_any_element();
-            let dismiss_entity: Entity<Self> = cx.entity();
-            let dismiss: DismissHandler = Rc::new(move |_, cx| {
-                dismiss_entity.update(cx, |menu, cx| menu.close(cx));
-            });
-            root = root.child(popup_layer(
-                anchor,
-                window,
-                anchor.size.width.max(self.min_width * zoom),
-                menu,
-                dismiss,
-            ));
-        }
-        root
-    }
-}
-
-pub struct ContextMenu {
-    id: ElementId,
-    focus_handle: FocusHandle,
-    position: gpui::Point<Pixels>,
-    anchor: Option<Bounds<Pixels>>,
-    width: Pixels,
-    items: Vec<MenuItem>,
-    state: MenuState,
-    on_activate: MenuHandler,
-    on_dismiss: DismissHandler,
-}
-
-impl ContextMenu {
-    pub fn new(
-        id: impl Into<ElementId>,
-        focus_handle: FocusHandle,
-        position: gpui::Point<Pixels>,
-        items: Vec<MenuItem>,
-        on_activate: MenuHandler,
-        on_dismiss: DismissHandler,
-    ) -> Self {
-        let mut state = MenuState::default();
-        state.open(&items, 0);
-        Self {
-            id: id.into(),
-            focus_handle,
-            position,
-            anchor: None,
-            width: px(160.),
-            items,
-            state,
-            on_activate,
-            on_dismiss,
-        }
-    }
-
-    pub fn width(mut self, width: Pixels) -> Self {
-        self.width = width;
-        self
-    }
-
-    /// Opens under `anchor`, the button that opened the menu, the way a
-    /// popover does, instead of at `position`.
-    pub fn anchored_to(mut self, anchor: Bounds<Pixels>) -> Self {
-        self.anchor = Some(anchor);
-        self
-    }
-
-    pub fn anchor(&self) -> Option<Bounds<Pixels>> {
-        self.anchor
-    }
-
-    pub fn focus_handle(&self) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-
-    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.state.close();
-        (self.on_dismiss)(window, cx);
-        cx.notify();
-    }
-
-    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.items.get(index).is_none_or(|item| item.disabled) {
-            return;
-        }
-        self.state.close();
-        (self.on_dismiss)(window, cx);
-        (self.on_activate)(index, window, cx);
-        cx.notify();
-    }
-
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let key = match event.keystroke.key.as_str() {
-            "up" => Some(MenuKey::Up),
-            "down" => Some(MenuKey::Down),
-            "home" => Some(MenuKey::Home),
-            "end" => Some(MenuKey::End),
-            "enter" | "space" => Some(MenuKey::Enter),
-            "escape" => Some(MenuKey::Escape),
-            _ => None,
-        };
-        let Some(key) = key else { return };
-        cx.stop_propagation();
         match self.state.handle_key(key, &self.items) {
-            MenuAction::Activate(index) => self.activate(index, window, cx),
-            MenuAction::Close => self.dismiss(window, cx),
-            MenuAction::None => cx.notify(),
+            MenuAction::Activate(index) => {
+                self.restore_focus(window, cx);
+                (self.on_activate)(index, window, cx);
+            }
+            MenuAction::Close => self.restore_focus(window, cx),
+            MenuAction::None => {}
         }
+        cx.notify();
     }
-}
-
-impl Render for ContextMenu {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn menu_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.state.open {
-            return div().into_any_element();
+            return None;
         }
-        let zoom = app_zoom(window);
-        let width = self.width * zoom;
-        let entity = cx.entity();
+        let menu_entity = cx.weak_entity();
         let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
             let active = self.state.highlighted == index;
-            let click_entity = entity.clone();
-            let hover_entity = entity.clone();
+            let click_entity = menu_entity.clone();
+            let hover_entity = menu_entity.clone();
             let foreground = if item.destructive {
                 theme::danger()
             } else if item.disabled {
@@ -693,7 +440,10 @@ impl Render for ContextMenu {
             };
             let separator_before = item.separator_before;
             let row = div()
-                .id(("context-menu-item", index))
+                .id(("popover-item", index))
+                .when(cfg!(test), |row| {
+                    row.debug_selector(move || format!("POPOVER_ITEM_{index}"))
+                })
                 .w_full()
                 .px(rems(10. / 16.))
                 .py(rems(if item.description.is_some() {
@@ -712,7 +462,7 @@ impl Render for ContextMenu {
                         .hover(|row| row.bg(theme::sidebar_selected()))
                         .on_hover(move |hovered, _, cx| {
                             if *hovered {
-                                hover_entity.update(cx, |menu, cx| {
+                                let _ = hover_entity.update(cx, |menu, cx| {
                                     if menu.state.highlighted != index {
                                         menu.state.highlighted = index;
                                         cx.notify();
@@ -760,7 +510,326 @@ impl Render for ContextMenu {
                 })
                 .when(!item.disabled, |row| {
                     row.on_click(move |_, window, cx| {
-                        click_entity.update(cx, |menu, cx| menu.activate(index, window, cx));
+                        let _ = click_entity.update(cx, |menu, cx| {
+                            menu.state.close();
+                            menu.restore_focus(window, cx);
+                            (menu.on_activate)(index, window, cx);
+                            cx.notify();
+                        });
+                    })
+                });
+            div()
+                .w_full()
+                .when(separator_before, |wrapper| {
+                    wrapper.child(
+                        div()
+                            .mx_1()
+                            .py_1()
+                            .child(div().h(px(1.)).w_full().bg(theme::border())),
+                    )
+                })
+                .child(row)
+        });
+        let menu = div()
+            .id("popover-menu-items")
+            .relative()
+            .max_h(rems(280. / 16.))
+            .overflow_hidden()
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::raised())
+            .when(cfg!(test), |menu| {
+                #[cfg(test)]
+                return crate::theme_snapshot::record_fill("POPOVER_MENU_PANEL", menu);
+                #[cfg(not(test))]
+                menu
+            })
+            .shadow_2xl()
+            .child(
+                div()
+                    .id("popover-menu-scroll")
+                    .max_h(rems(280. / 16.))
+                    .overflow_y_scroll()
+                    .scrollbar_width(px(0.))
+                    .track_scroll(&self.menu_scroll)
+                    .flex()
+                    .flex_col()
+                    .gap(rems(1. / 16.))
+                    .p(rems(6. / 16.))
+                    .children(rows),
+            )
+            .child(self.menu_scrollbar.clone())
+            .into_any_element();
+        Some(menu)
+    }
+}
+
+impl Render for PopoverMenu {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let zoom = app_zoom(window);
+        let entity = cx.entity();
+        let click_entity = entity.clone();
+        let trigger = IconButton::new("popover-trigger", self.trigger_icon.clone())
+            .size(self.trigger_size)
+            .focus_handle(self.focus_handle.clone())
+            .keyboard_activation(false)
+            .on_press(move |window, cx| {
+                click_entity.update(cx, |menu, cx| menu.toggle(window, cx));
+            });
+        let trigger = match self.trigger_tooltip.clone() {
+            Some(tooltip) => trigger.tooltip(tooltip),
+            None => trigger,
+        };
+        let capture = cx.entity();
+        let mut root = div()
+            .capture_any_mouse_down(move |_, window, cx| {
+                let focus = window.focused(cx);
+                capture.update(cx, |menu, _| {
+                    if !menu.state.open {
+                        menu.return_focus = focus;
+                    }
+                });
+            })
+            .id(self.id.clone())
+            .relative()
+            .size(rems(self.trigger_size.button_size() / 16.))
+            .flex_none()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .child(trigger)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, cx| {
+                        entity.update(cx, |menu, _| menu.anchor_bounds = Some(bounds));
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
+
+        if let (true, Some(anchor)) = (self.state.open, self.anchor_bounds) {
+            let menu = self.menu_content(window, cx).unwrap();
+            let dismiss_entity: Entity<Self> = cx.entity();
+            let dismiss: DismissHandler = Rc::new(move |window, cx| {
+                dismiss_entity.update(cx, |menu, cx| menu.dismiss(window, cx));
+            });
+            root = root.child(popup_layer(
+                anchor,
+                window,
+                anchor.size.width.max(self.min_width * zoom),
+                menu,
+                dismiss,
+            ));
+        }
+        root
+    }
+}
+
+pub struct ContextMenu {
+    id: ElementId,
+    focus_handle: FocusHandle,
+    position: gpui::Point<Pixels>,
+    anchor: Option<Bounds<Pixels>>,
+    width: Pixels,
+    items: Vec<MenuItem>,
+    state: MenuState,
+    on_activate: MenuHandler,
+    on_dismiss: DismissHandler,
+    return_focus: Option<FocusHandle>,
+}
+
+impl ContextMenu {
+    pub fn new(
+        id: impl Into<ElementId>,
+        focus_handle: FocusHandle,
+        position: gpui::Point<Pixels>,
+        items: Vec<MenuItem>,
+        on_activate: MenuHandler,
+        on_dismiss: DismissHandler,
+    ) -> Self {
+        let mut state = MenuState::default();
+        state.open(&items, 0);
+        Self {
+            id: id.into(),
+            focus_handle,
+            position,
+            anchor: None,
+            width: px(160.),
+            items,
+            state,
+            on_activate,
+            on_dismiss,
+            return_focus: None,
+        }
+    }
+
+    pub fn width(mut self, width: Pixels) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// Opens under `anchor`, the button that opened the menu, the way a
+    /// popover does, instead of at `position`.
+    pub fn anchored_to(mut self, anchor: Bounds<Pixels>) -> Self {
+        self.anchor = Some(anchor);
+        self
+    }
+
+    pub fn return_focus(mut self, focus: Option<FocusHandle>) -> Self {
+        self.return_focus = focus;
+        self
+    }
+
+    pub fn anchor(&self) -> Option<Bounds<Pixels>> {
+        self.anchor
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.close();
+        if self.focus_handle.is_focused(window) {
+            if let Some(focus) = self.return_focus.take() {
+                focus.focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close(window, cx);
+        (self.on_dismiss)(window, cx);
+    }
+
+    fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.items.get(index).is_none_or(|item| item.disabled) {
+            return;
+        }
+        self.state.close();
+        if self.focus_handle.is_focused(window) {
+            if let Some(focus) = self.return_focus.take() {
+                focus.focus(window, cx);
+            }
+        }
+        (self.on_dismiss)(window, cx);
+        (self.on_activate)(index, window, cx);
+        cx.notify();
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = match event.keystroke.key.as_str() {
+            "up" => Some(MenuKey::Up),
+            "down" => Some(MenuKey::Down),
+            "home" => Some(MenuKey::Home),
+            "end" => Some(MenuKey::End),
+            "enter" | "space" => Some(MenuKey::Enter),
+            "escape" => Some(MenuKey::Escape),
+            _ => None,
+        };
+        let Some(key) = key else { return };
+        cx.stop_propagation();
+        match self.state.handle_key(key, &self.items) {
+            MenuAction::Activate(index) => self.activate(index, window, cx),
+            MenuAction::Close => self.dismiss(window, cx),
+            MenuAction::None => cx.notify(),
+        }
+    }
+    fn menu_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.state.open {
+            return None;
+        }
+        let zoom = app_zoom(window);
+        let width = self.width * zoom;
+        let entity = cx.weak_entity();
+        let rows = self.items.iter().cloned().enumerate().map(|(index, item)| {
+            let active = self.state.highlighted == index;
+            let click_entity = entity.clone();
+            let hover_entity = entity.clone();
+            let foreground = if item.destructive {
+                theme::danger()
+            } else if item.disabled {
+                theme::faint()
+            } else {
+                theme::text()
+            };
+            let separator_before = item.separator_before;
+            let row = div()
+                .id(("context-menu-item", index))
+                .when(cfg!(test), |row| {
+                    row.debug_selector(move || format!("CONTEXT_MENU_ITEM_{index}"))
+                })
+                .w_full()
+                .px(rems(10. / 16.))
+                .py(rems(if item.description.is_some() {
+                    8. / 16.
+                } else {
+                    6. / 16.
+                }))
+                .flex()
+                .items_center()
+                .gap(rems(10. / 16.))
+                .rounded(rems(4. / 16.))
+                .opacity(if item.disabled { 0.5 } else { 1. })
+                .when(active, |row| row.bg(theme::sidebar_selected()))
+                .when(!item.disabled, |row| {
+                    row.cursor_pointer()
+                        .hover(|row| row.bg(theme::sidebar_selected()))
+                        .on_hover(move |hovered, _, cx| {
+                            if *hovered {
+                                let _ = hover_entity.update(cx, |menu, cx| {
+                                    if menu.state.highlighted != index {
+                                        menu.state.highlighted = index;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        })
+                })
+                .children(item.icon.map(|icon| {
+                    svg()
+                        .flex_none()
+                        .path(icon)
+                        .size(rems(14. / 16.))
+                        .text_color(foreground)
+                }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(theme::text_body())
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(foreground)
+                                .child(item.label),
+                        )
+                        .children(item.description.map(|description| {
+                            div()
+                                .text_size(theme::text_meta())
+                                .text_color(theme::faint())
+                                .child(description)
+                        })),
+                )
+                .children(item.shortcut.map(|shortcut| {
+                    div()
+                        .flex_none()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(shortcut)
+                }))
+                .when_some(item.tooltip, |row, tooltip| {
+                    row.tooltip(move |_, cx| tooltip_view(tooltip.clone(), cx))
+                })
+                .when(!item.disabled, |row| {
+                    row.on_click(move |_, window, cx| {
+                        let _ =
+                            click_entity.update(cx, |menu, cx| menu.activate(index, window, cx));
                     })
                 });
             div()
@@ -777,7 +846,6 @@ impl Render for ContextMenu {
         });
         let menu = div()
             .id(self.id.clone())
-            .track_focus(&self.focus_handle)
             .tab_index(0)
             .w(width)
             .flex()
@@ -788,24 +856,45 @@ impl Render for ContextMenu {
             .border_1()
             .border_color(theme::border())
             .bg(theme::raised())
+            .when(cfg!(test), |menu| {
+                #[cfg(test)]
+                return crate::theme_snapshot::record_fill("CONTEXT_MENU_PANEL", menu);
+                #[cfg(not(test))]
+                menu
+            })
             .shadow_2xl()
-            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .children(rows)
             .into_any_element();
+        Some(menu)
+    }
+}
+
+impl Render for ContextMenu {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.state.open {
+            return div().into_any_element();
+        }
+        let width = self.width * app_zoom(window);
+        let menu = self.menu_content(window, cx).unwrap();
         let dismiss_entity = cx.entity();
         let dismiss: DismissHandler = Rc::new(move |window, cx| {
             dismiss_entity.update(cx, |menu, cx| menu.dismiss(window, cx));
         });
-        match self.anchor {
+        let layer = match self.anchor {
             Some(anchor) => popup_layer(anchor, window, width, menu, dismiss),
             None => context_menu_layer(self.position, window, width, menu, dismiss),
-        }
+        };
+        div()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(Self::on_key_down))
+            .child(layer)
+            .into_any_element()
     }
 }
 
-fn context_menu_layer(
+pub(crate) fn context_menu_layer(
     position: gpui::Point<Pixels>,
     window: &Window,
     width: Pixels,
@@ -958,6 +1047,85 @@ mod tests {
             MenuItem::new("Unavailable").disabled(true),
             MenuItem::new("Delete").destructive(true),
         ]
+    }
+
+    #[test]
+    fn menus_stay_solid_in_parent_window_and_restore_focus_in_glass() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+
+        let _theme = ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+        ] {
+            theme::set_active_variant(variant);
+            for glass in [false, true] {
+                theme::set_glass(glass);
+                let mut cx = TestAppContext::single();
+                let activated = Rc::new(Cell::new(None));
+                let choice = activated.clone();
+                let host = cx.add_window(|window, cx| {
+                    let previous = cx.focus_handle();
+                    let focus = cx.focus_handle();
+                    focus.focus(window, cx);
+                    ContextMenu::new(
+                        "context-menu",
+                        focus,
+                        point(px(20.), px(20.)),
+                        items(),
+                        Rc::new(move |index, _, _| choice.set(Some(index))),
+                        Rc::new(|_, _| {}),
+                    )
+                    .return_focus(Some(previous))
+                });
+                let previous = host
+                    .read_with(&cx, |menu, _| menu.return_focus.clone().unwrap())
+                    .unwrap();
+                let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                visual.run_until_parked();
+                assert_fill(&mut visual, "CONTEXT_MENU_PANEL", theme::colors().raised);
+                visual.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+                let row = visual.debug_bounds("CONTEXT_MENU_ITEM_2").unwrap();
+                visual.simulate_click(row.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(activated.get(), Some(2));
+                assert!(!host.read_with(&visual, |menu, _| menu.state.open).unwrap());
+                visual.update(|window, _| assert!(previous.is_focused(window)));
+
+                let mut cx = TestAppContext::single();
+                let activated = Rc::new(Cell::new(None));
+                let choice = activated.clone();
+                let host = cx.add_window(|window, cx| {
+                    let previous = cx.focus_handle();
+                    let focus = cx.focus_handle();
+                    focus.focus(window, cx);
+                    let mut menu = PopoverMenu::new(
+                        "popover-menu",
+                        focus,
+                        items(),
+                        Rc::new(move |index, _, _| choice.set(Some(index))),
+                        cx,
+                    );
+                    menu.return_focus = Some(previous);
+                    menu
+                });
+                let previous = host
+                    .read_with(&cx, |menu, _| menu.return_focus.clone().unwrap())
+                    .unwrap();
+                let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                visual.run_until_parked();
+                visual.simulate_keystrokes("down");
+                visual.run_until_parked();
+                assert_fill(&mut visual, "POPOVER_MENU_PANEL", theme::colors().raised);
+                visual.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+                let row = visual.debug_bounds("POPOVER_ITEM_2").unwrap();
+                visual.simulate_click(row.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(activated.get(), Some(2));
+                assert!(!host.read_with(&visual, |menu, _| menu.state.open).unwrap());
+                visual.update(|window, _| assert!(previous.is_focused(window)));
+            }
+        }
     }
 
     #[test]

@@ -63,7 +63,11 @@ impl MissionWorkspace {
             .gap_1()
             .border_b_1()
             .border_color(theme::border())
-            .bg(theme::panel())
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("MISSION_TABS", element);
+                element
+            })
             .child(
                 mission_tab("mission-feed-tab", "feed", feed_active).on_click(
                     move |_, window, cx| {

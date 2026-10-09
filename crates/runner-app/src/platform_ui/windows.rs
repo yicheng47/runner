@@ -55,6 +55,10 @@ pub(crate) fn finish_window_close(window: &mut Window) -> bool {
     false
 }
 
+pub(crate) fn navigation_left(_window: &Window, zoom: f32) -> f32 {
+    16. * zoom
+}
+
 impl NativeRoot {
     pub(crate) fn decorate_window(
         &self,
@@ -67,7 +71,7 @@ impl NativeRoot {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::bg())
+            .bg(theme::sidebar())
             .child(
                 div()
                     .relative()
@@ -98,27 +102,92 @@ impl NativeRoot {
     pub(crate) fn render_sidebar_titlebar(
         &self,
         _window: &Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        None
+        Some(
+            div()
+                .flex_none()
+                .h(px(52. * self.settings(cx).app_zoom))
+                .into_any_element(),
+        )
     }
 
-    pub(crate) fn render_open_sidebar_button(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
-        None
-    }
-
-    fn render_windows_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_window_navigation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let zoom = self.settings(cx).app_zoom;
         let sidebar_root = cx.entity();
         let back_root = cx.entity();
         let forward_root = cx.entity();
         let in_settings = self.route == AppRoute::Settings;
-        let can_go_back =
-            !in_settings && self.runtime_navigation_index.is_some_and(|index| index > 0);
-        let can_go_forward = !in_settings
-            && self
-                .runtime_navigation_index
-                .is_some_and(|index| index + 1 < self.runtime_navigation_history.len());
+        let (can_go_back, can_go_forward) = self.page_navigation_state();
+        Some(
+            div()
+                .occlude()
+                .debug_selector(|| "WINDOW_TITLEBAR_CONTROLS".into())
+                .absolute()
+                .left(px(navigation_left(window, zoom)))
+                .top(px(16. * zoom))
+                .flex_none()
+                .h(px(28. * zoom))
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .debug_selector(|| "WINDOW_SIDEBAR_TOGGLE".into())
+                        .child(
+                            IconButton::new(
+                                "sidebar-toggle",
+                                if self.sidebar_collapsed {
+                                    "panel-left-hidden.svg"
+                                } else {
+                                    "panel-left-open.svg"
+                                },
+                            )
+                            .tooltip("Toggle sidebar")
+                            .disabled(in_settings)
+                            .on_press(move |window, cx| {
+                                sidebar_root.update(cx, |this, cx| {
+                                    this.toggle_window_sidebar(window, cx);
+                                });
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "WINDOW_PREVIOUS_PAGE".into())
+                        .child(
+                            IconButton::new("window-previous-page", "chevron-left.svg")
+                                .tooltip("Previous page")
+                                .disabled(!can_go_back)
+                                .on_press(move |window, cx| {
+                                    back_root.update(cx, |this, cx| {
+                                        this.navigate_runtime_page(-1, window, cx)
+                                    });
+                                }),
+                        ),
+                )
+                .child(
+                    div().debug_selector(|| "WINDOW_NEXT_PAGE".into()).child(
+                        IconButton::new("window-next-page", "chevron-right.svg")
+                            .tooltip("Next page")
+                            .disabled(!can_go_forward)
+                            .on_press(move |window, cx| {
+                                forward_root.update(cx, |this, cx| {
+                                    this.navigate_runtime_page(1, window, cx)
+                                });
+                            }),
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_windows_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let zoom = self.settings(cx).app_zoom;
         let caption_width = if window.is_fullscreen() {
             0.
         } else {
@@ -131,56 +200,6 @@ impl NativeRoot {
             .items_center()
             .bg(theme::sidebar())
             .font(crate::app_settings::app_font())
-            .child(
-                div()
-                    .occlude()
-                    .flex_none()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .pl_2()
-                    .gap_1()
-                    .child(
-                        IconButton::new(
-                            "sidebar-toggle",
-                            if self.sidebar_collapsed {
-                                "panel-left-hidden.svg"
-                            } else {
-                                "panel-left-open.svg"
-                            },
-                        )
-                        .tooltip("Toggle sidebar")
-                        .disabled(in_settings)
-                        .on_press(move |_, cx| {
-                            sidebar_root.update(cx, |this, cx| {
-                                this.set_sidebar_collapsed(!this.sidebar_collapsed, true, cx);
-                                this.sidebar_preview_open = false;
-                                this.sidebar_preview_peeking = false;
-                                cx.notify();
-                            });
-                        }),
-                    )
-                    .child(
-                        IconButton::new("window-previous-page", "chevron-left.svg")
-                            .tooltip("Previous page")
-                            .disabled(!can_go_back)
-                            .on_press(move |window, cx| {
-                                back_root.update(cx, |this, cx| {
-                                    this.navigate_runtime_page(-1, window, cx)
-                                });
-                            }),
-                    )
-                    .child(
-                        IconButton::new("window-next-page", "chevron-right.svg")
-                            .tooltip("Next page")
-                            .disabled(!can_go_forward)
-                            .on_press(move |window, cx| {
-                                forward_root.update(cx, |this, cx| {
-                                    this.navigate_runtime_page(1, window, cx)
-                                });
-                            }),
-                    ),
-            )
             .child(
                 self.render_titlebar_drag_area(
                     "windows-titlebar-drag",

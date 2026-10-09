@@ -12,9 +12,7 @@ use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use crate::theme;
 use crate::ui::app_zoom;
-use crate::ui::menu::{
-    popup_layer_sized, DismissHandler, MenuItem, MenuKey, MenuState, PopupWidth,
-};
+use crate::ui::menu::{DismissHandler, MenuItem, MenuKey, MenuState, PopupWidth};
 use crate::ui::scrollbar::{app_scrollbar_gutter, Scrollbar};
 
 pub type SelectHandler = Rc<dyn Fn(String, &mut Window, &mut App)>;
@@ -438,6 +436,29 @@ impl StyledSelect {
             cx.notify();
         }
     }
+    fn menu_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.state.is_open() {
+            return None;
+        }
+        let select_entity = cx.weak_entity();
+        let menu = option_menu(
+            &self.options,
+            &self.value,
+            self.state.highlighted(),
+            OptionMenuStyle {
+                detailed: self.detailed || self.picker,
+                monospace: self.monospace,
+                runtime_style: self.runtime_style,
+                mono_description: self.picker,
+            },
+            &self.menu_scroll,
+            self.menu_scrollbar.clone(),
+            Rc::new(move |index, window, cx| {
+                let _ = select_entity.update(cx, |select, cx| select.choose(index, window, cx));
+            }),
+        );
+        Some(menu)
+    }
 }
 
 impl Render for StyledSelect {
@@ -618,23 +639,7 @@ impl Render for StyledSelect {
             );
 
         if let (true, Some(anchor)) = (open, self.anchor_bounds) {
-            let select_entity = cx.entity();
-            let menu = option_menu(
-                &self.options,
-                &self.value,
-                self.state.highlighted(),
-                OptionMenuStyle {
-                    detailed: self.detailed || self.picker,
-                    monospace: self.monospace,
-                    runtime_style: self.runtime_style,
-                    mono_description: self.picker,
-                },
-                &self.menu_scroll,
-                self.menu_scrollbar.clone(),
-                Rc::new(move |index, window, cx| {
-                    select_entity.update(cx, |select, cx| select.choose(index, window, cx));
-                }),
-            );
+            let menu = self.menu_content(window, cx).unwrap();
             let dismiss_entity: Entity<Self> = cx.entity();
             let dismiss: DismissHandler = Rc::new(move |_, cx| {
                 dismiss_entity.update(cx, |select, cx| select.close(cx));
@@ -648,7 +653,9 @@ impl Render for StyledSelect {
                     zoom,
                 )
             };
-            root = root.child(popup_layer_sized(anchor, window, width, menu, dismiss));
+            root = root.child(crate::ui::menu::popup_layer_sized(
+                anchor, window, width, menu, dismiss,
+            ));
         }
         root
     }
@@ -793,7 +800,9 @@ pub(crate) fn option_menu(
                 )
             })
             .when(!option.disabled, |row| {
-                row.on_click(move |_, window, cx| on_choose(index, window, cx))
+                row.on_click(move |_, window, cx| {
+                    on_choose(index, window, cx);
+                })
             })
     });
     // A list that scrolls gives its scrollbar a lane of its own, so no row,
@@ -815,6 +824,12 @@ pub(crate) fn option_menu(
             theme::border_strong()
         })
         .bg(theme::panel())
+        .when(cfg!(test), |menu| {
+            #[cfg(test)]
+            return crate::theme_snapshot::record_fill("STYLED_SELECT_MENU", menu);
+            #[cfg(not(test))]
+            menu
+        })
         .shadow_xl()
         .child(
             div()
@@ -918,6 +933,50 @@ mod tests {
             keystroke: Keystroke::parse(key).unwrap(),
         });
         visual.run_until_parked();
+    }
+
+    #[test]
+    fn select_menu_stays_solid_in_parent_window_in_glass() {
+        use crate::theme_snapshot::{assert_fill, ThemeGuard};
+
+        let _theme = ThemeGuard::new();
+        for variant in [
+            theme::ThemeVariant::Carbon,
+            theme::ThemeVariant::RunnerLight,
+        ] {
+            theme::set_active_variant(variant);
+            for glass in [false, true] {
+                theme::set_glass(glass);
+                let mut cx = TestAppContext::single();
+                let choices = Rc::new(std::cell::RefCell::new(Vec::new()));
+                let host = cx.add_window(|window, cx| {
+                    let focus = cx.focus_handle();
+                    focus.focus(window, cx);
+                    let select = cx.new(|cx| {
+                        let choices = choices.clone();
+                        StyledSelect::new(
+                            "select",
+                            focus,
+                            "a",
+                            options(),
+                            Rc::new(move |value, _, _| choices.borrow_mut().push(value)),
+                            cx,
+                        )
+                    });
+                    SelectHost { select }
+                });
+                let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                visual.run_until_parked();
+                press_key(&mut visual, "enter");
+                assert_fill(&mut visual, "STYLED_SELECT_MENU", theme::colors().panel);
+                visual.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+                let row = visual.debug_bounds("STYLED_SELECT_OPTION_2").unwrap();
+                visual.simulate_click(row.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(&*choices.borrow(), &["c"]);
+                assert!(visual.debug_bounds("STYLED_SELECT_MENU").is_none());
+            }
+        }
     }
 
     #[test]

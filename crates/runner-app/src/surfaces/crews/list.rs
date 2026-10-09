@@ -532,6 +532,7 @@ impl NativeRoot {
         ];
         let root = cx.entity();
         let dismiss_root = root.clone();
+        let return_focus = window.focused(cx);
         let menu = cx.new(move |menu_cx| {
             let action_root = root;
             ContextMenu::new(
@@ -553,6 +554,7 @@ impl NativeRoot {
                     });
                 }),
             )
+            .return_focus(return_focus)
             .width(px(160.))
         });
         let focus = menu.read(cx).focus_handle();
