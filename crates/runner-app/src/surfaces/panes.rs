@@ -438,6 +438,7 @@ impl NativeRoot {
                             drawer_resizing,
                             zoom,
                             Some(theme::border_strong()),
+                            true,
                         )
                         .id("terminal-drawer-resize")
                         .on_drag(
@@ -538,6 +539,7 @@ impl NativeRoot {
                 self.chat_panel_resizing,
                 zoom,
                 None,
+                false,
             )
             .id("chat-panel-resize")
             .map(|handle| {
@@ -1134,7 +1136,6 @@ impl NativeRoot {
                     .pb(rems(8. / 16.))
                     .child(
                         div()
-                            .bg(theme::panel())
                             .id("chat-panel-scroll")
                             .flex_1()
                             .min_h(px(0.))
@@ -1553,6 +1554,7 @@ impl NativeRoot {
                     self.resizing_split.as_deref() == Some(split.id.as_str()),
                     self.settings(cx).app_zoom,
                     Some(theme::border_strong()),
+                    true,
                 )
                 .id(SharedString::from(format!("gutter-{}", split.id)))
                 .on_drag(drag, |drag: &SplitResizeDrag, _, _, cx: &mut App| {
@@ -2170,6 +2172,7 @@ impl NativeRoot {
                 .px(rems(8. / 16.))
                 .flex()
                 .items_center()
+                .bg(theme::panel())
                 .border_b_1()
                 .border_color(theme::border())
                 .map(|element| {
@@ -3066,7 +3069,7 @@ fn chat_panel_content(
                         .rounded_lg()
                         .border_1()
                         .border_color(theme::border_strong())
-                        .bg(theme::bg())
+                        .bg(theme::panel())
                         .p(rems(14. / 16.))
                         .child(chat_panel_setup(detail, role, column))
                         .child(div().h(rems(1. / 16.)).w_full().bg(theme::border()))

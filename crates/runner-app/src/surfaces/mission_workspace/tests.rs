@@ -188,7 +188,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         let colors = theme::colors_for(variant);
         assert_eq!(theme::active_variant(), variant);
         assert_fill(&mut visual, "APP_SIDEBAR", colors.sidebar);
-        assert_fill(&mut visual, "MISSION_PANEL", colors.panel);
+        assert_fill(&mut visual, "MISSION_PANEL", None);
         assert_fill(&mut visual, "MISSION_HEADER_ROW", None);
         assert_fill(&mut visual, "MISSION_RAIL_HEADER", None);
         assert_fill(&mut visual, "MISSION_TABS", None);

@@ -885,7 +885,7 @@ impl MissionWorkspace {
             .inset_0()
             .flex()
             .flex_col()
-            .bg(theme::panel())
+            .bg(theme::bg())
             .child(self.render_mission_feed(cx))
             .children(can_compose.then(|| self.render_mission_composer(window, cx)))
             .children(paused.then(|| self.render_mission_paused_overlay(cx)))

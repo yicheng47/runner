@@ -16,7 +16,7 @@ use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 #[cfg(target_os = "macos")]
-pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 94.3;
+pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 102.3;
 #[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_INSET: f32 = 6.3;
 const SIDEBAR_TRANSITION_MS: u64 = 200;
@@ -1259,6 +1259,7 @@ impl NativeRoot {
             self.sidebar_resizing,
             zoom,
             None,
+            false,
         )
         .id("sidebar-resize")
         .map(|handle| {
@@ -1985,7 +1986,7 @@ mod tests {
             if path.starts_with("/chats/") {
                 assert_fill(&mut visual, "CHAT_TAB_HEADER_CONTENT", None);
                 assert_fill(&mut visual, "CHAT_PANEL_HEADER", None);
-                assert_fill(&mut visual, "PANE_IDENTITY_LINE", None);
+                assert_fill(&mut visual, "PANE_IDENTITY_LINE", theme::colors().panel);
             } else if path.starts_with("/missions/") {
                 assert_fill(&mut visual, "MISSION_HEADER_ROW", None);
                 assert_fill(&mut visual, "MISSION_RAIL_HEADER", None);

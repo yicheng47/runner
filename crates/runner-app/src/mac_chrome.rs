@@ -50,7 +50,7 @@ pub fn sync_traffic_lights(window: &Window, zoom: f32) {
 
     for (index, button) in [close, minimize, maximize].into_iter().enumerate() {
         let mut frame = button.frame();
-        frame.origin.x = 20. + index as f64 * spacing;
+        frame.origin.x = 24. + index as f64 * spacing;
         frame.origin.y = titlebar_height - 30. * zoom as f64 - button_height / 2.;
         button.setFrameOrigin(frame.origin);
     }

@@ -57,9 +57,9 @@ impl MissionWorkspace {
             .debug_selector(|| "MISSION_TABS".into())
             .h(rems(WORKSPACE_TABS_HEIGHT / 16.))
             .flex_none()
-            .px_6()
+            .px_4()
             .flex()
-            .items_end()
+            .items_center()
             .gap_1()
             .border_b_1()
             .border_color(theme::border())
@@ -99,18 +99,14 @@ impl MissionWorkspace {
                     div()
                         .id(SharedString::from(format!("mission-tab-{session_id}")))
                         .relative()
-                        .h(rems(32. / 16.))
+                        .h(rems(28. / 16.))
                         .flex_none()
-                        .px(rems(14. / 16.))
+                        .px(rems(12. / 16.))
                         .flex()
                         .items_center()
                         .gap_2()
-                        .border_b_2()
-                        .border_color(if active {
-                            theme::accent()
-                        } else {
-                            gpui::transparent_black()
-                        })
+                        .rounded_md()
+                        .when(active, |tab| tab.bg(theme::panel()))
                         .cursor_pointer()
                         .text_size(theme::text_body())
                         .text_color(if active {
@@ -219,7 +215,7 @@ impl MissionWorkspace {
             .flex_1()
             .flex()
             .flex_col()
-            .bg(theme::panel())
+            .bg(theme::bg())
             .child(
                 div()
                     .id("mission-feed-scroll")
@@ -629,7 +625,7 @@ impl MissionWorkspace {
                             .bg(if warning {
                                 theme::with_alpha(theme::danger(), 0.05)
                             } else {
-                                theme::bg()
+                                theme::panel()
                             })
                             .p_3()
                             .when(!warning, |payload| {

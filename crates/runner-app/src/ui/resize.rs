@@ -33,12 +33,16 @@ impl ResizeAxis {
 /// That line never changes; the accent bar lights over it, exactly as it does
 /// over the border a neighbouring panel paints for the splitters that pass
 /// `None`.
+///
+/// The sidebar and side panel edges pass `lights: false`: they keep the grab
+/// strip and resize cursor but never paint the accent bar.
 pub fn resize_strip(
     group: &'static str,
     axis: ResizeAxis,
     active: bool,
     zoom: f32,
     rest: Option<Hsla>,
+    lights: bool,
 ) -> Div {
     let lit = theme::with_alpha(theme::accent(), 0.4);
     let grab = RESIZE_GRAB * zoom;
@@ -50,8 +54,8 @@ pub fn resize_strip(
         ResizeAxis::Rows => div().h(bar_size).w_full(),
     };
     let bar = bar
-        .when(active, |bar| bar.bg(lit))
-        .group_hover(group, move |bar| bar.bg(lit))
+        .when(lights && active, |bar| bar.bg(lit))
+        .when(lights, |bar| bar.group_hover(group, move |bar| bar.bg(lit)))
         .debug_selector(move || format!("{group}-bar"));
     let line = rest.map(|color| {
         let line = match axis {

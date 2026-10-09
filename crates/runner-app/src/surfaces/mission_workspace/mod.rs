@@ -375,17 +375,13 @@ fn mission_tab(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .h(rems(32. / 16.))
+        .h(rems(28. / 16.))
         .flex_none()
-        .px(rems(14. / 16.))
+        .px(rems(12. / 16.))
         .flex()
         .items_center()
-        .border_b_2()
-        .border_color(if active {
-            theme::accent()
-        } else {
-            gpui::transparent_black()
-        })
+        .rounded_md()
+        .when(active, |tab| tab.bg(theme::panel()))
         .cursor_pointer()
         .text_size(theme::text_body())
         .text_color(if active {

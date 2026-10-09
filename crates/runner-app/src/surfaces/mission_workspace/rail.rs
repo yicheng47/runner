@@ -130,7 +130,6 @@ impl MissionWorkspace {
                             .min_h(px(0.))
                             .flex()
                             .flex_col()
-                            .bg(theme::panel())
                             .map(|element| {
                                 #[cfg(test)]
                                 let element =
@@ -154,7 +153,6 @@ impl MissionWorkspace {
                     .h_full()
                     .w(rems(4. / 16.))
                     .cursor(CursorStyle::ResizeLeftRight)
-                    .hover(|strip| strip.bg(theme::with_alpha(theme::accent(), 0.4)))
                     .on_drag(drag, |drag: &MissionRailResizeDrag, _, _, cx: &mut App| {
                         cx.new(|_| drag.clone())
                     }),
@@ -373,7 +371,7 @@ impl MissionWorkspace {
                     } else {
                         theme::border()
                     })
-                    .bg(theme::bg())
+                    .bg(theme::panel())
                     .cursor_pointer()
                     .when(!active, |card| {
                         card.hover(|card| card.border_color(theme::border_strong()))
@@ -633,7 +631,7 @@ impl MissionWorkspace {
                             .rounded_md()
                             .border_1()
                             .border_color(theme::border())
-                            .bg(theme::bg())
+                            .bg(theme::panel())
                             .px_2()
                             .py_2()
                             .cursor_pointer()
