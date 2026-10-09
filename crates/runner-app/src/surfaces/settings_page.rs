@@ -3514,14 +3514,15 @@ mod tests {
                     .unwrap();
                 cx.run_until_parked();
                 let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+                let sidebar_top = if cfg!(windows) { 12. + 32. } else { 52. };
                 assert!(
                     back.top()
                         >= visual
                             .debug_bounds("WINDOW_TITLEBAR_CONTROLS")
                             .unwrap()
                             .bottom()
-                        && back.top() >= px((52. + if cfg!(windows) { 32. } else { 0. }) * zoom)
-                        && back.top() < px((68. + if cfg!(windows) { 32. } else { 0. }) * zoom),
+                        && back.top() >= px(sidebar_top * zoom)
+                        && back.top() < px((sidebar_top + 16.) * zoom),
                     "zoom {zoom} width {width}: {back:?}"
                 );
             }

@@ -1563,7 +1563,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
-        self.sidebar_collapsed.then(|| {
+        (self.sidebar_collapsed && !cfg!(windows)).then(|| {
             div()
                 .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
                 .flex_none()
@@ -1586,7 +1586,7 @@ impl NativeRoot {
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         let zoom = self.settings(cx).app_zoom;
-        if self.sidebar_collapsed {
+        if self.sidebar_collapsed && !cfg!(windows) {
             // The card's scaled inset and unscaled edge already consume part of the window anchor.
             platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
         } else {
@@ -2045,7 +2045,7 @@ mod tests {
     }
 
     #[test]
-    fn window_navigation_aligns_with_card_and_stays_fixed_when_sidebar_animates() {
+    fn window_navigation_stays_fixed_when_sidebar_animates() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
         let _theme = ThemeGuard::new();
@@ -2098,17 +2098,35 @@ mod tests {
                     "WINDOW_NEXT_PAGE",
                 ];
                 let original = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
-                let caption_height = if cfg!(windows) { 32. * zoom } else { 0. };
+                let controls_center = if cfg!(windows) { 16. } else { 30. } * zoom;
                 for bounds in original {
                     assert_eq!(
                         bounds.center().y,
-                        px(caption_height + 30. * zoom),
+                        px(controls_center),
                         "{path} at {zoom}: {bounds:?}"
                     );
                     assert_eq!(
                         bounds.size,
                         size(px(28. * zoom), px(28. * zoom)),
                         "{path} at {zoom}"
+                    );
+                }
+                if cfg!(windows) {
+                    let caption = visual.debug_bounds("WINDOW_CAPTION_BAR").unwrap();
+                    let buttons = visual.debug_bounds("WINDOW_CAPTION_CONTROLS").unwrap();
+                    assert_eq!(caption.size.height, px(32. * zoom));
+                    assert_eq!(buttons.center().y, original[0].center().y);
+                    assert!(original[0].top() >= caption.top());
+                    assert!(original[0].bottom() <= caption.bottom());
+                    let (card_selector, chrome_selector) = if path == "/settings" {
+                        ("WORK_CARD", "SETTINGS_CHROME")
+                    } else {
+                        ("APP_CONTENT_COLUMN", "APP_CHROME")
+                    };
+                    assert_eq!(
+                        visual.debug_bounds(card_selector).unwrap().top(),
+                        visual.debug_bounds(chrome_selector).unwrap().top(),
+                        "{path} at {zoom}: card starts below the titlebar"
                     );
                 }
                 let header_selector = if path.starts_with("/chats/") {
@@ -2121,7 +2139,11 @@ mod tests {
                 if let Some(selector) = header_selector {
                     let header = visual.debug_bounds(selector).unwrap();
                     assert!(
-                        (header.center().y - original[0].center().y).abs() <= px(1.),
+                        (header.center().y
+                            - original[0].center().y
+                            - px(if cfg!(windows) { 38. * zoom } else { 0. }))
+                        .abs()
+                            <= px(1.),
                         "{path} at {zoom}: {header:?} vs {:?}",
                         original[0]
                     );
@@ -2153,7 +2175,9 @@ mod tests {
                             "{path} at {zoom}: settled collapse moved {selector}"
                         );
                     }
-                    if header_selector.is_some() {
+                    if cfg!(windows) {
+                        assert!(visual.debug_bounds("WINDOW_NAVIGATION_SPACE").is_none());
+                    } else if header_selector.is_some() {
                         let reserved = visual.debug_bounds("WINDOW_NAVIGATION_SPACE").unwrap();
                         assert!(
                             (reserved.left() - original[0].left()).abs() <= px(1.),

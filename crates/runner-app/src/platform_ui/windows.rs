@@ -74,6 +74,7 @@ impl NativeRoot {
             .bg(theme::sidebar())
             .child(
                 div()
+                    .debug_selector(|| "WINDOW_CAPTION_BAR".into())
                     .relative()
                     .w_full()
                     .h(px(TITLEBAR_HEIGHT * self.settings(cx).app_zoom))
@@ -107,12 +108,20 @@ impl NativeRoot {
         Some(
             div()
                 .flex_none()
-                .h(px(52. * self.settings(cx).app_zoom))
+                .h(px(12. * self.settings(cx).app_zoom))
                 .into_any_element(),
         )
     }
 
     pub(crate) fn render_window_navigation(
+        &self,
+        _window: &Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
+    }
+
+    fn render_windows_navigation(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
@@ -129,7 +138,7 @@ impl NativeRoot {
                 .debug_selector(|| "WINDOW_TITLEBAR_CONTROLS".into())
                 .absolute()
                 .left(px(navigation_left(window, zoom)))
-                .top(px(16. * zoom))
+                .top(px(2. * zoom))
                 .flex_none()
                 .h(px(28. * zoom))
                 .flex()
@@ -206,6 +215,7 @@ impl NativeRoot {
                     div()
                         .flex_1()
                         .h_full()
+                        .ml(px(128. * zoom))
                         .mr(px(caption_width))
                         .flex()
                         .items_center()
@@ -216,6 +226,7 @@ impl NativeRoot {
                     cx,
                 ),
             )
+            .children(self.render_windows_navigation(window, cx))
             .children(self.render_caption_buttons(window, cx))
             .into_any_element()
     }
@@ -232,6 +243,7 @@ impl NativeRoot {
         };
         Some(
             div()
+                .debug_selector(|| "WINDOW_CAPTION_CONTROLS".into())
                 .absolute()
                 .top_0()
                 .right_0()

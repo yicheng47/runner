@@ -174,7 +174,7 @@ impl NativeRoot {
         let root = cx.entity();
         let panel_root = root.clone();
         let sidebar_toggle = self.render_collapsed_titlebar_spacer();
-        let sidebar_divider = self.sidebar_collapsed.then(|| {
+        let sidebar_divider = sidebar_toggle.is_some().then(|| {
             div()
                 .mx_1()
                 .h(rems(20. / 16.))

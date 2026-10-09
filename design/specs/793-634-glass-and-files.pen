@@ -22047,7 +22047,8 @@
                           "fill": "$text-mid",
                           "content": "(no output)",
                           "fontFamily": "$font-mono",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         }
                       ]
                     },
@@ -22058,7 +22059,8 @@
                       "fill": "$text-mid",
                       "content": "Thinking…",
                       "fontFamily": "$font-mono",
-                      "fontSize": 13
+                      "fontSize": 13,
+                      "fontWeight": "normal"
                     }
                   ]
                 }
@@ -22383,7 +22385,8 @@
                           "fill": "$text-mid",
                           "content": "(no output)",
                           "fontFamily": "$font-mono",
-                          "fontSize": 13
+                          "fontSize": 13,
+                          "fontWeight": "normal"
                         }
                       ]
                     },
@@ -22394,11 +22397,3334 @@
                       "fill": "$text-mid",
                       "content": "Thinking…",
                       "fontFamily": "$font-mono",
-                      "fontSize": 13
+                      "fontSize": 13,
+                      "fontWeight": "normal"
                     }
                   ]
                 }
               ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "gW1C2",
+      "x": 680,
+      "y": -124,
+      "name": "cmp/Windows caption controls · solid",
+      "reusable": true,
+      "width": 138,
+      "height": 32,
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "XW4xF",
+          "name": "Minimize window",
+          "width": 46,
+          "height": "fill_container",
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "eMm14",
+              "name": "Minimize icon",
+              "width": 10,
+              "height": 10,
+              "icon": "minus",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "ntkOC",
+          "name": "Maximize window",
+          "width": 46,
+          "height": "fill_container",
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "LXrvF",
+              "name": "Maximize icon",
+              "width": 10,
+              "height": 10,
+              "icon": "square",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "Bxhoz",
+          "name": "Close window",
+          "width": 46,
+          "height": "fill_container",
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "ARsOL",
+              "name": "Close icon",
+              "width": 10,
+              "height": 10,
+              "icon": "x",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "TLAFv",
+      "x": 898,
+      "y": -124,
+      "name": "cmp/Windows window navigation · solid",
+      "reusable": true,
+      "width": 96,
+      "height": 28,
+      "gap": 4,
+      "alignItems": "center",
+      "children": [
+        {
+          "type": "frame",
+          "id": "ruSR5",
+          "name": "Toggle sidebar",
+          "width": 28,
+          "height": 28,
+          "cornerRadius": 4,
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "EhfM3",
+              "name": "Toggle sidebar icon",
+              "width": 14,
+              "height": 14,
+              "icon": "panel-left",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "uePTn",
+          "name": "Previous page",
+          "width": 28,
+          "height": 28,
+          "cornerRadius": 4,
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "dgXGj",
+              "name": "Previous page icon",
+              "width": 14,
+              "height": 14,
+              "icon": "chevron-left",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "T06ST",
+          "name": "Next page",
+          "width": 28,
+          "height": 28,
+          "cornerRadius": 4,
+          "justifyContent": "center",
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon",
+              "id": "TyUpi",
+              "name": "Next page icon",
+              "opacity": 0.5,
+              "width": 14,
+              "height": 14,
+              "icon": "chevron-right",
+              "library": "lucide",
+              "fill": "$text-mid"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "vxtoa",
+      "x": 6960,
+      "y": 2237,
+      "name": "793 — Windows header · solid",
+      "clip": true,
+      "width": 1520,
+      "fill": "#10131B",
+      "layout": "vertical",
+      "gap": 20,
+      "padding": 40,
+      "children": [
+        {
+          "type": "text",
+          "id": "Ls9w4",
+          "name": "Windows design title",
+          "fill": "#ECEEF4",
+          "content": "Windows · solid header",
+          "fontFamily": "Inter",
+          "fontSize": 28,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "koqaH",
+          "name": "Windows header decisions",
+          "fill": "#B4BCCB",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Windows keeps its 32 px titlebar. The sidebar toggle and previous/next buttons sit on its left, aligned with the caption buttons. The solid work card stays inset below it; navigation does not move when the sidebar collapses.",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "g9fPgj",
+          "name": "Windows · solid · sidebar expanded",
+          "theme": {
+            "mode": "dark"
+          },
+          "clip": true,
+          "width": 1440,
+          "height": 900,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "strokeAlignment": "inner",
+          "layout": "vertical",
+          "children": [
+            {
+              "type": "frame",
+              "id": "n2HLpN",
+              "name": "Windows titlebar · shared navigation and caption row",
+              "width": "fill_container",
+              "height": 32,
+              "fill": "$sidebar",
+              "layout": "none",
+              "children": [
+                {
+                  "id": "lScAz",
+                  "type": "ref",
+                  "ref": "TLAFv",
+                  "name": "Window navigation · titlebar left",
+                  "layoutPosition": "absolute",
+                  "x": 16,
+                  "y": 2
+                },
+                {
+                  "id": "K75vjH",
+                  "type": "ref",
+                  "ref": "gW1C2",
+                  "name": "Window captions · titlebar right",
+                  "layoutPosition": "absolute",
+                  "x": 1302,
+                  "y": 0
+                },
+                {
+                  "type": "text",
+                  "id": "jflJf",
+                  "layoutPosition": "absolute",
+                  "x": 128,
+                  "y": 0,
+                  "name": "Runner window title",
+                  "fill": "$text-mid",
+                  "textGrowth": "fixed-width-height",
+                  "width": 1174,
+                  "height": 32,
+                  "content": "Runner",
+                  "textAlign": "center",
+                  "textAlignVertical": "middle",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 12,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "nR0w3",
+              "name": "Windows content below titlebar",
+              "width": "fill_container",
+              "height": "fill_container",
+              "children": [
+                {
+                  "id": "MfgLk",
+                  "type": "ref",
+                  "ref": "N4yXC",
+                  "fill": "$sidebar",
+                  "stroke": "$line",
+                  "height": "fill_container",
+                  "strokeWidth": 0,
+                  "name": "Sidebar",
+                  "width": 240,
+                  "descendants": {
+                    "I7HtpB": {
+                      "height": 20,
+                      "strokeWidth": 0,
+                      "stroke": "$glass-separator",
+                      "strokeAlignment": "inner"
+                    },
+                    "EMD6U": {
+                      "enabled": false,
+                      "y": 23
+                    },
+                    "GQUWo": {
+                      "enabled": false,
+                      "x": 14,
+                      "y": 24
+                    },
+                    "xk8Af": {
+                      "enabled": false,
+                      "y": 23
+                    },
+                    "rTuYR": {
+                      "enabled": false,
+                      "y": 23
+                    },
+                    "Y5Kp9Z": {
+                      "textGrowth": "auto",
+                      "width": 56
+                    },
+                    "gYUeI": {
+                      "fill": "$text-low"
+                    },
+                    "aljDB": {
+                      "fill": "#00000000",
+                      "strokeWidth": 0
+                    },
+                    "R7GFNs": {
+                      "content": "Ctrl+N"
+                    },
+                    "q8JAKU": {
+                      "fill": "$sidebar-selected",
+                      "stroke": "$sidebar-selected-border",
+                      "strokeWidth": 1,
+                      "cornerRadius": 6
+                    },
+                    "kLNB7": {
+                      "fill": "#00000000",
+                      "stroke": "$glass-separator",
+                      "strokeWidth": 0,
+                      "padding": 0,
+                      "height": 32
+                    },
+                    "TrVD6": {
+                      "fill": "#00000000",
+                      "strokeWidth": 0,
+                      "width": "fill_container",
+                      "height": 28,
+                      "stroke": "$glass-separator",
+                      "cornerRadius": 7
+                    },
+                    "hnXYe": {
+                      "width": 32,
+                      "height": 32,
+                      "fill": "#00000000",
+                      "stroke": "$glass-separator",
+                      "strokeWidth": 0,
+                      "cornerRadius": 6
+                    }
+                  }
+                },
+                {
+                  "type": "frame",
+                  "id": "Kk5GS",
+                  "name": "Card gutter",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "fill": "$sidebar",
+                  "padding": [
+                    8,
+                    8,
+                    8,
+                    0
+                  ],
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "W3MeNq",
+                      "name": "Work card",
+                      "clip": true,
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$bg",
+                      "cornerRadius": 12,
+                      "stroke": "$line-strong",
+                      "strokeWidth": 1,
+                      "strokeAlignment": "inner",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "KUV3f",
+                          "name": "Main",
+                          "width": "fill_container",
+                          "height": "fill_container",
+                          "fill": "#00000000",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "ACilt",
+                              "name": "Windows chat header",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "#00000000",
+                              "stroke": "$line",
+                              "strokeWidth": {
+                                "bottom": 1
+                              },
+                              "strokeAlignment": "inner",
+                              "gap": 12,
+                              "padding": [
+                                0,
+                                12,
+                                0,
+                                16
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "ex9A3",
+                                  "name": "tb_left",
+                                  "width": "fill_container",
+                                  "gap": 4,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "MNpCd",
+                                      "name": "title_cluster",
+                                      "fill": "#00000000",
+                                      "stroke": "$sidebar-sel-border",
+                                      "strokeAlignment": "inner",
+                                      "gap": 9,
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "jzg6m",
+                                          "name": "i",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "columns-2",
+                                          "library": "lucide",
+                                          "fill": "$accent"
+                                        },
+                                        {
+                                          "type": "text",
+                                          "id": "wOKFU",
+                                          "name": "l",
+                                          "fill": "$text-hi",
+                                          "content": "Claude Code + Codex",
+                                          "fontFamily": "$font-ui",
+                                          "fontSize": 13,
+                                          "fontWeight": "500"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "d6xPo",
+                                      "name": "header_kebab",
+                                      "width": 28,
+                                      "height": 28,
+                                      "cornerRadius": 7,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "a4fkt",
+                                          "name": "d",
+                                          "width": 13,
+                                          "height": 13,
+                                          "icon": "ellipsis",
+                                          "library": "lucide",
+                                          "fill": "$text-mid"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "v0Qb5G",
+                                  "name": "tb_right",
+                                  "gap": 4,
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "Bf26R",
+                                      "x": 0,
+                                      "y": 0,
+                                      "name": "Split panes button",
+                                      "enabled": false,
+                                      "width": 28,
+                                      "height": 28,
+                                      "cornerRadius": 7,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "A0IywA",
+                                          "name": "split_ic",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "columns-2",
+                                          "library": "lucide",
+                                          "fill": "$text-mid"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "l0KbU",
+                                      "name": "Side panel button",
+                                      "width": 28,
+                                      "height": 28,
+                                      "cornerRadius": 7,
+                                      "justifyContent": "center",
+                                      "alignItems": "center",
+                                      "children": [
+                                        {
+                                          "type": "icon",
+                                          "id": "R4dyZ",
+                                          "name": "panel_ic",
+                                          "width": 14,
+                                          "height": 14,
+                                          "icon": "panel-right",
+                                          "library": "lucide",
+                                          "fill": "$text-mid"
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "type": "rectangle",
+                                  "id": "Q5nDez",
+                                  "layoutPosition": "absolute",
+                                  "x": 0,
+                                  "y": 12,
+                                  "name": "Header divider · sidebar edge",
+                                  "enabled": false,
+                                  "fill": "$glass-separator",
+                                  "width": 1,
+                                  "height": 20
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "zMZof",
+                              "name": "Work surface · soft sidebar join",
+                              "width": "fill_container",
+                              "height": "fill_container",
+                              "layout": "vertical",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "LNTMi",
+                                  "name": "Terminal work surface · rounded glass edge",
+                                  "clip": true,
+                                  "width": "fill_container",
+                                  "height": "fill_container",
+                                  "fill": "$bg",
+                                  "stroke": "$glass-separator",
+                                  "strokeAlignment": "inner",
+                                  "effect": {
+                                    "type": "shadow",
+                                    "shadowType": "outer",
+                                    "color": "#00000024",
+                                    "offset": {
+                                      "x": -2,
+                                      "y": 2
+                                    },
+                                    "blur": 16
+                                  },
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "ZHehz",
+                                      "name": "Pane Claude Code",
+                                      "clip": true,
+                                      "width": "fill_container",
+                                      "height": "fill_container",
+                                      "fill": "#00000000",
+                                      "layout": "vertical",
+                                      "children": [
+                                        {
+                                          "type": "frame",
+                                          "id": "U6IcO",
+                                          "name": "idline",
+                                          "width": "fill_container",
+                                          "height": 30,
+                                          "fill": "$panel",
+                                          "stroke": "$line",
+                                          "strokeWidth": {
+                                            "bottom": 1
+                                          },
+                                          "strokeAlignment": "inner",
+                                          "gap": 6,
+                                          "padding": [
+                                            0,
+                                            8,
+                                            0,
+                                            10
+                                          ],
+                                          "alignItems": "center",
+                                          "children": [
+                                            {
+                                              "type": "icon",
+                                              "id": "dvBd2",
+                                              "name": "i",
+                                              "width": 12,
+                                              "height": 12,
+                                              "icon": "message-square",
+                                              "library": "lucide",
+                                              "fill": "$text-low"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "vAk4I",
+                                              "name": "n",
+                                              "fill": "$text-mid",
+                                              "content": "Claude Code",
+                                              "fontFamily": "$font-ui",
+                                              "fontSize": 12,
+                                              "fontWeight": "500"
+                                            },
+                                            {
+                                              "type": "ellipse",
+                                              "id": "MS7Sn",
+                                              "name": "d",
+                                              "fill": "$text-low",
+                                              "width": 5,
+                                              "height": 5
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "o1ZOg",
+                                              "name": "kebab",
+                                              "height": "fill_container",
+                                              "padding": [
+                                                0,
+                                                4
+                                              ],
+                                              "alignItems": "center",
+                                              "children": [
+                                                {
+                                                  "type": "icon",
+                                                  "id": "V7C2SP",
+                                                  "name": "d",
+                                                  "width": 13,
+                                                  "height": 13,
+                                                  "icon": "ellipsis",
+                                                  "library": "lucide",
+                                                  "fill": "$text-mid"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "S8hOcf",
+                                              "name": "sp",
+                                              "width": "fill_container",
+                                              "height": 1
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "Q6S7p",
+                                              "name": "split_view",
+                                              "height": "fill_container",
+                                              "padding": [
+                                                0,
+                                                4
+                                              ],
+                                              "alignItems": "center",
+                                              "children": [
+                                                {
+                                                  "type": "icon",
+                                                  "id": "FVrtl",
+                                                  "name": "d",
+                                                  "width": 13,
+                                                  "height": 13,
+                                                  "icon": "columns-2",
+                                                  "library": "lucide",
+                                                  "fill": "$text-mid"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "D9aAR",
+                                              "name": "close_view",
+                                              "height": "fill_container",
+                                              "padding": [
+                                                0,
+                                                4
+                                              ],
+                                              "alignItems": "center",
+                                              "children": [
+                                                {
+                                                  "type": "icon",
+                                                  "id": "YeLRl",
+                                                  "name": "d",
+                                                  "width": 13,
+                                                  "height": 13,
+                                                  "icon": "x",
+                                                  "library": "lucide",
+                                                  "fill": "$text-low"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "type": "frame",
+                                          "id": "OoXkW",
+                                          "name": "body",
+                                          "clip": true,
+                                          "width": "fill_container",
+                                          "height": "fill_container",
+                                          "layout": "vertical",
+                                          "gap": 10,
+                                          "padding": [
+                                            20,
+                                            22
+                                          ],
+                                          "children": [
+                                            {
+                                              "type": "text",
+                                              "id": "ierKa",
+                                              "name": "Claude task",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "❯ Refine the chat pane layout and run checks.",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "LwRTD",
+                                              "name": "Claude response",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "⏺ I’ll check the existing pane structure, then\n  update the layout and verify the result.",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "wz7pW",
+                                              "name": "Read tool",
+                                              "fill": "$text-mid",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "⏺ Read crates/runner-app/src/surfaces/panes.rs\n  Read 214 lines",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "Wplrs",
+                                              "name": "Patch heading",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "⏺ Update pane spacing",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "E7vJO",
+                                              "name": "Explicit diff cell backgrounds",
+                                              "width": "fill_container",
+                                              "fill": "$panel",
+                                              "cornerRadius": 4,
+                                              "layout": "vertical",
+                                              "gap": 5,
+                                              "padding": [
+                                                10,
+                                                12
+                                              ],
+                                              "children": [
+                                                {
+                                                  "type": "text",
+                                                  "id": "js1EA",
+                                                  "name": "Patch path",
+                                                  "fill": "$text-mid",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "crates/runner-app/src/surfaces/panes.rs",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "tEnsp",
+                                                  "name": "Removed line",
+                                                  "fill": "$danger",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "- .gap(px(0.0))",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "cVTaa",
+                                                  "name": "Added line",
+                                                  "fill": "$accent",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "+ .gap(px(8.0))\n+ .rounded(px(12.0))",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "normal"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "oRKcJ",
+                                              "name": "Check command",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "⏺ Bash cargo test -p runner-app --locked",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "eUAYp",
+                                              "name": "Test output",
+                                              "fill": "$text-mid",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "running 286 tests\ntest surfaces::panes::split_layout ... ok\ntest terminal::selection::marked_text ... ok\ntest session::pane_geometry ... ok",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 12,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "QIBUY",
+                                              "name": "Check result",
+                                              "fill": "$accent",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "✓ 286 passed · 0 failed · finished in 1.42s",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "y6dFQW",
+                                              "name": "Chinese text",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "中文输入和选区保持清晰，终端背景独立。",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "text",
+                                              "id": "HeaQd",
+                                              "name": "Claude summary",
+                                              "fill": "$text-hi",
+                                              "textGrowth": "fixed-width",
+                                              "width": "fill_container",
+                                              "content": "⏺ Updated the pane layout. Checks passed.\n  The terminal keeps its own cell backgrounds.",
+                                              "lineHeight": 1.55,
+                                              "fontFamily": "$font-mono",
+                                              "fontSize": 13,
+                                              "fontWeight": "normal"
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "cWvhc",
+                                              "name": "Selected terminal line",
+                                              "width": "fill_container",
+                                              "fill": "$raised",
+                                              "cornerRadius": 3,
+                                              "padding": [
+                                                8,
+                                                10
+                                              ],
+                                              "children": [
+                                                {
+                                                  "type": "text",
+                                                  "id": "DzNng",
+                                                  "name": "Selection text",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "❯ Review the result before implementation",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "rectangle",
+                                      "id": "NnrUt",
+                                      "name": "divider_v",
+                                      "fill": "$line-strong",
+                                      "width": 1,
+                                      "height": "fill_container"
+                                    },
+                                    {
+                                      "type": "frame",
+                                      "id": "treMN",
+                                      "name": "RightCol",
+                                      "width": "fill_container",
+                                      "height": "fill_container",
+                                      "layout": "vertical",
+                                      "children": [
+                                        {
+                                          "type": "frame",
+                                          "id": "uUoAK",
+                                          "name": "Pane Codex (focused)",
+                                          "clip": true,
+                                          "width": "fill_container",
+                                          "height": "fill_container",
+                                          "fill": "#00000000",
+                                          "stroke": "$accent",
+                                          "strokeAlignment": "inner",
+                                          "layout": "vertical",
+                                          "children": [
+                                            {
+                                              "type": "frame",
+                                              "id": "I9cHr",
+                                              "name": "idline",
+                                              "width": "fill_container",
+                                              "height": 30,
+                                              "fill": "$panel",
+                                              "stroke": "$line",
+                                              "strokeWidth": {
+                                                "bottom": 1
+                                              },
+                                              "strokeAlignment": "inner",
+                                              "gap": 6,
+                                              "padding": [
+                                                0,
+                                                8,
+                                                0,
+                                                10
+                                              ],
+                                              "alignItems": "center",
+                                              "children": [
+                                                {
+                                                  "type": "icon",
+                                                  "id": "VTvwp",
+                                                  "name": "i",
+                                                  "width": 12,
+                                                  "height": 12,
+                                                  "icon": "message-square",
+                                                  "library": "lucide",
+                                                  "fill": "$accent"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "ImcY8",
+                                                  "name": "n",
+                                                  "fill": "$text-hi",
+                                                  "content": "Codex",
+                                                  "fontFamily": "$font-ui",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "500"
+                                                },
+                                                {
+                                                  "type": "ellipse",
+                                                  "id": "L3xHMQ",
+                                                  "name": "d",
+                                                  "fill": "$text-low",
+                                                  "width": 5,
+                                                  "height": 5
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "ZouAx",
+                                                  "name": "kebab",
+                                                  "height": "fill_container",
+                                                  "padding": [
+                                                    0,
+                                                    4
+                                                  ],
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "icon",
+                                                      "id": "uRBMp",
+                                                      "name": "d",
+                                                      "width": 13,
+                                                      "height": 13,
+                                                      "icon": "ellipsis",
+                                                      "library": "lucide",
+                                                      "fill": "$text-mid"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "J5c8Ch",
+                                                  "name": "sp",
+                                                  "width": "fill_container",
+                                                  "height": 1
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "HecYk",
+                                                  "name": "split_view",
+                                                  "height": "fill_container",
+                                                  "padding": [
+                                                    0,
+                                                    4
+                                                  ],
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "icon",
+                                                      "id": "i4y5qF",
+                                                      "name": "d",
+                                                      "width": 13,
+                                                      "height": 13,
+                                                      "icon": "columns-2",
+                                                      "library": "lucide",
+                                                      "fill": "$text-mid"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "s57BxJ",
+                                                  "name": "close_view",
+                                                  "height": "fill_container",
+                                                  "padding": [
+                                                    0,
+                                                    4
+                                                  ],
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "icon",
+                                                      "id": "SGfBP",
+                                                      "name": "d",
+                                                      "width": 13,
+                                                      "height": 13,
+                                                      "icon": "x",
+                                                      "library": "lucide",
+                                                      "fill": "$text-low"
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "ZMTaH",
+                                              "name": "body",
+                                              "clip": true,
+                                              "width": "fill_container",
+                                              "height": "fill_container",
+                                              "layout": "vertical",
+                                              "gap": 10,
+                                              "padding": [
+                                                20,
+                                                22
+                                              ],
+                                              "children": [
+                                                {
+                                                  "type": "text",
+                                                  "id": "K8dj6t",
+                                                  "name": "Codex heading",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "╭─ Codex · GPT-6 ─────────────────────────╮\n│ ~/repos/yicheng47/runner                │\n╰────────────────────────────────────────╯",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "dLErr",
+                                                  "name": "Codex request",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "› Audit selection and IME composition.",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "mj5vT",
+                                                  "name": "Codex response",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "I’m checking the terminal renderer and the\nmarked text path for consistent contrast.",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "Yfkck",
+                                                  "name": "Codex read",
+                                                  "fill": "$text-mid",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "• Read terminal/element.rs\n• Read terminal/selection.rs\n• Read platform_ui/macos.rs",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "hJ9iG",
+                                                  "name": "Code sample",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "fn paint_cell_background(cell: &Cell) {\n    if cell.has_explicit_background() {\n        paint_quad(cell.background());\n    }\n}\n\nfn paint_marked_text(range: Range) {\n    paint_selection(range);\n    paint_ime_underline(range);\n}",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "Af90m",
+                                                  "name": "Opaque TUI status cells",
+                                                  "width": "fill_container",
+                                                  "fill": "$raised",
+                                                  "gap": 20,
+                                                  "padding": [
+                                                    8,
+                                                    10
+                                                  ],
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "o5WTdI",
+                                                      "name": "TUI mode",
+                                                      "fill": "$accent",
+                                                      "content": "NORMAL",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "S1oft",
+                                                      "name": "TUI file",
+                                                      "fill": "$text-hi",
+                                                      "content": "element.rs                 UTF-8",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "P1dQT",
+                                                  "name": "Codex result",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "The text grid stays dense. Explicit TUI\nbackgrounds and selected text stay opaque.",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "kzSwH",
+                                                  "name": "Codex footer",
+                                                  "fill": "$text-mid",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "context 24% · 2 files read · 0 edits",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 12,
+                                                  "fontWeight": "normal"
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "Ai8dW",
+                                                  "name": "IME prompt",
+                                                  "fill": "$text-hi",
+                                                  "textGrowth": "fixed-width",
+                                                  "width": "fill_container",
+                                                  "content": "› 检查终端输入 ▏",
+                                                  "lineHeight": 1.55,
+                                                  "fontFamily": "$font-mono",
+                                                  "fontSize": 13,
+                                                  "fontWeight": "normal"
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "oBwAa",
+                          "name": "Side panel",
+                          "width": 340,
+                          "height": "fill_container",
+                          "fill": "#00000000",
+                          "stroke": "$line",
+                          "strokeWidth": {
+                            "left": 1
+                          },
+                          "strokeAlignment": "inner",
+                          "layout": "vertical",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "myIwL",
+                              "name": "Windows side panel header",
+                              "width": "fill_container",
+                              "height": 44,
+                              "fill": "#00000000",
+                              "stroke": "$line",
+                              "strokeWidth": {
+                                "bottom": 1
+                              },
+                              "strokeAlignment": "inner",
+                              "gap": 4,
+                              "padding": [
+                                0,
+                                8,
+                                0,
+                                10
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "rectangle",
+                                  "id": "Lxsdf",
+                                  "layoutPosition": "absolute",
+                                  "x": 0,
+                                  "y": 12,
+                                  "name": "Header divider · panel edge",
+                                  "enabled": false,
+                                  "fill": "$glass-separator",
+                                  "width": 1,
+                                  "height": 20
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "i9C9DJ",
+                                  "name": "spacer",
+                                  "width": "fill_container",
+                                  "height": 1
+                                },
+                                {
+                                  "type": "frame",
+                                  "id": "oIWOE",
+                                  "name": "Collapse side panel",
+                                  "width": 28,
+                                  "height": 28,
+                                  "cornerRadius": 7,
+                                  "justifyContent": "center",
+                                  "alignItems": "center",
+                                  "children": [
+                                    {
+                                      "type": "icon",
+                                      "id": "lZa8z",
+                                      "name": "collapse_ic",
+                                      "width": 14,
+                                      "height": 14,
+                                      "icon": "panel-right",
+                                      "library": "lucide",
+                                      "fill": "$text-mid"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "t3ic5",
+                              "name": "Info · body",
+                              "width": "fill_container",
+                              "height": "fill_container",
+                              "layout": "vertical",
+                              "children": [
+                                {
+                                  "type": "frame",
+                                  "id": "NoD0r",
+                                  "name": "Panel surface",
+                                  "clip": true,
+                                  "width": "fill_container",
+                                  "height": "fill_container",
+                                  "fill": "#00000000",
+                                  "stroke": "$glass-separator",
+                                  "strokeAlignment": "inner",
+                                  "layout": "vertical",
+                                  "children": [
+                                    {
+                                      "type": "frame",
+                                      "id": "nt5DM",
+                                      "name": "Panel content",
+                                      "width": "fill_container",
+                                      "height": "fill_container",
+                                      "stroke": "$line-strong",
+                                      "strokeAlignment": "inner",
+                                      "layout": "vertical",
+                                      "gap": 10,
+                                      "padding": 20,
+                                      "children": [
+                                        {
+                                          "type": "text",
+                                          "id": "XTyzE",
+                                          "name": "RUNTIME label",
+                                          "fill": "$text-low",
+                                          "content": "RUNTIME",
+                                          "fontFamily": "$font-ui",
+                                          "fontSize": 11,
+                                          "fontWeight": "600",
+                                          "letterSpacing": 0.4
+                                        },
+                                        {
+                                          "type": "frame",
+                                          "id": "p8FRTh",
+                                          "name": "Runtime card",
+                                          "width": "fill_container",
+                                          "fill": "$panel",
+                                          "cornerRadius": 10,
+                                          "stroke": "$line-strong",
+                                          "strokeWidth": 1,
+                                          "layout": "vertical",
+                                          "gap": 16,
+                                          "padding": 14,
+                                          "children": [
+                                            {
+                                              "type": "frame",
+                                              "id": "XdZYL",
+                                              "name": "Identity",
+                                              "width": "fill_container",
+                                              "gap": 12,
+                                              "alignItems": "center",
+                                              "children": [
+                                                {
+                                                  "type": "frame",
+                                                  "id": "wfqSM",
+                                                  "name": "Mark tile",
+                                                  "width": 40,
+                                                  "height": 40,
+                                                  "fill": "$raised",
+                                                  "cornerRadius": 9,
+                                                  "justifyContent": "center",
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "id": "P7Gfkb",
+                                                      "type": "ref",
+                                                      "ref": "Y8rOW",
+                                                      "name": "Codex mark",
+                                                      "width": 18,
+                                                      "height": 18
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "text",
+                                                  "id": "G5GCl",
+                                                  "name": "Runtime name",
+                                                  "fill": "$text-hi",
+                                                  "content": "Codex",
+                                                  "fontFamily": "$font-ui",
+                                                  "fontSize": 15,
+                                                  "fontWeight": "600"
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "CG68l",
+                                              "name": "Model and effort",
+                                              "width": "fill_container",
+                                              "gap": 16,
+                                              "children": [
+                                                {
+                                                  "type": "frame",
+                                                  "id": "LXE6f",
+                                                  "name": "Model",
+                                                  "width": "fill_container",
+                                                  "layout": "vertical",
+                                                  "gap": 4,
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "Hw5Gn",
+                                                      "name": "Model label",
+                                                      "fill": "$text-low",
+                                                      "content": "Model",
+                                                      "fontFamily": "$font-ui",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "lpjX8",
+                                                      "name": "Model value",
+                                                      "fill": "$text-hi",
+                                                      "content": "gpt-6",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12.5,
+                                                      "fontWeight": "normal"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "d2uxe",
+                                                  "name": "Effort",
+                                                  "width": "fill_container",
+                                                  "layout": "vertical",
+                                                  "gap": 4,
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "A35wHD",
+                                                      "name": "Effort label",
+                                                      "fill": "$text-low",
+                                                      "content": "Effort",
+                                                      "fontFamily": "$font-ui",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "IUZEv",
+                                                      "name": "Effort value",
+                                                      "fill": "$text-hi",
+                                                      "content": "high",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12.5,
+                                                      "fontWeight": "normal"
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "xgzaO",
+                                              "name": "card divider",
+                                              "width": "fill_container",
+                                              "height": 1,
+                                              "fill": "$border"
+                                            },
+                                            {
+                                              "type": "frame",
+                                              "id": "eR9lB",
+                                              "name": "Meta rows",
+                                              "width": "fill_container",
+                                              "layout": "vertical",
+                                              "gap": 6,
+                                              "children": [
+                                                {
+                                                  "type": "frame",
+                                                  "id": "VMY22",
+                                                  "name": "row cmd",
+                                                  "width": "fill_container",
+                                                  "gap": 12,
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "GKGuv",
+                                                      "name": "cmd",
+                                                      "fill": "$text-low",
+                                                      "textGrowth": "fixed-width",
+                                                      "width": 72,
+                                                      "content": "cmd",
+                                                      "fontFamily": "$font-ui",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "tqoGu",
+                                                      "name": "cmd value",
+                                                      "fill": "$text-mid",
+                                                      "content": "codex",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "FZUO6",
+                                                  "name": "row cwd",
+                                                  "width": "fill_container",
+                                                  "gap": 12,
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "UbPzZ",
+                                                      "name": "cwd",
+                                                      "fill": "$text-low",
+                                                      "textGrowth": "fixed-width",
+                                                      "width": 72,
+                                                      "content": "cwd",
+                                                      "fontFamily": "$font-ui",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "dOw01",
+                                                      "name": "cwd value",
+                                                      "fill": "$text-mid",
+                                                      "content": "~/repos/yicheng47/runner",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "type": "frame",
+                                                  "id": "T09l5w",
+                                                  "name": "row session_key",
+                                                  "width": "fill_container",
+                                                  "gap": 12,
+                                                  "alignItems": "center",
+                                                  "children": [
+                                                    {
+                                                      "type": "text",
+                                                      "id": "FhmfJ",
+                                                      "name": "session_key",
+                                                      "fill": "$text-low",
+                                                      "textGrowth": "fixed-width",
+                                                      "width": 72,
+                                                      "content": "session_key",
+                                                      "fontFamily": "$font-ui",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "text",
+                                                      "id": "AOOxm",
+                                                      "name": "session_key value",
+                                                      "fill": "$text-mid",
+                                                      "content": "019a3f2e-7c41-7d0b",
+                                                      "fontFamily": "$font-mono",
+                                                      "fontSize": 12,
+                                                      "fontWeight": "normal"
+                                                    },
+                                                    {
+                                                      "type": "frame",
+                                                      "id": "n9sWT",
+                                                      "name": "sp",
+                                                      "width": "fill_container",
+                                                      "height": 1
+                                                    },
+                                                    {
+                                                      "type": "icon",
+                                                      "id": "iOB1b",
+                                                      "name": "copy_ic",
+                                                      "width": 12,
+                                                      "height": 12,
+                                                      "icon": "copy",
+                                                      "library": "lucide",
+                                                      "fill": "$text-low"
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "ECxyD",
+          "name": "Sidebar collapsed · dark label",
+          "fill": "#ECEEF4",
+          "content": "Sidebar collapsed · dark",
+          "fontFamily": "Inter",
+          "fontSize": 15,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "Cizx7",
+          "name": "Sidebar collapsed · dark",
+          "theme": {
+            "mode": "dark"
+          },
+          "clip": true,
+          "width": 1440,
+          "height": 116,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "layout": "none",
+          "children": [
+            {
+              "type": "frame",
+              "id": "lQiOP",
+              "layoutPosition": "absolute",
+              "x": 8,
+              "y": 40,
+              "name": "Solid work card · header detail",
+              "clip": true,
+              "width": 1424,
+              "height": 68,
+              "fill": "$bg",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "M0r6aY",
+                  "name": "Work card header · below Windows titlebar",
+                  "width": "fill_container",
+                  "height": 44,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "F54hs5",
+                      "name": "Chat header · sidebar collapsed",
+                      "width": "fill_container",
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        12,
+                        0,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Ra4iB",
+                          "name": "tb_left",
+                          "width": "fill_container",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "gB1SN",
+                              "name": "title_cluster",
+                              "fill": "#00000000",
+                              "stroke": "$sidebar-sel-border",
+                              "strokeAlignment": "inner",
+                              "gap": 9,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "kSHyZ",
+                                  "name": "i",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "HgQPh",
+                                  "name": "l",
+                                  "fill": "$text-hi",
+                                  "content": "Claude Code + Codex",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "Z2DaI8",
+                              "name": "header_kebab",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "sI69C",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "ellipsis",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "B4rWy",
+                          "name": "tb_right",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "qQCGi",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Split panes button",
+                              "enabled": false,
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "qqZQb",
+                                  "name": "split_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "f5HPfq",
+                              "name": "Side panel button",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "GOo6I",
+                                  "name": "panel_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "panel-right",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "rectangle",
+                          "id": "PqdO4",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · sidebar edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "v5FOzT",
+                      "name": "Side panel header · caption space reserved",
+                      "width": 340,
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 4,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "lpV0G",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · panel edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        },
+                        {
+                          "type": "frame",
+                          "id": "citw1",
+                          "name": "spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "G542Pc",
+                          "name": "Collapse side panel",
+                          "width": 28,
+                          "height": 28,
+                          "cornerRadius": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "O3q87n",
+                              "name": "collapse_ic",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "panel-right",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "P2tqYr",
+                  "name": "Work surface context",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "yMj2B",
+                      "name": "Split pane identity row",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$panel",
+                      "padding": [
+                        0,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "JIDVk",
+                          "name": "Left pane identity",
+                          "fill": "$text-mid",
+                          "content": "Claude Code",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "euHfl",
+                          "name": "Pane identity spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "jYDUz",
+                          "name": "Right pane identity",
+                          "fill": "$text-mid",
+                          "content": "Codex",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "LTuhR",
+                      "name": "Side panel continuation",
+                      "width": 340,
+                      "height": "fill_container",
+                      "fill": "$bg",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "left": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ofCOF",
+              "type": "ref",
+              "ref": "TLAFv",
+              "name": "Navigation · titlebar left",
+              "layoutPosition": "absolute",
+              "x": 16,
+              "y": 2
+            },
+            {
+              "id": "SdDMQ",
+              "type": "ref",
+              "ref": "gW1C2",
+              "name": "Caption controls · titlebar right",
+              "layoutPosition": "absolute",
+              "x": 1302,
+              "y": 0
+            },
+            {
+              "type": "text",
+              "id": "uGMC5",
+              "layoutPosition": "absolute",
+              "x": 128,
+              "y": 0,
+              "name": "Runner window title",
+              "fill": "$text-mid",
+              "textGrowth": "fixed-width-height",
+              "width": 1174,
+              "height": 32,
+              "content": "Runner",
+              "textAlign": "center",
+              "textAlignVertical": "middle",
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "HUNsu",
+          "name": "Sidebar expanded · light label",
+          "fill": "#ECEEF4",
+          "content": "Sidebar expanded · light",
+          "fontFamily": "Inter",
+          "fontSize": 15,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "T4j22",
+          "name": "Sidebar expanded · light",
+          "theme": {
+            "mode": "light"
+          },
+          "clip": true,
+          "width": 1440,
+          "height": 116,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "layout": "none",
+          "children": [
+            {
+              "type": "frame",
+              "id": "cUeEj",
+              "layoutPosition": "absolute",
+              "x": 240,
+              "y": 40,
+              "name": "Solid work card · header detail",
+              "clip": true,
+              "width": 1192,
+              "height": 68,
+              "fill": "$bg",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "e0NPVz",
+                  "name": "Work card header · below Windows titlebar",
+                  "width": "fill_container",
+                  "height": 44,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "K4rvwZ",
+                      "name": "Chat header · sidebar expanded",
+                      "width": "fill_container",
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        12,
+                        0,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "E4TMoR",
+                          "name": "tb_left",
+                          "width": "fill_container",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "v4JfL",
+                              "name": "title_cluster",
+                              "fill": "#00000000",
+                              "stroke": "$sidebar-sel-border",
+                              "strokeAlignment": "inner",
+                              "gap": 9,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "pem4p",
+                                  "name": "i",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "IW3oc",
+                                  "name": "l",
+                                  "fill": "$text-hi",
+                                  "content": "Claude Code + Codex",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "a5uh2",
+                              "name": "header_kebab",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "Loigm",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "ellipsis",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "r5DmO",
+                          "name": "tb_right",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "qfhYU",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Split panes button",
+                              "enabled": false,
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "ecdl6",
+                                  "name": "split_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "U1nnJq",
+                              "name": "Side panel button",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "j93PT6",
+                                  "name": "panel_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "panel-right",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "rectangle",
+                          "id": "AKVJX",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · sidebar edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "xxAuC",
+                      "name": "Side panel header · caption space reserved",
+                      "width": 340,
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 4,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "shUxU",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · panel edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        },
+                        {
+                          "type": "frame",
+                          "id": "cDuyN",
+                          "name": "spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "aDS6Y",
+                          "name": "Collapse side panel",
+                          "width": 28,
+                          "height": 28,
+                          "cornerRadius": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "Cuvjd",
+                              "name": "collapse_ic",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "panel-right",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "kTFJj",
+                  "name": "Work surface context",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "wOcAS",
+                      "name": "Split pane identity row",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$panel",
+                      "padding": [
+                        0,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "CQP8j",
+                          "name": "Left pane identity",
+                          "fill": "$text-mid",
+                          "content": "Claude Code",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "XpncR",
+                          "name": "Pane identity spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "HdMac",
+                          "name": "Right pane identity",
+                          "fill": "$text-mid",
+                          "content": "Codex",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "wPgAA",
+                      "name": "Side panel continuation",
+                      "width": 340,
+                      "height": "fill_container",
+                      "fill": "$bg",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "left": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "U2K4Le",
+              "x": 20,
+              "y": 56,
+              "name": "Sidebar brand · context",
+              "width": 200,
+              "height": 20,
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "e1LgY",
+                  "name": "Runner mark",
+                  "width": 20,
+                  "height": 20,
+                  "fill": "#00000000",
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "D2vtU",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "opacity": 0.28,
+                      "geometry": "M14 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.5,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "path",
+                      "id": "KD4VS",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "opacity": 0.55,
+                      "geometry": "M29 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.5,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "path",
+                      "id": "cMMtq",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "geometry": "M44 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.6667,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "tYcJT",
+                  "name": "Runner name",
+                  "fill": "$text-hi",
+                  "content": "Runner",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 14,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "id": "k1tflx",
+              "type": "ref",
+              "ref": "TLAFv",
+              "name": "Navigation · titlebar left",
+              "layoutPosition": "absolute",
+              "x": 16,
+              "y": 2
+            },
+            {
+              "id": "C80m99",
+              "type": "ref",
+              "ref": "gW1C2",
+              "name": "Caption controls · titlebar right",
+              "layoutPosition": "absolute",
+              "x": 1302,
+              "y": 0
+            },
+            {
+              "type": "text",
+              "id": "Eqfk5",
+              "layoutPosition": "absolute",
+              "x": 128,
+              "y": 0,
+              "name": "Runner window title",
+              "fill": "$text-mid",
+              "textGrowth": "fixed-width-height",
+              "width": 1174,
+              "height": 32,
+              "content": "Runner",
+              "textAlign": "center",
+              "textAlignVertical": "middle",
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "wmom9",
+          "name": "Sidebar collapsed · light label",
+          "fill": "#ECEEF4",
+          "content": "Sidebar collapsed · light",
+          "fontFamily": "Inter",
+          "fontSize": 15,
+          "fontWeight": "600"
+        },
+        {
+          "type": "frame",
+          "id": "xGwWH",
+          "name": "Sidebar collapsed · light",
+          "theme": {
+            "mode": "light"
+          },
+          "clip": true,
+          "width": 1440,
+          "height": 116,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "layout": "none",
+          "children": [
+            {
+              "type": "frame",
+              "id": "jiP2a",
+              "layoutPosition": "absolute",
+              "x": 8,
+              "y": 40,
+              "name": "Solid work card · header detail",
+              "clip": true,
+              "width": 1424,
+              "height": 68,
+              "fill": "$bg",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "Zb1J7",
+                  "name": "Work card header · below Windows titlebar",
+                  "width": "fill_container",
+                  "height": 44,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "BrUsA",
+                      "name": "Chat header · sidebar collapsed",
+                      "width": "fill_container",
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        12,
+                        0,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "Op9Wr",
+                          "name": "tb_left",
+                          "width": "fill_container",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "KPHZW",
+                              "name": "title_cluster",
+                              "fill": "#00000000",
+                              "stroke": "$sidebar-sel-border",
+                              "strokeAlignment": "inner",
+                              "gap": 9,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "n5q2R",
+                                  "name": "i",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "xZ2hZ",
+                                  "name": "l",
+                                  "fill": "$text-hi",
+                                  "content": "Claude Code + Codex",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "qe1BO",
+                              "name": "header_kebab",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "I4HCi",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "ellipsis",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "v00Y0",
+                          "name": "tb_right",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "d2mO7y",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Split panes button",
+                              "enabled": false,
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "D3oAXS",
+                                  "name": "split_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "wVuei",
+                              "name": "Side panel button",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "qJaod",
+                                  "name": "panel_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "panel-right",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "rectangle",
+                          "id": "ESkDZ",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · sidebar edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "GMPls",
+                      "name": "Side panel header · caption space reserved",
+                      "width": 340,
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 4,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "XRQ7u",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · panel edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        },
+                        {
+                          "type": "frame",
+                          "id": "dXC3K",
+                          "name": "spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "tPpZw",
+                          "name": "Collapse side panel",
+                          "width": 28,
+                          "height": 28,
+                          "cornerRadius": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "jnYD1",
+                              "name": "collapse_ic",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "panel-right",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "iNIFY",
+                  "name": "Work surface context",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "S74mL",
+                      "name": "Split pane identity row",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$panel",
+                      "padding": [
+                        0,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "c9WB3j",
+                          "name": "Left pane identity",
+                          "fill": "$text-mid",
+                          "content": "Claude Code",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "F4mFAO",
+                          "name": "Pane identity spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "Q3gTP",
+                          "name": "Right pane identity",
+                          "fill": "$text-mid",
+                          "content": "Codex",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "z8URth",
+                      "name": "Side panel continuation",
+                      "width": 340,
+                      "height": "fill_container",
+                      "fill": "$bg",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "left": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "huG6M",
+              "type": "ref",
+              "ref": "TLAFv",
+              "name": "Navigation · titlebar left",
+              "layoutPosition": "absolute",
+              "x": 16,
+              "y": 2
+            },
+            {
+              "id": "eZMVz",
+              "type": "ref",
+              "ref": "gW1C2",
+              "name": "Caption controls · titlebar right",
+              "layoutPosition": "absolute",
+              "x": 1302,
+              "y": 0
+            },
+            {
+              "type": "text",
+              "id": "vu4M5",
+              "layoutPosition": "absolute",
+              "x": 128,
+              "y": 0,
+              "name": "Runner window title",
+              "fill": "$text-mid",
+              "textGrowth": "fixed-width-height",
+              "width": 1174,
+              "height": 32,
+              "content": "Runner",
+              "textAlign": "center",
+              "textAlignVertical": "middle",
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "id": "Kmmcn",
+          "name": "Flush card proposal label",
+          "fill": "#ECEEF4",
+          "content": "Alternative · keep 32 px controls, bring the card up 8 px",
+          "fontFamily": "Inter",
+          "fontSize": 15,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "lZfXz",
+          "name": "Flush card proposal note",
+          "fill": "#B4BCCB",
+          "content": "Reduce the space below the titlebar. Keep the same icon sizes, button targets and fixed navigation positions.",
+          "fontFamily": "Inter",
+          "fontSize": 13,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "wioFs",
+          "name": "Windows header · flush card proposal · dark",
+          "theme": {
+            "mode": "dark"
+          },
+          "clip": true,
+          "width": 1440,
+          "height": 108,
+          "fill": "$sidebar",
+          "cornerRadius": 8,
+          "stroke": "$line-strong",
+          "strokeWidth": 1,
+          "layout": "none",
+          "children": [
+            {
+              "type": "frame",
+              "id": "xxvH5",
+              "layoutPosition": "absolute",
+              "x": 240,
+              "y": 32,
+              "name": "Solid work card · header detail",
+              "clip": true,
+              "width": 1192,
+              "height": 68,
+              "fill": "$bg",
+              "cornerRadius": 12,
+              "layout": "vertical",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "EVdQO",
+                  "name": "Work card header · below Windows titlebar",
+                  "width": "fill_container",
+                  "height": 44,
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "jaOdF",
+                      "name": "Chat header · sidebar expanded",
+                      "width": "fill_container",
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 12,
+                      "padding": [
+                        0,
+                        12,
+                        0,
+                        16
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "frame",
+                          "id": "YuBgc",
+                          "name": "tb_left",
+                          "width": "fill_container",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "aoN2G",
+                              "name": "title_cluster",
+                              "fill": "#00000000",
+                              "stroke": "$sidebar-sel-border",
+                              "strokeAlignment": "inner",
+                              "gap": 9,
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "CBSwH",
+                                  "name": "i",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$accent"
+                                },
+                                {
+                                  "type": "text",
+                                  "id": "bgPQE",
+                                  "name": "l",
+                                  "fill": "$text-hi",
+                                  "content": "Claude Code + Codex",
+                                  "fontFamily": "$font-ui",
+                                  "fontSize": 13,
+                                  "fontWeight": "500"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "U5Os4g",
+                              "name": "header_kebab",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "lHm8s",
+                                  "name": "d",
+                                  "width": 13,
+                                  "height": 13,
+                                  "icon": "ellipsis",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "t5DNL",
+                          "name": "tb_right",
+                          "gap": 4,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "frame",
+                              "id": "oWw93",
+                              "x": 0,
+                              "y": 0,
+                              "name": "Split panes button",
+                              "enabled": false,
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "kTqmI",
+                                  "name": "split_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "columns-2",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "z0x6rR",
+                              "name": "Side panel button",
+                              "width": 28,
+                              "height": 28,
+                              "cornerRadius": 7,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "E4SpzY",
+                                  "name": "panel_ic",
+                                  "width": 14,
+                                  "height": 14,
+                                  "icon": "panel-right",
+                                  "library": "lucide",
+                                  "fill": "$text-mid"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "rectangle",
+                          "id": "zESGH",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · sidebar edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "g0O2Vu",
+                      "name": "Side panel header · caption space reserved",
+                      "width": 340,
+                      "height": 44,
+                      "fill": "#00000000",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "bottom": 1
+                      },
+                      "strokeAlignment": "inner",
+                      "gap": 4,
+                      "padding": [
+                        0,
+                        8,
+                        0,
+                        10
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "rectangle",
+                          "id": "VDuzT",
+                          "layoutPosition": "absolute",
+                          "x": 0,
+                          "y": 12,
+                          "name": "Header divider · panel edge",
+                          "enabled": false,
+                          "fill": "$glass-separator",
+                          "width": 1,
+                          "height": 20
+                        },
+                        {
+                          "type": "frame",
+                          "id": "g130R5",
+                          "name": "spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "M3ARx",
+                          "name": "Collapse side panel",
+                          "width": 28,
+                          "height": 28,
+                          "cornerRadius": 7,
+                          "justifyContent": "center",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "icon",
+                              "id": "n4eYh",
+                              "name": "collapse_ic",
+                              "width": 14,
+                              "height": 14,
+                              "icon": "panel-right",
+                              "library": "lucide",
+                              "fill": "$text-mid"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "type": "frame",
+                  "id": "YyWN9",
+                  "name": "Work surface context",
+                  "width": "fill_container",
+                  "height": "fill_container",
+                  "children": [
+                    {
+                      "type": "frame",
+                      "id": "T7IMJ",
+                      "name": "Split pane identity row",
+                      "width": "fill_container",
+                      "height": "fill_container",
+                      "fill": "$panel",
+                      "padding": [
+                        0,
+                        12
+                      ],
+                      "alignItems": "center",
+                      "children": [
+                        {
+                          "type": "text",
+                          "id": "y7t3e",
+                          "name": "Left pane identity",
+                          "fill": "$text-mid",
+                          "content": "Claude Code",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        },
+                        {
+                          "type": "frame",
+                          "id": "N1aSkV",
+                          "name": "Pane identity spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "text",
+                          "id": "U2lfZy",
+                          "name": "Right pane identity",
+                          "fill": "$text-mid",
+                          "content": "Codex",
+                          "fontFamily": "$font-ui",
+                          "fontSize": 11,
+                          "fontWeight": "normal"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "frame",
+                      "id": "RLlwq",
+                      "name": "Side panel continuation",
+                      "width": 340,
+                      "height": "fill_container",
+                      "fill": "$bg",
+                      "stroke": "$line",
+                      "strokeWidth": {
+                        "left": 1
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "r4VTk",
+              "x": 20,
+              "y": 48,
+              "name": "Sidebar brand · context",
+              "width": 200,
+              "height": 20,
+              "gap": 8,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "wn2C0",
+                  "name": "Runner mark",
+                  "width": 20,
+                  "height": 20,
+                  "fill": "#00000000",
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "path",
+                      "id": "t011e7",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "opacity": 0.28,
+                      "geometry": "M14 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.5,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "path",
+                      "id": "sRY3J",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "opacity": 0.55,
+                      "geometry": "M29 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.5,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    },
+                    {
+                      "type": "path",
+                      "id": "FllCv",
+                      "x": 0,
+                      "y": 0,
+                      "name": "Runner brand chevron",
+                      "geometry": "M44 22l14 14-14 14",
+                      "viewBox": [
+                        0,
+                        0,
+                        72,
+                        72
+                      ],
+                      "fill": "#00000000",
+                      "width": 20,
+                      "height": 20,
+                      "stroke": "$accent",
+                      "strokeWidth": 2.6667,
+                      "strokeLinejoin": "round",
+                      "strokeLinecap": "round"
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "AoDs0",
+                  "name": "Runner name",
+                  "fill": "$text-hi",
+                  "content": "Runner",
+                  "fontFamily": "$font-ui",
+                  "fontSize": 14,
+                  "fontWeight": "600"
+                }
+              ]
+            },
+            {
+              "id": "nqAFD",
+              "type": "ref",
+              "ref": "TLAFv",
+              "name": "Navigation · titlebar left",
+              "layoutPosition": "absolute",
+              "x": 16,
+              "y": 2
+            },
+            {
+              "id": "GLm7K",
+              "type": "ref",
+              "ref": "gW1C2",
+              "name": "Caption controls · titlebar right",
+              "layoutPosition": "absolute",
+              "x": 1302,
+              "y": 0
+            },
+            {
+              "type": "text",
+              "id": "Ns2GN",
+              "layoutPosition": "absolute",
+              "x": 128,
+              "y": 0,
+              "name": "Runner window title",
+              "fill": "$text-mid",
+              "textGrowth": "fixed-width-height",
+              "width": 1174,
+              "height": 32,
+              "content": "Runner",
+              "textAlign": "center",
+              "textAlignVertical": "middle",
+              "fontFamily": "$font-ui",
+              "fontSize": 12,
+              "fontWeight": "normal"
             }
           ]
         }

@@ -20,7 +20,7 @@ use crate::*;
 impl MissionWorkspace {
     fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         let zoom = self.settings(cx).app_zoom;
-        if self.sidebar_collapsed {
+        if self.sidebar_collapsed && !cfg!(windows) {
             platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
         } else {
             16. * zoom
@@ -28,7 +28,7 @@ impl MissionWorkspace {
     }
 
     fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
-        self.sidebar_collapsed.then(|| {
+        (self.sidebar_collapsed && !cfg!(windows)).then(|| {
             div()
                 .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
                 .flex_none()

@@ -11,6 +11,7 @@ pub fn work_card(collapsed_sidebar: bool) -> Div {
         .min_w(px(0.))
         .min_h(px(0.))
         .my(rems(8. / 16.))
+        .when(cfg!(windows), |card| card.mt_0())
         .mr(rems(8. / 16.))
         .when(collapsed_sidebar, |card| card.ml(rems(8. / 16.)))
         .flex()
