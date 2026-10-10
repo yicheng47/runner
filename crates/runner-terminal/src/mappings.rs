@@ -63,7 +63,8 @@ enum MouseAction {
 
 /// Encode a non-text keystroke (or ctrl-chord) into PTY bytes.
 /// `mode` selects the DECCKM application-cursor sequences for the arrow
-/// keys and the kitty key forms an app has opted into. Returns `None` when
+/// keys and the kitty key forms an app has opted into. Legacy macOS
+/// Option+Left/Right use Meta-b/f for shell word navigation. Returns `None` when
 /// the key is not ours to handle (the caller lets the event propagate,
 /// e.g. to a global binding).
 pub fn encode_key(
@@ -77,6 +78,18 @@ pub fn encode_key(
     if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
         if let Some(bytes) = encode_kitty_key(key, ctrl, alt, shift) {
             return Some(bytes);
+        }
+    } else if cfg!(target_os = "macos")
+        && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
+        && alt
+        && !ctrl
+        && !shift
+    {
+        // macOS word navigation must also work in shells without CSI arrow bindings.
+        match key {
+            "left" => return Some(b"\x1bb".to_vec()),
+            "right" => return Some(b"\x1bf".to_vec()),
+            _ => {}
         }
     }
     if key == "enter" && shift && !ctrl && !alt {
@@ -498,15 +511,13 @@ mod tests {
 
     #[test]
     fn modified_special_keys_use_the_xterm_parameter_form() {
-        // Option+Right must never be ESC ESC [ C — crossterm reads that as
-        // Esc then the text "[C".
         assert_eq!(
-            encode_key("right", false, true, false, None, TermMode::empty()),
-            Some(b"\x1b[1;3C".to_vec())
+            encode_key("up", false, true, false, None, TermMode::empty()),
+            Some(b"\x1b[1;3A".to_vec())
         );
         assert_eq!(
-            encode_key("left", false, true, false, None, TermMode::APP_CURSOR),
-            Some(b"\x1b[1;3D".to_vec())
+            encode_key("down", false, true, false, None, TermMode::APP_CURSOR),
+            Some(b"\x1b[1;3B".to_vec())
         );
         assert_eq!(
             encode_key("right", false, false, true, None, TermMode::empty()),
@@ -562,6 +573,60 @@ mod tests {
             encode_key("enter", false, true, false, None, TermMode::empty()),
             Some(b"\x1b\r".to_vec())
         );
+    }
+
+    #[test]
+    fn option_arrows_preserve_platform_protocol_and_modifier_boundaries() {
+        for mode in [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::DISAMBIGUATE_ESC_CODES,
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::APP_CURSOR,
+            TermMode::REPORT_EVENT_TYPES,
+            TermMode::REPORT_ALTERNATE_KEYS,
+            TermMode::REPORT_ALL_KEYS_AS_ESC,
+            TermMode::REPORT_ASSOCIATED_TEXT,
+            TermMode::KITTY_KEYBOARD_PROTOCOL,
+            TermMode::KITTY_KEYBOARD_PROTOCOL | TermMode::APP_CURSOR,
+        ] {
+            for (key, suffix, meta) in [("left", 'D', b'b'), ("right", 'C', b'f')] {
+                for (ctrl, alt, shift) in [
+                    (false, false, false),
+                    (false, true, false),
+                    (false, false, true),
+                    (true, false, false),
+                    (false, true, true),
+                    (true, true, false),
+                    (true, false, true),
+                    (true, true, true),
+                ] {
+                    let expected = if cfg!(target_os = "macos")
+                        && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
+                        && alt
+                        && !ctrl
+                        && !shift
+                    {
+                        vec![0x1b, meta]
+                    } else if ctrl || alt || shift {
+                        let mods = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+                        format!("\x1b[1;{mods}{suffix}").into_bytes()
+                    } else if mode.contains(TermMode::APP_CURSOR) {
+                        format!("\x1bO{suffix}").into_bytes()
+                    } else {
+                        format!("\x1b[{suffix}").into_bytes()
+                    };
+                    assert_eq!(
+                        encode_key(key, ctrl, alt, shift, None, mode),
+                        Some(expected),
+                        "{key} ctrl={ctrl} alt={alt} shift={shift} mode={mode:?}"
+                    );
+                    assert_eq!(
+                        classify_key(key, ctrl, alt, shift, None),
+                        InputKind::Navigate
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -862,6 +927,7 @@ mod tests {
             ("1", false, false, true, Some("!"), "!"),
             ("up", false, false, false, None, "\x1b[A"),
             ("right", false, true, false, None, "\x1b[1;3C"),
+            ("left", false, true, false, None, "\x1b[1;3D"),
             ("delete", true, false, false, None, "\x1b[3;5~"),
             ("f5", false, false, false, None, "\x1b[15~"),
         ]);
