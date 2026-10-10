@@ -607,6 +607,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         vec!["session-1".into(), "session-2".into()],
         vec!["session-1".into(), "session-2".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
     assert!(tab_entries[2].0.destructive);
@@ -622,6 +623,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         Vec::new(),
         vec!["shell".into()],
         Some("shell".into()),
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
         single_pane_entries[1].1,
@@ -664,12 +666,14 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         vec!["session-1".into(), "session-2".into()],
         vec!["session-1".into(), "session-2".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
         menu_labels(&multi_pane_entries),
         ["Pin", "Rename tab", "Archive"]
     );
     assert!(multi_pane_entries[2].0.destructive);
+    assert!(multi_pane_entries[2].0.shortcut.is_none());
 
     let mixed_entries = tab_menu_entries(
         "tab-1",
@@ -682,6 +686,7 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         vec!["chat-1".into()],
         vec!["chat-1".into(), "shell-1".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
         mixed_entries[2].1,
@@ -702,12 +707,17 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         Vec::new(),
         vec!["shell-1".into()],
         Some("shell-1".into()),
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
         menu_labels(&terminal_only_entries),
         ["Pin", "Rename tab", "Close terminal"]
     );
     assert!(terminal_only_entries[2].0.destructive);
+    assert_eq!(
+        terminal_only_entries[2].0.shortcut.as_deref(),
+        Some(keymap::fixed_shortcut("cmd-w").as_str())
+    );
     assert_eq!(
         terminal_only_entries[2].1,
         SidebarMenuAction::CloseTerminalTab {
@@ -945,6 +955,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         vec!["chat".into()],
         vec!["chat".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
         menu_labels(&entries),
@@ -952,6 +963,11 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     );
     assert!(!entries[2].0.disabled);
     assert_eq!(entries[2].1, SidebarMenuAction::ForkChat("chat".into()));
+    assert!(entries[..3].iter().all(|(item, _)| item.shortcut.is_none()));
+    assert_eq!(
+        entries[3].0.shortcut.as_deref(),
+        Some(keymap::fixed_shortcut("cmd-w").as_str())
+    );
 
     let busy_entries = tab_menu_entries(
         "tab-1",
@@ -964,8 +980,10 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         vec!["chat".into()],
         vec!["chat".into()],
         None,
+        &keymap::KeymapOverrides::from([("close-pane".into(), None)]),
     );
     assert!(busy_entries[2].0.disabled);
+    assert!(busy_entries[3].0.shortcut.is_none());
 
     let mut waiting = direct_session("chat", "codex", SessionStatus::Running);
     waiting.native_fork = true;
@@ -984,6 +1002,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         vec!["chat".into()],
         vec!["chat".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert!(waiting_entries[2].0.disabled);
     assert_eq!(waiting_entries[2].0.description, None);
@@ -1007,6 +1026,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         vec!["chat".into()],
         vec!["chat".into()],
         None,
+        &keymap::KeymapOverrides::new(),
     );
     assert!(trae_entries[2].0.disabled);
     assert_eq!(trae_entries[2].0.tooltip, None);

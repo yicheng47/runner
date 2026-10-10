@@ -154,8 +154,9 @@ impl Sidebar {
                 .collect(),
             tab_session_ids,
             terminal_session_id,
+            &self.settings(cx).keymap_overrides,
         );
-        self.open_sidebar_context_menu(position, 160., entries, window, cx);
+        self.open_sidebar_context_menu(position, 260., entries, window, cx);
     }
 
     pub(super) fn open_mission_menu(
@@ -373,7 +374,12 @@ pub(super) fn tab_menu_entries(
     chat_session_ids: Vec<String>,
     tab_session_ids: Vec<String>,
     terminal_session_id: Option<String>,
+    overrides: &keymap::KeymapOverrides,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
+    let close_shortcut = (!archive_all && tab_session_ids.len() == 1)
+        .then(|| keymap::effective_binding("close-pane", overrides))
+        .flatten()
+        .map(|combo| keymap::format_combo(&combo).into());
     let mut entries = vec![
         (
             UiMenuItem::new(if pinned { "Unpin" } else { "Pin" }).icon(if pinned {
@@ -405,10 +411,12 @@ pub(super) fn tab_menu_entries(
         entries.push((item, SidebarMenuAction::ForkChat(target.session_id)));
     }
     if !chat_session_ids.is_empty() {
+        let mut item = UiMenuItem::new("Archive")
+            .icon("archive.svg")
+            .destructive(true);
+        item.shortcut = close_shortcut;
         entries.push((
-            UiMenuItem::new("Archive")
-                .icon("archive.svg")
-                .destructive(true),
+            item,
             SidebarMenuAction::ArchiveTab {
                 tab_id: node_id.to_owned(),
                 session_ids: if archive_all {
@@ -419,10 +427,12 @@ pub(super) fn tab_menu_entries(
             },
         ));
     } else if let Some(session_id) = terminal_session_id {
+        let mut item = UiMenuItem::new("Close terminal")
+            .icon("close.svg")
+            .destructive(true);
+        item.shortcut = close_shortcut;
         entries.push((
-            UiMenuItem::new("Close terminal")
-                .icon("close.svg")
-                .destructive(true),
+            item,
             SidebarMenuAction::CloseTerminalTab {
                 tab_id: node_id.to_owned(),
                 session_id,
