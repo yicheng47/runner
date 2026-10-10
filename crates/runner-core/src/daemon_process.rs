@@ -122,28 +122,12 @@ impl Launch {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
-            use windows_sys::Win32::System::Threading::{
-                CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-            };
-            let flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
-            // Isolated fixtures stay in the test runner's job.
-            let flags = if self.isolated {
-                flags
-            } else {
-                flags | CREATE_BREAKAWAY_FROM_JOB
-            };
-            command.creation_flags(flags);
-            match command.spawn() {
-                Err(error) if error.raw_os_error() == Some(5) && self.app => {
-                    log::warn!(
-                        "runnerd breakaway refused by app launcher; retrying without breakaway"
-                    );
-                    command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-                    command.spawn()
-                }
-                result => result,
-            }
+            spawn_windows(
+                &mut command,
+                self.app,
+                self.isolated,
+                system_is_shutting_down(),
+            )
         }
         #[cfg(unix)]
         command.spawn()
@@ -235,6 +219,58 @@ impl Launch {
         ))
     }
 }
+
+pub fn system_is_shutting_down() -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SHUTTINGDOWN};
+        unsafe { GetSystemMetrics(SM_SHUTTINGDOWN) != 0 }
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+#[cfg(windows)]
+fn spawn_windows(
+    command: &mut Command,
+    app: bool,
+    isolated: bool,
+    shutting_down: bool,
+) -> io::Result<Child> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
+    };
+    if shutting_down {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Windows is shutting down; runnerd will not be started",
+        ));
+    }
+    let flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
+    // Isolated fixtures stay in the test runner's job.
+    let flags = if isolated {
+        flags
+    } else {
+        flags | CREATE_BREAKAWAY_FROM_JOB
+    };
+    command.creation_flags(flags);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(5) && app => {
+            log::warn!("runnerd breakaway refused by app launcher; retrying without breakaway");
+            if system_is_shutting_down() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Windows is shutting down; runnerd will not be started",
+                ));
+            }
+            command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+            command.spawn()
+        }
+        result => result,
+    }
+}
+
 pub struct LockFile(File);
 
 impl LockFile {
@@ -348,6 +384,22 @@ pub fn clean_environment(data: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shutdown_prevents_daemon_process_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let mut command = Command::new(root.path().join("missing-runnerd.exe"));
+        let error = spawn_windows(&mut command, true, true, true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(error.to_string().contains("Windows is shutting down"));
+        assert_eq!(
+            spawn_windows(&mut command, true, true, false)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
 
     #[test]
     fn exited_child_is_reported_immediately_with_status_and_log_path() {
