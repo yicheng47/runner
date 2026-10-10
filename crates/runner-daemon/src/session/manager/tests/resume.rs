@@ -140,6 +140,8 @@ fn codex_resume_skips_first_prompt_injection() {
         prior_key.clone(),
         "-c".into(),
         "check_for_update_on_startup=false".into(),
+        "-c".into(),
+        crate::runtimes::codex::CODEX_TERMINAL_TITLE.into(),
     ];
     expected.extend(crate::runtimes::codex::codex_status_args(
         &[],

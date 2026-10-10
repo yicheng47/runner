@@ -15,6 +15,10 @@ pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
     if let Some(("|" | "/" | "-" | "\\", rest)) = title.split_once(' ') {
         title = trim_chrome(rest);
     }
+    // A blank leading item leaves its separator behind: `<frame> | <project>`.
+    if let Some(rest) = title.strip_prefix('|') {
+        title = trim_chrome(rest);
+    }
     loop {
         let previous = title;
         for separator in [" | ", " — ", " - "] {
@@ -94,6 +98,10 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
     ) {
         return true;
     }
+    // Codex shows the thread id until the thread has a name.
+    if uuid::Uuid::try_parse(text).is_ok() {
+        return true;
+    }
     if text.starts_with(['/', '~', '\\'])
         || text
             .as_bytes()
@@ -147,6 +155,15 @@ mod tests {
                 Some("Discuss cars")
             );
             assert_eq!(provider_title(&format!("{glyph} runner"), cwd), None);
+            assert_eq!(provider_title(&format!("{glyph} | runner"), cwd), None);
+        }
+        assert_eq!(provider_title("| ", cwd), None);
+        for raw in [
+            "⠋ 01a12397-9faf-7cd3-ab0b-dea463107705 | runner",
+            "01a12397-9faf-7cd3-ab0b-dea463107705 | runner",
+            "01a12397-9faf-7cd3-ab0b-dea463107705",
+        ] {
+            assert_eq!(provider_title(raw, cwd), None, "{raw}");
         }
         assert_eq!(
             provider_title("-argument handling", cwd).as_deref(),

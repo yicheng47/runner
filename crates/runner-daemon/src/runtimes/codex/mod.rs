@@ -104,7 +104,7 @@ pub(crate) fn codex_status_args(
         toml_edit::Value::from(hook_executable(app_data_dir).to_string_lossy().as_ref());
     args.extend([
         "-c".into(),
-        format!("mcp_servers.runner_hooks={{command={executable},args=[\"hook\",\"serve\"],env_vars=[\"{}\",\"{}\",\"{}\"],required=false}}", hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV),
+        format!("mcp_servers.runner_hooks={{command={executable},args=[\"hook\",\"serve\"],env_vars=[\"{}\",\"{}\",\"{}\"],required=false,enabled=true}}", hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV),
     ]);
     for event in crate::runtimes::codex::codex_status::EVENTS {
         if *event == "SessionEnd" {
@@ -197,10 +197,11 @@ impl RuntimeAdapter for Codex {
         cwd: Option<&Path>,
         _copilot_home: Option<&str>,
     ) -> crate::error::Result<()> {
+        let hook_server = codex_trust::seed_hook_server();
         if let Some(cwd) = trust_cwd(session_id, Runtime::Codex, cwd) {
             codex_trust::seed_project_trust(cwd)?;
         }
-        Ok(())
+        hook_server
     }
 
     fn catalog(&self) -> Option<RuntimeCatalog> {
@@ -242,6 +243,9 @@ impl RuntimeAdapter for Codex {
         let mut out = Vec::new();
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
         out.extend(strings(&["-c", "check_for_update_on_startup=false"]));
+        // Codex 0.161 dropped the thread title from its default terminal
+        // title, and the chat name is read from it.
+        out.extend(strings(&["-c", CODEX_TERMINAL_TITLE]));
         if let Some(speed) = ctx.codex_speed {
             out.extend([
                 "-c".into(),
@@ -293,6 +297,8 @@ impl StatusHooks for Hooks {
 mod tests;
 
 pub(crate) const CODEX_CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
+pub(crate) const CODEX_TERMINAL_TITLE: &str =
+    r#"tui.terminal_title=["activity","thread-title","project-name"]"#;
 pub(crate) fn config_path(home: &Path) -> PathBuf {
     home.join(CODEX_CONFIG_RELATIVE_PATH)
 }

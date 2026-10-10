@@ -207,6 +207,9 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(codex
         .windows(2)
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
+    assert!(codex
+        .windows(2)
+        .any(|args| args == ["-c", crate::runtimes::codex::CODEX_TERMINAL_TITLE]));
     assert_eq!(codex.last().map(String::as_str), Some("first turn"));
 
     let resumed = compose(
@@ -217,6 +220,9 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(resumed
         .windows(2)
         .any(|args| args == ["-c", "check_for_update_on_startup=false"]));
+    assert!(resumed
+        .windows(2)
+        .any(|args| args == ["-c", crate::runtimes::codex::CODEX_TERMINAL_TITLE]));
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
     for runtime in ["claude-code", "trae", "copilot", "pi", "antigravity"] {

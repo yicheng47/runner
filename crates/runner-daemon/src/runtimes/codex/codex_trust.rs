@@ -26,6 +26,64 @@ pub(crate) fn seed_project_trust_at(cwd: &Path, config_path: &Path) -> Result<()
     seed_project_trust_at_with_home(cwd, config_path, None)
 }
 
+/// Codex's thread-title generator starts a hidden thread that sets every
+/// MCP server it knows to `{ enabled = false }` and reloads config without
+/// the session's `-c` overrides, so a server that exists only in Runner's
+/// `-c mcp_servers.runner_hooks` loses its command there and the title is
+/// never generated. A disabled entry in config.toml gives it one; sessions
+/// re-enable the server through their own override.
+#[cfg(not(test))]
+pub(crate) fn seed_hook_server() -> Result<()> {
+    let home = runner_core::app_paths::home_dir()
+        .ok_or_else(|| Error::msg("home directory is not available"))?;
+    seed_hook_server_at(&super::config_path(&home))
+}
+
+#[cfg(test)]
+pub(crate) fn seed_hook_server() -> Result<()> {
+    Ok(())
+}
+
+fn seed_hook_server_at(config_path: &Path) -> Result<()> {
+    let _guard = CONFIG_LOCK
+        .lock()
+        .map_err(|_| Error::msg("codex trust config lock poisoned"))?;
+    let write_path = resolve_config_write_path(config_path)?;
+    let raw = if write_path.exists() {
+        fs::read_to_string(&write_path)
+            .map_err(|e| Error::msg(format!("read {}: {e}", write_path.display())))?
+    } else {
+        String::new()
+    };
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| Error::msg(format!("parse {}: {e}", write_path.display())))?;
+
+    if doc.get("mcp_servers").is_none() {
+        let mut servers = toml_edit::Table::new();
+        servers.set_implicit(true);
+        doc["mcp_servers"] = toml_edit::Item::Table(servers);
+    }
+    let servers = doc["mcp_servers"]
+        .as_table_mut()
+        .ok_or_else(|| Error::msg("mcp_servers is not a table"))?;
+    if servers.contains_key("runner_hooks") {
+        return Ok(());
+    }
+    let mut server = toml_edit::Table::new();
+    let gap = if raw.trim().is_empty() { "" } else { "\n" };
+    server.decor_mut().set_prefix(format!(
+        "{gap}# Runner's status hooks: Runner enables this per session.\n"
+    ));
+    server["command"] = toml_edit::value("runner");
+    server["args"] = toml_edit::value(toml_edit::Array::from_iter(["hook", "serve"]));
+    server["enabled"] = toml_edit::value(false);
+    servers.insert("runner_hooks", toml_edit::Item::Table(server));
+
+    write_config_atomically(&write_path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
 fn seed_project_trust_at_with_home(
     cwd: &Path,
     config_path: &Path,
@@ -319,6 +377,40 @@ mod tests {
                 cwd.display()
             )
         );
+    }
+
+    #[test]
+    fn hook_server_stub_is_seeded_disabled_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("codex/config.toml");
+
+        seed_hook_server_at(&config_path).unwrap();
+        seed_hook_server_at(&config_path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(config_path).unwrap(),
+            "# Runner's status hooks: Runner enables this per session.\n[mcp_servers.runner_hooks]\ncommand = \"runner\"\nargs = [\"hook\", \"serve\"]\nenabled = false\n"
+        );
+    }
+
+    #[test]
+    fn hook_server_stub_keeps_other_servers_and_existing_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_path = temp.path().join("config.toml");
+        let existing = "# keep this comment\nmodel = \"gpt-5\"\n\n[mcp_servers.pencil]\ncommand = \"/pencil\"\n";
+        fs::write(&config_path, existing).unwrap();
+
+        seed_hook_server_at(&config_path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            format!("{existing}\n# Runner's status hooks: Runner enables this per session.\n[mcp_servers.runner_hooks]\ncommand = \"runner\"\nargs = [\"hook\", \"serve\"]\nenabled = false\n")
+        );
+
+        let own = "[mcp_servers.runner_hooks]\ncommand = \"/custom/runner\" # operator choice\n";
+        fs::write(&config_path, own).unwrap();
+        seed_hook_server_at(&config_path).unwrap();
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), own);
     }
 
     #[test]
