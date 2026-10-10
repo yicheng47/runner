@@ -376,6 +376,9 @@ fn run_process(query: Query<'_>) -> std::io::Result<Vec<u8>> {
     if let Some(home) = runner_core::app_paths::home_dir() {
         command.current_dir(home);
     }
+    // agy's updater can open a descendant console despite CREATE_NO_WINDOW.
+    #[cfg(windows)]
+    command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
     #[cfg(test)]
     if crate::golden::record_command(&command, query.stdin, query.timeout) {
         return Err(std::io::Error::other("golden query recorded"));
