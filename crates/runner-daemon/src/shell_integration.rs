@@ -298,6 +298,15 @@ mod real_shells {
             home: &Path,
             inherited: impl Fn(&str) -> Option<String>,
         ) -> Option<Self> {
+            Self::start_with_integration(command, home, inherited, true)
+        }
+
+        fn start_with_integration(
+            command: &str,
+            home: &Path,
+            inherited: impl Fn(&str) -> Option<String>,
+            integration: bool,
+        ) -> Option<Self> {
             if !Path::new(command).exists() {
                 eprintln!("skipping: {command} is not installed");
                 return None;
@@ -311,6 +320,10 @@ mod real_shells {
                 cwd: Some(home.to_path_buf()),
                 env: BTreeMap::from([
                     ("HOME".into(), home.to_string_lossy().into_owned()),
+                    (
+                        "INPUTRC".into(),
+                        home.join(".inputrc").to_string_lossy().into_owned(),
+                    ),
                     ("TERM".into(), "xterm-256color".into()),
                     // Keeps macOS's /etc/zshrc and /etc/bashrc from loading
                     // Terminal.app's own OSC 7 hook when the tests run there.
@@ -320,7 +333,12 @@ mod real_shells {
                 initial_size: Some((160, 40)),
                 ..SpawnSpec::default()
             };
-            inject(&mut spec, &data, inherited);
+            if integration {
+                inject(&mut spec, &data, inherited);
+            } else {
+                spec.env
+                    .insert("ZDOTDIR".into(), home.to_string_lossy().into_owned());
+            }
             let runtime = PtyRuntime::new();
             let (session, stream) = runtime.spawn(spec).unwrap();
             let mut shell = Self {
@@ -330,8 +348,12 @@ mod real_shells {
                 output: Vec::new(),
             };
             assert!(
-                shell.wait_for(b"\x1b]7;"),
-                "no report at the first prompt: {}",
+                shell.wait_for(if integration {
+                    b"\x1b]7;"
+                } else {
+                    b"NAV-READY> "
+                }),
+                "no first prompt: {}",
                 shell.text()
             );
             Some(shell)
@@ -407,6 +429,79 @@ mod real_shells {
 
     fn nothing_inherited(_: &str) -> Option<String> {
         None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn option_arrows_move_over_an_unsent_draft(command: &str) {
+        use alacritty_terminal::term::TermMode;
+        use runner_terminal::mappings::encode_key;
+
+        for integration in [true, false] {
+            for mode in [TermMode::empty(), TermMode::APP_CURSOR] {
+                let home = tempfile::tempdir().unwrap();
+                write(
+                    &home.path().join(".zshrc"),
+                    "PS1='NAV-READY> '\nbindkey -e\n__nav_count=0\n\
+                     _nav_snapshot() { printf '\\nNAV-%s:%s:%s:END\\n' \"$((++__nav_count))\" \"$CURSOR\" \"$BUFFER\"; }\n\
+                     zle -N _nav_snapshot\nbindkey '^O' _nav_snapshot\n",
+                );
+                write(&home.path().join(".inputrc"), "set editing-mode emacs\n");
+                write(
+                    &home.path().join(".bash_profile"),
+                    "PS1='NAV-READY> '\nset -o emacs\n",
+                );
+                let mut shell = Shell::start_with_integration(
+                    command,
+                    home.path(),
+                    nothing_inherited,
+                    integration,
+                )
+                .expect("macOS has zsh and bash");
+                shell.expect("NAV-READY> ");
+                let draft = "alpha bravo charlie delta";
+                if command.ends_with("bash") {
+                    let line = format!("printf 'NAV:%s:END\\n' '{draft}'");
+                    shell.send(&line);
+                    shell.expect(&line);
+                    for (key, marker) in [("left", "LEFT"), ("right", "RIGHT")] {
+                        let bytes = encode_key(key, false, true, false, None, mode).unwrap();
+                        shell.send(&std::str::from_utf8(&bytes).unwrap().repeat(4));
+                        shell.send(marker);
+                    }
+                    shell.send("\r");
+                    shell.expect("\r\nNAV:LEFTalpha bravo charlie deltaRIGHT:END\r\n");
+                    continue;
+                }
+                shell.send(draft);
+                shell.expect(draft);
+                let mut snapshot = 0;
+                let mut expect_draft = |shell: &mut Shell, point| {
+                    snapshot += 1;
+                    shell.send("\x0f");
+                    shell.expect(&format!("NAV-{snapshot}:{point}:{draft}:END"));
+                };
+                expect_draft(&mut shell, 25);
+                for (key, points) in [("left", [20, 12, 6, 0, 0]), ("right", [6, 12, 20, 25, 25])] {
+                    let bytes = encode_key(key, false, true, false, None, mode).unwrap();
+                    for point in points {
+                        shell.send(std::str::from_utf8(&bytes).unwrap());
+                        expect_draft(&mut shell, point);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn zsh_option_arrows_move_by_word_without_inserting_text() {
+        option_arrows_move_over_an_unsent_draft("/bin/zsh");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bash_option_arrows_move_by_word_without_inserting_text() {
+        option_arrows_move_over_an_unsent_draft("/bin/bash");
     }
 
     #[test]
