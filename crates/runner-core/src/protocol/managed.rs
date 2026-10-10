@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::socket::SocketTransport;
 use super::terminal::*;
 use super::*;
-use crate::daemon_process::{wait_unlocked, Launch, DAEMON_STOP_TIMEOUT};
+use crate::daemon_process::{system_is_shutting_down, wait_unlocked, Launch, DAEMON_STOP_TIMEOUT};
 
 pub const RESTART_LIMIT_NOTICE: &str =
     "Runner's background service keeps crashing. Sessions are stopped until it runs again.";
@@ -101,6 +101,11 @@ impl ManagedTransport {
                         owner.emit(event);
                         continue;
                     }
+                    if system_is_shutting_down() {
+                        log::info!("Windows is shutting down; runnerd recovery stopped");
+                        owner.disconnect();
+                        break;
+                    }
                     owner.emit(ClientEvent {
                         name: "daemon/disconnected".into(),
                         payload: serde_json::Value::Null,
@@ -144,6 +149,14 @@ impl ManagedTransport {
                             restarts.clear();
                             manual_retry = true;
                         }
+                        if system_is_shutting_down() {
+                            owner.disconnect();
+                            if let Some(reply) = reply {
+                                let _ =
+                                    reply.send(Err(ClientError::msg("Windows is shutting down")));
+                            }
+                            break 'events;
+                        }
                         match owner.launch.connect_or_spawn_with_restart(&hash) {
                             Ok((active, did_restart)) => {
                                 restarted = did_restart;
@@ -168,6 +181,15 @@ impl ManagedTransport {
                                 break;
                             }
                             Err(error) => {
+                                if system_is_shutting_down() {
+                                    owner.disconnect();
+                                    if let Some(reply) = reply {
+                                        let _ = reply.send(Err(ClientError::msg(
+                                            "Windows is shutting down",
+                                        )));
+                                    }
+                                    break 'events;
+                                }
                                 log::error!(
                                     "runnerd reconnect failed: {error}; log: {}",
                                     owner.launch.paths.log_dir.join("runnerd.log").display()
