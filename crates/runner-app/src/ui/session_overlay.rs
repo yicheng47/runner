@@ -33,6 +33,8 @@ pub struct SessionOverlay {
     subtitle: Option<SharedString>,
     on_primary: Option<PressHandler>,
     on_secondary: Option<PressHandler>,
+    primary_shortcut: Option<SharedString>,
+    secondary_shortcut: Option<SharedString>,
     ended_style: EndedStyle,
 }
 
@@ -47,6 +49,8 @@ impl SessionOverlay {
             subtitle: None,
             on_primary: None,
             on_secondary: None,
+            primary_shortcut: None,
+            secondary_shortcut: None,
             ended_style: EndedStyle::Chat,
         }
     }
@@ -65,6 +69,8 @@ impl SessionOverlay {
             subtitle: Some(subtitle.into()),
             on_primary: Some(Rc::new(on_primary)),
             on_secondary: Some(Rc::new(on_secondary)),
+            primary_shortcut: None,
+            secondary_shortcut: None,
             ended_style: EndedStyle::Chat,
         }
     }
@@ -83,6 +89,8 @@ impl SessionOverlay {
             subtitle: Some(subtitle.into()),
             on_primary: Some(Rc::new(on_restart)),
             on_secondary: Some(Rc::new(on_close)),
+            primary_shortcut: None,
+            secondary_shortcut: None,
             ended_style: EndedStyle::Shell,
         }
     }
@@ -100,6 +108,12 @@ impl SessionOverlay {
 
     pub fn title(mut self, title: impl Into<SharedString>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    pub fn shortcuts(mut self, primary: Option<String>, secondary: Option<String>) -> Self {
+        self.primary_shortcut = primary.map(Into::into);
+        self.secondary_shortcut = secondary.map(Into::into);
         self
     }
 }
@@ -198,6 +212,8 @@ impl RenderOnce for SessionOverlay {
                 let slot = self.ended_style == EndedStyle::Slot;
                 let primary_click = Rc::clone(&primary);
                 let secondary_click = Rc::clone(&secondary);
+                let primary_shortcut = self.primary_shortcut;
+                let secondary_shortcut = self.secondary_shortcut;
                 let header = if shell {
                     div()
                         .text_size(theme::text_body())
@@ -236,11 +252,13 @@ impl RenderOnce for SessionOverlay {
                             Button::new(SharedString::from(format!("{id}-restart")), "Restart")
                                 .size(ButtonSize::Sm)
                                 .variant(ButtonVariant::Primary)
+                                .when_some(primary_shortcut, Button::shortcut)
                                 .on_press(move |window, cx| primary_click(window, cx)),
                         )
                         .child(
                             Button::new(SharedString::from(format!("{id}-close")), "Close")
                                 .size(ButtonSize::Sm)
+                                .when_some(secondary_shortcut, Button::shortcut)
                                 .on_press(move |window, cx| secondary_click(window, cx)),
                         )
                         .into_any_element()
@@ -257,6 +275,7 @@ impl RenderOnce for SessionOverlay {
                             )
                             .icon("play.svg")
                             .variant(ButtonVariant::Primary)
+                            .when_some(primary_shortcut, Button::shortcut)
                             .on_press(move |window, cx| primary_click(window, cx)),
                         )
                         .child(
@@ -269,6 +288,7 @@ impl RenderOnce for SessionOverlay {
                             } else {
                                 "archive.svg"
                             })
+                            .when_some(secondary_shortcut, Button::shortcut)
                             .on_press(move |window, cx| secondary_click(window, cx)),
                         )
                         .into_any_element()
