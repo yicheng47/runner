@@ -1,4 +1,4 @@
-use gpui::{ClipboardEntry, ClipboardItem};
+use gpui::{ClipboardEntry, ClipboardItem, ExternalPaths};
 use runner_core::Runtime;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +54,15 @@ pub fn resolve_terminal_paste(
     })
     .and_then(ClipboardItem::text)
     .map(TerminalPaste::Text)
+}
+
+pub fn dropped_paths_text(paths: &ExternalPaths) -> Option<String> {
+    let paths: Vec<String> = paths
+        .paths()
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    (!paths.is_empty()).then(|| format_pasted_paths(&paths))
 }
 
 pub fn shell_quote_path(path: &str) -> String {
@@ -144,6 +153,21 @@ mod tests {
             format_pasted_paths(&["/tmp/a.png".into(), "/tmp/two words.jpg".into()]),
             "/tmp/a.png '/tmp/two words.jpg'"
         );
+    }
+
+    #[test]
+    fn dropped_paths_insert_like_pasted_files() {
+        let paths = ExternalPaths(
+            ["/tmp/a.png", "/tmp/two words.jpg"]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        );
+        assert_eq!(
+            dropped_paths_text(&paths),
+            Some("/tmp/a.png '/tmp/two words.jpg'".into())
+        );
+        assert_eq!(dropped_paths_text(&ExternalPaths::default()), None);
     }
 
     #[test]

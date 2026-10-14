@@ -309,6 +309,29 @@ impl MissionWorkspace {
         }
     }
 
+    pub(super) fn on_mission_file_drop(
+        &mut self,
+        session_id: &str,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.mission_terminal_interactive(session_id, cx) {
+            return;
+        }
+        let Some(text) = runner_app::terminal_paste::dropped_paths_text(paths) else {
+            return;
+        };
+        let Some(chat) = self.attached.get(session_id) else {
+            return;
+        };
+        chat.terminal_focus.focus(window, cx);
+        if let Err(error) = chat.terminal.paste(&text) {
+            self.error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
     pub(super) fn submit_or_clear_mission_input(
         &mut self,
         session_id: &str,

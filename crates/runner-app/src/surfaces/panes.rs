@@ -1800,6 +1800,7 @@ impl NativeRoot {
             let key_session_id = session_id.clone();
             let copy_session_id = session_id.clone();
             let paste_session_id = session_id.clone();
+            let drop_session_id = session_id.clone();
             div()
                 .id(SharedString::from(format!("drawer-terminal-{session_id}")))
                 .absolute()
@@ -1819,15 +1820,6 @@ impl NativeRoot {
                 .on_action(cx.listener(move |this, action: &Copy, window, cx| {
                     this.on_terminal_copy(&copy_session_id, action, window, cx);
                 }))
-                .when(interactive, |surface| {
-                    surface
-                        .on_key_down(cx.listener(move |this, event, window, cx| {
-                            this.on_key_down(&key_session_id, event, window, cx);
-                        }))
-                        .on_action(cx.listener(move |this, action, window, cx| {
-                            this.on_paste(&paste_session_id, action, window, cx);
-                        }))
-                })
                 .child(
                     div()
                         .relative()
@@ -1850,6 +1842,21 @@ impl NativeRoot {
                         )
                         .child(terminal_scrollbar),
                 )
+                .when(interactive, |surface| {
+                    surface
+                        .on_key_down(cx.listener(move |this, event, window, cx| {
+                            this.on_key_down(&key_session_id, event, window, cx);
+                        }))
+                        .on_action(cx.listener(move |this, action, window, cx| {
+                            this.on_paste(&paste_session_id, action, window, cx);
+                        }))
+                        .child(runner_app::ui::file_drop_target(
+                            &session_id,
+                            cx.listener(move |this, paths, window, cx| {
+                                this.on_file_drop(None, &drop_session_id, paths, window, cx);
+                            }),
+                        ))
+                })
                 .into_any_element()
         } else {
             div()
@@ -2287,6 +2294,8 @@ impl NativeRoot {
                 let key_session_id = session_id.clone();
                 let copy_session_id = session_id.clone();
                 let paste_session_id = session_id.clone();
+                let drop_session_id = session_id.clone();
+                let drop_pane_id = pane_id.clone();
                 div()
                     .id(SharedString::from(format!("terminal-{session_id}")))
                     .absolute()
@@ -2306,15 +2315,6 @@ impl NativeRoot {
                     .on_action(cx.listener(move |this, action: &Copy, window, cx| {
                         this.on_terminal_copy(&copy_session_id, action, window, cx);
                     }))
-                    .when(interactive, |surface| {
-                        surface
-                            .on_key_down(cx.listener(move |this, event, window, cx| {
-                                this.on_key_down(&key_session_id, event, window, cx);
-                            }))
-                            .on_action(cx.listener(move |this, action, window, cx| {
-                                this.on_paste(&paste_session_id, action, window, cx);
-                            }))
-                    })
                     .child(
                         div()
                             .relative()
@@ -2337,6 +2337,27 @@ impl NativeRoot {
                             )
                             .child(terminal_scrollbar),
                     )
+                    .when(interactive, |surface| {
+                        surface
+                            .on_key_down(cx.listener(move |this, event, window, cx| {
+                                this.on_key_down(&key_session_id, event, window, cx);
+                            }))
+                            .on_action(cx.listener(move |this, action, window, cx| {
+                                this.on_paste(&paste_session_id, action, window, cx);
+                            }))
+                            .child(runner_app::ui::file_drop_target(
+                                &session_id,
+                                cx.listener(move |this, paths, window, cx| {
+                                    this.on_file_drop(
+                                        Some(&drop_pane_id),
+                                        &drop_session_id,
+                                        paths,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            ))
+                    })
                     .into_any_element()
             } else {
                 div()
@@ -4261,5 +4282,88 @@ mod tests {
         assert_eq!(pane_rename_key("enter"), Some(PaneRenameKey::Submit));
         assert_eq!(pane_rename_key("escape"), Some(PaneRenameKey::Cancel));
         assert_eq!(pane_rename_key("tab"), None);
+    }
+
+    #[test]
+    fn dropped_files_focus_the_pane_they_land_on() {
+        use crate::{AppRoute, NativeRoot};
+        use gpui::{ExternalPaths, FileDropEvent, TestAppContext, VisualTestContext};
+        use std::sync::Arc;
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let target_pane = store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let core = store.test_core.clone();
+            let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
+                Arc::new(core.session_events());
+            for id in ["busy-shell", "direct-agent"] {
+                core.sessions
+                    .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+                    .unwrap();
+                store.bridge.attach(id).unwrap();
+            }
+            let mut layout = PaneLayout::single(Some("busy-shell"), &[]);
+            let target_pane = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&target_pane, "direct-agent").unwrap();
+            assert!(layout.focus_pane("p1"));
+            let conn = core.db.get().unwrap();
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
+            target_pane
+        });
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "file-drop-test".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session("busy-shell"));
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root.ensure_active_tab_attached(window, cx).unwrap();
+            root
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1440.), px(900.)));
+        visual.run_until_parked();
+        host.update(&mut cx, |root, _, _| {
+            assert_eq!(root.tabs.active().unwrap().focused_pane_id, "p1");
+        })
+        .unwrap();
+
+        let target = visual
+            .debug_bounds("TERMINAL_FILE_DROP direct-agent")
+            .expect("an interactive terminal is a drop target");
+        visual.simulate_event(FileDropEvent::Entered {
+            position: target.center(),
+            paths: ExternalPaths(["/tmp/two words.png"].into_iter().map(Into::into).collect()),
+        });
+        visual.simulate_event(FileDropEvent::Submit {
+            position: target.center(),
+        });
+        visual.run_until_parked();
+
+        host.update(&mut cx, |root, window, _| {
+            assert_eq!(root.tabs.active().unwrap().focused_pane_id, target_pane);
+            assert!(root.attached["direct-agent"]
+                .terminal_focus
+                .is_focused(window));
+            // No process backs the test session, so the daemon refuses the
+            // write; the refusal names the terminal the paths were sent to.
+            assert_eq!(
+                root.chat_error.as_deref(),
+                Some("session not found: direct-agent")
+            );
+        })
+        .unwrap();
     }
 }

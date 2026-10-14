@@ -1520,6 +1520,34 @@ impl NativeRoot {
         }
     }
 
+    /// `pane_id` is `None` for a terminal in the drawer.
+    pub(crate) fn on_file_drop(
+        &mut self,
+        pane_id: Option<&str>,
+        session_id: &str,
+        paths: &gpui::ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
+        let Some(text) = runner_app::terminal_paste::dropped_paths_text(paths) else {
+            return;
+        };
+        match pane_id {
+            Some(pane_id) => self.focus_terminal(pane_id, session_id, window, cx),
+            None => self.focus_drawer_terminal(session_id, window, cx),
+        }
+        let Some(chat) = self.attached.get(session_id) else {
+            return;
+        };
+        if let Err(error) = chat.terminal.paste(&text) {
+            self.chat_error = Some(error.to_string());
+        }
+        cx.notify();
+    }
+
     pub(crate) fn resume_chat(
         &mut self,
         pane_id: &str,

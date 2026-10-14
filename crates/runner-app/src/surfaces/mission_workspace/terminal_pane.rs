@@ -117,6 +117,8 @@ impl MissionWorkspace {
         if interactive {
             let key_root = root.clone();
             let paste_root = root.clone();
+            let drop_root = root.clone();
+            let drop_id = session_id.clone();
             terminal_surface = terminal_surface
                 .on_key_down(move |event, window, cx| {
                     key_root.update(cx, |this, cx| {
@@ -127,7 +129,15 @@ impl MissionWorkspace {
                     paste_root.update(cx, |this, cx| {
                         this.on_mission_paste(&paste_id, action, window, cx)
                     });
-                });
+                })
+                .child(runner_app::ui::file_drop_target(
+                    &session_id,
+                    move |paths, window, cx| {
+                        drop_root.update(cx, |this, cx| {
+                            this.on_mission_file_drop(&drop_id, paths, window, cx)
+                        });
+                    },
+                ));
         }
         let mut pane = div()
             .absolute()
