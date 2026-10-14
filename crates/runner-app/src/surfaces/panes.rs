@@ -763,6 +763,7 @@ impl NativeRoot {
             let shell = self.session_entry(&session_id, cx).is_some_and(|entry| {
                 Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
             });
+            let overrides = &self.settings(cx).keymap_overrides;
             if any_resuming {
                 Some(
                     SessionControl::new(
@@ -782,7 +783,11 @@ impl NativeRoot {
                 Some(
                     SessionControl::new("stop-chat-header", SessionControlKind::Stop)
                         .variant(SessionControlVariant::Header)
-                        .title(if shell { "Stop terminal" } else { "Stop chat" })
+                        .title(header_control_title(
+                            if shell { "Stop terminal" } else { "Stop chat" },
+                            "stop-session",
+                            overrides,
+                        ))
                         .lifecycle_disabled(lifecycle_busy)
                         .on_press(move |window, cx| {
                             root.update(cx, |this, cx| this.stop_chat(&session_id, window, cx));
@@ -794,11 +799,15 @@ impl NativeRoot {
                 Some(
                     SessionControl::new("resume-chat-header", SessionControlKind::Resume)
                         .variant(SessionControlVariant::Header)
-                        .title(if shell {
-                            "Restart terminal"
-                        } else {
-                            "Resume chat"
-                        })
+                        .title(header_control_title(
+                            if shell {
+                                "Restart terminal"
+                            } else {
+                                "Resume chat"
+                            },
+                            "resume-session",
+                            overrides,
+                        ))
                         .lifecycle_disabled(lifecycle_busy)
                         .on_press(move |window, cx| {
                             root.update(cx, |this, cx| {
@@ -2469,6 +2478,13 @@ impl NativeRoot {
                             let resume_id = session_id.clone();
                             let archive_id = session_id.clone();
                             let resume_pane = pane_id.clone();
+                            let overrides = &self.settings(cx).keymap_overrides;
+                            let shortcut = |binding| {
+                                focused
+                                    .then(|| keymap::effective_binding(binding, overrides))
+                                    .flatten()
+                                    .map(|combo| keymap::format_combo(&combo))
+                            };
                             Some(
                                 SessionOverlay::ended(
                                     format!("ended-{session_id}"),
@@ -2488,6 +2504,7 @@ impl NativeRoot {
                                         });
                                     },
                                 )
+                                .shortcuts(shortcut("resume-session"), shortcut("close-pane"))
                                 .into_any_element(),
                             )
                         }
@@ -2935,6 +2952,13 @@ fn archive_chat_confirm_body(label: &str, running: bool) -> String {
     }
 }
 
+fn header_control_title(label: &str, binding: &str, overrides: &keymap::KeymapOverrides) -> String {
+    keymap::effective_binding(binding, overrides).map_or_else(
+        || label.to_owned(),
+        |combo| format!("{label} · {}", keymap::format_combo(&combo)),
+    )
+}
+
 fn pane_action_items(
     entry: &DirectSessionEntry,
     disabled: bool,
@@ -3344,10 +3368,10 @@ pub(crate) fn adjacent_pane_index(
 mod tests {
     use super::{
         adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
-        empty_pane_action_label, header_fork_state, pane_action_items_for, pane_body_opacity,
-        pane_close_behavior, pane_identity_icon, pane_identity_shows_status, pane_identity_visible,
-        pane_rename_key, side_panel_open, split_allowed, split_decision, split_menu_items,
-        split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
+        empty_pane_action_label, header_control_title, header_fork_state, pane_action_items_for,
+        pane_body_opacity, pane_close_behavior, pane_identity_icon, pane_identity_shows_status,
+        pane_identity_visible, pane_rename_key, side_panel_open, split_allowed, split_decision,
+        split_menu_items, split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
         workspace_header_icon, HeaderForkState, PaneCloseBehavior, PaneRenameKey, SplitDecision,
         MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
@@ -4120,6 +4144,27 @@ mod tests {
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer"
+        );
+    }
+
+    #[test]
+    fn header_control_titles_follow_effective_bindings() {
+        let mut overrides = keymap::KeymapOverrides::new();
+        #[cfg(unix)]
+        assert_eq!(
+            header_control_title("Stop chat", "stop-session", &overrides),
+            "Stop chat · ⇧⌘X"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            header_control_title("Stop chat", "stop-session", &overrides),
+            "Stop chat · Ctrl+Shift+X"
+        );
+
+        overrides.insert("resume-session".into(), None);
+        assert_eq!(
+            header_control_title("Resume chat", "resume-session", &overrides),
+            "Resume chat"
         );
     }
 
