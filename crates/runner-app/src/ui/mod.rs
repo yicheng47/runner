@@ -4,6 +4,7 @@ pub mod button;
 pub mod copy_value_button;
 pub mod duplicate_subject_overlay;
 pub mod field;
+pub mod file_drop;
 pub mod list;
 pub mod menu;
 pub mod model_field;
@@ -40,6 +41,7 @@ pub use field::{
     effective_working_dir, working_dir_placeholder, working_dir_text_field, BrowseField, Field,
     FieldError, FieldValidation, Label, TextField, TextFieldKind, WorkingDirField,
 };
+pub use file_drop::file_drop_target;
 pub use list::{
     clamp_page, count_label, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager,
     PaginatedListPage, SearchHandler, SearchInput, PAGE_SIZE,
