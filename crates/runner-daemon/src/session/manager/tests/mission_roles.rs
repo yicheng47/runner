@@ -374,12 +374,13 @@ fn empty_mission_mounts_adds_workers_and_remounts_without_a_crew() {
             std::fs::read_to_string(dir.join("shims").join(role).join("bin/runner")).unwrap();
         assert!(shim.contains("unset RUNNER_CREW_ID"));
         assert!(!shim.contains("export RUNNER_CREW_ID"));
-        assert!(log
-            .read_from(0)
-            .unwrap()
-            .iter()
-            .any(|entry| entry.event.to.as_deref() == Some(role)
-                && entry.event.payload["text"] == format!("TASK_{role}")));
+        assert!(log.read_from(0).unwrap().iter().any(|entry| entry
+            .event
+            .recipients()
+            .first()
+            .map(String::as_str)
+            == Some(role)
+            && entry.event.payload["text"] == format!("TASK_{role}")));
     }
     let status = crate::ops::mission::feed::mission_status(&core, id).unwrap();
     assert!(status.crew.is_none());
@@ -390,7 +391,7 @@ fn empty_mission_mounts_adds_workers_and_remounts_without_a_crew() {
             runner_core::protocol::PostMessageInput {
                 mission_id: id.clone(),
                 from: Some(from.into()),
-                to: to.map(str::to_owned),
+                to: to.map(str::to_owned).into(),
                 text: "Hello team".into(),
             },
         ))
@@ -432,7 +433,7 @@ fn deleting_a_crew_keeps_its_mission_roster_status_and_add_role() {
         runner_core::protocol::PostMessageInput {
             mission_id: "m".into(),
             from: Some("worker".into()),
-            to: Some("lead".into()),
+            to: Some("lead".into()).into(),
             text: "still here".into(),
         },
     ))

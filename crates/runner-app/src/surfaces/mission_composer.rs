@@ -11,7 +11,7 @@ pub(crate) struct RosterEntry {
 pub(crate) struct ComposerState {
     pub draft: String,
     pub caret: usize,
-    pub target: Option<String>,
+    pub targets: Vec<String>,
     pub picker_dismissed: bool,
     pub active_index: usize,
 }
@@ -19,7 +19,7 @@ pub(crate) struct ComposerState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ComposerPost {
     pub text: String,
-    pub to: Option<String>,
+    pub to: runner_core::Recipients,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,7 +87,7 @@ pub(crate) fn update_draft(state: &ComposerState, draft: String, caret: usize) -
     ComposerState {
         draft,
         caret,
-        target: state.target.clone(),
+        targets: state.targets.clone(),
         picker_dismissed: stayed_in_mention && state.picker_dismissed,
         active_index: 0,
     }
@@ -97,7 +97,7 @@ pub(crate) fn select_target(state: &ComposerState, handle: String) -> KeyTransit
     let Some(token) = mention_range(state) else {
         return transition(state.clone());
     };
-    let leading = token.start == 0 && state.target.is_none();
+    let leading = state.draft[..token.start].trim().is_empty();
     let text = if leading {
         String::new()
     } else {
@@ -105,13 +105,17 @@ pub(crate) fn select_target(state: &ComposerState, handle: String) -> KeyTransit
     };
     let end = token.end + usize::from(state.draft[token.end..].starts_with(' '));
     let range = token.start..end;
+    let mut targets = state.targets.clone();
+    if leading && !targets.contains(&handle) {
+        targets.push(handle);
+    }
     let mut draft = state.draft.clone();
     draft.replace_range(range.clone(), &text);
     KeyTransition {
         state: ComposerState {
             draft,
             caret: range.start + text.len(),
-            target: state.target.clone().or(Some(handle)),
+            targets,
             ..ComposerState::default()
         },
         edit: Some(DraftEdit { range, text }),
@@ -160,9 +164,9 @@ pub(crate) fn key_down(
         next.picker_dismissed = true;
         return transition(next);
     }
-    if key == "backspace" && state.target.is_some() && state.draft.is_empty() {
+    if key == "backspace" && !state.targets.is_empty() && state.draft.is_empty() {
         let mut next = state.clone();
-        next.target = None;
+        next.targets.pop();
         return transition(next);
     }
     if key == "enter" && !shift {
@@ -173,7 +177,7 @@ pub(crate) fn key_down(
             prevent_default: true,
             post: (!trimmed.is_empty()).then(|| ComposerPost {
                 text: trimmed.to_owned(),
-                to: state.target.clone(),
+                to: runner_core::Recipients::new(state.targets.clone()),
             }),
         };
     }
@@ -224,10 +228,40 @@ mod tests {
     }
 
     #[test]
+    fn several_leading_picks_add_unique_chips_and_backspace_removes_the_last() {
+        let first = pick(
+            &update_draft(&ComposerState::default(), "@c".into(), 2),
+            "coder",
+        );
+        let second = pick(&update_draft(&first, "@rev".into(), 4), "reviewer");
+        assert_eq!(second.targets, vec!["coder", "reviewer"]);
+        let duplicate = pick(&update_draft(&second, "@c".into(), 2), "coder");
+        assert_eq!(duplicate.targets, second.targets);
+        let sent = key_down(
+            &update_draft(&second, "check".into(), 5),
+            &roster(),
+            "enter",
+            false,
+        )
+        .post
+        .unwrap();
+        assert_eq!(sent.to.as_slice(), &["coder", "reviewer"]);
+        let removed = key_down(&second, &roster(), "backspace", false).state;
+        assert_eq!(removed.targets, vec!["coder"]);
+        assert!(key_down(&removed, &roster(), "backspace", false)
+            .state
+            .targets
+            .is_empty());
+    }
+
+    #[test]
     fn picker_and_send_match_the_react_composer_contract() {
         let state = update_draft(&ComposerState::default(), "@c".into(), 2);
         let picked = key_down(&state, &roster(), "enter", false);
-        assert_eq!(picked.state.target.as_deref(), Some("coder"));
+        assert_eq!(
+            picked.state.targets.first().map(String::as_str),
+            Some("coder")
+        );
         assert!(picked.state.draft.is_empty());
 
         let drafted = update_draft(&picked.state, "  hello crew  ".into(), 14);
@@ -236,7 +270,7 @@ mod tests {
             sent.post,
             Some(ComposerPost {
                 text: "hello crew".into(),
-                to: Some("coder".into()),
+                to: Some("coder".into()).into(),
             })
         );
         assert!(!key_down(&drafted, &roster(), "enter", true).prevent_default);
@@ -251,7 +285,7 @@ mod tests {
 
         let targeted = pick(&mention, "reviewer");
         let cleared = key_down(&targeted, &roster(), "backspace", false).state;
-        assert_eq!(cleared.target, None);
+        assert!(cleared.targets.is_empty());
     }
 
     #[test]
@@ -291,14 +325,14 @@ mod tests {
             assert_eq!(picked.post, None);
             assert_eq!(picked.state.draft, "请检查 👩‍💻 @reviewer to check 王菲");
             assert_eq!(picked.state.caret, "请检查 👩‍💻 @reviewer ".len());
-            assert_eq!(picked.state.target.as_deref(), Some("reviewer"));
+            assert!(picked.state.targets.is_empty());
             assert!(mention_options(&picked.state, &roster()).is_empty());
         }
 
         let mut targeted = state.clone();
-        targeted.target = Some("coder".into());
+        targeted.targets = vec!["coder".into()];
         let picked = pick(&targeted, "reviewer");
-        assert_eq!(picked.target.as_deref(), Some("coder"));
+        assert_eq!(picked.targets.first().map(String::as_str), Some("coder"));
         assert_eq!(picked.draft, "请检查 👩‍💻 @reviewer to check 王菲");
         assert_eq!(picked.caret, "请检查 👩‍💻 @reviewer ".len());
 
@@ -308,13 +342,14 @@ mod tests {
     }
 
     #[test]
-    fn picks_after_a_chip_complete_in_place_and_keep_the_chip() {
+    fn leading_picks_after_a_chip_add_another_chip() {
         let mut state = update_draft(&ComposerState::default(), "@c please".into(), 2);
-        state.target = Some("reviewer".into());
+        state.targets = vec!["reviewer".into()];
         let picked = pick(&state, "coder");
-        assert_eq!(picked.target.as_deref(), Some("reviewer"));
-        assert_eq!(picked.draft, "@coder please");
-        assert_eq!(picked.caret, "@coder ".len());
+        assert_eq!(picked.targets.first().map(String::as_str), Some("reviewer"));
+        assert_eq!(picked.targets, vec!["reviewer", "coder"]);
+        assert_eq!(picked.draft, "please");
+        assert_eq!(picked.caret, 0);
     }
 
     #[test]
@@ -323,7 +358,7 @@ mod tests {
         let picked = pick(&state, "reviewer");
         assert_eq!(picked.draft, "请检查 👋");
         assert_eq!(picked.caret, 0);
-        assert_eq!(picked.target.as_deref(), Some("reviewer"));
+        assert_eq!(picked.targets.first().map(String::as_str), Some("reviewer"));
     }
 
     #[test]
@@ -355,7 +390,7 @@ mod tests {
             key_down(&picked.state, &roster(), "enter", false).post,
             Some(ComposerPost {
                 text: "please check @reviewer".into(),
-                to: Some("reviewer".into())
+                to: Default::default()
             })
         );
     }

@@ -105,7 +105,7 @@ fn i2_1_signal_appends_one_line_with_correct_envelope() {
     let ev = &events[0];
     assert!(matches!(ev.kind, EventKind::Signal));
     assert_eq!(ev.from, "impl");
-    assert_eq!(ev.to, None);
+    assert!(ev.recipients().is_empty());
     assert_eq!(ev.signal_type.as_ref().unwrap().as_str(), "mission_goal");
     assert_eq!(ev.payload["text"], "go");
 }
@@ -181,7 +181,7 @@ fn i2_3_msg_post_to_handle_routes_directed() {
     let ev = &events[0];
     assert!(matches!(ev.kind, EventKind::Message));
     assert_eq!(ev.from, "lead");
-    assert_eq!(ev.to.as_deref(), Some("impl"));
+    assert_eq!(ev.recipients().first().map(String::as_str), Some("impl"));
     assert_eq!(ev.payload["text"], "ready for review");
 }
 
@@ -271,9 +271,12 @@ fn msg_post_accepts_messages_at_and_under_cap() {
 
     let events = f.read_log();
     assert_eq!(events.len(), 2);
-    assert_eq!(events[0].to, None);
+    assert!(events[0].recipients().is_empty());
     assert_eq!(events[0].payload["text"].as_str().unwrap(), at_limit);
-    assert_eq!(events[1].to.as_deref(), Some("impl"));
+    assert_eq!(
+        events[1].recipients().first().map(String::as_str),
+        Some("impl")
+    );
     assert_eq!(events[1].payload["text"].as_str().unwrap(), under_limit);
 }
 
@@ -289,9 +292,8 @@ fn msg_post_to_human_is_rejected_with_channel_guidance() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("human is not a message recipient")
-            && stderr.contains("runner msg post \"<text>\"")
-            && stderr.contains("omit --to"),
+        stderr.contains("@human is not a message recipient")
+            && stderr.contains("valid handles: @lead, @impl"),
         "stderr should teach the agent to broadcast into the channel; got: {stderr}",
     );
     assert_eq!(f.line_count(), 0);
@@ -697,3 +699,41 @@ fn command_help_describes_verbs_and_flags() {
 // Avoid unused-warning on Path import when the file body changes.
 #[allow(dead_code)]
 fn _path_marker(_p: &Path) {}
+
+#[test]
+fn targeted_posts_resolve_leading_mentions_and_repeatable_to() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("coder", false), ("reviewer", false), ("qa", false)]);
+    for args in [
+        vec!["msg", "post", "@reviewer @qa please check"],
+        vec![
+            "msg",
+            "post",
+            "@human explicit wins",
+            "--to",
+            "reviewer",
+            "--to",
+            "qa",
+        ],
+        vec!["msg", "post", "please ask @qa"],
+    ] {
+        let result = f.cmd("coder", &args).output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let events = f.read_log();
+    for event in &events[..2] {
+        assert_eq!(event.recipients(), &["reviewer", "qa"]);
+    }
+    assert!(events[2].recipients().is_empty());
+    for text in ["@human forbidden", "@missing unknown"] {
+        let result = f.cmd("coder", &["msg", "post", text]).output().unwrap();
+        assert_eq!(result.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&result.stderr)
+            .contains("valid handles: @coder, @reviewer, @qa"));
+    }
+    assert_eq!(f.read_log().len(), 3);
+}

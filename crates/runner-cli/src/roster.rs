@@ -25,40 +25,6 @@ pub fn load(event_log: &Path) -> Option<Vec<RosterSlot>> {
         .map(|roster| roster.slots)
 }
 
-/// Returns true if `handle` is in the roster. Missing-sidecar is
-/// treated permissively — a missing roster sidecar means something is
-/// broken upstream, but stranding the mission is worse than letting
-/// the message through. Stderr warning surfaces the gap.
-pub fn is_known(event_log: &Path, handle: &str) -> bool {
-    match load(event_log) {
-        Some(list) => {
-            let known = list.iter().any(|row| row.handle == handle);
-            if !known {
-                let handles = list
-                    .iter()
-                    .map(|row| format!("@{}", row.handle))
-                    .collect::<Vec<_>>();
-                let team = match handles.split_last() {
-                    Some((last, rest)) if !rest.is_empty() => {
-                        format!("{} and {last}", rest.join(", "))
-                    }
-                    Some((last, _)) => last.clone(),
-                    None => String::new(),
-                };
-                eprintln!("@{handle} is not in the mission roster; the team is {team}.");
-            }
-            known
-        }
-        None => {
-            eprintln!(
-                "runner: roster sidecar missing/unreadable; allowing --to @{handle} permissively. \
-                 Re-run mission_start to restore the sidecar."
-            );
-            true
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,13 +54,6 @@ mod tests {
         assert!(r.iter().any(|e| e.handle == "lead" && e.lead));
         assert!(r.iter().any(|e| e.handle == "impl" && !e.lead));
     }
-
-    #[test]
-    fn is_known_permits_when_sidecar_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        let log = dir.path().join("events.ndjson");
-        assert!(is_known(&log, "anyone"));
-    }
 }
 
 #[cfg(test)]
@@ -102,7 +61,7 @@ mod version_tests {
     use super::*;
 
     #[test]
-    fn only_version_two_is_read_and_unknown_handles_are_rejected() {
+    fn only_version_two_is_loaded() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("events.ndjson");
         let path = dir.path().join("roster.json");
@@ -115,8 +74,6 @@ mod version_tests {
             assert!(load(&log).is_none());
         }
         std::fs::write(&path, br#"{"version":2,"crew_name":"Pair","crew_addendum":null,"slots":[{"id":"s","handle":"original","lead":true,"position":0,"role_id":"r"}]}"#).unwrap();
-        assert!(is_known(&log, "original"));
-        assert!(!is_known(&log, "renamed"));
-        assert!(!is_known(&log, "added"));
+        assert_eq!(load(&log).unwrap()[0].handle, "original");
     }
 }

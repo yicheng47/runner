@@ -255,7 +255,7 @@ pub fn start(
         mission_id: id.clone(),
         kind: EventKind::Signal,
         from: "system".into(),
-        to: None,
+        to: Default::default(),
         signal_type: Some(SignalType::new("mission_start")),
         payload: serde_json::json!({
             "title": title,
@@ -268,7 +268,7 @@ pub fn start(
         mission_id: id.clone(),
         kind: EventKind::Signal,
         from: "human".into(),
-        to: None,
+        to: Default::default(),
         signal_type: Some(SignalType::new("mission_goal")),
         payload: serde_json::json!({ "text": goal_text }),
     })?;
@@ -324,7 +324,7 @@ pub fn stop(conn: &mut Connection, app_data_dir: &Path, id: &str) -> Result<Miss
             mission_id: id.to_string(),
             kind: EventKind::Signal,
             from: "system".into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(SignalType::new("mission_stopped")),
             payload: serde_json::json!({}),
         })?;
@@ -441,6 +441,24 @@ pub async fn mission_signal_impl(
         event_log::mission_dir(&state.app_data_dir, mission.crew_id.as_deref(), &mission.id);
     let log = EventLog::open(&mission_dir)?;
     let mut payload = input.payload;
+    if input.signal_type == "human_said" {
+        let conn = state.db.get()?;
+        let roster = roster::load(&conn, &state.app_data_dir, &mission)?.slots;
+        let handles = roster
+            .iter()
+            .map(|member| member.slot.slot_handle.clone())
+            .collect::<Vec<_>>();
+        let explicit: runner_core::Recipients = serde_json::from_value(payload["target"].clone())?;
+        let resolved = runner_core::addressing::resolve(
+            payload["text"].as_str().unwrap_or_default(),
+            explicit.as_slice(),
+            &handles,
+        )?;
+        let object = payload
+            .as_object_mut()
+            .ok_or_else(|| Error::msg("person signal payload must be an object"))?;
+        object.insert("target".into(), serde_json::to_value(resolved.recipients)?);
+    }
     if matches!(input.signal_type.as_str(), "human_said" | "human_response") {
         let object = payload
             .as_object_mut()
@@ -452,7 +470,7 @@ pub async fn mission_signal_impl(
         mission_id: mission.id.clone(),
         kind: EventKind::Signal,
         from,
-        to: None,
+        to: Default::default(),
         signal_type: Some(SignalType::new(input.signal_type)),
         payload,
     })?;
@@ -479,36 +497,24 @@ fn post_message(
 
     validate_roster_handle(conn, app_data_dir, &mission, input.from.as_deref())?;
 
-    if let Some(target) = input.to.as_deref() {
-        if target == "human" {
-            return Err(Error::msg("cannot address a mission message to @human"));
-        }
-        let roster = roster::load(conn, app_data_dir, &mission)?.slots;
-        if !roster
-            .iter()
-            .any(|member| member.slot.slot_handle == target)
-        {
-            return Err(Error::msg(format!(
-                "@{target} is not in the mission roster; the team is {}.",
-                roles::join_handles(
-                    roster
-                        .iter()
-                        .map(|member| format!("@{}", member.slot.slot_handle))
-                        .collect()
-                )
-            )));
-        }
-    }
+    let roster = roster::load(conn, app_data_dir, &mission)?.slots;
+    let handles = roster
+        .iter()
+        .map(|member| member.slot.slot_handle.clone())
+        .collect::<Vec<_>>();
+    let resolved = runner_core::addressing::resolve(&text, input.to.as_slice(), &handles)?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, mission.crew_id.as_deref(), &mission.id);
     let log = EventLog::open(&mission_dir)?;
-    let event = log.append(EventDraft::message(
+    let mut draft = EventDraft::message(
         mission.crew_id.as_deref(),
         mission.id,
         input.from.unwrap_or_else(|| "human".to_owned()),
-        input.to,
-        text,
-    ))?;
+        None,
+        resolved.text,
+    );
+    draft.to = resolved.recipients;
+    let event = log.append(draft)?;
     Ok(event)
 }
 
@@ -1626,7 +1632,7 @@ mod tests {
                 mission_id: mission_id.clone(),
                 from: None,
                 text: "Heads up".into(),
-                to: None,
+                to: Default::default(),
             },
         )
         .unwrap();
@@ -1635,7 +1641,7 @@ mod tests {
         assert_eq!(event.crew_id.as_deref(), Some(crew_id.as_str()));
         assert_eq!(event.mission_id, mission_id);
         assert_eq!(event.from, "human");
-        assert_eq!(event.to, None);
+        assert!(event.recipients().is_empty());
         assert_eq!(event.signal_type, None);
         assert_eq!(event.payload, serde_json::json!({ "text": "Heads up" }));
 
@@ -1658,14 +1664,17 @@ mod tests {
                 mission_id,
                 from: None,
                 text: "  Please review\n".into(),
-                to: Some("reviewer".into()),
+                to: Some("reviewer".into()).into(),
             },
         )
         .unwrap();
 
         assert_eq!(event.kind, EventKind::Message);
         assert_eq!(event.from, "human");
-        assert_eq!(event.to.as_deref(), Some("reviewer"));
+        assert_eq!(
+            event.recipients().first().map(String::as_str),
+            Some("reviewer")
+        );
         assert_eq!(
             event.payload,
             serde_json::json!({ "text": "Please review" })
@@ -1686,7 +1695,7 @@ mod tests {
                 mission_id: mission_id.clone(),
                 from: Some("reviewer".into()),
                 text: "Reviewed".into(),
-                to: None,
+                to: Default::default(),
             },
         )
         .unwrap();
@@ -1699,11 +1708,83 @@ mod tests {
                 mission_id,
                 from: Some("missing".into()),
                 text: "Nope".into(),
-                to: None,
+                to: Default::default(),
             },
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "@missing is not in the mission roster");
+    }
+
+    #[tokio::test]
+    async fn person_signals_persist_resolved_recipients_before_conversion() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let mission_id = {
+            let mut conn = state.db.get().unwrap();
+            start_message_test_mission(&mut conn, &state.app_data_dir).1
+        };
+        for payload in [
+            serde_json::json!({"text":"@lead @reviewer check"}),
+            serde_json::json!({"text":"@human explicit wins","target":["lead","reviewer"]}),
+        ] {
+            let event = mission_signal_impl(
+                &state,
+                PostSignalInput {
+                    mission_id: mission_id.clone(),
+                    from: None,
+                    signal_type: "human_said".into(),
+                    payload,
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                event.payload["target"],
+                serde_json::json!(["lead", "reviewer"])
+            );
+            assert_eq!(event.payload["delivery"], "inbox");
+        }
+        let error = mission_signal_impl(
+            &state,
+            PostSignalInput {
+                mission_id,
+                from: None,
+                signal_type: "human_said".into(),
+                payload: serde_json::json!({"text":"@human check"}),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("valid handles:"));
+    }
+
+    #[test]
+    fn socket_posts_match_the_shared_resolver() {
+        let pool = pool();
+        let mut conn = pool.get().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, mission_id) = start_message_test_mission(&mut conn, tmp.path());
+        let handles = vec!["lead".into(), "reviewer".into()];
+        for (text, targets) in [
+            ("@lead @reviewer check", vec![]),
+            ("@human explicit wins", vec!["reviewer".into()]),
+            ("ask @lead", vec![]),
+        ] {
+            let expected = runner_core::addressing::resolve(text, &targets, &handles).unwrap();
+            let event = post_message(
+                tmp.path(),
+                &conn,
+                PostMessageInput {
+                    mission_id: mission_id.clone(),
+                    from: None,
+                    text: text.into(),
+                    to: runner_core::Recipients::new(targets),
+                },
+            )
+            .unwrap();
+            assert_eq!(event.recipients(), expected.recipients.as_slice());
+            assert_eq!(event.payload["text"], expected.text);
+        }
     }
 
     #[tokio::test]
@@ -1919,7 +2000,7 @@ mod tests {
                 mission_id,
                 from: None,
                 text: "Hello?".into(),
-                to: Some("missing".into()),
+                to: Some("missing".into()).into(),
             },
         )
         .unwrap_err();
@@ -1944,7 +2025,7 @@ mod tests {
                 mission_id,
                 from: None,
                 text: "Echo".into(),
-                to: Some("human".into()),
+                to: Some("human".into()).into(),
             },
         )
         .unwrap_err();
@@ -1970,7 +2051,7 @@ mod tests {
                     mission_id: mission_id.clone(),
                     from: None,
                     text: text.into(),
-                    to: None,
+                    to: Default::default(),
                 },
             )
             .unwrap_err();
@@ -1996,7 +2077,7 @@ mod tests {
                 mission_id,
                 from: None,
                 text: "Too late".into(),
-                to: None,
+                to: Default::default(),
             },
         )
         .unwrap_err();
@@ -3157,7 +3238,7 @@ mod tests {
             mission_id: out.mission.id.clone(),
             kind: EventKind::Signal,
             from: "human".into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(SignalType::new("human_response")),
             payload: serde_json::json!({"question_id": q1.id, "choice": "yes"}),
         })

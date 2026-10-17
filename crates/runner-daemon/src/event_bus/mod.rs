@@ -27,8 +27,7 @@
 //     emitter (the app event channel or a test fake) so the bus is
 //     unit-testable without a running app.
 //
-//   - Per-runner inbox projection is incoming messages where `to == null OR
-//     to == handle`. We track every matching event id per handle so
+//   - Per-runner inbox projection is incoming messages where `to is empty or contains the handle`. We track every matching event id per handle so
 //     unread_count after a watermark advance is just `len - read_idx` — no
 //     log rescans.
 //
@@ -389,7 +388,7 @@ impl BusState {
             // inbox_read signals advance watermarks; handle them and move on.
             // Other signals (mission_start, mission_goal, ask_lead, …) never
             // project into inboxes — per arch §2.7 the inbox is strictly
-            // `kind = "message" AND from != h AND (to = null OR to = h)`.
+            // `kind = "message" AND from != h AND (to is empty OR contains h)`.
             if Self::is_inbox_read(&event) {
                 self.handle_inbox_read(&event, emitter);
                 continue;
@@ -401,10 +400,10 @@ impl BusState {
             // Project into matching inboxes. Broadcasts (`to == null`) land in
             // every roster member's inbox except the sender; directs land in
             // the addressee's inbox unless they sent the message to themself.
-            let recipients = match event.to.as_deref() {
-                Some("human") => Vec::new(),
-                Some(handle) => vec![handle.to_owned()],
-                None => self.handles.clone(),
+            let recipients = if event.recipients().is_empty() {
+                self.handles.clone()
+            } else {
+                event.recipients().to_vec()
             };
             for handle in recipients {
                 if event.addresses(&handle) {
@@ -601,7 +600,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Signal,
             from: from.into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(SignalType::new(ty)),
             payload,
         }
@@ -613,7 +612,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Message,
             from: from.into(),
-            to: to.map(String::from),
+            to: to.map(String::from).into(),
             signal_type: None,
             payload: serde_json::json!({ "text": text }),
         }
@@ -1262,5 +1261,50 @@ mod cursor_tests {
         let mut replay = BusState::new("m".into(), vec!["coder".into(), "qa".into()]);
         replay.tick(&log, &Silent).unwrap();
         assert_eq!(replay.cursors(), live.cursors());
+    }
+}
+
+#[cfg(test)]
+mod recipient_tests {
+    use super::*;
+    use runner_core::EventDraft;
+
+    #[derive(Default)]
+    struct Capture(Mutex<Vec<InboxUpdate>>);
+    impl BusEmitter for Capture {
+        fn appended(&self, _: &AppendedEvent) {}
+        fn inbox_updated(&self, event: &InboxUpdate) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+        fn watermark_advanced(&self, _: &WatermarkUpdate) {}
+    }
+    #[test]
+    fn direct_multi_and_broadcast_backlogs_match_subscriptions() {
+        for (targets, expected) in [
+            (vec!["qa"], vec!["qa"]),
+            (vec!["qa", "reviewer"], vec!["qa", "reviewer"]),
+            (vec![], vec!["qa", "reviewer", "other"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let mut state = BusState::new(
+                "m".into(),
+                ["coder", "qa", "reviewer", "other"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            );
+            let capture = Capture::default();
+            let mut draft = EventDraft::message(None, "m", "coder", None, "hello");
+            draft.to =
+                runner_core::Recipients::new(targets.into_iter().map(str::to_owned).collect());
+            log.append(draft).unwrap();
+            state.tick(&log, &capture).unwrap();
+            let updates = capture.0.lock().unwrap();
+            assert_eq!(updates.len(), expected.len());
+            assert!(updates
+                .iter()
+                .all(|update| expected.contains(&update.role_handle.as_str())
+                    && update.unread_count == 1));
+        }
     }
 }

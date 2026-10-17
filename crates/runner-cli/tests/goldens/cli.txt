@@ -1896,7 +1896,7 @@ Arguments:
 
 Options:
       --json               Print the tool result as exact JSON
-      --to <TO>            Direct the message to one roster handle
+      --to <TO>            Address a roster handle; repeat for several recipients
       --mission <MISSION>  Mission ID or unique prefix; required outside a mission
   -q                       Print only result IDs
       --as <FROM>          Attribute the message to this roster handle

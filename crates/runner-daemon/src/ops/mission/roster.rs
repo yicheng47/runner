@@ -848,7 +848,7 @@ mod tests {
                         mission_id: "m".into(),
                         text: "hello".into(),
                         from: Some(handle.into()),
-                        to: Some("lead".into()),
+                        to: Some("lead".into()).into(),
                     },
                 )
                 .await
@@ -873,7 +873,7 @@ mod tests {
                             mission_id: "m".into(),
                             text: "hello".into(),
                             from: from.then(|| handle.into()),
-                            to: (!from).then(|| handle.into())
+                            to: (!from).then(|| handle.into()).into()
                         }
                     )
                     .await
@@ -886,7 +886,7 @@ mod tests {
                     mission_id: "m".into(),
                     text: "broadcast".into(),
                     from: Some("lead".into()),
-                    to: None,
+                    to: Default::default(),
                 },
             )
             .await

@@ -1,6 +1,7 @@
 use super::terminal::*;
 use super::*;
 use super::{agent_skill::*, command::*, skills::*};
+use crate::model::Recipients;
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -345,6 +346,7 @@ variant!(NodeType => Self::Project);
 variant!(ObservationSource => Self::Hook);
 record!(OverrideValidationError { code, message });
 variant!(PermissionMode => Self::Default);
+variant!(Recipients => Self::new(vec!["coder".into(), "qa".into()]));
 record!(PostMessageInput {
     mission_id,
     from,

@@ -8,7 +8,7 @@ use crate::{env, roster};
 
 const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 
-pub fn post(env: &env::MissionEnv, text: &str, to: Option<&str>) -> i32 {
+pub fn post(env: &env::MissionEnv, text: &str, to: &[String]) -> i32 {
     if text.len() > MAX_MESSAGE_BYTES {
         let size_kb = text.len().div_ceil(1024);
         eprintln!(
@@ -18,24 +18,23 @@ pub fn post(env: &env::MissionEnv, text: &str, to: Option<&str>) -> i32 {
         return 1;
     }
 
-    if let Some(handle) = to {
-        if handle == "human" {
-            eprintln!(
-                "runner msg post: human is not a message recipient. \
-                 To reply in the crew channel, broadcast with \
-                 `runner msg post \"<text>\"` (omit --to)."
-            );
+    let handles = match roster::load(&env.event_log) {
+        Some(roster) => roster
+            .into_iter()
+            .map(|member| member.handle)
+            .collect::<Vec<_>>(),
+        None => {
+            eprintln!("runner msg post: roster sidecar missing or unreadable");
             return 1;
         }
-        if !roster::is_known(&env.event_log, handle) {
-            eprintln!(
-                "runner msg post: --to @{handle} is not in this mission's roster. \
-                 Use one of the handles printed by `runner msg read --from <handle>` \
-                 or check the mission workspace's session rail."
-            );
+    };
+    let resolved = match runner_core::addressing::resolve(text, to, &handles) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            eprintln!("runner msg post: {error}");
             return 1;
         }
-    }
+    };
 
     let Some(mission_dir) = env.event_log.parent() else {
         eprintln!(
@@ -57,9 +56,9 @@ pub fn post(env: &env::MissionEnv, text: &str, to: Option<&str>) -> i32 {
         mission_id: env.mission_id.clone(),
         kind: EventKind::Message,
         from: env.handle.clone(),
-        to: to.map(String::from),
+        to: resolved.recipients,
         signal_type: None,
-        payload: serde_json::json!({ "text": text }),
+        payload: serde_json::json!({ "text": resolved.text }),
     };
     match log.append(draft) {
         Ok(_ev) => 0,
@@ -224,7 +223,7 @@ fn select(
                     let event = &entry.event;
                     entry.next_offset > cursor.start_offset
                         && event.kind == EventKind::Message
-                        && event.to.is_some()
+                        && !event.recipients().is_empty()
                         && event.from != handle
                         && !event.addresses(handle)
                         && cursor
@@ -247,6 +246,14 @@ fn select(
     }
 }
 
+fn recipient_label(event: &Event) -> String {
+    if event.recipients().is_empty() {
+        "*".into()
+    } else {
+        event.recipients().join(", @")
+    }
+}
+
 impl ReadBatch {
     fn print_and_ack(
         &self,
@@ -260,7 +267,7 @@ impl ReadBatch {
                 "[{}] @{} -> @{}: {}",
                 event.ts.to_rfc3339(),
                 event.from,
-                event.to.as_deref().unwrap_or("*"),
+                recipient_label(event),
                 event.payload["text"].as_str().unwrap_or("")
             )?;
             writeln!(output, "  id: {}", event.id)?;
@@ -279,7 +286,7 @@ impl ReadBatch {
                     output,
                     "  @{} -> @{}: {}{}",
                     event.from,
-                    event.to.as_deref().unwrap_or("*"),
+                    recipient_label(event),
                     preview,
                     if line.chars().count() > 120 {
                         "…"
@@ -415,6 +422,23 @@ mod tests {
             .unwrap()
             .messages
             .is_empty());
+    }
+
+    #[test]
+    fn history_acks_only_the_last_printed_inbox_message() {
+        let (_dir, log, env) = fixture();
+        let inbox = message(&log, "qa", Some("coder"), "inbox");
+        let other = message(&log, "qa", Some("reviewer"), "later directed traffic");
+        let own = message(&log, "coder", None, "later sent message");
+        let history = capture(&log, "coder", None, true, None, None).unwrap();
+        assert_eq!(
+            ids(&history),
+            vec![inbox.id.as_str(), other.id.as_str(), own.id.as_str()]
+        );
+        assert_eq!(history.ack.as_ref(), Some(&inbox.id));
+        history.print_and_ack(&log, &env, &mut Vec::new()).unwrap();
+        let empty = capture(&log, "coder", None, false, None, None).unwrap();
+        assert!(empty.messages.is_empty() && empty.digest.is_empty() && empty.ack.is_none());
     }
 
     #[test]

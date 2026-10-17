@@ -546,7 +546,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Signal,
             from: "coder".into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(SignalType::new(ty)),
             payload: serde_json::json!({}),
         }
@@ -558,7 +558,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Message,
             from: "lead".into(),
-            to: to.map(String::from),
+            to: to.map(String::from).into(),
             signal_type: None,
             payload: serde_json::json!({ "text": text }),
         }
@@ -578,7 +578,10 @@ mod tests {
         assert_eq!(entries[0].event.id, a.id);
         assert_eq!(entries[1].event.id, b.id);
         assert_eq!(entries[1].event.kind, EventKind::Message);
-        assert_eq!(entries[1].event.to.as_deref(), Some("impl"));
+        assert_eq!(
+            entries[1].event.recipients().first().map(String::as_str),
+            Some("impl")
+        );
 
         // Resuming from the first entry's offset yields only the second.
         let after_first = log.read_from(entries[0].next_offset).unwrap();

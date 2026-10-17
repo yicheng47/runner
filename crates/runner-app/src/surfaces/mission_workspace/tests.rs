@@ -127,12 +127,10 @@ fn composer_tracks_keyboard_and_mouse_caret_moves_and_completes_without_resettin
         assert_eq!(input.text(), "please check @reviewer ");
         assert_eq!(input.caret_offset(), input.text().len());
     });
-    assert_eq!(
-        workspace
-            .read_with(&visual, |workspace, _| workspace.composer.target.clone())
-            .as_deref(),
-        Some("reviewer")
-    );
+    assert!(workspace.read_with(&visual, |workspace, _| workspace
+        .composer
+        .targets
+        .is_empty()));
     visual.simulate_keystrokes(if cfg!(windows) { "ctrl-z" } else { "cmd-z" });
     assert_eq!(
         input.read_with(&visual, |input, _| input.text().to_owned()),
@@ -198,7 +196,7 @@ fn signal(signal_type: &str, payload: serde_json::Value) -> Event {
         mission_id: "mission".into(),
         kind: EventKind::Signal,
         from: "system".into(),
-        to: None,
+        to: Default::default(),
         signal_type: Some(runner_daemon::model::SignalType::new(signal_type)),
         payload,
     }
@@ -1761,7 +1759,7 @@ fn notification_clicks_select_slot_and_feed_and_visible_slots_stay_silent() {
     cx.run_until_parked();
     let events = core.events.clone();
     events.emit("event/appended", &serde_json::json!({"mission_id":"test-mission", "event": Event {
-        id: "q".into(), ts: chrono::Utc::now(), crew_id: Some("test-crew".into()), mission_id: "test-mission".into(), kind: EventKind::Signal, from: "app".into(), to: None, signal_type: Some(runner_core::model::SignalType::new("human_question")), payload: serde_json::json!({"prompt":"Ship?"}),
+        id: "q".into(), ts: chrono::Utc::now(), crew_id: Some("test-crew".into()), mission_id: "test-mission".into(), kind: EventKind::Signal, from: "app".into(), to: Default::default(), signal_type: Some(runner_core::model::SignalType::new("human_question")), payload: serde_json::json!({"prompt":"Ship?"}),
     }, "next_offset":1}));
     cx.run_until_parked();
     assert_eq!(cx.delivered_system_notifications().len(), 1);
@@ -1889,7 +1887,7 @@ fn asynchronous_slot_removal_withdraws_a_question_when_it_reveals_the_feed() {
     visual.deactivate_window();
     cx.run_until_parked();
     core.events.emit("event/appended", &serde_json::json!({"mission_id":"test-mission", "event": Event {
-        id: "removed-slot-question".into(), ts: chrono::Utc::now(), crew_id: Some("test-crew".into()), mission_id: "test-mission".into(), kind: EventKind::Signal, from: "app".into(), to: None, signal_type: Some(runner_core::model::SignalType::new("human_question")), payload: serde_json::json!({"prompt":"Ship?"}),
+        id: "removed-slot-question".into(), ts: chrono::Utc::now(), crew_id: Some("test-crew".into()), mission_id: "test-mission".into(), kind: EventKind::Signal, from: "app".into(), to: Default::default(), signal_type: Some(runner_core::model::SignalType::new("human_question")), payload: serde_json::json!({"prompt":"Ship?"}),
     }, "next_offset":1}));
     cx.run_until_parked();
     assert_eq!(cx.delivered_system_notifications().len(), 1);

@@ -148,7 +148,7 @@ impl MissionWorkspace {
             mention_options(&self.composer, &roster)
         };
         let picker_open = !options.is_empty();
-        let target = self.composer.target.clone();
+        let targets = self.composer.targets.clone();
         let posting = self.composer_posting;
         let can_send = !disabled && !self.composer.draft.trim().is_empty();
         let root = cx.entity();
@@ -168,10 +168,13 @@ impl MissionWorkspace {
             .bg(theme::panel())
             .px_4()
             .py_3()
-            .children(target.map(|target| {
+            .children(targets.into_iter().map(|target| {
                 let clear_root = target_root.clone();
+                let clear_target = target.clone();
                 div()
-                    .id("mission-composer-target")
+                    .id(SharedString::from(format!(
+                        "mission-composer-target-{target}"
+                    )))
                     .flex_none()
                     .rounded_sm()
                     .bg(theme::with_alpha(theme::accent(), 0.15))
@@ -184,7 +187,7 @@ impl MissionWorkspace {
                     .text_color(theme::accent())
                     .on_click(move |_, window, cx| {
                         clear_root.update(cx, |this, cx| {
-                            this.clear_mission_composer_target(window, cx)
+                            this.clear_mission_composer_target(&clear_target, window, cx)
                         });
                     })
                     .child(format!("@{target}"))
@@ -331,11 +334,16 @@ impl MissionWorkspace {
         cx.notify();
     }
 
-    fn clear_mission_composer_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn clear_mission_composer_target(
+        &mut self,
+        handle: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.roster.is_empty() || self.composer_posting || self.secondary_state(cx).secondary {
             return;
         }
-        self.composer.target = None;
+        self.composer.targets.retain(|target| target != handle);
         self.composer_input
             .read(cx)
             .focus_handle()
@@ -351,7 +359,7 @@ impl MissionWorkspace {
         self.post_mission_composer(
             ComposerPost {
                 text,
-                to: self.composer.target.clone(),
+                to: runner_core::Recipients::new(self.composer.targets.clone()),
             },
             window,
             cx,
@@ -370,6 +378,23 @@ impl MissionWorkspace {
         if self.roster.is_empty() || self.composer_posting || self.secondary_state(cx).secondary {
             return;
         }
+        let handles = self
+            .mission_composer_roster()
+            .into_iter()
+            .map(|member| member.handle)
+            .collect::<Vec<_>>();
+        let resolved =
+            match runner_core::addressing::resolve(&post.text, post.to.as_slice(), &handles) {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    self.error = Some(action_failure(
+                        crate::i18n::message("action.send_message"),
+                        error.to_string(),
+                    ));
+                    cx.notify();
+                    return;
+                }
+            };
         self.composer_posting = true;
         self.composer_input
             .update(cx, |input, input_cx| input.set_disabled(true, input_cx));
@@ -380,8 +405,8 @@ impl MissionWorkspace {
             core.mission_post_impl(runner_core::protocol::mission::PostMessageInput {
                 mission_id: mission_id.clone(),
                 from: None,
-                text: post.text,
-                to: post.to,
+                text: resolved.text,
+                to: resolved.recipients,
             })
             .map(|_| mission_id)
             .map_err(|error| error.to_string())

@@ -102,6 +102,64 @@ pub enum EventKind {
     Message,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(with = "Option<RecipientsWire>"))]
+pub struct Recipients(Vec<String>);
+
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+enum RecipientsWire {
+    One(String),
+    Several(Vec<String>),
+}
+
+impl Recipients {
+    pub fn new(handles: Vec<String>) -> Self {
+        let mut unique = Vec::new();
+        for handle in handles {
+            if !unique.contains(&handle) {
+                unique.push(handle);
+            }
+        }
+        Self(unique)
+    }
+
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl From<Option<String>> for Recipients {
+    fn from(handle: Option<String>) -> Self {
+        Self(handle.into_iter().collect())
+    }
+}
+
+impl Serialize for Recipients {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [] => serializer.serialize_none(),
+            [handle] => serializer.serialize_str(handle),
+            handles => handles.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Recipients {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match Option::<RecipientsWire>::deserialize(deserializer)? {
+            None => Self::default(),
+            Some(RecipientsWire::One(handle)) => Self::new(vec![handle]),
+            Some(RecipientsWire::Several(handles)) => Self::new(handles),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: Ulid,
@@ -111,7 +169,8 @@ pub struct Event {
     pub mission_id: String,
     pub kind: EventKind,
     pub from: String,
-    pub to: Option<String>,
+    #[serde(default)]
+    pub to: Recipients,
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub signal_type: Option<SignalType>,
     #[serde(default)]
@@ -119,11 +178,16 @@ pub struct Event {
 }
 
 impl Event {
+    pub fn recipients(&self) -> &[String] {
+        self.to.as_slice()
+    }
+
     pub fn addresses(&self, handle: &str) -> bool {
         self.kind == EventKind::Message
             && handle != "human"
             && self.from != handle
-            && self.to.as_deref().is_none_or(|target| target == handle)
+            && (self.recipients().is_empty()
+                || self.recipients().iter().any(|target| target == handle))
     }
 }
 
@@ -136,7 +200,7 @@ pub struct EventDraft {
     pub mission_id: String,
     pub kind: EventKind,
     pub from: String,
-    pub to: Option<String>,
+    pub to: Recipients,
     pub signal_type: Option<SignalType>,
     pub payload: serde_json::Value,
 }
@@ -154,7 +218,7 @@ impl EventDraft {
             mission_id: mission_id.into(),
             kind: EventKind::Signal,
             from: from.into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(signal_type.into()),
             payload,
         }
@@ -172,7 +236,7 @@ impl EventDraft {
             mission_id: mission_id.into(),
             kind: EventKind::Message,
             from: from.into(),
-            to,
+            to: to.into(),
             signal_type: None,
             payload: serde_json::json!({ "text": text.into() }),
         }
@@ -200,7 +264,7 @@ mod tests {
         let evt: Event = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(evt.kind, EventKind::Signal);
         assert_eq!(evt.signal_type.as_ref().unwrap().as_str(), "ask_lead");
-        assert_eq!(evt.to, None);
+        assert!(evt.recipients().is_empty());
 
         let back = serde_json::to_value(&evt).unwrap();
         assert_eq!(back, json);
@@ -230,12 +294,42 @@ mod tests {
             mission_id: "m".into(),
             kind: EventKind::Message,
             from: "lead".into(),
-            to: Some("impl".into()),
+            to: Some("impl".into()).into(),
             signal_type: None,
             payload: serde_json::json!({ "text": "hi" }),
         };
         let v = serde_json::to_value(&evt).unwrap();
         assert!(v.get("type").is_none(), "messages must omit `type`");
         assert_eq!(v["to"], "impl");
+    }
+}
+
+#[cfg(test)]
+mod recipients_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_single_and_broadcast_lines_roundtrip_and_arrays_address_all_targets() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!("qa"),
+            serde_json::json!(["qa", "coder"]),
+        ] {
+            let event_json = serde_json::json!({"id":"01HG3K1YRG7RQ3N9ABCDEFGHJK","ts":"2026-04-21T12:34:56.123Z","mission_id":"m","kind":"message","from":"reviewer","to":value,"payload":{"text":"hello"}});
+            let event: Event = serde_json::from_value(event_json.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&event).unwrap(), event_json);
+            assert!(event.addresses("qa"));
+            assert!(!event.addresses("reviewer"));
+            assert!(!event.addresses("human"));
+            assert_eq!(
+                event.addresses("coder"),
+                value.is_null() || value.is_array()
+            );
+        }
+        let legacy: Event = serde_json::from_value(serde_json::json!({"id":"old","ts":"2026-04-21T12:34:56Z","mission_id":"m","kind":"message","from":"qa","payload":{"text":"omitted to"}})).unwrap();
+        assert!(legacy.addresses("coder"));
+        let recipients: Recipients =
+            serde_json::from_value(serde_json::json!(["qa", "qa"])).unwrap();
+        assert_eq!(serde_json::to_value(recipients).unwrap(), "qa");
     }
 }

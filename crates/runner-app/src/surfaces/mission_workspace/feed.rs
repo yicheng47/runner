@@ -721,12 +721,14 @@ impl MissionWorkspace {
                                                 ("signal", (signal).to_string()),
                                                 (
                                                     "recipient",
-                                                    (event
-                                                        .to
-                                                        .as_ref()
-                                                        .map(|to| format!(" → @{to}"))
-                                                        .unwrap_or_default())
-                                                    .to_string(),
+                                                    if event.recipients().is_empty() {
+                                                        String::new()
+                                                    } else {
+                                                        format!(
+                                                            " → @{}",
+                                                            event.recipients().join(", @")
+                                                        )
+                                                    },
                                                 ),
                                                 ("time", (format_event_time(&event)).to_string()),
                                             ],
