@@ -52,6 +52,36 @@ fn endpoint_exists(_: &IpcEndpoint) -> bool {
     true
 }
 
+pub fn mission_read_cursor(
+    mission_id: &str,
+    handle: &str,
+) -> Option<runner_core::protocol::MissionReadCursor> {
+    mission_read_cursor_at(&endpoint()?, mission_id, handle)
+}
+
+fn mission_read_cursor_at(
+    endpoint: &IpcEndpoint,
+    mission_id: &str,
+    handle: &str,
+) -> Option<runner_core::protocol::MissionReadCursor> {
+    let transport = SocketTransport::connect_with_timeout(
+        endpoint,
+        wire::Hello {
+            exe_sha256: String::new(),
+            client: "cli".into(),
+        },
+        Duration::from_millis(200),
+    )
+    .ok()?;
+    let response = call_daemon(
+        &transport.client(),
+        "mission_read_cursor",
+        json!({"mission_id": mission_id, "handle": handle}),
+    )
+    .ok()?;
+    serde_json::from_value(response.value).ok().flatten()
+}
+
 pub struct SocketClient {
     daemon: DaemonClient,
     transport: std::sync::Arc<SocketTransport>,
@@ -320,6 +350,10 @@ pub fn call_daemon(
         "mission_stop" => response(client.mission_stop_impl(argument(&args, "id")?)),
         "mission_archive" => response(client.mission_archive_impl(argument(&args, "id")?)),
         "mission_unarchive" => response(client.mission_unarchive_impl(argument(&args, "id")?)),
+        "mission_read_cursor" => response(client.mission_read_cursor(
+            &argument::<String>(&args, "mission_id")?,
+            &argument::<String>(&args, "handle")?,
+        )),
         "mission_post" => response(client.mission_post_impl(parse(args)?)),
         "mission_signal" => response(client.mission_signal_impl(parse(args)?)),
         "session_resume" => {
@@ -401,5 +435,88 @@ mod skew_tests {
             .unwrap();
         assert_eq!(error, ClientError::Protocol(VERSION_SKEW_MESSAGE.into()));
         server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use runner_core::protocol::{ClientError as ProtocolError, Request, Response, Transport};
+
+    struct Cursor;
+    impl Transport for Cursor {
+        fn call(&self, request: Request) -> Result<Response, ProtocolError> {
+            let Request::mission_read_cursor { mission_id, handle } = request else {
+                panic!("wrong request")
+            };
+            assert_eq!((mission_id.as_str(), handle.as_str()), ("m", "coder"));
+            Ok(Response::mission_read_cursor(Ok(Some(
+                runner_core::protocol::MissionReadCursor {
+                    start_offset: 123,
+                    ack_id: Some("ack".into()),
+                    ack_offset: 456,
+                },
+            ))))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            panic!("read-only query does not subscribe")
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn cursor_query_uses_existing_socket_and_missing_or_unavailable_cursor_falls_back() {
+        use wire::Frame;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = IpcEndpoint(dir.path().join("cursor.sock"));
+        assert!(mission_read_cursor_at(&endpoint, "m", "coder").is_none());
+        assert!(!endpoint.0.exists());
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let hello: wire::Hello = Frame::read(&mut stream).unwrap().decode().unwrap();
+            assert!(hello.exe_sha256.is_empty());
+            Frame::json(
+                wire::WELCOME,
+                &wire::Welcome {
+                    exe_sha256: "existing".into(),
+                    pid: 1,
+                    started_at: "now".into(),
+                },
+            )
+            .unwrap()
+            .write(&mut stream)
+            .unwrap();
+            let call: wire::Call = Frame::read(&mut stream).unwrap().decode().unwrap();
+            assert!(
+                matches!(call.request, Request::mission_read_cursor { mission_id, handle } if mission_id == "m" && handle == "coder")
+            );
+            Frame::json(
+                wire::RESPONSE,
+                &wire::Reply {
+                    id: call.id,
+                    response: Response::mission_read_cursor(Ok(None)),
+                },
+            )
+            .unwrap()
+            .write(&mut stream)
+            .unwrap();
+        });
+        assert!(mission_read_cursor_at(&endpoint, "m", "coder").is_none());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cursor_query_uses_typed_cli_adapter() {
+        let client = DaemonClient::new(std::sync::Arc::new(Cursor));
+        let result = call_daemon(
+            &client,
+            "mission_read_cursor",
+            json!({"mission_id":"m","handle":"coder"}),
+        )
+        .unwrap();
+        assert_eq!(
+            result.value,
+            json!({"start_offset":123,"ack_id":"ack","ack_offset":456})
+        );
     }
 }

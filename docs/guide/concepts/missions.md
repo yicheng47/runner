@@ -14,7 +14,7 @@ The mission's working directory is shared by its members when supplied. Runner d
 
 The feed records messages, questions, answers and lifecycle events in a persistent event log. A member can address another member by handle, post to the crew, or ask the person for a decision. Runner delivers coordination messages to the relevant agents; their own terminals retain the detailed work and output.
 
-Answer a question through its feed card. For an ordinary follow-up, use the message composer. You can also [use the CLI](../guides/drive-runner-from-agents.md) to read the feed, send a message or answer a pending question.
+Answer a question through its feed card. For an ordinary follow-up, use the message composer. Type `@` at the start and pick a member to add a recipient chip; repeat to choose several. Click a chip to remove it, or press Backspace in an empty draft to remove the last chip. With no chips or leading mentions, the message broadcasts to the crew. Only its recipients receive inbox notifications. Mentions inside the text remain text. You can also [use the CLI](../guides/drive-runner-from-agents.md) to read the feed, send a message or answer a pending question.
 
 ## Permissions
 

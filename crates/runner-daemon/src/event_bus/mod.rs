@@ -27,8 +27,7 @@
 //     emitter (the app event channel or a test fake) so the bus is
 //     unit-testable without a running app.
 //
-//   - Per-runner inbox projection is incoming messages where `to == null OR
-//     to == handle`. We track every matching event id per handle so
+//   - Per-runner inbox projection is incoming messages where `to is empty or contains the handle`. We track every matching event id per handle so
 //     unread_count after a watermark advance is just `len - read_idx` — no
 //     log rescans.
 //
@@ -50,6 +49,7 @@ use notify::{
 };
 use runner_core::event_log::EventLog;
 use runner_core::model::{Event, EventKind};
+use runner_core::protocol::MissionReadCursor;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -123,6 +123,7 @@ pub struct WatermarkUpdate {
 /// notify watcher and consumer thread running; dropping it tears both down.
 pub struct EventBus {
     mission_id: String,
+    cursors: Arc<Mutex<Option<BTreeMap<String, MissionReadCursor>>>>,
     shutdown: Arc<AtomicBool>,
     consumer: Mutex<Option<JoinHandle<()>>>,
     /// Notify watcher — kept alive for the bus's lifetime. It feeds the
@@ -176,6 +177,8 @@ impl EventBus {
             .watch(&watch_root, RecursiveMode::NonRecursive)
             .map_err(|e| Error::msg(format!("notify watch {watch_root:?}: {e}")))?;
 
+        let cursors = Arc::new(Mutex::new(None));
+        let cursors_for_thread = Arc::clone(&cursors);
         let shutdown = Arc::new(AtomicBool::new(false));
         let mission_id_for_thread = mission_id.clone();
         let roster_for_thread: Vec<String> = roster.to_vec();
@@ -191,6 +194,7 @@ impl EventBus {
                 if let Err(e) = state.tick(&log, emitter_for_thread.as_ref()) {
                     log::error!("initial tick failed for mission {mission_id_for_thread}: {e}");
                 }
+                *cursors_for_thread.lock().unwrap() = Some(state.cursors());
                 loop {
                     // recv_timeout lets us notice shutdown without a notify
                     // event arriving; also serves as a slow-poll safety net
@@ -207,6 +211,7 @@ impl EventBus {
                     if let Err(e) = state.tick(&log, emitter_for_thread.as_ref()) {
                         log::error!("tick failed for mission {mission_id_for_thread}: {e}");
                     }
+                    *cursors_for_thread.lock().unwrap() = Some(state.cursors());
                     if shutting {
                         return;
                     }
@@ -216,6 +221,7 @@ impl EventBus {
 
         Ok(Arc::new(Self {
             mission_id,
+            cursors,
             shutdown,
             consumer: Mutex::new(Some(consumer)),
             _watcher: watcher,
@@ -229,6 +235,10 @@ impl EventBus {
         if let Some(handle) = self.consumer.lock().unwrap().take() {
             let _ = handle.join();
         }
+    }
+
+    pub fn read_cursor(&self, handle: &str) -> Option<MissionReadCursor> {
+        self.cursors.lock().unwrap().as_ref()?.get(handle).cloned()
     }
 
     pub fn mission_id(&self) -> &str {
@@ -264,6 +274,9 @@ struct BusState {
 #[derive(Default)]
 struct RoleInbox {
     matched: Vec<String>, // ULIDs in append order
+    offsets: BTreeMap<String, u64>,
+    start_offset: u64,
+    ack_offset: u64,
     /// Index of the first unread entry in `matched`. `matched[read_idx..]`
     /// is the unread tail; `matched[..read_idx]` has been ack'd via
     /// inbox_read.
@@ -285,6 +298,22 @@ impl BusState {
             handles,
             inbox,
         }
+    }
+
+    fn cursors(&self) -> BTreeMap<String, MissionReadCursor> {
+        self.inbox
+            .iter()
+            .map(|(handle, inbox)| {
+                (
+                    handle.clone(),
+                    MissionReadCursor {
+                        start_offset: inbox.start_offset,
+                        ack_id: inbox.watermark.clone(),
+                        ack_offset: inbox.ack_offset,
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Drain whatever new lines are on disk and project them through the
@@ -317,6 +346,13 @@ impl BusState {
                 if membership_signal(&entry.event, "role_joined") {
                     if let Some(handle) = entry.event.payload["handle"].as_str() {
                         self.handles.retain(|existing| existing != handle);
+                        self.inbox.insert(
+                            handle.to_owned(),
+                            RoleInbox {
+                                start_offset: entry.next_offset,
+                                ..RoleInbox::default()
+                            },
+                        );
                     }
                 }
             }
@@ -335,7 +371,13 @@ impl BusState {
                     if !self.handles.iter().any(|existing| existing == handle) {
                         self.handles.push(handle.to_owned());
                     }
-                    self.inbox.entry(handle.to_owned()).or_default();
+                    let inbox = self.inbox.entry(handle.to_owned()).or_default();
+                    if inbox.start_offset == 0 {
+                        *inbox = RoleInbox {
+                            start_offset: entry.next_offset,
+                            ..RoleInbox::default()
+                        };
+                    }
                 }
             } else if membership_signal(&event, "role_removed") {
                 if let Some(handle) = event.payload["handle"].as_str() {
@@ -346,7 +388,7 @@ impl BusState {
             // inbox_read signals advance watermarks; handle them and move on.
             // Other signals (mission_start, mission_goal, ask_lead, …) never
             // project into inboxes — per arch §2.7 the inbox is strictly
-            // `kind = "message" AND from != h AND (to = null OR to = h)`.
+            // `kind = "message" AND from != h AND (to is empty OR contains h)`.
             if Self::is_inbox_read(&event) {
                 self.handle_inbox_read(&event, emitter);
                 continue;
@@ -358,15 +400,21 @@ impl BusState {
             // Project into matching inboxes. Broadcasts (`to == null`) land in
             // every roster member's inbox except the sender; directs land in
             // the addressee's inbox unless they sent the message to themself.
-            let recipients = match event.to.as_deref() {
-                Some("human") => Vec::new(),
-                Some(handle) => vec![handle.to_owned()],
-                None => self.handles.clone(),
+            let recipients = if event.recipients().is_empty() {
+                self.handles.clone()
+            } else {
+                event.recipients().to_vec()
             };
             for handle in recipients {
-                if event_targets(&event, &handle) {
-                    let inbox = self.inbox.entry(handle.clone()).or_default();
+                if event.addresses(&handle) {
+                    let Some(inbox) = self.inbox.get_mut(&handle) else {
+                        continue;
+                    };
+                    if entry.next_offset <= inbox.start_offset {
+                        continue;
+                    }
                     inbox.matched.push(event.id.clone());
+                    inbox.offsets.insert(event.id.clone(), entry.next_offset);
                     let unread = inbox.matched.len() - inbox.read_idx;
                     emitter.inbox_updated(&InboxUpdate {
                         mission_id: self.mission_id.clone(),
@@ -431,6 +479,10 @@ impl BusState {
             return;
         }
 
+        let Some(offset) = inbox.offsets.get(&up_to).copied() else {
+            return;
+        };
+        inbox.ack_offset = offset;
         inbox.watermark = Some(up_to.clone());
         // Advance read_idx past every matched id ≤ up_to. matched is already
         // append-ordered (ULIDs are monotonic), so this is just a forward
@@ -466,17 +518,6 @@ fn membership_signal(event: &Event, signal: &str) -> bool {
             .signal_type
             .as_ref()
             .is_some_and(|kind| kind.as_str() == signal)
-}
-
-/// Returns true when `event` should appear in `handle`'s inbox.
-fn event_targets(event: &Event, handle: &str) -> bool {
-    if event.from == handle {
-        return false;
-    }
-    match event.to.as_deref() {
-        None => true,
-        Some(target) => target == handle,
-    }
 }
 
 /// Process-wide registry of live buses, keyed by mission id. Mounted by
@@ -559,7 +600,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Signal,
             from: from.into(),
-            to: None,
+            to: Default::default(),
             signal_type: Some(SignalType::new(ty)),
             payload,
         }
@@ -571,7 +612,7 @@ mod tests {
             mission_id: "mission".into(),
             kind: EventKind::Message,
             from: from.into(),
-            to: to.map(String::from),
+            to: to.map(String::from).into(),
             signal_type: None,
             payload: serde_json::json!({ "text": text }),
         }
@@ -1068,7 +1109,7 @@ mod membership_tests {
     }
 
     #[test]
-    fn membership_live_and_replay_match_and_directed_messages_are_never_dropped() {
+    fn membership_live_and_replay_match_and_subscription_starts_at_join() {
         let dir = tempfile::tempdir().unwrap();
         let log = EventLog::open(dir.path()).unwrap();
         let capture = Capture::default();
@@ -1082,7 +1123,7 @@ mod membership_tests {
                 "before join",
             ))
             .unwrap();
-        let directed = log
+        let _directed = log
             .append(runner_core::EventDraft::message(
                 Some("c"),
                 "m",
@@ -1151,15 +1192,119 @@ mod membership_tests {
             ))
             .unwrap();
         live.tick(&log, &capture).unwrap();
-        assert_eq!(
-            live.inbox["worker"].matched,
-            vec![directed.id, intro.id, late_direct.id]
-        );
+        assert_eq!(live.inbox["worker"].matched, vec![intro.id, late_direct.id]);
         assert!(!live.inbox["worker"].matched.contains(&earlier.id));
         assert!(!live.inbox["worker"].matched.contains(&departed.id));
         let mut replay = BusState::new("m".into(), vec!["lead".into(), "worker".into()]);
         replay.tick(&log, &Capture::default()).unwrap();
         assert_eq!(live.handles, replay.handles);
         assert_eq!(live.inbox["worker"].matched, replay.inbox["worker"].matched);
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use runner_core::EventDraft;
+
+    struct Silent;
+    impl BusEmitter for Silent {
+        fn appended(&self, _: &AppendedEvent) {}
+        fn inbox_updated(&self, _: &InboxUpdate) {}
+        fn watermark_advanced(&self, _: &WatermarkUpdate) {}
+    }
+
+    #[test]
+    fn cursor_rebuild_matches_live_and_offsets_follow_messages_not_ack_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(dir.path()).unwrap();
+        let mut live = BusState::new("m".into(), vec!["coder".into(), "qa".into()]);
+        log.append(EventDraft::message(
+            None,
+            "m",
+            "coder",
+            Some("qa".into()),
+            "before join",
+        ))
+        .unwrap();
+        log.append(EventDraft::signal(
+            None,
+            "m",
+            "human",
+            "role_joined",
+            serde_json::json!({"handle":"qa"}),
+        ))
+        .unwrap();
+        let a = log
+            .append(EventDraft::message(None, "m", "coder", None, "A"))
+            .unwrap();
+        live.tick(&log, &Silent).unwrap();
+        let b = log
+            .append(EventDraft::message(None, "m", "coder", None, "B"))
+            .unwrap();
+        log.append(EventDraft::signal(
+            None,
+            "m",
+            "qa",
+            "inbox_read",
+            serde_json::json!({"up_to":a.id}),
+        ))
+        .unwrap();
+        live.tick(&log, &Silent).unwrap();
+        let entries = log.read_from(0).unwrap();
+        let cursor = &live.cursors()["qa"];
+        assert_eq!(cursor.start_offset, entries[1].next_offset);
+        assert_eq!(cursor.ack_offset, entries[2].next_offset);
+        assert_eq!(cursor.ack_id.as_ref(), Some(&a.id));
+        assert_eq!(live.inbox["qa"].matched, vec![a.id, b.id]);
+        assert_eq!(live.inbox["qa"].read_idx, 1);
+        let mut replay = BusState::new("m".into(), vec!["coder".into(), "qa".into()]);
+        replay.tick(&log, &Silent).unwrap();
+        assert_eq!(replay.cursors(), live.cursors());
+    }
+}
+
+#[cfg(test)]
+mod recipient_tests {
+    use super::*;
+    use runner_core::EventDraft;
+
+    #[derive(Default)]
+    struct Capture(Mutex<Vec<InboxUpdate>>);
+    impl BusEmitter for Capture {
+        fn appended(&self, _: &AppendedEvent) {}
+        fn inbox_updated(&self, event: &InboxUpdate) {
+            self.0.lock().unwrap().push(event.clone());
+        }
+        fn watermark_advanced(&self, _: &WatermarkUpdate) {}
+    }
+    #[test]
+    fn direct_multi_and_broadcast_backlogs_match_subscriptions() {
+        for (targets, expected) in [
+            (vec!["qa"], vec!["qa"]),
+            (vec!["qa", "reviewer"], vec!["qa", "reviewer"]),
+            (vec![], vec!["qa", "reviewer", "other"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let log = EventLog::open(dir.path()).unwrap();
+            let mut state = BusState::new(
+                "m".into(),
+                ["coder", "qa", "reviewer", "other"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            );
+            let capture = Capture::default();
+            let mut draft = EventDraft::message(None, "m", "coder", None, "hello");
+            draft.to =
+                runner_core::Recipients::new(targets.into_iter().map(str::to_owned).collect());
+            log.append(draft).unwrap();
+            state.tick(&log, &capture).unwrap();
+            let updates = capture.0.lock().unwrap();
+            assert_eq!(updates.len(), expected.len());
+            assert!(updates
+                .iter()
+                .all(|update| expected.contains(&update.role_handle.as_str())
+                    && update.unread_count == 1));
+        }
     }
 }

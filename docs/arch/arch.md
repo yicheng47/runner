@@ -253,25 +253,27 @@ Short, typed, router-visible. Grammar: past-tense verb (or asker verbs like `ask
 
 ### 4.2 Message — *"here's what I think"*
 
-Prose, addressed either to the mission (broadcast) or to a specific crewmate (direct).
+Prose, addressed to one member, several members or the mission.
 
 - **Broadcast** — `runner msg post "<text>"`. Goes to every other crew member's inbox; a human-authored broadcast goes to every crew member.
-- **Direct** — `runner msg post --to <slot_handle> "<text>"`. Goes to that slot's inbox only.
+- **Directed** — `runner msg post --to coder --to reviewer "<text>"`, or `runner msg post "@coder @reviewer <text>"`. Repeatable explicit recipients take precedence over leading mentions. Mid-text mentions do not address. Unknown handles and `human` are refused with the valid handles.
 
-Messages are **flat by design** — one stream per mission, no thread scoping, no fact primitive. Durable conclusions belong in project files, code, commits, or message prose. Signals are typed and small; messages are prose the router does not parse — but it does *notice* them (§8.5).
+Messages are flat, with one stream per mission. Durable conclusions belong in project files, code, commits or message prose. `Recipients` reads a string, an array or `null`; it writes one handle as a string, several as an array and a broadcast as `null`. Existing single-recipient logs keep their form. CLI posting, mission operations and the composer use `runner_core::addressing::resolve`.
 
 ### 4.3 Inbox — *"what's in my mailbox"*
 
-Every slot has an **inbox**: the subset of the mission's messages relevant to it. The inbox is a **projection** over the event log, not a separate data structure. For the slot with handle `h`:
+Each member's subscription starts at its human-authored `role_joined`, or at mission start for an original member. Membership is shared by the bus, router and reads through `Event::addresses(h)`:
 
 ```
-inbox(h) = all events in the mission where
-          kind = "message" AND from != h AND (to = null OR to = h)
+inbox(h) = events since joining where
+           kind = "message" AND from != h AND (to is empty OR to contains h)
 ```
 
-`runner msg read` returns the calling slot's inbox, sorted by ULID. `--since <ts>` restricts to messages newer than a given ULID/timestamp so agents can poll without re-reading history.
+`runner msg read` prints only messages after the latest ack, in stream order, followed by a digest of other members' directed traffic. The digest excludes the caller's sent and addressed messages, spans the previous ack through the last inbox message printed, and shows the latest ten entries in log order as truncated single lines. Empty inbox reads emit no digest or ack.
 
-**The inbox is pull-based, with a nudge.** The body of a message is only ever read when the recipient runs `msg read`. What the router does on a new message is write one line into the recipient's PTY — `[inbox] new message from @coder — run \`runner msg read\` to view.` — subject to the delivery gate in §8.5, so an agent that is mid-turn or a human who is mid-draft is not interrupted. The recipient also learns to read its inbox through the platform preamble (§6 Layer 1), which instructs every crew member to check at natural task boundaries.
+`runner msg read --all` prints all crew messages since joining, including the caller's sent messages and traffic between others, without a digest. `--since ID` selects after that event ID; `--from HANDLE` filters the selected messages by sender. Either filter disables acks and the digest, including with `--all`. Unfiltered reads ack only fully printed messages in the caller's own inbox, through its last printed inbox ID, and only after successful output. Other members' traffic and digest entries never advance the ack.
+
+The dispatcher types the unchanged pointer notification ``[inbox] N new messages — run `runner msg read` to view.`` according to §8.5. A recipient reads when notified and uses `--all` after a resume or when earlier messages are no longer in context.
 
 ### 4.4 Event — *the unifying transport*
 
@@ -285,7 +287,7 @@ Every coordination primitive is persisted as an **event** — one line in the pe
   "mission_id": "01HG...",
   "kind":       "signal",                // signal | message
   "from":       "coder",                 // slot handle | "human" | "router"
-  "to":         null,                    // null = broadcast; slot handle = directed
+  "to":         null,                    // null = broadcast; string or array = directed
   "type":       "review_requested",      // for kind=signal; omitted for kind=message
   "payload":    { "...": "..." }         // kind-specific (e.g. { "text": "..." } for messages)
 }
@@ -519,11 +521,11 @@ Add records `role_joined` before publishing `roster.json`, then updates the rout
 | Event | Fixed handler |
 |---|---|
 | `mission_goal` | No runtime side effect; the launch prompt was composed before spawn and this event remains the durable goal record. |
-| `human_said` | Append a message from `human` to `payload.target`, or broadcast when no target is given. |
+| `human_said` | Validate and persist resolved recipients in `payload.target` (string, array or null), then append a message from `human` with those recipients; reopen repair preserves the same recipients. |
 | `ask_human` | Append a `human_question` event for the UI. |
 | `human_response` | Append a message from `human` to the original asker, with `payload.question_id`; retain the signal as the card record. |
 | `session_status` | The feed renders status; readiness comes directly from the session manager. |
-| message (any) | Inject a one-line inbox nudge to the recipient (directed) or to every other roster member (broadcast); a message to the virtual `human` handle is rendered in the feed and not nudged. |
+| message (any) | Signal backlogs for the addressed subscribers through `Event::addresses`; the dispatcher sends the unchanged pointer notification. Legacy messages to `human` remain visible in the feed and have no subscriber. |
 | `inbox_read` | Internal — owned by the bus's projection layer to track read watermarks. |
 
 `mission_start`, `mission_stopped`, `human_question`, `mission_warning` are observed but not routed: they are events the router or the lifecycle itself emits.
@@ -581,7 +583,7 @@ Mission messaging is a small durable queue with push delivery. This section name
 | Producer | Anything that appends: the `runner` CLI, the daemon's mission operations, the router. | `EventLog::append` |
 | Message | An event with `kind: "message"`. Signals are not messages and are not queued for subscribers. | `EventKind::Message` |
 | Subscriber | One mission member, addressed by its handle. The person is not a subscriber; a message to `human` is in no subscription. | roster handle |
-| Subscription | The messages a subscriber receives: `from ≠ h` and (`to` is null or `to = h`), starting at the subscriber's `role_joined`, or at mission start for an original member. | bus `RoleInbox` |
+| Subscription | The messages a subscriber receives: `from ≠ h` and (`to` is empty or contains `h`), starting at the subscriber's `role_joined`, or at mission start for an original member. | bus `RoleInbox` |
 | Ack | A cumulative acknowledgement written by or for the subscriber: every message in its subscription with an ID at or below `up_to` is consumed. Acks only move forward; the bus ignores a stale one. | `inbox_read { up_to }` signal |
 | Backlog | The subscription's messages after the latest ack. | bus unread count (`InboxUpdate.unread_count`) |
 | Dispatcher | The per-mission loop that pushes notifications to subscribers with a backlog. | `router/dispatch.rs` (new) |
@@ -598,7 +600,7 @@ Guarantees:
 - **At-least-once notification.** A subscriber with a backlog is notified until it acks. A duplicate notification is harmless; a lost one is repaired by redelivery.
 - **Order.** A subscriber reads its messages in stream order, and its attempts are serial.
 - **Soft dispatcher state.** Everything the dispatcher holds is rebuilt from the stream on mount: backlogs from acks, the cursor from the log's end.
-- **Who acks.** Today the subscriber acks by reading, through `runner msg read`. #826's Phase 3 makes a confirmed attempt that carries the messages themselves an ack written for the subscriber.
+- **Who acks.** The subscriber acks successfully printed inbox messages through an unfiltered `runner msg read` or `runner msg read --all`. Filtered reads never ack. A confirmed notification attempt does not ack messages.
 
 Not in this model: partitions, consumer groups, exactly-once delivery, per-message acks, dead-letter queues and priorities. A subscriber whose attempt is unsubmitted is paused, not dead-lettered: its backlog stays until a later attempt is confirmed or it acks.
 
@@ -681,7 +683,7 @@ Every stopped/crashed session transition and successful watch end is reported on
 
 ### 9.3 Two modes and one identity rule
 
-Inside a mission, `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, and `RUNNER_EVENT_LOG` identify the caller. `msg post`, `msg read`, `signal`, and `ask` append or read the event log directly and do not start a Tokio runtime or connect to the app. Other commands use the socket, and mission commands with no explicit target default to the caller's mission. An explicit different mission uses the outside path.
+Inside a mission, `RUNNER_CREW_ID`, `RUNNER_MISSION_ID`, `RUNNER_HANDLE`, and `RUNNER_EVENT_LOG` identify the caller. `msg post`, `msg read`, `signal`, and `ask` append or read the event log directly without a Tokio runtime. `msg read` may first issue a bounded, read-only `mission_read_cursor(mission_id, handle)` query to the existing daemon, without auto-start. The optional snapshot publishes the membership start offset, latest ack ID and offset immediately after that acknowledged inbox message together after a complete bus projection batch, and rebuilds on mount. Default reads may seek after that message; `--all` and `--since` start at the membership boundary. The CLI folds newer valid acks in one captured batch before selection, then writes its ack after output. The offset never points after the later `inbox_read` signal, so messages appended between capture and ack remain unread. An unavailable socket or cursor falls back to folding the log from offset 0 for exactly the same join boundary, selection and ack behavior. Stale acks never move the watermark backwards. Other commands use the socket, and mission commands with no explicit target default to the caller's mission. An explicit different mission uses the outside path.
 
 Outside a mission, mission-scoped writes require `--mission`; `msg read` is inside-only and points outside callers to `mission feed`. The caller acts for the user, so posts and answers with no handle appear as the person, represented as `human`. `--as <handle>` becomes the socket tool's `from` after roster validation, but must only name a slot the caller holds, never another agent's slot; #562 adds the seats an outside agent can take. `ask` requires `--as` outside; `mission answer` is always the person's verb and posts `human_response` without a handle.
 

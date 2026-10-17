@@ -460,9 +460,9 @@ enum MsgCommand {
     /// Post a mission message.
     Post {
         text: String,
-        /// Direct the message to one roster handle.
+        /// Address a roster handle; repeat for several recipients.
         #[arg(long)]
-        to: Option<String>,
+        to: Vec<String>,
         /// Mission ID or unique prefix; required outside a mission.
         #[arg(long)]
         mission: Option<String>,
@@ -470,9 +470,12 @@ enum MsgCommand {
         #[arg(long = "as")]
         from: Option<String>,
     },
-    /// Read the current mission inbox.
+    /// Read new inbox messages; --all shows crew history since joining.
     Read {
-        /// Return messages after this event ID.
+        /// Show all crew messages since joining.
+        #[arg(long)]
+        all: bool,
+        /// Return messages after this event ID without marking them read.
         #[arg(long)]
         since: Option<String>,
         /// Filter by sender handle.
@@ -700,18 +703,19 @@ fn run_local(cli: &Cli, context: &BusContext) -> Option<i32> {
                 eprintln!("runner msg post: --as is only valid outside the caller's mission");
                 Some(2)
             } else {
-                Some(msg::post(mission, text, to.as_deref()))
+                Some(msg::post(mission, text, to))
             }
         }
         Command::Msg {
             command:
                 MsgCommand::Read {
+                    all,
                     since,
                     from,
                     mission: target,
                 },
         } if same_mission(target.as_deref(), mission) => {
-            Some(msg::read(mission, since.as_deref(), from.as_deref()))
+            Some(msg::read(mission, *all, since.as_deref(), from.as_deref()))
         }
         Command::Signal {
             r#type,
@@ -2086,7 +2090,7 @@ async fn run_msg(
             call(
                 client,
                 "mission_post",
-                mission_post_args(&mission_id, text, to.as_deref(), from.as_deref()),
+                mission_post_args(&mission_id, text, to, from.as_deref()),
             )
             .await
         }
@@ -2139,7 +2143,8 @@ fn ask_signal(args: &AskArgs) -> Result<(&'static str, Value), CliError> {
     }
 }
 
-fn mission_post_args(mission_id: &str, text: &str, to: Option<&str>, from: Option<&str>) -> Value {
+fn mission_post_args(mission_id: &str, text: &str, to: &[String], from: Option<&str>) -> Value {
+    let to = runner_core::Recipients::new(to.to_vec());
     let mut args = json!({"mission_id": mission_id, "text": text, "to": to});
     insert_string(&mut args, "from", from);
     args
@@ -3696,11 +3701,11 @@ mod tests {
     #[test]
     fn outside_identity_is_omitted_for_the_person_and_forwarded_for_a_handle() {
         assert_eq!(
-            mission_post_args("mission", "hello", Some("lead"), None),
+            mission_post_args("mission", "hello", &["lead".into()], None),
             json!({"mission_id": "mission", "text": "hello", "to": "lead"})
         );
         assert_eq!(
-            mission_post_args("mission", "hello", None, Some("coder"))["from"],
+            mission_post_args("mission", "hello", &[], Some("coder"))["from"],
             "coder"
         );
         assert_eq!(

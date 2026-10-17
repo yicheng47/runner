@@ -70,7 +70,7 @@ impl Fixture {
             PostMessageInput {
                 mission_id: "m".into(),
                 from: None,
-                to: target.map(str::to_owned),
+                to: target.map(str::to_owned).into(),
                 text: "message".into(),
             },
         ))
@@ -127,7 +127,10 @@ fn add_and_remove_keep_roster_log_router_and_history_across_remount() {
             .position(|event| event.payload["text"] == "tiny task")
             .unwrap();
     assert_eq!(events[task].from, "human");
-    assert_eq!(events[task].to.as_deref(), Some("coder-2"));
+    assert_eq!(
+        events[task].recipients().first().map(String::as_str),
+        Some("coder-2")
+    );
     {
         let conn = fixture.state.db.get().unwrap();
         let row = repo::session::get_row(&conn, &added.session_id)
@@ -146,7 +149,7 @@ fn add_and_remove_keep_roster_log_router_and_history_across_remount() {
                 .post(Some(&added.handle))
                 .unwrap_err()
                 .to_string()
-                .contains("the team is @lead and @coder"));
+                .contains("valid handles: @lead, @coder"));
             let sessions = session::session_list(&fixture.state, "m").unwrap();
             assert!(!sessions
                 .iter()

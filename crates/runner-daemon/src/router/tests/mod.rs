@@ -611,7 +611,10 @@ fn slot_restart_records_the_signal_before_notices_to_the_right_members() {
         for (entry, recipient) in entries[1..].iter().zip(recipients) {
             assert_eq!(entry.event.kind, EventKind::Message);
             assert_eq!(entry.event.from, "runner");
-            assert_eq!(entry.event.to.as_deref(), Some(recipient));
+            assert_eq!(
+                entry.event.recipients().first().map(String::as_str),
+                Some(recipient)
+            );
             assert_eq!(entry.event.payload["text"], format!("@{handle} was restarted by the human and starts over with only its brief. Nothing it was told in this mission survives; re-send the task, branch, and anything else it needs."));
         }
     }
@@ -677,7 +680,10 @@ fn reconstruction_skips_malformed_lines_and_places_its_cursor_after_them() {
     let entries = f.router.log.read_from_lossy(end).unwrap().0;
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[1].event.kind, EventKind::Message);
-    assert_eq!(entries[1].event.to.as_deref(), Some("worker"));
+    assert_eq!(
+        entries[1].event.recipients().first().map(String::as_str),
+        Some("worker")
+    );
     assert_eq!(entries[1].event.payload["question_id"], question.id);
     assert_eq!(f.router.pending_ask_count(), 0);
 }
@@ -748,7 +754,10 @@ fn ask_human_creates_a_card_and_routes_its_response_to_the_recorded_asker() {
     let answer = &entries[3].event;
     assert_eq!(answer.kind, EventKind::Message);
     assert_eq!(answer.from, "human");
-    assert_eq!(answer.to.as_deref(), Some("worker"));
+    assert_eq!(
+        answer.recipients().first().map(String::as_str),
+        Some("worker")
+    );
     assert_eq!(answer.payload["text"], "Answer to \"continue?\": yes");
     assert_eq!(answer.payload["question_id"], card.id);
     assert_eq!(answer.payload["source_event"], response.id);
@@ -903,7 +912,10 @@ fn answers_are_durable_messages_to_the_asker_with_a_unicode_safe_prompt_excerpt(
         .collect::<Vec<_>>();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].event.from, "human");
-    assert_eq!(messages[0].event.to.as_deref(), Some("worker"));
+    assert_eq!(
+        messages[0].event.recipients().first().map(String::as_str),
+        Some("worker")
+    );
     assert_eq!(messages[0].event.payload["question_id"], question.id);
     assert_eq!(
         messages[0].event.payload["text"],
@@ -942,8 +954,11 @@ fn targeted_and_untargeted_human_said_use_the_stream_without_a_lead_fallback() {
         .filter(|entry| entry.event.kind == EventKind::Message)
         .collect::<Vec<_>>();
     assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].event.to, None);
-    assert_eq!(messages[1].event.to.as_deref(), Some("worker"));
+    assert!(messages[0].event.recipients().is_empty());
+    assert_eq!(
+        messages[1].event.recipients().first().map(String::as_str),
+        Some("worker")
+    );
     assert!(messages.iter().all(|entry| entry.event.from == "human"));
     assert!(f.port.0.lock().unwrap().pushes.is_empty());
 }
@@ -1137,5 +1152,102 @@ fn approval_release_never_unpauses_unchanged_notification_even_after_resize() {
         f.session(SessionDeliveryEvent::InputCleared);
         f.after(Duration::from_millis(500));
         assert!(f.writes().last().unwrap().contains("2 new messages"));
+    }
+}
+
+#[test]
+fn addressed_members_alone_receive_notifications_on_the_manual_clock() {
+    for (targets, expected) in [
+        (vec!["worker"], vec!["worker"]),
+        (vec!["worker", "qa"], vec!["worker", "qa"]),
+        (vec![], vec!["worker", "qa", "reviewer"]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let port = Arc::new(Fake::default());
+        let handles = ["coder", "worker", "qa", "reviewer"];
+        let router = Router::new(
+            "mission".into(),
+            None,
+            "crew".into(),
+            &handles.map(|handle| slot_with_role(handle, false)),
+            vec![],
+            None,
+            Arc::new(EventLog::open(dir.path()).unwrap()),
+            port.clone(),
+            port.clone(),
+        )
+        .unwrap();
+        router.register_sessions(&handles.map(|handle| (handle.to_owned(), handle.to_owned())));
+        let mut draft = EventDraft::message(None, "mission", "coder", None, "please check");
+        draft.to = runner_core::Recipients::new(targets.into_iter().map(str::to_owned).collect());
+        let event = router.log.append(draft).unwrap();
+        super::handlers::message_nudge(&router, &event);
+        let notified = router.state.lock().unwrap().changed_backlogs.clone();
+        assert_eq!(notified.len(), expected.len());
+        assert!(expected.iter().all(|handle| notified.contains(*handle)));
+        let now = Instant::now();
+        let mut dispatcher = Dispatcher::new(now);
+        for handle in &expected {
+            router
+                .state
+                .lock()
+                .unwrap()
+                .unread_by_handle
+                .insert((*handle).into(), 1);
+        }
+        for handle in notified {
+            dispatcher.advance(
+                &router,
+                Some(Input::Backlog {
+                    handle,
+                    initial_backlog: false,
+                }),
+                now,
+            );
+        }
+        dispatcher.advance(&router, None, now + SUBMIT_DELAY);
+        let state = port.0.lock().unwrap();
+        let notifications = state
+            .pushes
+            .iter()
+            .filter(|(_, bytes)| bytes != b"\r")
+            .collect::<Vec<_>>();
+        assert_eq!(notifications.len(), expected.len());
+        assert!(notifications
+            .iter()
+            .all(|(handle, bytes)| expected.contains(&handle.as_str())
+                && bytes == "[inbox] 1 new messages — run `runner msg read` to view.".as_bytes()));
+    }
+}
+
+#[test]
+fn multi_target_human_messages_keep_recipients_live_and_during_reopen_repair() {
+    let f = Fixture::new();
+    f.signal(
+        "human",
+        "human_said",
+        serde_json::json!({"text":"live","target":["lead","worker"]}),
+    );
+    f.router
+        .log
+        .append(EventDraft::signal(
+            None,
+            "mission",
+            "human",
+            "human_said",
+            serde_json::json!({"text":"repair","target":["lead","worker"],"delivery":"inbox"}),
+        ))
+        .unwrap();
+    f.router.reconstruct_from_log().unwrap();
+    f.router.reconstruct_from_log().unwrap();
+    let entries = f.router.log.read_from(0).unwrap();
+    let messages = entries
+        .iter()
+        .filter(|entry| entry.event.kind == EventKind::Message)
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 2);
+    for entry in messages {
+        assert_eq!(entry.event.recipients(), &["lead", "worker"]);
+        assert!(!entry.event.addresses("qa"));
     }
 }

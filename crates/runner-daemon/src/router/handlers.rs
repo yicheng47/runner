@@ -16,9 +16,10 @@ pub(super) fn append_human_said(router: &Router, event: &Event) -> Result<()> {
         router.crew_id.as_deref(),
         &router.mission_id,
         "human",
-        event.payload["target"].as_str().map(str::to_owned),
+        None,
         event.payload["text"].as_str().unwrap_or_default(),
     );
+    draft.to = serde_json::from_value(event.payload["target"].clone())?;
     draft.payload["source_event"] = event.id.clone().into();
     router.log.append(draft)?;
     Ok(())
@@ -85,9 +86,7 @@ pub(super) fn message_nudge(router: &Router, event: &Event) {
         state
             .session_by_handle
             .keys()
-            .filter(|handle| {
-                event.from != **handle && event.to.as_ref().is_none_or(|to| to == *handle)
-            })
+            .filter(|handle| event.addresses(handle))
             .cloned()
             .collect::<Vec<_>>()
     };

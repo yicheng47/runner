@@ -81,7 +81,7 @@ pub fn append(env: &env::MissionEnv, ty: &str, payload: serde_json::Value) -> i3
         mission_id: env.mission_id.clone(),
         kind: EventKind::Signal,
         from: env.handle.clone(),
-        to: None,
+        to: Default::default(),
         signal_type: Some(SignalType::new(ty)),
         payload,
     };

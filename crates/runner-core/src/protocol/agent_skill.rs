@@ -80,6 +80,8 @@ mission=$({command} mission start --title "Small task" -q)
 
 Use `mission show` to see the team; direct messages can address any member when there is no lead.
 
+Messaging inside a mission: run `{command} msg read` when an `[inbox]` notification arrives; it shows only new messages and a short digest. Use `{command} msg read --all` for crew history since joining after a resume or when earlier messages are no longer in context. `--since` and `--from` never mark messages read. Address one or several members with repeated `--to` or leading `@handle` mentions; explicit recipients win and mid-text mentions do not address. Reply to the sender, broadcast only when everyone must act, and do not send acknowledgements or standby messages.
+
 Rules:
 
 1. Prefer `--json` for structured output.
@@ -95,3 +97,27 @@ Rules:
 
 pub const SKILL_ROOTS: &[&str] = crate::RUNNER_SKILL_ROOTS;
 pub const SKILL_MARKER: &str = crate::RUNNER_SKILL_MARKER;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_skill_renders_include_targeted_messaging_and_history() {
+        for debug in [false, true] {
+            let text = render(debug, Path::new("/tmp/runner"));
+            for rule in [
+                "only new messages",
+                "msg read --all",
+                "--since",
+                "--from",
+                "never mark messages read",
+                "repeated `--to`",
+                "mid-text mentions do not address",
+                "do not send acknowledgements or standby messages",
+            ] {
+                assert!(text.contains(rule), "missing {rule}");
+            }
+        }
+    }
+}

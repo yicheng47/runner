@@ -30,7 +30,7 @@ The lead receives the goal. The other slot gets its role and team conventions an
 
 The **Feed** shows messages and coordination events. Open a slot's terminal to see its full agent interface; return to the feed to follow the team. **⌘[** / **Ctrl+[** and **⌘]** / **Ctrl+]** cycle through the feed and open session tabs.
 
-Use the mission's message composer to give the crew a correction or new constraint. If an agent asks you a question, its question card shows the available choices; select an answer there. Ordinary agent approval prompts, when present, appear in the agent terminal rather than as a feed question.
+Use the mission's message composer to give the crew a correction or new constraint. Start with `@` and choose a member to add a recipient chip; repeat for several members. Remove a chip by clicking it. A message with no chips or leading mentions broadcasts to everyone; addressed messages wake only their recipients. If an agent asks you a question, its question card shows the available choices; select an answer there. Ordinary agent approval prompts, when present, appear in the agent terminal rather than as a feed question.
 
 The seeded conventions ask the coder and reviewer to repeat their review until no must-fix findings remain. A message saying the work is done does not itself stop the processes. Inspect the final diff and the reported checks yourself.
 

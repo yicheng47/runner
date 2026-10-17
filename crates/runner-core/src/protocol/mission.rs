@@ -1,6 +1,13 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionReadCursor {
+    pub start_offset: u64,
+    pub ack_id: Option<String>,
+    pub ack_offset: u64,
+}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StartMissionInput {
@@ -122,10 +129,9 @@ pub struct PostMessageInput {
     #[serde(default)]
     pub from: Option<String>,
     pub text: String,
-    /// Omit for a crew-wide channel post; set to a slot handle for a
-    /// targeted message.
+    /// One handle, several handles, or none for a crew-wide broadcast.
     #[serde(default)]
-    pub to: Option<String>,
+    pub to: crate::model::Recipients,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
