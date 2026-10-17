@@ -79,6 +79,8 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
             | "gemini cli"
             | "grok"
             | "grok build"
+            | "pi"
+            | "π"
             | "new chat"
             | "new session"
             | "untitled"
@@ -150,6 +152,28 @@ mod tests {
             );
             assert_eq!(provider_title(&format!("{glyph} Claude Code"), None), None);
             assert_eq!(provider_title(&glyph.to_string(), None), None);
+        }
+    }
+
+    /// pi titles itself `π - <name> - <cwd>` (or the package name instead
+    /// of `π`), and `π - <cwd>` while the session has no name, so the app
+    /// prefix has to leave like any other runtime's.
+    #[test]
+    fn pi_app_prefix_leaves_only_the_session_name() {
+        let cwd = Some("/repos/runner");
+        for raw in ["π", "π - runner", "pi", "pi - runner"] {
+            assert_eq!(provider_title(raw, cwd), None, "{raw}");
+        }
+        assert_eq!(
+            provider_title("π - Airplane type", None).as_deref(),
+            Some("Airplane type")
+        );
+        for raw in ["π - Airplane type - runner", "pi - Airplane type - runner"] {
+            assert_eq!(
+                provider_title(raw, cwd).as_deref(),
+                Some("Airplane type"),
+                "{raw}"
+            );
         }
     }
 
