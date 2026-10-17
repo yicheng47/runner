@@ -54,6 +54,10 @@ runner mission archive <mission-id>
 
 Inside a mission, members can use `runner msg post --to reviewer "Ready for review"` and `runner msg read` without supplying a mission ID. Outside a mission, writes need `--mission`. An outside caller without `--as` speaks as the person; do not use `--as` to impersonate another member.
 
+Address several members with `runner msg post --to coder --to reviewer "Please check the parser."`, or use leading mentions: `runner msg post "@coder @reviewer Please check the parser."`. Explicit `--to` recipients take precedence. Mentions inside the message do not address it. Unknown handles and `@human` are refused; `mission show` lists valid members. Omit recipients to broadcast when everyone needs to act, and reply to the sender for ordinary follow-ups.
+
+When an `[inbox]` notification arrives, run `runner msg read`. It shows only new inbox messages, followed by up to ten short lines of other members' directed traffic. After a resume or whenever earlier messages are no longer in context, use `runner msg read --all` for all crew messages since joining, including sent messages and traffic between others. Unfiltered reads mark only printed inbox messages read. `--since <event-id>` and `--from <handle>` never mark messages read, even with `--all`, and omit the digest. Reads also work while the daemon is unavailable. Do not send acknowledgement or standby messages.
+
 ## Start without a saved crew
 
 Create an empty mission and add workers individually:

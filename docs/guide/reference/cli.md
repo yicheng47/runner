@@ -93,6 +93,7 @@ OUTPUT
 
 CONTEXT
   Inside a mission, msg post/read, signal, and ask use the event log directly.
+  msg read optionally queries the existing daemon for a read cursor; offline reads still work.
   Outside, mission-scoped writes require --mission; --as names a roster handle.
 
 RESERVED FOR #562
@@ -148,6 +149,18 @@ COMMON FLOW
   runner msg post --mission "$mission" --to <lead_handle> "message"
   runner mission stop "$mission"
   runner mission archive "$mission"
+
+MESSAGING INSIDE A MISSION
+  Run runner msg read when an [inbox] notification arrives: only new inbox messages print,
+  followed by a short digest of others' directed traffic. Use runner msg read --all for all
+  crew messages since joining after a resume or when earlier messages are no longer in context.
+  --all acknowledges only your inbox. --since and --from never mark messages read, even with --all.
+  Address one or several members:
+    runner msg post --to coder --to reviewer "please check"
+    runner msg post "@coder @reviewer please check"
+  Explicit --to wins; mid-text mentions do not address. Unknown handles and @human are refused.
+  Reply to the sender. Broadcast only when everyone must act. Do not send acknowledgements
+  or standby messages.
 
 START AND WATCH (REQUIRED)
   After every successful runner mission start, arm runner mission feed <id> --follow --json
@@ -1141,7 +1154,7 @@ Usage: runner msg [OPTIONS] <COMMAND>
 
 Commands:
   post  Post a mission message
-  read  Read the current mission inbox
+  read  Read new inbox messages; --all shows crew history since joining
 
 Options:
       --json  Print the tool result as exact JSON
@@ -1161,7 +1174,7 @@ Arguments:
 
 Options:
       --json               Print the tool result as exact JSON
-      --to <TO>            Direct the message to one roster handle
+      --to <TO>            Address a roster handle; repeat for several recipients
       --mission <MISSION>  Mission ID or unique prefix; required outside a mission
   -q                       Print only result IDs
       --as <FROM>          Attribute the message to this roster handle
@@ -1171,15 +1184,16 @@ Options:
 ## runner msg read
 
 ```text
-Read the current mission inbox
+Read new inbox messages; --all shows crew history since joining
 
 Usage: runner msg read [OPTIONS]
 
 Options:
+      --all                Show all crew messages since joining
       --json               Print the tool result as exact JSON
-      --since <SINCE>      Return messages after this event ID
-      --from <FROM>        Filter by sender handle
   -q                       Print only result IDs
+      --since <SINCE>      Return messages after this event ID without marking them read
+      --from <FROM>        Filter by sender handle
       --mission <MISSION>  Mission reference; only the caller's mission is supported
   -h, --help               Print help
 ```

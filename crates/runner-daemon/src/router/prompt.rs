@@ -118,9 +118,10 @@ pub fn compose_direct_first_turn(system_prompt: Option<&str>) -> Option<String> 
 pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a crew coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the crew via a shared event bus. Use these verbs to participate; do not invent your own conventions.
 
 == Coordination ==
-- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.
-- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any slot in this crew.
-- `runner msg post "<text>"` — broadcast to the crew (no `--to`).
+- Run `runner msg read` when an `[inbox]` notification arrives; it shows only new inbox messages plus a short digest of others' traffic.
+- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` never mark messages read.
+- Address one or several members with `runner msg post --to coder --to reviewer "<text>"` or leading mentions: `runner msg post "@coder @reviewer <text>"`. Explicit `--to` wins; mid-text mentions do not address.
+- Reply to the sender. Broadcast with `runner msg post "<text>"` only when everyone must act. Do not send acknowledgements or standby messages.
 - Questions for the lead go to it with `runner msg post --to <lead>`; `runner mission show` names it.
 - The team can change while the mission runs; your inbox announces every join and leave, and `runner mission show` lists the current team.
 - Busy/idle is inferred from your terminal activity."#;
@@ -128,9 +129,10 @@ pub(crate) const WORKER_COORDINATION_PREAMBLE: &str = r#"You are a worker in a c
 pub(crate) const TEAM_COORDINATION_PREAMBLE: &str = r#"You are a member of a team coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the team via a shared event bus. This mission has no lead. Use these verbs to participate; do not invent your own conventions.
 
 == Coordination ==
-- `runner msg read` — read your inbox (pull-based: new messages do NOT auto-print). Run this when you see an `[inbox]` notification or any time you suspect new traffic.
-- `runner msg post --to <handle> "<text>"` — direct message to a specific handle. Valid handles: any member of this team.
-- `runner msg post "<text>"` — broadcast to the team (no `--to`).
+- Run `runner msg read` when an `[inbox]` notification arrives; it shows only new inbox messages plus a short digest of others' traffic.
+- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` never mark messages read.
+- Address one or several members with `runner msg post --to coder --to reviewer "<text>"` or leading mentions: `runner msg post "@coder @reviewer <text>"`. Explicit `--to` wins; mid-text mentions do not address.
+- Reply to the sender. Broadcast with `runner msg post "<text>"` only when everyone must act. Do not send acknowledgements or standby messages.
 - Escalate to the human (with structured choices) via `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"<asker>"}'`.
 - The team can change while the mission runs; your inbox announces every join and leave, and `runner mission show` lists the current team.
 - Busy/idle is inferred from your terminal activity."#;
@@ -206,7 +208,10 @@ pub(crate) fn compose_launch_prompt_sections(
     after_mission.push_str(
         "- The operator watches the terminals and types directly into a runner's pane.\n",
     );
-    after_mission.push_str("- Read your inbox with `runner msg read` — it's pull-based.\n");
+    after_mission.push_str("- Run `runner msg read` when an `[inbox]` notification arrives; it shows only new inbox messages plus a short digest of others' traffic.\n");
+    after_mission.push_str("- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` never mark messages read.\n");
+    after_mission.push_str("- Address one or several members with repeated `--to` (`runner msg post --to coder --to reviewer \"<text>\"`) or leading mentions (`runner msg post \"@coder @reviewer <text>\"`). Explicit recipients win; mid-text mentions do not address.\n");
+    after_mission.push_str("- Reply to the sender. Broadcast only when everyone must act. Do not send acknowledgements or standby messages.\n");
     after_mission.push_str(
         "- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"],\"on_behalf_of\":\"<asker>\"}'`.\n",
     );
@@ -312,6 +317,30 @@ mod tests {
     }
 
     #[test]
+    fn every_coordination_text_explains_targeted_messaging_and_history() {
+        for text in [
+            WORKER_COORDINATION_PREAMBLE.to_owned(),
+            TEAM_COORDINATION_PREAMBLE.to_owned(),
+            launch_fixture(),
+        ] {
+            for rule in [
+                "only new",
+                "msg read --all",
+                "--since",
+                "--from",
+                "never mark messages read",
+                "--to coder --to reviewer",
+                "mid-text mentions do not address",
+                "Reply to the sender",
+                "only when everyone must act",
+                "Do not send acknowledgements or standby messages",
+            ] {
+                assert!(text.contains(rule), "missing {rule}: {text}");
+            }
+        }
+    }
+
+    #[test]
     fn established_runtimes_keep_composed_bodies_byte_identical() {
         let direct = compose_direct_first_turn(Some("  persona  "));
         let worker = Some(compose_worker_first_turn(Some("brief"), Some("team"), None));
@@ -395,7 +424,10 @@ Goal: Implement feature
 - You are the human's counterpart. Workers message you with questions.
 - Reply to a worker with `runner msg post --to <handle> "…"`; broadcasts omit `--to`.
 - The operator watches the terminals and types directly into a runner's pane.
-- Read your inbox with `runner msg read` — it's pull-based.
+- Run `runner msg read` when an `[inbox]` notification arrives; it shows only new inbox messages plus a short digest of others' traffic.
+- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` never mark messages read.
+- Address one or several members with repeated `--to` (`runner msg post --to coder --to reviewer "<text>"`) or leading mentions (`runner msg post "@coder @reviewer <text>"`). Explicit recipients win; mid-text mentions do not address.
+- Reply to the sender. Broadcast only when everyone must act. Do not send acknowledgements or standby messages.
 - Escalate to the human (with structured choices) via `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"],"on_behalf_of":"<asker>"}'`.
 - The team can change while the mission runs; your inbox announces every join and leave, and `runner mission show` lists the current team.
 - Busy/idle is inferred from your terminal activity.

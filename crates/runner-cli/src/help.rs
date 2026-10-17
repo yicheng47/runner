@@ -30,6 +30,7 @@ OUTPUT
 
 CONTEXT
   Inside a mission, msg post/read, signal, and ask use the event log directly.
+  msg read optionally queries the existing daemon for a read cursor; offline reads still work.
   Outside, mission-scoped writes require --mission; --as names a roster handle.
 
 RESERVED FOR #562
@@ -91,6 +92,18 @@ COMMON FLOW
   runner mission stop "$mission"
   runner mission archive "$mission"
 
+MESSAGING INSIDE A MISSION
+  Run runner msg read when an [inbox] notification arrives: only new inbox messages print,
+  followed by a short digest of others' directed traffic. Use runner msg read --all for all
+  crew messages since joining after a resume or when earlier messages are no longer in context.
+  --all acknowledges only your inbox. --since and --from never mark messages read, even with --all.
+  Address one or several members:
+    runner msg post --to coder --to reviewer "please check"
+    runner msg post "@coder @reviewer please check"
+  Explicit --to wins; mid-text mentions do not address. Unknown handles and @human are refused.
+  Reply to the sender. Broadcast only when everyone must act. Do not send acknowledgements
+  or standby messages.
+
 START AND WATCH (REQUIRED)
   After every successful runner mission start, arm runner mission feed <id> --follow --json
   for the exact returned ID in your host's supported background/watch facility before
@@ -137,6 +150,20 @@ mod tests {
     use clap::CommandFactory as _;
 
     use super::*;
+
+    #[test]
+    fn agent_guide_explains_targeted_messaging_and_non_acking_filters() {
+        for rule in [
+            "only new inbox messages",
+            "msg read --all",
+            "--since and --from never mark messages read",
+            "--to coder --to reviewer",
+            "mid-text mentions do not address",
+            "Do not send acknowledgements",
+        ] {
+            assert!(AGENT_GUIDE.contains(rule), "missing {rule}");
+        }
+    }
 
     #[test]
     fn agent_guide_names_every_visible_top_level_command_and_no_others() {
