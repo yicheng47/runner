@@ -470,9 +470,12 @@ enum MsgCommand {
         #[arg(long = "as")]
         from: Option<String>,
     },
-    /// Read the current mission inbox.
+    /// Read new inbox messages; --all shows crew history since joining.
     Read {
-        /// Return messages after this event ID.
+        /// Show all crew messages since joining.
+        #[arg(long)]
+        all: bool,
+        /// Return messages after this event ID without marking them read.
         #[arg(long)]
         since: Option<String>,
         /// Filter by sender handle.
@@ -706,12 +709,13 @@ fn run_local(cli: &Cli, context: &BusContext) -> Option<i32> {
         Command::Msg {
             command:
                 MsgCommand::Read {
+                    all,
                     since,
                     from,
                     mission: target,
                 },
         } if same_mission(target.as_deref(), mission) => {
-            Some(msg::read(mission, since.as_deref(), from.as_deref()))
+            Some(msg::read(mission, *all, since.as_deref(), from.as_deref()))
         }
         Command::Signal {
             r#type,

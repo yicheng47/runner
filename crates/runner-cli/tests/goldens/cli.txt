@@ -1905,15 +1905,16 @@ Options:
 # context: not running
 $ runner msg read --help
 exit 0
-Read the current mission inbox
+Read new inbox messages; --all shows crew history since joining
 
 Usage: runner msg read [OPTIONS]
 
 Options:
+      --all                Show all crew messages since joining
       --json               Print the tool result as exact JSON
-      --since <SINCE>      Return messages after this event ID
-      --from <FROM>        Filter by sender handle
   -q                       Print only result IDs
+      --since <SINCE>      Return messages after this event ID without marking them read
+      --from <FROM>        Filter by sender handle
       --mission <MISSION>  Mission reference; only the caller's mission is supported
   -h, --help               Print help
 

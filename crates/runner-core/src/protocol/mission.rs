@@ -1,6 +1,13 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionReadCursor {
+    pub start_offset: u64,
+    pub ack_id: Option<String>,
+    pub ack_offset: u64,
+}
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StartMissionInput {

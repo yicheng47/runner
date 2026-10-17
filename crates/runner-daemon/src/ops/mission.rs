@@ -355,6 +355,14 @@ pub fn read_events(
     Ok(entries.into_iter().map(|e| e.event).collect())
 }
 
+pub fn mission_read_cursor(
+    state: &AppCore,
+    mission_id: &str,
+    handle: &str,
+) -> Option<runner_core::protocol::MissionReadCursor> {
+    state.buses.get(mission_id)?.read_cursor(handle)
+}
+
 pub fn mission_events_replay(
     state: &AppCore,
     mission_id: &str,

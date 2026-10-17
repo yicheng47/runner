@@ -118,6 +118,15 @@ pub struct Event {
     pub payload: serde_json::Value,
 }
 
+impl Event {
+    pub fn addresses(&self, handle: &str) -> bool {
+        self.kind == EventKind::Message
+            && handle != "human"
+            && self.from != handle
+            && self.to.as_deref().is_none_or(|target| target == handle)
+    }
+}
+
 /// All of `Event`'s fields except `id` and `ts`. `EventLog::append` takes a
 /// draft and assigns `id` + `ts` inside the flock so cross-process appends
 /// stay monotonic.

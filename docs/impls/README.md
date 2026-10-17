@@ -7,6 +7,7 @@ A plan is written on its feature's branch and lands in the pull request with the
 ## Active
 
 - [`907-reliable-delivery.md`](./907-reliable-delivery.md) — reliable mission message delivery ([#907](https://github.com/yicheng47/runner/issues/907)): mission messaging formalized as a small durable queue: the session manager owns readiness, one dispatcher per mission pushes idempotent notifications, every delivery attempt is confirmed, the router's cursor is a log offset, and the person's answers become messages; merged in [#921](https://github.com/yicheng47/runner/pull/921) after 0.16.4 and swept with the release that ships it. #826's direct delivery and #748's return path build on it.
+- [`826-targeted-messaging.md`](./826-targeted-messaging.md) — targeted crew messaging ([#826](https://github.com/yicheng47/runner/issues/826)): several recipients through one shared address resolver, notifications only to recipients with #907's `[inbox]` line unchanged, and unread-only reads with a digest of others' traffic; plan.
 
 ## Archive
 

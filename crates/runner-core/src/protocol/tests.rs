@@ -263,6 +263,11 @@ record!(SkippedEventLine {
     next_offset,
     error
 });
+record!(MissionReadCursor {
+    start_offset,
+    ack_id,
+    ack_offset
+});
 record!(MissionStatusSnapshot {
     mission,
     crew,
