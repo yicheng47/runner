@@ -1494,6 +1494,7 @@ impl NativeRoot {
             let icon_color = match toast.tone {
                 ToastTone::Info => theme::muted(),
                 ToastTone::Success | ToastTone::Restart => theme::accent(),
+                ToastTone::Warning => theme::warning(),
                 ToastTone::Error => theme::danger(),
             };
             div()

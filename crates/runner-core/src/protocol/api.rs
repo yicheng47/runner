@@ -10,6 +10,13 @@ use std::path::PathBuf;
 macro_rules! daemon_api {
     ($consumer:ident) => { $consumer! {
 
+        remote_status() -> $crate::remote::RemoteStatus [true] => |core: &crate::AppCore| { Ok(core.remote.status()) };
+        remote_enroll_start(origin: Option<String> => Option<String> = { origin }, confirm_account: bool => bool = { confirm_account }) -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore, origin: Option<String>, confirm_account: bool| { crate::daemon::block_on(core.remote.start(origin, confirm_account)).map_err(crate::error::Error::msg) };
+        remote_enroll_confirm(allow: bool => bool = { allow }) -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore, allow: bool| { crate::daemon::block_on(core.remote.confirm(allow)).map_err(crate::error::Error::msg) };
+        remote_enroll_cancel() -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.cancel()).map_err(crate::error::Error::msg) };
+        remote_set_paused(paused: bool => bool = { paused }) -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore, paused: bool| { crate::daemon::block_on(core.remote.pause(paused)).map_err(crate::error::Error::msg) };
+        remote_retry() -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.retry()).map_err(crate::error::Error::msg) };
+        remote_logout() -> $crate::remote::RemoteLogout [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.logout()).map_err(crate::error::Error::msg) };
         app_version() -> String [true] => |core: &crate::AppCore| { Ok(core.app_version.clone()) };
         hook_report(report: HookReport => HookReport = { report }) -> () [true] => |_core: &crate::AppCore, _report: HookReport| { Err(crate::error::Error::msg("hook admission requires a reporter connection")) };
         mission_list(crew_id: Option<String> => Option<String> = { crew_id }) -> Vec<Mission> [false] => |core: &crate::AppCore, crew_id: Option<String>| { crate::ops::mission::mission_list(core, crew_id) };
