@@ -6,7 +6,9 @@ A plan is written on its feature's branch and lands in the pull request with the
 
 ## Active
 
-No standalone plan is in flight on `main`. The [Linux brief](briefs/823-linux.md) remains active in [PR #982](https://github.com/yicheng47/runner/pull/982); remote-control implementation continues on the `nightly-remote` umbrella under [#836](../features/836-web-remote-control.md).
+- [`836-web-remote-control.md`](./836-web-remote-control.md) — web remote control ([#836](https://github.com/yicheng47/runner/issues/836)): the program record for the `nightly-remote` umbrella, which missions branch from and target, follows `main` by rebase, ships installed builds as the separate `remote-nightly` release and reaches `main` as one PR; Phase 1's desktop side merged into it in [#945](https://github.com/yicheng47/runner/pull/945).
+
+The [Linux brief](briefs/823-linux.md) remains active in [PR #982](https://github.com/yicheng47/runner/pull/982).
 
 ## Archive
 
