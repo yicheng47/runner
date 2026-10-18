@@ -1,0 +1,8 @@
+{
+  "deviceCode": "pV8m2Qy1nX0bJk3sTq7wE5rLc9aZ4hUd6gFiYoN1MjA",
+  "userCode": "BCDF-GHJK",
+  "verificationUri": "https://runner.example/hosts/add",
+  "verificationUriComplete": "https://runner.example/hosts/add?code=BCDF-GHJK",
+  "expiresIn": 600,
+  "interval": 5
+}
