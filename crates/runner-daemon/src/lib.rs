@@ -18,6 +18,7 @@ pub mod events;
 pub mod ipc;
 pub mod model;
 pub mod ops;
+pub mod remote;
 pub mod repo;
 pub mod router;
 pub mod runtime_defaults;

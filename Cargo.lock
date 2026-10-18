@@ -5457,6 +5457,7 @@ dependencies = [
  "runner-terminal",
  "rusqlite",
  "schemars",
+ "security-framework",
  "serde",
  "serde_json",
  "serde_rusqlite",
