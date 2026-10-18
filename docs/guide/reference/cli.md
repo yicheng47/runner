@@ -8,6 +8,10 @@ Every public `runner` command and option below comes from the CLI shipped with t
 - [Command overview](#command-overview)
 - [Agent guide](#agent-guide)
 - [runner](#runner)
+- [runner remote](#runner-remote)
+- [runner remote login](#runner-remote-login)
+- [runner remote logout](#runner-remote-logout)
+- [runner remote status](#runner-remote-status)
 - [runner daemon](#runner-daemon)
 - [runner daemon status](#runner-daemon-status)
 - [runner daemon stop](#runner-daemon-stop)
@@ -219,6 +223,7 @@ Operate Runner missions, crews, roles, projects, and chats.
 Usage: runner [OPTIONS] <COMMAND>
 
 Commands:
+  remote   Connect this computer to your remote access account
   daemon   Inspect or stop the local daemon
   status   Check whether Runner is running
   project  Manage projects
@@ -238,6 +243,64 @@ Options:
   -q             Print only result IDs
   -h, --help     Print help
   -V, --version  Print version
+```
+
+## runner remote
+
+```text
+Connect this computer to your remote access account
+
+Usage: runner remote [OPTIONS] <COMMAND>
+
+Commands:
+  login   Connect this computer to your account (interactive terminal required)
+  logout  Disconnect this computer and delete its local secrets
+  status  Show remote access status
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote login
+
+```text
+Connect this computer to your account (interactive terminal required)
+
+Usage: runner remote login [OPTIONS]
+
+Options:
+      --json             Print the tool result as exact JSON
+      --server <SERVER>
+  -q                     Print only result IDs
+  -h, --help             Print help
+```
+
+## runner remote logout
+
+```text
+Disconnect this computer and delete its local secrets
+
+Usage: runner remote logout [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote status
+
+```text
+Show remote access status
+
+Usage: runner remote status [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
 ```
 
 ## runner daemon

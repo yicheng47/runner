@@ -19,6 +19,7 @@ pub mod events;
 pub mod ipc;
 pub mod model;
 pub mod ops;
+pub mod remote;
 pub mod repo;
 pub mod router;
 pub mod runtime_defaults;
@@ -45,6 +46,7 @@ use session::manager::{CoreSessionEvents, SessionEventObserverRegistry};
 /// daemon clones it per connection.
 #[derive(Clone)]
 pub struct AppCore {
+    pub remote: remote::RemoteHandle,
     pub db: Arc<db::DbPool>,
     /// Root of the app's per-user data tree — `$APPDATA/runner/` on real
     /// installs, a tempdir in tests. Mission commands resolve event-log paths

@@ -1136,6 +1136,16 @@ impl NativeRoot {
         let previous = self.store_revisions;
         self.store_revisions = revisions;
         let reactions = revisions.reactions_since(previous);
+        if revisions.remote_notice != previous.remote_notice {
+            let status = self.app_store.read(cx).remote_warning.clone();
+            if let Some(status) = status {
+                self.show_toast(
+                    surfaces::settings::remote::stopped_text(&status),
+                    toast::ToastTone::Warning,
+                    cx,
+                );
+            }
+        }
 
         if revisions.settings != previous.settings {
             self.sync_role_page_size(cx);
