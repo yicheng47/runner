@@ -4,9 +4,11 @@ on:
   pull_request:
     branches:
       - main
+      - nightly-remote
   push:
     branches:
       - main
+      - nightly-remote
 
 permissions:
   contents: read
@@ -44,7 +46,7 @@ jobs:
           key: ${{ steps.cache-key.outputs.hash }}
           add-rust-environment-hash-key: false
           cache-on-failure: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/nightly-remote' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -105,7 +107,7 @@ jobs:
           key: ${{ steps.cache-key.outputs.hash }}
           add-rust-environment-hash-key: false
           cache-on-failure: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/nightly-remote' }}
 
       - name: Verify Windows installer behavior
         run: ./script/windows/test-installer.ps1
