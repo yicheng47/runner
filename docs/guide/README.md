@@ -18,6 +18,7 @@ Learn to run a single coding agent, bring a crew together on a task, and manage 
   - [Chats, tabs and windows](guides/chats-and-windows.md)
   - [MCP servers and skills](guides/mcp-and-skills.md)
   - [Appearance](guides/appearance.md)
+  - [Remote access](guides/remote-access.md)
   - [Troubleshooting](guides/troubleshooting.md)
 - Reference
   - [CLI reference](reference/cli.md)

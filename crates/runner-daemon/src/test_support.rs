@@ -51,6 +51,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         crate::shell_path::DiscoveryState::startup(None, None),
     ));
     AppCore {
+        remote: Default::default(),
         db: Arc::new(db::open_in_memory().unwrap()),
         app_data_dir,
         sessions: SessionManager::new(

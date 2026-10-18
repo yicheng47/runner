@@ -1,0 +1,8 @@
+{
+  "state": "ENROLLMENT_STATE_APPROVED",
+  "hostId": "7383920468475904",
+  "credential": "rhc_Zm9vYmFyYmF6cXV4cXV1eGNvcmdlZ3JhdWx0Z2FycGx",
+  "relayUrl": "wss://runner.example/relay/host",
+  "account": {"username": "jason", "displayName": "Jason"},
+  "claimExpiresAt": "2026-10-16T10:10:00Z"
+}
