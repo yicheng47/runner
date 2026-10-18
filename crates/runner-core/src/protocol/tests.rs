@@ -6,6 +6,17 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+impl Sample for crate::remote::RemoteStatus {
+    fn sample() -> Self {
+        Self::default()
+    }
+}
+impl Sample for crate::remote::RemoteLogout {
+    fn sample() -> Self {
+        Self::Removed
+    }
+}
+
 trait Sample {
     fn sample() -> Self;
 }
