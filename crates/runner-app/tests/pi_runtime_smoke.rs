@@ -33,6 +33,7 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_daemon::db::DbPool>) -> AppCore
         runner_daemon::shell_path::DiscoveryState::startup(None, None),
     ));
     AppCore {
+        remote: Default::default(),
         sessions: SessionManager::new(
             runtime_shell_env.clone(),
             runtime_discovery.clone(),

@@ -101,6 +101,7 @@ impl StoreRefreshKind {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StoreRevisions {
+    pub(crate) remote_notice: u64,
     pub(crate) terminal_wake: u64,
     pub(crate) sessions: u64,
     pub(crate) roles: u64,
@@ -257,6 +258,8 @@ pub(crate) struct TerminalUpdates;
 impl EventEmitter<String> for TerminalUpdates {}
 
 pub(crate) struct AppStore {
+    pub(crate) remote_status: Option<runner_core::remote::RemoteStatus>,
+    pub(crate) remote_warning: Option<runner_core::remote::RemoteStatus>,
     pub(crate) terminal_updates: Entity<TerminalUpdates>,
     terminal_labels: BTreeMap<String, (String, Option<PathBuf>)>,
     pub(crate) client: DaemonClient,
@@ -483,7 +486,65 @@ impl AppStore {
         if let Err(error) = bridge.attach_live_sessions() {
             eprintln!("attach live terminals: {error}");
         }
+        let (remote_tx, mut remote_rx) = futures::channel::mpsc::unbounded();
+        let remote_client = host.client.clone();
+        let mut remote_events = remote_client.subscribe();
+        cx.background_spawn(async move {
+            if let Ok(status) = remote_client.remote_status() {
+                let _ = remote_tx.unbounded_send((status, false));
+            }
+            loop {
+                match remote_events.recv().await {
+                    Ok(event) if event.name == "remote/status" => {
+                        if let Ok(status) = serde_json::from_value(event.payload) {
+                            if remote_tx.unbounded_send((status, true)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(event) if event.name == "daemon/reconnected" => {
+                        if let Ok(status) = remote_client.remote_status() {
+                            let _ = remote_tx.unbounded_send((status, false));
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(runner_core::protocol::EventError::Lagged(_)) => {
+                        if let Ok(status) = remote_client.remote_status() {
+                            let _ = remote_tx.unbounded_send((status, false));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |weak, cx| {
+            while let Some((status, live)) = remote_rx.next().await {
+                if weak
+                    .update(cx, |store, cx| {
+                        if live
+                            && crate::surfaces::settings::remote::warn_transition(
+                                store.remote_status.as_ref(),
+                                &status,
+                            )
+                        {
+                            store.remote_warning = Some(status.clone());
+                            store.revisions.remote_notice =
+                                store.revisions.remote_notice.wrapping_add(1);
+                        }
+                        store.remote_status = Some(status);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut store = Self {
+            remote_status: None,
+            remote_warning: None,
             terminal_updates,
             terminal_labels: BTreeMap::new(),
             app_data_dir: host.app_data_dir.clone(),

@@ -393,6 +393,7 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, fake.clone());
     let core = crate::AppCore {
+        remote: Default::default(),
         db: pool.clone(),
         app_data_dir: app_data.path().to_owned(),
         sessions: mgr.clone(),

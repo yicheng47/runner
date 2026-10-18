@@ -3,6 +3,7 @@ mod env;
 mod help;
 mod msg;
 mod output;
+mod remote;
 mod roster;
 mod signal;
 
