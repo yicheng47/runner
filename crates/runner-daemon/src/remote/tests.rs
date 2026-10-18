@@ -1,0 +1,688 @@
+use super::*;
+use runner_core::remote::{RemoteState, StopReason};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::tungstenite::protocol::Role;
+
+struct Service {
+    origin: String,
+    task: tokio::task::JoinHandle<()>,
+    polls: Arc<AtomicUsize>,
+    signouts: Arc<AtomicUsize>,
+    connections: Arc<AtomicUsize>,
+    close_code: Arc<AtomicUsize>,
+    refusal: Arc<AtomicUsize>,
+    welcome: Arc<std::sync::atomic::AtomicBool>,
+}
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl Service {
+    async fn new(outcomes: Vec<&'static str>) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let polls = Arc::new(AtomicUsize::new(0));
+        let signouts = Arc::new(AtomicUsize::new(0));
+        let connections = Arc::new(AtomicUsize::new(0));
+        let close_code = Arc::new(AtomicUsize::new(0));
+        let refusal = Arc::new(AtomicUsize::new(0));
+        let welcome = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (o, p, s, c, close, refuse, send_welcome) = (
+            origin.clone(),
+            polls.clone(),
+            signouts.clone(),
+            connections.clone(),
+            close_code.clone(),
+            refusal.clone(),
+            welcome.clone(),
+        );
+        let start_gate = Arc::new(std::sync::Mutex::new(None::<Arc<CallGate>>));
+        let signout_gate = Arc::new(std::sync::Mutex::new(None::<Arc<CallGate>>));
+        let signout_status = Arc::new(AtomicUsize::new(200));
+        let (start_hold, signout_hold, signout_code) = (
+            start_gate.clone(),
+            signout_gate.clone(),
+            signout_status.clone(),
+        );
+        let claim_deadline = (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let (origin, polls, signouts, connections, close, refuse, outcomes) = (
+                    o.clone(),
+                    p.clone(),
+                    s.clone(),
+                    c.clone(),
+                    close.clone(),
+                    refuse.clone(),
+                    outcomes.clone(),
+                );
+                let claim_deadline = claim_deadline.clone();
+                let send_welcome = send_welcome.clone();
+                let (start_hold, signout_hold, signout_code) = (
+                    start_hold.clone(),
+                    signout_hold.clone(),
+                    signout_code.clone(),
+                );
+                tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    while !bytes.ends_with(b"\r\n\r\n") {
+                        let Ok(b) = stream.read_u8().await else {
+                            return;
+                        };
+                        bytes.push(b);
+                        if bytes.len() > 16 * 1024 {
+                            return;
+                        }
+                    }
+                    let headers = String::from_utf8(bytes).unwrap();
+                    let lower = headers.to_ascii_lowercase();
+                    let len = lower
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("content-length: ")
+                                .and_then(|v| v.parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    let mut body = vec![0; len];
+                    stream.read_exact(&mut body).await.unwrap();
+                    let mut status = 200;
+                    let response = if headers.starts_with("GET /relay/host ") {
+                        if lower.lines().any(|l| l.starts_with("origin:")) {
+                            stream.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                            return;
+                        }
+                        assert!(lower.contains("sec-websocket-protocol: runner-relay.v1"));
+                        assert!(lower.contains("authorization: bearer rhc_"));
+                        let refusal = refuse.load(Ordering::SeqCst);
+                        if refusal != 0 {
+                            status = refusal;
+                            serde_json::json!({"code":"unauthenticated"})
+                        } else {
+                            connections.fetch_add(1, Ordering::SeqCst);
+                            let key = headers
+                                .lines()
+                                .find_map(|l| {
+                                    l.split_once(':')
+                                        .filter(|(k, _)| {
+                                            k.eq_ignore_ascii_case("sec-websocket-key")
+                                        })
+                                        .map(|(_, v)| v.trim())
+                                })
+                                .unwrap();
+                            let accept =
+                                tokio_tungstenite::tungstenite::handshake::derive_accept_key(
+                                    key.as_bytes(),
+                                );
+                            stream.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\nSec-WebSocket-Protocol: runner-relay.v1\r\n\r\n").as_bytes()).await.unwrap();
+                            let mut socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                                stream,
+                                Role::Server,
+                                None,
+                            )
+                            .await;
+                            let hello = socket.next().await.unwrap().unwrap();
+                            let value: serde_json::Value =
+                                serde_json::from_str(hello.to_text().unwrap()).unwrap();
+                            assert_eq!(value["type"], "hello");
+                            if send_welcome.load(Ordering::SeqCst) {
+                                socket.send(Message::Text(r#"{"type":"welcome","hostId":"7383920468475904","name":"Mac Studio","account":{"username":"jason","displayName":"Jason"}}"#.into())).await.unwrap();
+                            }
+                            let code = close.swap(0, Ordering::SeqCst);
+                            if code != 0 {
+                                let _ = socket
+                                    .close(Some(CloseFrame {
+                                        code: CloseCode::from(code as u16),
+                                        reason: "".into(),
+                                    }))
+                                    .await;
+                            } else {
+                                while let Some(Ok(message)) = socket.next().await {
+                                    if message.is_close() {
+                                        break;
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    } else if headers.starts_with(
+                        "POST /api/runner_server.v1.HostEnrollmentService/StartEnrollment ",
+                    ) {
+                        let gate = start_hold.lock().unwrap().clone();
+                        if let Some(gate) = gate {
+                            gate.wait().await;
+                        }
+                        assert!(!lower.contains("authorization:"));
+                        let start: remote::StartRequest = serde_json::from_slice(&body).unwrap();
+                        assert!(!start.host.hostname.is_empty());
+                        serde_json::json!({"deviceCode":"test-device-code","userCode":"BCDF-GHJK","verificationUri":format!("{origin}/hosts/add"),"verificationUriComplete":format!("{origin}/hosts/add?code=BCDF-GHJK"),"expiresIn":600,"interval":1})
+                    } else if headers.starts_with(
+                        "POST /api/runner_server.v1.HostEnrollmentService/PollEnrollment ",
+                    ) {
+                        let request: remote::PollRequest = serde_json::from_slice(&body).unwrap();
+                        assert_eq!(request.device_code.0, "test-device-code");
+                        let at = polls.fetch_add(1, Ordering::SeqCst);
+                        let outcome = outcomes.get(at).copied().unwrap_or("approved");
+                        match outcome {
+                            "lost" => return,
+                            "limited" => {
+                                status = 429;
+                                serde_json::json!({"code":"resource_exhausted","message":"rhc_testsecret test-device-code"})
+                            }
+                            "denied" => serde_json::json!({"state":"ENROLLMENT_STATE_DENIED"}),
+                            "expired" => serde_json::json!({"state":"ENROLLMENT_STATE_EXPIRED"}),
+                            "pending" => serde_json::json!({"state":"ENROLLMENT_STATE_PENDING"}),
+                            _ => {
+                                serde_json::json!({"state":"ENROLLMENT_STATE_APPROVED","hostId":"7383920468475904","credential":format!("rhc_{}","x".repeat(43)),"relayUrl":format!("{}/relay/host",origin.replacen("http:","ws:",1)),"account":{"username":"jason","displayName":"Jason"},"claimExpiresAt":claim_deadline.clone()})
+                            }
+                        }
+                    } else if headers.starts_with(
+                        "POST /api/runner_server.v1.HostEnrollmentService/SignOutHost ",
+                    ) {
+                        assert!(lower.contains("authorization: bearer rhc_"));
+                        assert_eq!(body, b"{}");
+                        signouts.fetch_add(1, Ordering::SeqCst);
+                        let gate = signout_hold.lock().unwrap().clone();
+                        if let Some(gate) = gate {
+                            gate.wait().await;
+                        }
+                        status = signout_code.load(Ordering::SeqCst);
+                        if status == 200 {
+                            serde_json::json!({})
+                        } else {
+                            serde_json::json!({"code":"unavailable"})
+                        }
+                    } else {
+                        panic!("unexpected fake-service route");
+                    };
+                    let body = response.to_string();
+                    stream.write_all(format!("HTTP/1.1 {status} Result\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+                });
+            }
+        });
+        Self {
+            origin,
+            task,
+            polls,
+            signouts,
+            connections,
+            close_code,
+            refusal,
+            welcome,
+        }
+    }
+}
+async fn until(handle: &RemoteHandle, predicate: impl Fn(&RemoteStatus) -> bool) -> RemoteStatus {
+    let mut status = handle.status.clone();
+    for _ in 0..100 {
+        let value = status.borrow_and_update().clone();
+        if predicate(&value) {
+            return value;
+        }
+        if matches!(
+            value.state,
+            RemoteState::Enrolling { .. } | RemoteState::Reconnecting { .. }
+        ) {
+            handle.status_command(Command::TestDeadline).await.unwrap();
+        } else {
+            status.changed().await.unwrap();
+        }
+    }
+    panic!(
+        "fake service did not reach expected state: {:?}",
+        handle.status()
+    );
+}
+#[tokio::test(start_paused = true)]
+async fn status_wall_clock_advances_independently_of_tokio_time() {
+    let production = Clock::default();
+    let initial = Utc::now();
+    let wall = Arc::new(std::sync::Mutex::new(initial));
+    let clock = Clock {
+        wall: Some(wall.clone()),
+    };
+    let instant = tokio::time::Instant::now();
+    *wall.lock().unwrap() += chrono::Duration::hours(12);
+    assert_eq!(clock.now(), initial + chrono::Duration::hours(12));
+    assert_eq!(tokio::time::Instant::now(), instant);
+    let before = Utc::now();
+    tokio::time::advance(std::time::Duration::from_secs(12 * 60 * 60)).await;
+    let observed = production.now();
+    assert!((before..=Utc::now()).contains(&observed));
+    assert_eq!(clock.now(), initial + chrono::Duration::hours(12));
+}
+#[tokio::test]
+async fn fake_service_app_enrollment_pause_restart_logout() {
+    let service = Service::new(vec!["pending", "limited", "lost", "approved"]).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    let start = handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    assert!(
+        matches!(start.state, RemoteState::Enrolling { .. }),
+        "{start:?}"
+    );
+    let connected = until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    assert!(service.polls.load(Ordering::SeqCst) >= 4);
+    assert!(service.connections.load(Ordering::SeqCst) > 0);
+    let secret = store.get(&service.origin).unwrap().unwrap();
+    let persisted = std::fs::read_to_string(root.path().join("remote.json")).unwrap();
+    assert!(!persisted.contains("rhc_"));
+    assert!(!persisted.contains("test-device-code"));
+    handle.pause(true).await.unwrap();
+    assert_eq!(store.get(&service.origin).unwrap().unwrap(), secret);
+    handle.pause(false).await.unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    handle.shutdown().await;
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    assert!(matches!(
+        handle.logout().await.unwrap(),
+        RemoteLogout::Removed
+    ));
+    assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(!root.path().join("remote.json").exists());
+    assert_eq!(service.signouts.load(Ordering::SeqCst), 1);
+    let again = handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    assert_ne!(connected.fingerprint, again.fingerprint);
+    handle.cancel().await.unwrap();
+    handle.shutdown().await;
+}
+#[tokio::test]
+async fn fake_service_cli_allow_refuse_and_owner_disconnect() {
+    let service = Service::new(vec!["approved"]).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    for allow in [false, true] {
+        handle
+            .start_owned(Some(service.origin.clone()), true, Some(0))
+            .await
+            .unwrap();
+        until(&handle, |s| {
+            matches!(s.state, RemoteState::Confirming { .. })
+        })
+        .await;
+        assert!(store.get(&service.origin).unwrap().is_none());
+        handle.confirm(allow).await.unwrap();
+        if allow {
+            until(&handle, |s| {
+                matches!(s.state, RemoteState::Connected { .. })
+            })
+            .await;
+            handle.logout().await.unwrap();
+        } else {
+            assert!(matches!(handle.status().state, RemoteState::Off));
+        }
+    }
+    handle
+        .start_owned(Some(service.origin.clone()), true, Some(0))
+        .await
+        .unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Confirming { .. })
+    })
+    .await;
+    handle.owner_gone(0);
+    until(&handle, |s| matches!(s.state, RemoteState::Off)).await;
+    handle.shutdown().await;
+}
+#[tokio::test]
+async fn fake_service_denial_expiry_removed_retry_and_401() {
+    for outcome in ["denied", "expired"] {
+        let s = Service::new(vec![outcome]).await;
+        let root = tempfile::tempdir().unwrap();
+        let h = spawn_with_store(
+            root.path().into(),
+            Arc::new(store::MemoryStore::default()),
+            crate::events::EventChannel::new(),
+        );
+        h.start(Some(s.origin.clone()), false).await.unwrap();
+        until(&h, |s| matches!(s.state, RemoteState::Stopped { .. })).await;
+        h.shutdown().await;
+    }
+    for code in [1012, 4001, 4003, 4444] {
+        let s = Service::new(vec![]).await;
+        s.close_code.store(code, Ordering::SeqCst);
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(store::MemoryStore::default());
+        let h = spawn_with_store(
+            root.path().into(),
+            store.clone(),
+            crate::events::EventChannel::new(),
+        );
+        h.start(Some(s.origin.clone()), false).await.unwrap();
+        if matches!(code, 4001 | 4003) {
+            until(&h, |s| matches!(s.state, RemoteState::Stopped { .. })).await;
+            assert!(store.get(&s.origin).unwrap().is_some());
+            h.retry().await.unwrap();
+        }
+        until(&h, |s| matches!(s.state, RemoteState::Connected { .. })).await;
+        s.refusal.store(401, Ordering::SeqCst);
+        h.pause(true).await.unwrap();
+        h.pause(false).await.unwrap();
+        until(&h, |s| {
+            matches!(
+                s.state,
+                RemoteState::Stopped {
+                    reason: StopReason::Removed
+                }
+            )
+        })
+        .await;
+        assert!(store.get(&s.origin).unwrap().is_some());
+        h.logout().await.unwrap();
+        h.shutdown().await;
+    }
+}
+#[tokio::test]
+async fn offline_logout_is_local_first_once_and_restart_stays_off() {
+    let s = Service::new(vec![]).await;
+    let origin = s.origin.clone();
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let h = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    h.start(Some(origin.clone()), false).await.unwrap();
+    until(&h, |s| matches!(s.state, RemoteState::Connected { .. })).await;
+    drop(s);
+    assert!(matches!(
+        h.logout().await.unwrap(),
+        RemoteLogout::StillListed { .. }
+    ));
+    assert!(store.get(&origin).unwrap().is_none());
+    assert!(!root.path().join("remote.json").exists());
+    h.shutdown().await;
+    let h = spawn_with_store(
+        root.path().into(),
+        store,
+        crate::events::EventChannel::new(),
+    );
+    h.shutdown().await;
+    assert!(matches!(h.status().state, RemoteState::Off));
+}
+
+#[tokio::test]
+async fn offline_refusal_and_dead_connection_leave_daemon_requests_serving() {
+    let service = Service::new(vec![]).await;
+    let origin = service.origin.clone();
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let mut core = crate::test_support::test_core_in(root.path().into());
+    core.remote = spawn_with_store(root.path().into(), store.clone(), core.events.clone());
+    let client = crate::daemon::InProcessTransport::client(core.clone());
+    core.remote.start(Some(origin.clone()), true).await.unwrap();
+    until(&core.remote, |s| {
+        matches!(s.state, RemoteState::Confirming { .. })
+    })
+    .await;
+    drop(service);
+    core.remote.confirm(false).await.unwrap();
+    assert!(matches!(core.remote.status().state, RemoteState::Off));
+    assert!(core.remote.status().last_error.is_some());
+    assert!(store.get(&origin).unwrap().is_none());
+    assert!(client.app_version().is_ok());
+    assert!(client.session_live_ids().is_ok());
+    core.remote.shutdown().await;
+    let service = Service::new(vec![]).await;
+    let h = spawn_with_store(root.path().into(), store, core.events.clone());
+    h.start(Some(service.origin.clone()), false).await.unwrap();
+    until(&h, |s| matches!(s.state, RemoteState::Connected { .. })).await;
+    h.status_command(Command::TestDeadline).await.unwrap();
+    assert!(matches!(h.status().state, RemoteState::Reconnecting { .. }));
+    assert!(client.app_version().is_ok());
+    h.logout().await.unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn fake_service_refusals_origin_rejection_and_upgrade_validation() {
+    let service = Service::new(vec![]).await;
+    let client = transport::client().unwrap();
+    let relay = format!("{}/relay/host", service.origin.replacen("http:", "ws:", 1));
+    let credential = remote::Secret(format!("rhc_{}", "x".repeat(43)));
+    for (status, action) in [
+        (400, remote::Retry::Stop(StopReason::UpdateRequired)),
+        (401, remote::Retry::Stop(StopReason::Removed)),
+        (403, remote::Retry::Stop(StopReason::UpdateRequired)),
+        (429, remote::Retry::After(60)),
+        (503, remote::Retry::Backoff),
+        (101, remote::Retry::Backoff),
+    ] {
+        service.refusal.store(status, Ordering::SeqCst);
+        let failure =
+            transport::connect(&client, &relay, &credential, &remote::HostInfo::default())
+                .await
+                .expect_err("fake refusal must fail");
+        assert_eq!(failure.retry, action);
+    }
+    service.refusal.store(0, Ordering::SeqCst);
+    let response = client
+        .get(format!("{}/relay/host", service.origin))
+        .header("Origin", &service.origin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 403);
+}
+
+#[tokio::test]
+async fn saved_stop_is_the_initial_snapshot_before_the_task_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let saved = Saved {
+        version: 1,
+        origin: "http://127.0.0.1:1".into(),
+        host_id: "7383920468475904".into(),
+        relay_url: "ws://127.0.0.1:1/relay/host".into(),
+        account: remote::RemoteAccount {
+            username: "jason".into(),
+            display_name: "Jason".into(),
+        },
+        host_name: "Mac Studio".into(),
+        fingerprint: "630d cd29 66c4 3366 9112".into(),
+        activated: true,
+        claim_expires_at: Utc::now(),
+        paused: false,
+        stopped: Some(StopReason::InUseElsewhere),
+    };
+    saved.save(root.path()).unwrap();
+    store
+        .put(
+            &saved.origin,
+            &serde_json::to_vec(&Secrets {
+                v: 1,
+                key: remote::Secret("test-key".into()),
+                credential: remote::Secret(format!("rhc_{}", "x".repeat(43))),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    let handle = spawn_with_store(
+        root.path().into(),
+        store,
+        crate::events::EventChannel::new(),
+    );
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Stopped {
+            reason: StopReason::InUseElsewhere
+        }
+    ));
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn claim_deadline_before_first_welcome_deletes_the_provisional_enrollment() {
+    let service = Service::new(vec![]).await;
+    service.welcome.store(false, Ordering::SeqCst);
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connecting { .. })
+    })
+    .await;
+    assert_eq!(service.connections.load(Ordering::SeqCst), 1);
+    handle
+        .status_command(Command::TestClaimDeadline)
+        .await
+        .unwrap();
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Stopped {
+            reason: StopReason::Expired
+        }
+    ));
+    assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(!root.path().join("remote.json").exists());
+    assert_eq!(service.signouts.load(Ordering::SeqCst), 0);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn incoming_text_at_claim_expiry_runs_local_cleanup() {
+    for text in [
+        r#"{"type":"welcome","hostId":"7383920468475904","name":"Mac Studio","account":{"username":"jason"}}"#,
+        r#"{"type":"future"}"#,
+    ] {
+        let service = Service::new(vec![]).await;
+        service.welcome.store(false, Ordering::SeqCst);
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(store::MemoryStore::default());
+        let handle = spawn_with_store(
+            root.path().into(),
+            store.clone(),
+            crate::events::EventChannel::new(),
+        );
+        handle
+            .start(Some(service.origin.clone()), false)
+            .await
+            .unwrap();
+        until(&handle, |s| {
+            matches!(s.state, RemoteState::Connecting { .. })
+        })
+        .await;
+        handle
+            .status_command(Command::TestTextAtClaimDeadline(text.into()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            handle.status().state,
+            RemoteState::Stopped {
+                reason: StopReason::Expired
+            }
+        ));
+        assert!(store.get(&service.origin).unwrap().is_none());
+        assert!(!root.path().join("remote.json").exists());
+        assert_eq!(service.signouts.load(Ordering::SeqCst), 0);
+        handle.shutdown().await;
+    }
+}
+#[tokio::test(start_paused = true)]
+async fn startup_failures_cannot_hold_shutdown_or_daemon_requests() {
+    struct FailedStore;
+    impl SecretStore for FailedStore {
+        fn get(&self, _: &str) -> store::StoreResult<Option<Vec<u8>>> {
+            Err("test secret store inaccessible")
+        }
+        fn put(&self, _: &str, _: &[u8]) -> store::StoreResult<()> {
+            Err("test secret store inaccessible")
+        }
+        fn delete(&self, _: &str) -> store::StoreResult<()> {
+            Err("test secret store inaccessible")
+        }
+    }
+    for read_failure in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        if read_failure {
+            std::fs::create_dir(root.path().join("remote.json")).unwrap();
+        } else {
+            Saved {
+                version: 1,
+                origin: "http://127.0.0.1:1".into(),
+                host_id: "1".into(),
+                relay_url: "ws://127.0.0.1:1/relay/host".into(),
+                account: Default::default(),
+                host_name: String::new(),
+                fingerprint: String::new(),
+                activated: true,
+                claim_expires_at: Utc::now(),
+                paused: true,
+                stopped: None,
+            }
+            .save(root.path())
+            .unwrap();
+        }
+        let mut core = crate::test_support::test_core_in(root.path().into());
+        core.remote = spawn_with_store(
+            root.path().into(),
+            Arc::new(FailedStore),
+            core.events.clone(),
+        );
+        let client = crate::daemon::InProcessTransport::client(core.clone());
+        let mut restarts = core.remote.restarts.clone();
+        while *restarts.borrow_and_update() == 0 {
+            restarts.changed().await.unwrap();
+        }
+        assert!(client.app_version().is_ok());
+        tokio::time::timeout(std::time::Duration::from_secs(4), core.remote.shutdown())
+            .await
+            .expect("remote shutdown must not depend on startup success");
+        assert!(*core.remote.stopped.borrow());
+        assert!(client.session_live_ids().is_ok());
+    }
+}
+
+struct CallGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+impl CallGate {
+    async fn wait(&self) {
+        self.entered.notify_one();
+        self.release.acquire().await.unwrap().forget();
+    }
+}

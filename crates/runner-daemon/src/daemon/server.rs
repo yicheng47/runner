@@ -165,7 +165,7 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
 
 async fn serve_with_listener(
     config: Config,
-    core: AppCore,
+    mut core: AppCore,
     hash: String,
     settings: Settings,
     mut listener: IpcListener,
@@ -181,6 +181,7 @@ async fn serve_with_listener(
             None
         }
     };
+    core.remote = crate::remote::spawn(core.app_data_dir.clone(), core.events.clone());
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
@@ -257,6 +258,7 @@ async fn serve_with_listener(
     drop(sentinel);
     core.usage.set_polling_enabled(false);
     cancel.cancel();
+    core.remote.shutdown().await;
     let shutdown_core = core.clone();
     let teardown = tokio::task::spawn_blocking(move || -> Result<()> {
         resume_consumer.stop();

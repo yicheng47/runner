@@ -47,6 +47,7 @@ use session::manager::{CoreSessionEvents, SessionEventObserverRegistry};
 /// daemon clones it per connection.
 #[derive(Clone)]
 pub struct AppCore {
+    pub remote: remote::RemoteHandle,
     pub db: Arc<db::DbPool>,
     /// Root of the app's per-user data tree — `$APPDATA/runner/` on real
     /// installs, a tempdir in tests. Mission commands resolve event-log paths
