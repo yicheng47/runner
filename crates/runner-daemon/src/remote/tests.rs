@@ -13,6 +13,10 @@ struct Service {
     close_code: Arc<AtomicUsize>,
     refusal: Arc<AtomicUsize>,
     welcome: Arc<std::sync::atomic::AtomicBool>,
+    start_gate: Arc<std::sync::Mutex<Option<Arc<CallGate>>>>,
+    start_status: Arc<AtomicUsize>,
+    signout_gate: Arc<std::sync::Mutex<Option<Arc<CallGate>>>>,
+    signout_status: Arc<AtomicUsize>,
 }
 impl Drop for Service {
     fn drop(&mut self) {
@@ -39,10 +43,12 @@ impl Service {
             welcome.clone(),
         );
         let start_gate = Arc::new(std::sync::Mutex::new(None::<Arc<CallGate>>));
+        let start_status = Arc::new(AtomicUsize::new(200));
         let signout_gate = Arc::new(std::sync::Mutex::new(None::<Arc<CallGate>>));
         let signout_status = Arc::new(AtomicUsize::new(200));
-        let (start_hold, signout_hold, signout_code) = (
+        let (start_hold, start_code, signout_hold, signout_code) = (
             start_gate.clone(),
+            start_status.clone(),
             signout_gate.clone(),
             signout_status.clone(),
         );
@@ -63,8 +69,9 @@ impl Service {
                 );
                 let claim_deadline = claim_deadline.clone();
                 let send_welcome = send_welcome.clone();
-                let (start_hold, signout_hold, signout_code) = (
+                let (start_hold, start_code, signout_hold, signout_code) = (
                     start_hold.clone(),
+                    start_code.clone(),
                     signout_hold.clone(),
                     signout_code.clone(),
                 );
@@ -159,7 +166,12 @@ impl Service {
                         assert!(!lower.contains("authorization:"));
                         let start: remote::StartRequest = serde_json::from_slice(&body).unwrap();
                         assert!(!start.host.hostname.is_empty());
-                        serde_json::json!({"deviceCode":"test-device-code","userCode":"BCDF-GHJK","verificationUri":format!("{origin}/hosts/add"),"verificationUriComplete":format!("{origin}/hosts/add?code=BCDF-GHJK"),"expiresIn":600,"interval":1})
+                        status = start_code.load(Ordering::SeqCst);
+                        if status == 200 {
+                            serde_json::json!({"deviceCode":"test-device-code","userCode":"BCDF-GHJK","verificationUri":format!("{origin}/hosts/add"),"verificationUriComplete":format!("{origin}/hosts/add?code=BCDF-GHJK"),"expiresIn":600,"interval":1})
+                        } else {
+                            serde_json::json!({"code":"unavailable"})
+                        }
                     } else if headers.starts_with(
                         "POST /api/runner_server.v1.HostEnrollmentService/PollEnrollment ",
                     ) {
@@ -213,6 +225,10 @@ impl Service {
             close_code,
             refusal,
             welcome,
+            start_gate,
+            start_status,
+            signout_gate,
+            signout_status,
         }
     }
 }
@@ -582,6 +598,138 @@ async fn claim_deadline_before_first_welcome_deletes_the_provisional_enrollment(
     handle.shutdown().await;
 }
 
+struct SocketHarness {
+    endpoint: runner_core::app_paths::IpcEndpoint,
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+impl SocketHarness {
+    async fn new(_root: &std::path::Path, core: crate::AppCore) -> Self {
+        #[cfg(unix)]
+        let endpoint = runner_core::app_paths::IpcEndpoint(_root.join("remote.sock"));
+        #[cfg(windows)]
+        let endpoint = runner_core::app_paths::IpcEndpoint(
+            format!(r"\\.\pipe\runner-remote-test-{}", uuid::Uuid::new_v4()).into(),
+        );
+        let mut listener = crate::ipc::IpcListener::bind(&endpoint).unwrap();
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let task = tokio::spawn(async move {
+            let mut id = 0;
+            loop {
+                tokio::select! {
+                    _ = stop.cancelled() => break,
+                    stream = listener.accept() => { let Ok(stream)=stream else {break}; id+=1; let core=core.clone(); let stop=stop.clone(); tokio::spawn(async move { let _=crate::daemon::server::remote_test_connection(stream,core,id,stop).await; }); }
+                }
+            }
+        });
+        Self {
+            endpoint,
+            cancel,
+            task,
+        }
+    }
+    async fn client(&self, timeout: std::time::Duration) -> runner_core::protocol::DaemonClient {
+        let endpoint = self.endpoint.clone();
+        tokio::task::spawn_blocking(move || {
+            runner_core::protocol::socket::SocketTransport::connect_with_timeout(
+                &endpoint,
+                runner_core::protocol::wire::Hello {
+                    exe_sha256: "remote-test".into(),
+                    client: "remote-test".into(),
+                },
+                timeout,
+            )
+            .unwrap()
+            .client()
+        })
+        .await
+        .unwrap()
+    }
+}
+impl Drop for SocketHarness {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.task.abort();
+    }
+}
+fn socket_root() -> tempfile::TempDir {
+    #[cfg(unix)]
+    {
+        tempfile::tempdir_in("/tmp").unwrap()
+    }
+    #[cfg(windows)]
+    {
+        tempfile::tempdir().unwrap()
+    }
+}
+#[tokio::test]
+async fn rejected_and_replaced_socket_clients_do_not_own_another_claim() {
+    let service = Service::new(vec![]).await;
+    for replace in [false, true] {
+        let root = socket_root();
+        let mut core = crate::test_support::test_core_in(root.path().into());
+        core.remote = spawn_with_store(
+            root.path().into(),
+            Arc::new(store::MemoryStore::default()),
+            core.events.clone(),
+        );
+        let server = SocketHarness::new(root.path(), core.clone()).await;
+        let a = server.client(std::time::Duration::from_secs(10)).await;
+        let b = server.client(std::time::Duration::from_secs(10)).await;
+        let origin = service.origin.clone();
+        let request_a = a.clone();
+        let first =
+            tokio::task::spawn_blocking(move || request_a.remote_enroll_start(Some(origin), true))
+                .await
+                .unwrap()
+                .unwrap();
+        if !replace {
+            until(&core.remote, |s| {
+                matches!(s.state, RemoteState::Confirming { .. })
+            })
+            .await;
+        }
+        let origin = service.origin.clone();
+        let request_b = b.clone();
+        let second =
+            tokio::task::spawn_blocking(move || request_b.remote_enroll_start(Some(origin), true))
+                .await
+                .unwrap();
+        if replace {
+            let second = second.unwrap();
+            assert_ne!(first.fingerprint, second.fingerprint);
+            core.remote
+                .status_command(Command::OwnerGone(1))
+                .await
+                .unwrap();
+            until(&core.remote, |s| {
+                matches!(s.state, RemoteState::Confirming { .. })
+            })
+            .await;
+            assert_eq!(core.remote.status().fingerprint, second.fingerprint);
+            drop(b);
+            until(&core.remote, |s| matches!(s.state, RemoteState::Off)).await;
+        } else {
+            assert!(second.is_err());
+            core.remote
+                .status_command(Command::OwnerGone(2))
+                .await
+                .unwrap();
+            assert!(matches!(
+                core.remote.status().state,
+                RemoteState::Confirming { .. }
+            ));
+            core.remote.confirm(true).await.unwrap();
+            until(&core.remote, |s| {
+                matches!(s.state, RemoteState::Connected { .. })
+            })
+            .await;
+            core.remote.logout().await.unwrap();
+        }
+        core.remote.shutdown().await;
+    }
+}
 #[tokio::test]
 async fn incoming_text_at_claim_expiry_runs_local_cleanup() {
     for text in [
@@ -681,8 +829,139 @@ struct CallGate {
     release: tokio::sync::Semaphore,
 }
 impl CallGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        })
+    }
     async fn wait(&self) {
         self.entered.notify_one();
         self.release.acquire().await.unwrap().forget();
     }
+}
+#[tokio::test]
+async fn unreachable_start_returns_off_through_client_transport_and_can_start_again() {
+    let service = Service::new(vec!["pending"]).await;
+    service.start_status.store(503, Ordering::SeqCst);
+    let start = CallGate::new();
+    *service.start_gate.lock().unwrap() = Some(start.clone());
+    let initial = Utc::now();
+    let wall = Arc::new(std::sync::Mutex::new(initial));
+    let root = socket_root();
+    let mut core = crate::test_support::test_core_in(root.path().into());
+    core.remote = spawn_with_clock(
+        root.path().into(),
+        Arc::new(store::MemoryStore::default()),
+        core.events.clone(),
+        Clock {
+            wall: Some(wall.clone()),
+        },
+    );
+    let server = SocketHarness::new(root.path(), core.clone()).await;
+    let client = server.client(std::time::Duration::from_millis(40)).await;
+    let caller = client.clone();
+    let origin = service.origin.clone();
+    let (done, received) = std::sync::mpsc::channel();
+    let login = tokio::task::spawn_blocking(move || {
+        let _ = done.send(caller.remote_enroll_start(Some(origin), false));
+    });
+    start.entered.notified().await;
+    *wall.lock().unwrap() = initial + chrono::Duration::seconds(31);
+    start.release.add_permits(1);
+    let status = tokio::task::spawn_blocking(move || {
+        received.recv_timeout(std::time::Duration::from_secs(2))
+    })
+    .await
+    .unwrap()
+    .expect("the pending client request must finish after the startup budget")
+    .unwrap();
+    login.await.unwrap();
+    assert!(matches!(status.state, RemoteState::Off));
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("Couldn't reach 127.0.0.1.")
+    );
+    assert!(status.fingerprint.is_none());
+    core.remote
+        .status_command(Command::TestDeadline)
+        .await
+        .unwrap();
+    assert_eq!(core.remote.status(), status);
+    service.start_status.store(200, Ordering::SeqCst);
+    start.release.add_permits(1);
+    let origin = service.origin.clone();
+    let next = tokio::task::spawn_blocking(move || client.remote_enroll_start(Some(origin), false))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(next.state, RemoteState::Enrolling { .. }));
+    assert!(next.last_error.is_none());
+    core.remote.logout().await.unwrap();
+    core.remote.shutdown().await;
+}
+#[tokio::test]
+async fn delayed_start_and_signout_survive_the_client_transport_budget() {
+    let service = Service::new(vec![]).await;
+    let root = socket_root();
+    let store = Arc::new(store::MemoryStore::default());
+    let mut core = crate::test_support::test_core_in(root.path().into());
+    core.remote = spawn_with_store(root.path().into(), store.clone(), core.events.clone());
+    let server = SocketHarness::new(root.path(), core.clone()).await;
+    let client = server.client(std::time::Duration::from_millis(40)).await;
+    let start = CallGate::new();
+    *service.start_gate.lock().unwrap() = Some(start.clone());
+    let origin = service.origin.clone();
+    let caller = client.clone();
+    let (done, received) = std::sync::mpsc::channel();
+    let login = tokio::task::spawn_blocking(move || {
+        let result = caller.remote_enroll_start(Some(origin), false);
+        let _ = done.send(());
+        result
+    });
+    start.entered.notified().await;
+    assert!(matches!(
+        tokio::task::spawn_blocking(
+            move || received.recv_timeout(std::time::Duration::from_millis(100))
+        )
+        .await
+        .unwrap(),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    start.release.add_permits(1);
+    assert!(matches!(
+        login.await.unwrap().unwrap().state,
+        RemoteState::Enrolling { .. }
+    ));
+    until(&core.remote, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    let signout = CallGate::new();
+    *service.signout_gate.lock().unwrap() = Some(signout.clone());
+    service.signout_status.store(503, Ordering::SeqCst);
+    let caller = client.clone();
+    let (done, received) = std::sync::mpsc::channel();
+    let logout = tokio::task::spawn_blocking(move || {
+        let result = caller.remote_logout();
+        let _ = done.send(());
+        result
+    });
+    signout.entered.notified().await;
+    assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(!root.path().join("remote.json").exists());
+    assert!(matches!(
+        tokio::task::spawn_blocking(
+            move || received.recv_timeout(std::time::Duration::from_millis(100))
+        )
+        .await
+        .unwrap(),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    signout.release.add_permits(1);
+    assert!(matches!(
+        logout.await.unwrap().unwrap(),
+        RemoteLogout::StillListed { .. }
+    ));
+    core.remote.shutdown().await;
 }
