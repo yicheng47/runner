@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -165,7 +164,7 @@ async fn serve(config: Config, core: AppCore, hash: String, settings: Settings) 
 
 async fn serve_with_listener(
     config: Config,
-    core: AppCore,
+    mut core: AppCore,
     hash: String,
     settings: Settings,
     mut listener: IpcListener,
@@ -181,6 +180,7 @@ async fn serve_with_listener(
             None
         }
     };
+    core.remote = crate::remote::spawn(core.app_data_dir.clone(), core.events.clone());
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
@@ -247,7 +247,7 @@ async fn serve_with_listener(
                     let isolated = config.isolated;
                     let resume_report = resume_rx.clone();
                     next_connection += 1;
-                    let windows = Arc::new(ConnectionWindows { core: core.clone(), owners: window_owners.clone(), id: next_connection, closed: AtomicBool::new(false) });
+                    let windows = Arc::new(ConnectionWindows { core: core.clone(), owners: window_owners.clone(), id: next_connection, closed: CancellationToken::new() });
                     connections.spawn(async move { if let Err(error) = connection(stream, core, welcome, cancel, isolated, windows, resume_report).await { log::debug!("runnerd client: {error}"); } });
                 }
             }
@@ -257,6 +257,7 @@ async fn serve_with_listener(
     drop(sentinel);
     core.usage.set_polling_enabled(false);
     cancel.cancel();
+    core.remote.shutdown().await;
     let shutdown_core = core.clone();
     let teardown = tokio::task::spawn_blocking(move || -> Result<()> {
         resume_consumer.stop();
@@ -425,7 +426,7 @@ impl Drop for ConnectionCleanup {
     fn drop(&mut self) {
         self.cancel.cancel();
         self.reader.abort();
-        self.windows.closed.store(true, Ordering::Release);
+        self.windows.closed.cancel();
         let windows = self.windows.clone();
         tokio::task::spawn_blocking(move || windows.remove());
         let ids = self
@@ -446,11 +447,29 @@ struct ConnectionWindows {
     core: AppCore,
     owners: Arc<Mutex<HashMap<String, u64>>>,
     id: u64,
-    closed: AtomicBool,
+    closed: CancellationToken,
 }
 
 impl ConnectionWindows {
     fn dispatch(&self, request: Request) -> Option<Response> {
+        if let Request::remote_enroll_start {
+            origin,
+            confirm_account,
+        } = request
+        {
+            let result = super::block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = self.closed.cancelled() => {
+                        self.core.remote.owner_gone(self.id);
+                        Err("Enrollment client disconnected.".into())
+                    }
+                    result = self.core.remote.start_owned(origin, confirm_account, Some(self.id)) => result,
+                }
+            })
+            .map_err(ClientError::msg);
+            return Some(Response::remote_enroll_start(result));
+        }
         if let Request::node_mark_viewed {
             window_label,
             id,
@@ -464,7 +483,7 @@ impl ConnectionWindows {
                 viewed_session_id.as_deref(),
                 || {
                     let mut owners = self.owners.lock().unwrap();
-                    if self.closed.load(Ordering::Acquire)
+                    if self.closed.is_cancelled()
                         || owners
                             .get(&window_label)
                             .is_some_and(|owner| *owner != self.id)
@@ -502,7 +521,7 @@ impl ConnectionWindows {
         };
         // Keep cleanup and window mutations atomic, including requests already in flight.
         let mut owners = self.owners.lock().unwrap();
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.is_cancelled() {
             return None;
         }
         if !matches!(request, Request::window_register { .. })
@@ -555,6 +574,7 @@ impl ConnectionWindows {
     }
 
     fn remove(&self) {
+        self.core.remote.owner_gone(self.id);
         let mut owners = self.owners.lock().unwrap();
         owners.retain(|label, owner| {
             if *owner != self.id {
@@ -920,6 +940,36 @@ pub(super) async fn os_shutdown(
 }
 
 #[cfg(test)]
+pub(crate) async fn remote_test_connection(
+    stream: crate::ipc::IpcStream,
+    core: AppCore,
+    id: u64,
+    cancel: CancellationToken,
+) -> Result<()> {
+    let windows = Arc::new(ConnectionWindows {
+        core: core.clone(),
+        owners: Arc::new(Mutex::default()),
+        id,
+        closed: CancellationToken::new(),
+    });
+    let (_tx, report) = tokio::sync::watch::channel(None);
+    connection(
+        stream,
+        core,
+        wire::Welcome {
+            exe_sha256: "remote-test".into(),
+            pid: 1,
+            started_at: "now".into(),
+        },
+        cancel,
+        true,
+        windows,
+        report,
+    )
+    .await
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -950,7 +1000,7 @@ mod tests {
                 core: server_core.clone(),
                 owners: Arc::new(Mutex::default()),
                 id: 1,
-                closed: AtomicBool::new(false),
+                closed: CancellationToken::new(),
             });
             let (_report, resume_report) = tokio::sync::watch::channel(None);
             connection(
@@ -1151,6 +1201,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn queued_remote_start_cannot_outlive_its_disconnected_client() {
+        let core = crate::test_support::test_core();
+        let windows = ConnectionWindows {
+            core,
+            owners: Arc::new(Mutex::default()),
+            id: 1,
+            closed: CancellationToken::new(),
+        };
+        windows.closed.cancel();
+        let response = tokio::task::spawn_blocking(move || {
+            windows.dispatch(Request::remote_enroll_start {
+                origin: None,
+                confirm_account: true,
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        match response {
+            Response::remote_enroll_start(Err(error)) => {
+                assert_eq!(error.message, "Enrollment client disconnected.");
+            }
+            response => panic!("unexpected response: {response:?}"),
+        }
+    }
+
     #[test]
     fn queued_window_requests_cannot_recreate_a_disconnected_window() {
         let core = crate::test_support::test_core();
@@ -1158,7 +1235,7 @@ mod tests {
             core: core.clone(),
             owners: Arc::new(Mutex::default()),
             id: 1,
-            closed: AtomicBool::new(false),
+            closed: CancellationToken::new(),
         });
         windows
             .dispatch(Request::window_register {
@@ -1174,7 +1251,7 @@ mod tests {
                 viewed_session_id: Some("chat-1".into()),
             })
         });
-        windows.closed.store(true, Ordering::Release);
+        windows.closed.cancel();
         drop(owners);
         windows.remove();
         assert!(worker.join().unwrap().is_none());

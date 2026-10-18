@@ -145,6 +145,7 @@ pub(crate) enum SettingsPane {
     Missions,
     Appearance,
     Notifications,
+    Remote,
     Terminal,
     Shortcuts,
     Agents,
@@ -161,6 +162,7 @@ impl SettingsPane {
         match value {
             Some("missions") => Self::Missions,
             Some("appearance") => Self::Appearance,
+            Some("remote") => Self::Remote,
             Some("notifications") => Self::Notifications,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
@@ -180,6 +182,7 @@ impl SettingsPane {
             Self::General => "general",
             Self::Missions => "missions",
             Self::Appearance => "appearance",
+            Self::Remote => "remote",
             Self::Notifications => "notifications",
             Self::Terminal => "terminal",
             Self::Shortcuts => "shortcuts",
@@ -198,6 +201,7 @@ impl SettingsPane {
             Self::General => crate::i18n::text("ui.general"),
             Self::Missions => crate::i18n::text("ui.missions"),
             Self::Appearance => crate::i18n::text("ui.appearance"),
+            Self::Remote => crate::i18n::text("ui.remote_access"),
             Self::Notifications => crate::i18n::text("ui.notifications"),
             Self::Terminal => crate::i18n::text("ui.terminal"),
             Self::Shortcuts => crate::i18n::text("ui.keyboard_shortcuts"),
@@ -216,6 +220,7 @@ impl SettingsPane {
             Self::General => "settings.svg",
             Self::Missions => "rocket.svg",
             Self::Appearance => "sun.svg",
+            Self::Remote => "globe.svg",
             Self::Notifications => "bell.svg",
             Self::Terminal => "terminal.svg",
             Self::Shortcuts => "keyboard.svg",
@@ -234,6 +239,7 @@ const APP_PANES: &[SettingsPane] = &[
     SettingsPane::General,
     SettingsPane::Appearance,
     SettingsPane::Notifications,
+    SettingsPane::Remote,
     SettingsPane::Missions,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
@@ -296,7 +302,8 @@ enum SettingsSelection {
 }
 
 pub(crate) struct SettingsState {
-    pane: SettingsPane,
+    pub(crate) remote: settings::remote::RemotePaneState,
+    pub(crate) pane: SettingsPane,
     focus: FocusHandle,
     search_query: String,
     search: Entity<TextField>,
@@ -538,6 +545,7 @@ impl SettingsState {
             }
         });
         Self {
+            remote: settings::remote::RemotePaneState::new(cx),
             pane: SettingsPane::General,
             focus: cx.focus_handle(),
             search_query: String::new(),
@@ -949,6 +957,7 @@ impl NativeRoot {
         }
         self.settings_page.pane = pane;
         match pane {
+            SettingsPane::Remote => self.enter_remote_settings(cx),
             SettingsPane::Missions => self.refresh_settings_crews(cx),
             SettingsPane::Agents => {
                 if self.settings_page.agents.is_none() {
@@ -1571,6 +1580,7 @@ impl NativeRoot {
             SettingsPane::General => Some(self.render_general_settings(cx)),
             SettingsPane::Missions => Some(self.render_missions_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
+            SettingsPane::Remote => Some(self.render_remote_settings(cx)),
             SettingsPane::Notifications => Some(self.render_notifications_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
             SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
@@ -1643,17 +1653,23 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn settings_confirm_overlay(&self, cx: &App) -> Option<AnyElement> {
-        if self.route == AppRoute::Settings && self.settings_page.pane == SettingsPane::Agents {
+    pub(crate) fn settings_confirm_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.route != AppRoute::Settings {
+            return None;
+        }
+        if self.settings_page.remote.confirm {
+            return Some(self.remote_confirm_overlay(cx));
+        }
+        if self.settings_page.pane == SettingsPane::Agents {
             return self
                 .settings_page
                 .agents
                 .as_ref()
                 .map(|agents| agents.read(cx).accounts_overlay(cx));
         }
-        (self.route == AppRoute::Settings)
-            .then_some(self.settings_page.archived.as_ref())
-            .flatten()
+        self.settings_page
+            .archived
+            .as_ref()
             .map(|archived| archived.read(cx).confirm_overlay().into_any_element())
     }
 
@@ -3516,7 +3532,7 @@ mod tests {
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
         assert_eq!(all.len(), 3);
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 13);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 14);
         assert_eq!(
             all[0],
             (
@@ -3525,6 +3541,7 @@ mod tests {
                     SettingsPane::General,
                     SettingsPane::Appearance,
                     SettingsPane::Notifications,
+                    SettingsPane::Remote,
                     SettingsPane::Missions,
                     SettingsPane::Terminal,
                     SettingsPane::Shortcuts,
