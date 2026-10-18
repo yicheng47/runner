@@ -1,7 +1,7 @@
 # 836 — Web remote control
 
 > Tracking issue: [#836](https://github.com/yicheng47/runner/issues/836). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows first; Linux wherever `runnerd` runs ([#823](https://github.com/yicheng47/runner/issues/823)).
-> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. The encrypted channel, the companion protocol and terminals (Phases 2 and 3) get their sections when their development starts.
+> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. The encrypted channel, the companion protocol and terminals (Phases 2 and 3) are specified in full when their development starts; one Phase 2 constraint is already settled, and Phase 4, the Tailscale route, is released together with the hosted service.
 > Scope: Runner's side only, what runs on the person's computer: `runnerd`, the `runner` CLI and the desktop app. The web panel and the service are developed separately; this spec describes them only as far as Runner talks to them.
 > Design: `design/specs/836-web-remote-control.pen`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect.
 > Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (multi-client resize).
@@ -17,8 +17,11 @@ Since 0.13, agents keep running in `runnerd` after the desktop app closes, but t
 | 1 | Connect a host: enrollment under an account, the stored secrets, the outbound connection, and its state in Settings and the CLI |
 | 2 | The companion protocol v1 in `runner-core`, with golden JSON for every message, and how a host decides which clients it trusts |
 | 3 | The end-to-end channel in `runnerd` (Noise through `snow`) and the adapter that serves the protocol from `runnerd`'s state: overview, live status, terminal attach, input and resize |
+| 4 | The Tailscale route: a listener on the host's Tailscale interface and its pairing, carrying Phase 3's channel and Phase 2's protocol unchanged |
 
 Phase 1 is plumbing: the web panel shows the computer online or offline. Nothing a session contains leaves the computer before Phase 3.
+
+**Two routes, one release (Jason, 2026-10-18).** Remote control is released with two ways to reach a host, as two options of the same release: Tailscale for users worldwide, with no account or service, and the hosted service, invite-only, for users in mainland China. Neither audience comes first, so the order of the phases follows how easily each part is built and tested: the relay goes first because its service is live and Phase 1 already connects to it, and Tailscale follows Phase 3 on the same protocol and channel. Remote control is 0.17's focus, and each phase is a sub-issue of #836: [#951](https://github.com/yicheng47/runner/issues/951), [#952](https://github.com/yicheng47/runner/issues/952), [#953](https://github.com/yicheng47/runner/issues/953) and [#954](https://github.com/yicheng47/runner/issues/954).
 
 ## Phase 1 — Connect a host
 
@@ -406,7 +409,7 @@ A new Settings pane, **Remote access**, in the App group after Notifications, wi
 
 ### Out of scope
 
-Everything in Phases 2 and 3; push notifications and the iOS app ([#912](https://github.com/yicheng47/runner/issues/912)); LAN, Bonjour and Tailscale routes; one computer on several accounts or services at once; renaming the computer from Runner, which the web panel does; credential rotation; the Linux Secret Service; starting, stopping or archiving sessions remotely.
+Everything in Phases 2 to 4, including the Tailscale route; push notifications and the iOS app ([#912](https://github.com/yicheng47/runner/issues/912)); same-network and Bonjour routes; one computer on several accounts or services at once; renaming the computer from Runner, which the web panel does; credential rotation; the Linux Secret Service; starting, stopping or archiving sessions remotely.
 
 ### Verification
 
@@ -445,4 +448,10 @@ New dependencies: `snow`; `tokio-tungstenite` without TLS features; `windows-sys
 | Question | Recommendation | Settle before |
 | --- | --- | --- |
 | Should the app also confirm enrollments started from the CLI when it is running? | Not in Phase 1: the TTY and account confirmation cover the CLI; revisit with Phase 3's client trust | Phase 2 |
-| How a browser trusts a host's key, and how the host trusts a browser | Enrollment already binds the host's public key to the approving account; client trust is decided with the companion protocol | Phase 2 |
+| How a browser trusts a host's key, and how the host trusts a browser | Enrollment already binds the host's public key to the approving account; clients get per-device keys (Phase 2's route rule), and how a browser obtains and proves one is decided with the companion protocol | Phase 2 |
+
+## Phase 2 — Companion protocol and client trust
+
+Specified in full when its development starts. One constraint is settled:
+
+- **The protocol and the channel do not depend on the route (Jason, 2026-10-18).** The companion protocol and Phase 3's end-to-end channel run over any ordered, reliable byte stream; the relay's WebSocket is the first such stream, not part of either. A host trusts clients by per-device keys that it can list and revoke, not by the account session alone. Phase 4's Tailscale route, and any later direct route such as a same-network listener ([#912](https://github.com/yicheng47/runner/issues/912)), then adds only its listener and its pairing, and reuses the protocol, the channel and the trust model unchanged.
