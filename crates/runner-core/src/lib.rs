@@ -38,3 +38,5 @@ pub const fn runner_skill_name(debug: bool) -> &'static str {
 pub mod protocol;
 
 pub mod version;
+
+pub mod remote;

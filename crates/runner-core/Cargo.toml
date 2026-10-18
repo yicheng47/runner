@@ -24,6 +24,10 @@ uuid = { workspace = true }
 anyhow = "1"
 log = "0.4"
 sha2 = "0.10"
+base64 = "0.22"
+snow = "0.9.6"
+hostname = "0.4"
+url = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"
@@ -33,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_IO", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]

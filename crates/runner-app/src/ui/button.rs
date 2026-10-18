@@ -30,6 +30,7 @@ pub enum ButtonVariant {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ButtonSize {
     Sm,
+    Compact,
     #[default]
     Md,
 }
@@ -38,6 +39,7 @@ impl ButtonSize {
     pub const fn height(self, bordered: bool) -> f32 {
         let height = match self {
             Self::Sm => 24.,
+            Self::Compact => 28.,
             Self::Md => 32.,
         };
         if bordered {
@@ -181,6 +183,7 @@ impl RenderOnce for Button {
         let height = self.size.height(has_border);
         let (horizontal_padding, text_size, icon_size) = match self.size {
             ButtonSize::Sm => (10., theme::text_ui(), 12.),
+            ButtonSize::Compact => (12., theme::text_ui(), 13.),
             ButtonSize::Md => (12., theme::text_title(), 14.),
         };
         let mouse_focus = self.focus_handle.clone();
@@ -207,6 +210,9 @@ impl RenderOnce for Button {
             .bg(background)
             .font_weight(FontWeight::MEDIUM)
             .text_size(text_size)
+            .when(self.size == ButtonSize::Compact, |button| {
+                button.line_height(rems(14. / 16.))
+            })
             .text_color(foreground)
             .opacity(if inactive { 0.5 } else { 1. })
             .cursor(if inactive {

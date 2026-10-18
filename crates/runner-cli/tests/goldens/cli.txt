@@ -1233,6 +1233,7 @@ Operate Runner missions, crews, roles, projects, and chats.
 Usage: runner [OPTIONS] <COMMAND>
 
 Commands:
+  remote   Connect this computer to your remote access account
   daemon   Inspect or stop the local daemon
   status   Check whether Runner is running
   project  Manage projects
@@ -1263,6 +1264,60 @@ Usage: runner daemon [OPTIONS] <COMMAND>
 Commands:
   status  
   stop    
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote --help
+exit 0
+Connect this computer to your remote access account
+
+Usage: runner remote [OPTIONS] <COMMAND>
+
+Commands:
+  login   Connect this computer to your account (interactive terminal required)
+  logout  Disconnect this computer and delete its local secrets
+  status  Show remote access status
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote status --help
+exit 0
+Show remote access status
+
+Usage: runner remote status [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote login --help
+exit 0
+Connect this computer to your account (interactive terminal required)
+
+Usage: runner remote login [OPTIONS]
+
+Options:
+      --json             Print the tool result as exact JSON
+      --server <SERVER>  
+  -q                     Print only result IDs
+  -h, --help             Print help
+
+# context: not running
+$ runner remote logout --help
+exit 0
+Disconnect this computer and delete its local secrets
+
+Usage: runner remote logout [OPTIONS]
 
 Options:
       --json  Print the tool result as exact JSON

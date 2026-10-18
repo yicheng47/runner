@@ -7,6 +7,7 @@ pub enum ToastTone {
     Success,
     Error,
     Restart,
+    Warning,
 }
 
 impl ToastTone {
@@ -15,6 +16,7 @@ impl ToastTone {
             Self::Info => "info.svg",
             Self::Success => "circle-check.svg",
             Self::Error => "circle-x.svg",
+            Self::Warning => "triangle-alert.svg",
             Self::Restart => "rotate-cw.svg",
         }
     }
