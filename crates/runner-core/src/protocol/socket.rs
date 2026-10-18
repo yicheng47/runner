@@ -14,10 +14,18 @@ pub const FORK_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const FORK_REQUEST_TIMEOUT: Duration =
     Duration::from_secs(FORK_MATERIALIZE_TIMEOUT.as_secs() + 30);
 
-fn request_timeout(request: &Request, timeout: Duration) -> Duration {
+pub const REMOTE_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+
+fn request_timeout(request: &Request, timeout: Duration) -> Option<Duration> {
     match request {
-        Request::session_fork { .. } => timeout.max(FORK_REQUEST_TIMEOUT),
-        _ => timeout,
+        Request::remote_enroll_start { .. }
+        | Request::remote_enroll_confirm { .. }
+        | Request::remote_enroll_cancel { .. }
+        | Request::remote_set_paused { .. }
+        | Request::remote_retry { .. }
+        | Request::remote_logout { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
+        Request::session_fork { .. } => Some(timeout.max(FORK_REQUEST_TIMEOUT)),
+        _ => Some(timeout),
     }
 }
 const QUEUE_CAPACITY: usize = 64;
@@ -556,10 +564,13 @@ impl Transport for SocketTransport {
         let response = Frame::json(wire::REQUEST, &wire::Call { id, request })
             .map_err(client_error)
             .and_then(|frame| self.send(frame))
-            .and_then(|()| {
-                result
+            .and_then(|()| match timeout {
+                Some(timeout) => result
                     .recv_timeout(timeout)
-                    .map_err(|_| ClientError::msg("runnerd request deadline exceeded"))?
+                    .map_err(|_| ClientError::msg("runnerd request deadline exceeded"))?,
+                None => result
+                    .recv()
+                    .map_err(|_| ClientError::msg("runnerd connection closed"))?,
             });
         self.pending.lock().unwrap().remove(&id);
         response
@@ -929,7 +940,7 @@ mod deadline_tests {
     use super::*;
 
     #[test]
-    fn only_forks_extend_the_request_deadline_to_cover_materialization() {
+    fn ordinary_requests_keep_their_deadlines_and_forks_cover_materialization() {
         let fast = Request::app_version {};
         let fork = Request::session_fork {
             source_session_id: "source".into(),
@@ -939,13 +950,13 @@ mod deadline_tests {
         };
         assert_eq!(
             request_timeout(&fast, REQUEST_TIMEOUT),
-            Duration::from_secs(10)
+            Some(Duration::from_secs(10))
         );
         assert_eq!(
             request_timeout(&fast, Duration::from_millis(200)),
-            Duration::from_millis(200)
+            Some(Duration::from_millis(200))
         );
-        assert!(request_timeout(&fork, REQUEST_TIMEOUT) > FORK_MATERIALIZE_TIMEOUT);
+        assert!(request_timeout(&fork, REQUEST_TIMEOUT).unwrap() > FORK_MATERIALIZE_TIMEOUT);
         for ordinary in [
             Request::session_list {
                 mission_id: "mission".into(),
@@ -957,15 +968,51 @@ mod deadline_tests {
             },
         ] {
             assert!(!ordinary.is_fast());
-            assert_eq!(request_timeout(&ordinary, REQUEST_TIMEOUT), REQUEST_TIMEOUT);
+            assert_eq!(
+                request_timeout(&ordinary, REQUEST_TIMEOUT),
+                Some(REQUEST_TIMEOUT)
+            );
             assert_eq!(
                 request_timeout(&ordinary, Duration::from_millis(200)),
-                Duration::from_millis(200)
+                Some(Duration::from_millis(200))
             );
             assert_eq!(
                 request_timeout(&ordinary, Duration::from_secs(30)),
-                Duration::from_secs(30)
+                Some(Duration::from_secs(30))
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod remote_deadline_tests {
+    use super::*;
+    #[test]
+    fn remote_budgets_cover_service_calls_and_enrollment_retries() {
+        for request in [
+            Request::remote_enroll_start {
+                origin: None,
+                confirm_account: true,
+            },
+            Request::remote_enroll_confirm { allow: true },
+            Request::remote_enroll_cancel {},
+            Request::remote_set_paused { paused: false },
+            Request::remote_retry {},
+            Request::remote_logout {},
+        ] {
+            assert_eq!(
+                request_timeout(&request, REQUEST_TIMEOUT),
+                Some(REMOTE_REQUEST_TIMEOUT)
+            );
+            assert_eq!(
+                request_timeout(&request, Duration::from_secs(60)),
+                Some(Duration::from_secs(60))
+            );
+            assert!(REMOTE_REQUEST_TIMEOUT > Duration::from_secs(30));
+        }
+        assert_eq!(
+            request_timeout(&Request::remote_status {}, REQUEST_TIMEOUT),
+            Some(REQUEST_TIMEOUT)
+        );
     }
 }

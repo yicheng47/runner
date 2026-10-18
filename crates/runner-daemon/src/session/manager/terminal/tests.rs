@@ -166,6 +166,7 @@ fn test_core_with_runtime(root: &std::path::Path, runtime: Arc<dyn SessionRuntim
         crate::shell_path::DiscoveryState::startup(None, None),
     ));
     AppCore {
+        remote: Default::default(),
         db: pool,
         app_data_dir,
         sessions: crate::session::SessionManager::new(
