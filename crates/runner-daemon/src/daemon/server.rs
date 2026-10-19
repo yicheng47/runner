@@ -1133,6 +1133,22 @@ mod tests {
             .unwrap()
             .unwrap();
         let stopped = if let Ok(client) = &connected {
+            let remote = client.client();
+            tokio::task::spawn_blocking(move || {
+                assert_eq!(remote.remote_trust().unwrap(), Default::default());
+                let trust = remote
+                    .remote_set_pin(runner_core::remote::Secret("001234".into()))
+                    .unwrap();
+                assert!(trust.pin_set);
+                assert!(trust.fingerprint.is_some());
+                assert!(trust.devices.is_empty());
+            })
+            .await
+            .unwrap();
+            assert!(!root.path().join("remote.json").exists());
+            assert!(!root.path().join("remote-trust.json").exists());
+            assert!(!root.path().join("remote-identity.json").exists());
+            assert!(!root.path().join("remote-secrets.json").exists());
             client.shutdown(true).unwrap();
             Some(tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, server).await)
         } else {
