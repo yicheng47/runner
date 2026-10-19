@@ -23,7 +23,11 @@ fn request_timeout(request: &Request, timeout: Duration) -> Option<Duration> {
         | Request::remote_enroll_cancel { .. }
         | Request::remote_set_paused { .. }
         | Request::remote_retry { .. }
-        | Request::remote_logout { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
+        | Request::remote_logout { .. }
+        | Request::remote_set_pin { .. }
+        | Request::remote_unlock_pin { .. }
+        | Request::remote_revoke_device { .. }
+        | Request::remote_reset_identity { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
         Request::session_fork { .. } => Some(timeout.max(FORK_REQUEST_TIMEOUT)),
         _ => Some(timeout),
     }
@@ -999,6 +1003,14 @@ mod remote_deadline_tests {
             Request::remote_set_paused { paused: false },
             Request::remote_retry {},
             Request::remote_logout {},
+            Request::remote_set_pin {
+                pin: crate::remote::Secret("001234".into()),
+            },
+            Request::remote_unlock_pin {},
+            Request::remote_revoke_device {
+                fingerprint: "device".into(),
+            },
+            Request::remote_reset_identity {},
         ] {
             assert_eq!(
                 request_timeout(&request, REQUEST_TIMEOUT),
@@ -1010,9 +1022,10 @@ mod remote_deadline_tests {
             );
             assert!(REMOTE_REQUEST_TIMEOUT > Duration::from_secs(30));
         }
-        assert_eq!(
-            request_timeout(&Request::remote_status {}, REQUEST_TIMEOUT),
-            Some(REQUEST_TIMEOUT)
-        );
+        for request in [Request::remote_status {}, Request::remote_trust {}] {
+            for timeout in [REQUEST_TIMEOUT, Duration::from_millis(200)] {
+                assert_eq!(request_timeout(&request, timeout), Some(timeout));
+            }
+        }
     }
 }

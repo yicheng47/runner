@@ -25,7 +25,7 @@ impl OsStore {
         Self {
             namespace: namespace.into(),
             #[cfg(not(any(target_os = "macos", windows)))]
-            root: _root.join("remote-secrets.json"),
+            root: _root.into(),
         }
     }
 }
@@ -135,8 +135,12 @@ impl SecretStore for OsStore {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 impl OsStore {
-    fn path(&self, _origin: &str) -> PathBuf {
-        self.root.clone()
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.join(if name == IDENTITY_NAME {
+            "remote-identity.json"
+        } else {
+            "remote-secrets.json"
+        })
     }
 }
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -144,7 +148,7 @@ impl SecretStore for OsStore {
     fn get(&self, origin: &str) -> StoreResult<Option<Vec<u8>>> {
         use std::os::unix::fs::MetadataExt;
         let path = self.path(origin);
-        let file = match std::fs::OpenOptions::new()
+        let mut file = match std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)
@@ -159,18 +163,16 @@ impl SecretStore for OsStore {
         }
         use std::io::Read;
         let mut bytes = Vec::new();
-        file.take(4096)
-            .read_to_end(&mut bytes)
+        file.read_to_end(&mut bytes)
             .map_err(|_| "Secret file read failed")?;
         Ok(Some(bytes))
     }
     fn put(&self, origin: &str, value: &[u8]) -> StoreResult<()> {
         use std::io::Write;
-        std::fs::create_dir_all(self.root.parent().ok_or("Secret file has no parent")?)
-            .map_err(|_| "Secret directory creation failed")?;
+        std::fs::create_dir_all(&self.root).map_err(|_| "Secret directory creation failed")?;
         let mut file = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o600))
-            .tempfile_in(self.root.parent().ok_or("Secret file has no parent")?)
+            .tempfile_in(&self.root)
             .map_err(|_| "Secret file creation failed")?;
         file.write_all(value)
             .map_err(|_| "Secret file write failed")?;
@@ -223,6 +225,89 @@ mod tests {
         assert!(store.get(origin).unwrap().is_none());
     }
     #[test]
+    fn identity_os_store_round_trip_and_enrollment_deletion_are_independent() {
+        let root = tempfile::tempdir().unwrap();
+        let namespace = format!("com.wycstudios.runner.remote.test.{}", uuid::Uuid::new_v4());
+        let store = OsStore::named(root.path(), &namespace);
+        struct Cleanup<'a>(&'a OsStore);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = self.0.delete(IDENTITY_NAME);
+                let _ = self.0.delete("https://identity-test.invalid");
+            }
+        }
+        let _cleanup = Cleanup(&store);
+        let mut identity = Identity::generate().unwrap();
+        identity.pin = Some(runner_core::remote::Secret("001234".into()));
+        identity.save(&store).unwrap();
+        store
+            .put(
+                "https://identity-test.invalid",
+                br#"{"v":2,"credential":"test"}"#,
+            )
+            .unwrap();
+        store.delete("https://identity-test.invalid").unwrap();
+        let restored = Identity::load(&store).unwrap().unwrap();
+        assert_eq!(
+            restored.host_key().unwrap().public,
+            identity.host_key().unwrap().public
+        );
+        assert_eq!(restored.pin.as_ref().unwrap().0, "001234");
+        assert!(!format!("{restored:?}").contains("001234"));
+        assert!(!format!("{restored:?}").contains(&identity.key.0));
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(root.path().join("remote-identity.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert!(!root.path().join("remote-secrets.json").exists());
+        }
+    }
+    #[test]
+    fn upgrade_adopts_legacy_key_only_without_an_identity_and_rewrites_enrollment() {
+        for existing in [false, true] {
+            let store = MemoryStore::default();
+            let legacy = Identity::generate().unwrap();
+            let expected = if existing {
+                Identity::generate().unwrap()
+            } else {
+                legacy.clone()
+            };
+            if existing {
+                expected.save(&store).unwrap();
+            }
+            let origin = "https://upgrade-test.invalid";
+            store
+                .put(
+                    origin,
+                    &serde_json::to_vec(&Secrets {
+                        v: 1,
+                        key: Some(legacy.key),
+                        credential: runner_core::remote::Secret(format!("rhc_{}", "x".repeat(43))),
+                    })
+                    .unwrap(),
+                )
+                .unwrap();
+            let (identity, enrollment) = restore(&store, Some(origin)).unwrap();
+            assert_eq!(
+                identity.unwrap().host_key().unwrap().public,
+                expected.host_key().unwrap().public
+            );
+            assert_eq!(enrollment.unwrap().v, 2);
+            let value: serde_json::Value =
+                serde_json::from_slice(&store.get(origin).unwrap().unwrap()).unwrap();
+            assert!(value.get("key").is_none());
+            let (again, _) = restore(&store, Some(origin)).unwrap();
+            assert_eq!(again.unwrap().key.0, expected.key.0);
+        }
+    }
+    #[test]
     fn dev_store_names_are_separate() {
         assert_ne!(
             OsStore::new(Path::new("unused"), true).namespace,
@@ -260,11 +345,93 @@ impl SecretStore for MemoryStore {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Secrets {
     pub v: u8,
-    pub key: runner_core::remote::Secret,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<runner_core::remote::Secret>,
     pub credential: runner_core::remote::Secret,
 }
 impl std::fmt::Debug for Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("[redacted]")
     }
+}
+
+pub const IDENTITY_NAME: &str = "host-identity";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Identity {
+    pub v: u8,
+    pub key: runner_core::remote::Secret,
+    pub pin: Option<runner_core::remote::Secret>,
+}
+impl Identity {
+    pub fn generate() -> StoreResult<Self> {
+        let key = runner_core::remote::HostKey::generate()
+            .map_err(|_| "Could not generate a host key")?;
+        Ok(Self {
+            v: 1,
+            key: runner_core::remote::Secret(runner_core::remote::encode_key(&key.private)),
+            pin: None,
+        })
+    }
+    pub fn host_key(&self) -> StoreResult<runner_core::remote::HostKey> {
+        runner_core::remote::HostKey::from_private(&self.key.0)
+    }
+    pub fn load(store: &dyn SecretStore) -> StoreResult<Option<Self>> {
+        store
+            .get(IDENTITY_NAME)?
+            .map(|bytes| {
+                let identity: Self =
+                    serde_json::from_slice(&bytes).map_err(|_| "Invalid host identity")?;
+                if identity.v != 1 {
+                    return Err("Invalid host identity version");
+                }
+                identity.host_key()?;
+                Ok(identity)
+            })
+            .transpose()
+    }
+    pub fn save(&self, store: &dyn SecretStore) -> StoreResult<()> {
+        let bytes = serde_json::to_vec(self).map_err(|_| "Could not encode host identity")?;
+        store.put(IDENTITY_NAME, &bytes)
+    }
+}
+
+pub fn restore(
+    store: &dyn SecretStore,
+    origin: Option<&str>,
+) -> StoreResult<(Option<Identity>, Option<Secrets>)> {
+    let mut identity = Identity::load(store)?;
+    let mut secrets = match origin {
+        Some(origin) => store
+            .get(origin)?
+            .and_then(|bytes| serde_json::from_slice::<Secrets>(&bytes).ok())
+            .filter(|s| {
+                matches!(s.v, 1 | 2) && runner_core::remote::valid_credential(&s.credential.0)
+            }),
+        None => None,
+    };
+    if let Some(secrets) = &mut secrets {
+        if secrets.v == 1 {
+            if identity.is_none() {
+                let key = secrets.key.clone().ok_or("Missing legacy host key")?;
+                runner_core::remote::HostKey::from_private(&key.0)?;
+                let adopted = Identity {
+                    v: 1,
+                    key,
+                    pin: None,
+                };
+                adopted.save(store)?;
+                identity = Some(adopted);
+            }
+            secrets.v = 2;
+            secrets.key = None;
+            let bytes =
+                serde_json::to_vec(secrets).map_err(|_| "Could not encode remote secrets")?;
+            store.put(origin.ok_or("Missing enrollment origin")?, &bytes)?;
+        }
+    }
+    if identity.is_none() {
+        secrets = None;
+    }
+    Ok((identity, secrets))
 }
