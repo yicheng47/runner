@@ -74,3 +74,20 @@ pub enum RemoteLogout {
     Removed,
     StillListed { error: String },
 }
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteTrust {
+    pub fingerprint: Option<String>,
+    pub pin_set: bool,
+    pub pin_locked: bool,
+    pub devices: Vec<PairedDevice>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairedDevice {
+    pub fingerprint: String,
+    pub name: String,
+    pub public_key: String,
+    pub paired_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
