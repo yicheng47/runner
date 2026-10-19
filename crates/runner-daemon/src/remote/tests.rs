@@ -321,13 +321,15 @@ async fn fake_service_app_enrollment_pause_restart_logout() {
         RemoteLogout::Removed
     ));
     assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     assert!(!root.path().join("remote.json").exists());
     assert_eq!(service.signouts.load(Ordering::SeqCst), 1);
     let again = handle
         .start(Some(service.origin.clone()), false)
         .await
         .unwrap();
-    assert_ne!(connected.fingerprint, again.fingerprint);
+    assert_eq!(connected.fingerprint, again.fingerprint);
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     handle.cancel().await.unwrap();
     handle.shutdown().await;
 }
@@ -471,6 +473,7 @@ async fn offline_refusal_and_dead_connection_leave_daemon_requests_serving() {
     assert!(matches!(core.remote.status().state, RemoteState::Off));
     assert!(core.remote.status().last_error.is_some());
     assert!(store.get(&origin).unwrap().is_none());
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     assert!(client.app_version().is_ok());
     assert!(client.session_live_ids().is_ok());
     core.remote.shutdown().await;
@@ -542,7 +545,9 @@ async fn saved_stop_is_the_initial_snapshot_before_the_task_runs() {
             &saved.origin,
             &serde_json::to_vec(&Secrets {
                 v: 1,
-                key: remote::Secret("test-key".into()),
+                key: Some(remote::Secret(remote::encode_key(
+                    &remote::HostKey::generate().unwrap().private,
+                ))),
                 credential: remote::Secret(format!("rhc_{}", "x".repeat(43))),
             })
             .unwrap(),
@@ -593,6 +598,7 @@ async fn claim_deadline_before_first_welcome_deletes_the_provisional_enrollment(
         }
     ));
     assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     assert!(!root.path().join("remote.json").exists());
     assert_eq!(service.signouts.load(Ordering::SeqCst), 0);
     handle.shutdown().await;
@@ -698,7 +704,7 @@ async fn rejected_and_replaced_socket_clients_do_not_own_another_claim() {
                 .unwrap();
         if replace {
             let second = second.unwrap();
-            assert_ne!(first.fingerprint, second.fingerprint);
+            assert_eq!(first.fingerprint, second.fingerprint);
             core.remote
                 .status_command(Command::OwnerGone(1))
                 .await
@@ -949,6 +955,7 @@ async fn delayed_start_and_signout_survive_the_client_transport_budget() {
     });
     signout.entered.notified().await;
     assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     assert!(!root.path().join("remote.json").exists());
     assert!(matches!(
         tokio::task::spawn_blocking(
@@ -963,5 +970,337 @@ async fn delayed_start_and_signout_survive_the_client_transport_budget() {
         logout.await.unwrap().unwrap(),
         RemoteLogout::StillListed { .. }
     ));
+    *service.start_gate.lock().unwrap() = None;
+    core.remote
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    until(&core.remote, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    let original = core
+        .remote
+        .set_pin(remote::Secret("001234".into()))
+        .await
+        .unwrap();
+    let caller = client.clone();
+    let (reset_done, reset_received) = std::sync::mpsc::channel();
+    let reset = tokio::task::spawn_blocking(move || {
+        let result = caller.remote_reset_identity();
+        let _ = reset_done.send(());
+        result
+    });
+    signout.entered.notified().await;
+    let caller = client.clone();
+    let snapshot = tokio::task::spawn_blocking(move || caller.remote_trust())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot, original);
+    let (pin_done, pin_received) = std::sync::mpsc::channel();
+    let queued_pin = tokio::task::spawn_blocking(move || {
+        let result = client.remote_set_pin(remote::Secret("654321".into()));
+        let _ = pin_done.send(());
+        result
+    });
+    for received in [reset_received, pin_received] {
+        assert!(matches!(
+            tokio::task::spawn_blocking(
+                move || received.recv_timeout(std::time::Duration::from_millis(100))
+            )
+            .await
+            .unwrap(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+    }
+    signout.release.add_permits(1);
+    let reset = reset.await.unwrap().unwrap();
+    assert_ne!(reset.fingerprint, original.fingerprint);
+    assert!(!reset.pin_set);
+    let updated = queued_pin.await.unwrap().unwrap();
+    assert_eq!(updated.fingerprint, reset.fingerprint);
+    assert!(updated.pin_set);
+    assert_eq!(
+        Identity::load(store.as_ref())
+            .unwrap()
+            .unwrap()
+            .pin
+            .unwrap()
+            .0,
+        "654321"
+    );
+    assert!(matches!(core.remote.status().state, RemoteState::Off));
     core.remote.shutdown().await;
+}
+
+#[tokio::test]
+async fn trust_commands_persist_without_exposing_secrets_and_reset_signs_out() {
+    let service = Service::new(vec!["approved"]).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let events = crate::events::EventChannel::new();
+    let mut pushed = events.subscribe();
+    let handle = spawn_with_store(root.path().into(), store.clone(), events.clone());
+    assert!(handle
+        .record_paired(vec![3; 32], "Browser".into())
+        .await
+        .is_err());
+    let pin = "001234";
+    let trust = handle.set_pin(remote::Secret(pin.into())).await.unwrap();
+    let original = trust.fingerprint.clone();
+    assert!(trust.pin_set);
+    let identity = Identity::load(store.as_ref()).unwrap().unwrap();
+    assert_eq!(identity.pin.as_ref().unwrap().0, pin);
+    assert!(!format!("{identity:?}").contains(pin));
+    assert!(!format!("{:?}", Command::SetPin(remote::Secret(pin.into()))).contains(pin));
+    handle.record_failed_pin().await.unwrap();
+    handle
+        .record_paired(vec![3; 32], "Browser".into())
+        .await
+        .unwrap();
+    assert_eq!(trust::Trust::load(root.path()).unwrap().failed_pins, 0);
+    handle
+        .set_pin(remote::Secret("999999".into()))
+        .await
+        .unwrap();
+    assert_eq!(handle.trust().devices.len(), 1);
+    for _ in 0..5 {
+        handle.record_failed_pin().await.unwrap();
+    }
+    assert!(handle.trust().pin_locked);
+    handle.shutdown().await;
+    let handle = spawn_with_store(root.path().into(), store.clone(), events);
+    let trust_path = root.path().join("remote-trust.json");
+    let persisted = std::fs::read(&trust_path).unwrap();
+    assert_eq!(
+        handle.revoke_device("unknown".into()).await.unwrap_err(),
+        "No paired device has fingerprint unknown."
+    );
+    assert_eq!(std::fs::read(&trust_path).unwrap(), persisted);
+    let restored = handle.trust();
+    assert!(restored.pin_locked);
+    assert_eq!(restored.devices.len(), 1);
+    assert!(handle
+        .record_paired(vec![4; 32], "Other".into())
+        .await
+        .is_err());
+    handle.unlock_pin().await.unwrap();
+    assert!(!handle.trust().pin_locked);
+    assert_eq!(trust::Trust::load(root.path()).unwrap().failed_pins, 0);
+    let revoked = handle
+        .revoke_device(restored.devices[0].fingerprint.clone())
+        .await
+        .unwrap();
+    assert!(revoked.devices.is_empty());
+    assert!(trust::Trust::load(root.path()).unwrap().devices.is_empty());
+    handle
+        .record_paired(vec![3; 32], "Browser".into())
+        .await
+        .unwrap();
+    handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    let public = serde_json::to_string(&handle.trust()).unwrap();
+    let persisted = std::fs::read_to_string(root.path().join("remote-trust.json")).unwrap();
+    for text in [&public, &persisted] {
+        assert!(!text.contains(pin));
+        assert!(!text.contains(&identity.key.0));
+    }
+    let mut saw_lock = false;
+    while let Ok(event) = pushed.try_recv() {
+        let debug = format!("{event:?}");
+        assert!(!debug.contains(pin));
+        assert!(!debug.contains(&identity.key.0));
+        if event.name == "remote/trust" && event.payload["pin_locked"] == true {
+            saw_lock = true;
+        }
+    }
+    assert!(saw_lock);
+    let reset = handle.reset_identity().await.unwrap();
+    assert_ne!(reset.fingerprint, original);
+    assert!(!reset.pin_set);
+    assert!(!reset.pin_locked);
+    assert!(reset.devices.is_empty());
+    assert!(matches!(handle.status().state, RemoteState::Off));
+    assert_eq!(service.signouts.load(Ordering::SeqCst), 1);
+    assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
+    assert!(!root.path().join("remote.json").exists());
+    assert!(Identity::load(store.as_ref())
+        .unwrap()
+        .unwrap()
+        .pin
+        .is_none());
+    assert!(trust::Trust::load(root.path()).unwrap().devices.is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_reset_identity_save_preserves_trust_after_signout() {
+    struct FailedIdentityStore(store::MemoryStore);
+    impl SecretStore for FailedIdentityStore {
+        fn get(&self, name: &str) -> store::StoreResult<Option<Vec<u8>>> {
+            self.0.get(name)
+        }
+        fn put(&self, name: &str, value: &[u8]) -> store::StoreResult<()> {
+            if name == store::IDENTITY_NAME {
+                Err("test identity write failed")
+            } else {
+                self.0.put(name, value)
+            }
+        }
+        fn delete(&self, name: &str) -> store::StoreResult<()> {
+            self.0.delete(name)
+        }
+    }
+
+    let service = Service::new(vec!["approved"]).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(FailedIdentityStore(store::MemoryStore::default()));
+    let mut identity = Identity::generate().unwrap();
+    identity.pin = Some(remote::Secret("001234".into()));
+    identity.save(&store.0).unwrap();
+    let original_identity = store.get(store::IDENTITY_NAME).unwrap();
+    let mut trust = trust::Trust::default();
+    trust
+        .record_paired(&[3; 32], "Browser".into(), Utc::now())
+        .unwrap();
+    for _ in 0..5 {
+        trust.record_failed_pin();
+    }
+    trust.save(root.path()).unwrap();
+    let trust_path = root.path().join("remote-trust.json");
+    let original_trust = std::fs::read(&trust_path).unwrap();
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    assert!(handle.reset_identity().await.is_err());
+    handle.shutdown().await;
+
+    assert_eq!(service.signouts.load(Ordering::SeqCst), 1);
+    assert!(matches!(handle.status().state, RemoteState::Off));
+    assert!(store.get(&service.origin).unwrap().is_none());
+    assert!(!root.path().join("remote.json").exists());
+    assert!(store.get(store::IDENTITY_NAME).unwrap() == original_identity);
+    assert_eq!(std::fs::read(&trust_path).unwrap(), original_trust);
+    let restored = trust::Trust::load(root.path()).unwrap();
+    assert_eq!(restored.devices, trust.devices);
+    assert!(restored.pin_locked);
+}
+
+#[tokio::test]
+async fn trust_requests_round_trip_over_the_client_socket() {
+    let root = socket_root();
+    let mut core = crate::test_support::test_core_in(root.path().into());
+    core.remote = spawn_with_store(
+        root.path().into(),
+        Arc::new(store::MemoryStore::default()),
+        core.events.clone(),
+    );
+    let server = SocketHarness::new(root.path(), core.clone()).await;
+    let client = server.client(std::time::Duration::from_secs(10)).await;
+    let handle = core.remote.clone();
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(
+            client
+                .remote_set_pin(remote::Secret("0012345".into()))
+                .unwrap_err()
+                .message,
+            "The PIN must be exactly six digits."
+        );
+        assert!(!client.remote_trust().unwrap().pin_set);
+        let original = client
+            .remote_set_pin(remote::Secret("001234".into()))
+            .unwrap();
+        assert!(original.pin_set);
+        assert_eq!(client.remote_trust().unwrap(), original);
+        assert!(!client.remote_unlock_pin().unwrap().pin_locked);
+        assert_eq!(
+            client
+                .remote_revoke_device("unknown".into())
+                .unwrap_err()
+                .message,
+            "No paired device has fingerprint unknown."
+        );
+        let reset = client.remote_reset_identity().unwrap();
+        assert_ne!(reset.fingerprint, original.fingerprint);
+        assert!(!reset.pin_set);
+        assert_eq!(client.remote_trust().unwrap(), reset);
+    })
+    .await
+    .unwrap();
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn legacy_enrollment_upgrade_reconnects_with_its_original_fingerprint() {
+    let service = Service::new(vec!["approved"]).await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    let connected = until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    handle.shutdown().await;
+    let identity = Identity::load(store.as_ref()).unwrap().unwrap();
+    let mut enrollment: Secrets =
+        serde_json::from_slice(&store.get(&service.origin).unwrap().unwrap()).unwrap();
+    enrollment.v = 1;
+    enrollment.key = Some(identity.key);
+    store
+        .put(&service.origin, &serde_json::to_vec(&enrollment).unwrap())
+        .unwrap();
+    store.delete(store::IDENTITY_NAME).unwrap();
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    let restored = until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    assert_eq!(restored.fingerprint, connected.fingerprint);
+    assert_eq!(handle.trust().fingerprint, connected.fingerprint);
+    assert_eq!(
+        handle.trust().fingerprint,
+        Some(remote::fingerprint(
+            &Identity::load(store.as_ref())
+                .unwrap()
+                .unwrap()
+                .host_key()
+                .unwrap()
+                .public
+        ))
+    );
+    let saved: serde_json::Value =
+        serde_json::from_slice(&store.get(&service.origin).unwrap().unwrap()).unwrap();
+    assert_eq!(saved["v"], 2);
+    assert!(saved.get("key").is_none());
+    handle.shutdown().await;
 }

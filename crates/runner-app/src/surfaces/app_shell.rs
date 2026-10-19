@@ -896,9 +896,14 @@ impl NativeRoot {
             .settings_confirm_overlay(cx)
             .map(|overlay| deferred(overlay).with_priority(100));
         let command_palette = deferred(self.command_palette.clone()).with_priority(50);
+        let toast_priority = if self.route == AppRoute::Settings && self.remote_pin_dialog_open() {
+            101
+        } else {
+            3
+        };
         let toast = self
             .render_toast(cx)
-            .map(|toast| deferred(toast).with_priority(3));
+            .map(|toast| deferred(toast).with_priority(toast_priority));
         let modifier_sidebar = self.sidebar.clone();
         let key_sidebar = self.sidebar.clone();
         let usage_root = cx.entity();
@@ -1657,7 +1662,7 @@ impl NativeRoot {
     fn render_toast(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.toasts.active().map(|toast| {
             let zoom = self.settings(cx).app_zoom;
-            let icon = toast.tone.icon();
+            let icon = toast.icon.unwrap_or_else(|| toast.tone.icon());
             let icon_color = match toast.tone {
                 ToastTone::Info => theme::muted(),
                 ToastTone::Success | ToastTone::Restart => theme::accent(),
@@ -1666,7 +1671,10 @@ impl NativeRoot {
             };
             div()
                 .absolute()
-                .top(px((TITLEBAR_DRAG_HEIGHT + 12.) * zoom))
+                .when(toast.bottom, |toast| toast.bottom(px(24. * zoom)))
+                .when(!toast.bottom, |toast| {
+                    toast.top(px((TITLEBAR_DRAG_HEIGHT + 12.) * zoom))
+                })
                 .left(px(16. * zoom))
                 .right(px(16. * zoom))
                 .flex()
@@ -1933,6 +1941,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_remote_dialog();
         if self.shortcut_recording_active() {
             self.finish_shortcut_recording(window, cx);
         }
