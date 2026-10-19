@@ -30,7 +30,7 @@ Phase 3 builds on both: the PIN exchange and the Noise handshakes, the relay's c
    - Upgrade: restoring a `v: 1` enrollment item when no identity exists adopts its `key` as the identity and rewrites the item as `v: 2`. A host enrolled from `remote-nightly` keeps its fingerprint and stays enrolled.
    - Reset identity runs the sign-out cleanup when enrolled, then creates a new identity with no PIN, empties the device list and ends in Off.
 2. **The PIN, its lock and the device list**, in `runner-daemon/src/remote/`.
-   - Set and change: digits only, at least six. The PIN is stored in the identity item as entered, so Phase 3's choice between SPAKE2 and CPace does not change what is stored. Changing it keeps the devices.
+   - Set and change: exactly six ASCII digits. The PIN is stored in the identity item as entered, so Phase 3's choice between SPAKE2 and CPace does not change what is stored. Changing it keeps the devices.
    - `remote-trust.json` beside `remote.json`, written the same way (temporary file and rename, `0600`, a file that fails to parse set aside as `.bad`): `{"version": 1, "devices": [], "failed_pins": 0, "pin_locked": false}`. Each device has its fingerprint, name, public key, `paired_at` and `last_seen_at`. It holds no secret.
    - The lock: `record_failed_pin` and `record_paired` for Phase 3 to call. Five failures in a row lock PIN entry, a success resets the count, and Unlock clears both.
    - Revoke removes the device from the list; Phase 3 adds closing its channel.
@@ -69,12 +69,12 @@ It lands like m2, on `feat/836-m3-companion-protocol` with its brief as `836-m3-
 
 ### Spec additions before m2
 
-Planning m2 surfaced details the spec does not state yet. They go into the spec, for Jason's review, before m2's brief is written:
+Planning m2 surfaced details the spec did not state. Jason approved them with the plan on 2026-10-19, and they went into the spec with m2's brief:
 
 - Reset identity also clears the PIN: the two share a secret-store item, so a leak of one is a leak of both.
 - `runner remote reset-identity`, for a host without the app, behind the same guard as `runner remote pin`.
 - The trust requests and the `remote/trust` event, `runner remote devices` and `revoke`, and the new `status` lines.
-- The PIN is digits only, at least six, stored as entered.
+- The PIN is exactly six ASCII digits, stored as entered.
 - `runner remote revoke` names a device by its fingerprint, as `runner remote devices` prints it.
 
 ## Phase 3 — the end-to-end channel and live terminals

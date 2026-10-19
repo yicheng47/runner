@@ -180,7 +180,11 @@ async fn serve_with_listener(
             None
         }
     };
-    core.remote = crate::remote::spawn(core.app_data_dir.clone(), core.events.clone());
+    core.remote = crate::remote::spawn(
+        core.app_data_dir.clone(),
+        core.events.clone(),
+        config.isolated,
+    );
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
