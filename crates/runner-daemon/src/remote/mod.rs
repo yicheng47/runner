@@ -9,7 +9,9 @@ use machine::{Command, Effect, Input, Machine};
 use persistence::Saved;
 use runner_core::remote::{self, RemoteLogout, RemoteStatus};
 use std::{path::PathBuf, sync::Arc};
-use store::{OsStore, SecretStore, Secrets};
+#[cfg(test)]
+use store::Secrets;
+use store::{Identity, OsStore, SecretStore};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio_tungstenite::tungstenite::{
     protocol::{frame::coding::CloseCode, CloseFrame},
@@ -70,7 +72,6 @@ impl RemoteHandle {
             origin,
             confirm_account,
             owner,
-            key: remote::HostKey::generate().map_err(|_| "Could not generate a host key")?,
         })
         .await
     }
@@ -91,6 +92,10 @@ impl RemoteHandle {
             Reply::Logout(r) => Ok(r),
             _ => Err("Invalid remote reply".into()),
         }
+    }
+    pub async fn reset_identity(&self) -> Result<RemoteStatus, String> {
+        self.status_command(Command::ResetIdentity(Identity::generate()?))
+            .await
     }
     pub async fn shutdown(&self) {
         self.cancel.cancel();
@@ -134,12 +139,13 @@ impl RemoteHandle {
     }
 }
 
-pub fn spawn(root: PathBuf, events: crate::events::EventChannel) -> RemoteHandle {
-    spawn_with_store(
-        root.clone(),
-        Arc::new(OsStore::new(&root, cfg!(debug_assertions))),
-        events,
-    )
+pub fn spawn(root: PathBuf, events: crate::events::EventChannel, isolated: bool) -> RemoteHandle {
+    let store: Arc<dyn SecretStore> = if isolated {
+        Arc::new(store::MemoryStore::default())
+    } else {
+        Arc::new(OsStore::new(&root, cfg!(debug_assertions)))
+    };
+    spawn_with_store(root, store, events)
 }
 fn spawn_with_store(
     root: PathBuf,
@@ -238,20 +244,18 @@ async fn run(
     let preparation = tokio::task::spawn_blocking(move || -> Result<_, &'static str> {
         let client = transport::client()?;
         let saved = Saved::load(&prepare_root)?;
-        let secrets = match &saved {
-            Some(saved) => prepare_store
-                .get(&saved.origin)?
-                .and_then(|bytes| serde_json::from_slice::<Secrets>(&bytes).ok())
-                .filter(|s| s.v == 1 && remote::valid_credential(&s.credential.0)),
-            None => None,
-        };
-        Ok((client, saved, secrets))
+        let (identity, secrets) = store::restore(
+            prepare_store.as_ref(),
+            saved.as_ref().map(|s| s.origin.as_str()),
+        )?;
+        Ok((client, saved, identity, secrets))
     });
-    let (client, saved, secrets) = tokio::select! {
+    let (client, saved, identity, secrets) = tokio::select! {
         prepared=preparation=>prepared.map_err(|_| "Remote startup worker failed")??,
         _=cancel.cancelled()=>return Ok(()),
     };
     let (mut machine, initial) = Machine::restore(saved, secrets, clock.now());
+    machine.identity = identity;
     machine.host = remote::HostInfo::current();
     let mut socket = None;
     let initialized = tokio::select! {
@@ -327,6 +331,25 @@ async fn run(
         };
         let logout = matches!(&input, Input::Command(Command::Logout));
         let starting = matches!(&input, Input::Command(Command::Start { .. }));
+        if starting && machine.identity.is_none() {
+            let store = store.clone();
+            let identity = tokio::task::spawn_blocking(move || {
+                let identity = Identity::generate()?;
+                identity.save(store.as_ref())?;
+                Ok::<_, &'static str>(identity)
+            })
+            .await
+            .map_err(|_| "Host identity worker failed")?;
+            match identity {
+                Ok(identity) => machine.identity = Some(identity),
+                Err(error) => {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(error.into()));
+                    }
+                    continue;
+                }
+            }
+        }
         let effects = match machine.step(input, clock.now(), &mut rand::random) {
             Ok((effects, _)) => effects,
             Err(error) => {
@@ -517,6 +540,17 @@ async fn perform(
                 })
                 .await
                 .map_err(|_| "Remote secret-store worker failed")??;
+                None
+            }
+            Effect::SaveIdentity => {
+                let store = store.clone();
+                let identity = machine
+                    .identity
+                    .clone()
+                    .ok_or("Host identity is unavailable")?;
+                tokio::task::spawn_blocking(move || identity.save(store.as_ref()))
+                    .await
+                    .map_err(|_| "Host identity worker failed")??;
                 None
             }
             Effect::Save => {

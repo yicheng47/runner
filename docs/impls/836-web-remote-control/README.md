@@ -9,7 +9,7 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 | Mission | Scope | State |
 | --- | --- | --- |
 | m1 | Phase 1 ([#951](https://github.com/yicheng47/runner/issues/951)): connect a host to an account | Merged into `nightly-remote` on 2026-10-18 as [#945](https://github.com/yicheng47/runner/pull/945); #951 closed on 2026-10-19. The hosted-service pass on macOS covered connect, approve, pause, resume and disconnect; the other live checks are pending with Jason in [`836-connect-host.md`](../../tests/836-connect-host.md) and gate the umbrella's landing |
-| m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Planned; waits on Jason's review of the spec additions and on the Pencil design |
+| m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Running as a codex duo on `feat/836-m2-host-trust` since 2026-10-19; its Settings commit waits on the Pencil design |
 | m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Waits on the spec's protocol section |
 | — | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with [#838](https://github.com/yicheng47/runner/issues/838) | Planned when its development starts |
 | — | Phase 4 ([#954](https://github.com/yicheng47/runner/issues/954)): reach a host over Tailscale | Planned when its development starts |
@@ -27,5 +27,5 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 ## Open
 
 - Phase 1's remaining live checks, pending with Jason.
-- m2: Jason's review of the spec additions in [plan.md](plan.md#spec-additions-before-m2), then the Pencil frames of the PIN, its lock, the device list and Reset identity.
+- m2: the Pencil frames of the PIN, its lock, the device list and Reset identity, which its Settings commit waits on.
 - m3: the spec's protocol section.
