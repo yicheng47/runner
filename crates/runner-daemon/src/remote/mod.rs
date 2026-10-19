@@ -2,14 +2,17 @@ mod machine;
 mod persistence;
 pub mod store;
 mod transport;
+mod trust;
 
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
 use machine::{Command, Effect, Input, Machine};
 use persistence::Saved;
-use runner_core::remote::{self, RemoteLogout, RemoteStatus};
+use runner_core::remote::{self, RemoteLogout, RemoteStatus, RemoteTrust};
 use std::{path::PathBuf, sync::Arc};
-use store::{OsStore, SecretStore, Secrets};
+#[cfg(test)]
+use store::Secrets;
+use store::{Identity, OsStore, SecretStore};
 use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio_tungstenite::tungstenite::{
     protocol::{frame::coding::CloseCode, CloseFrame},
@@ -24,11 +27,13 @@ struct Envelope {
 pub enum Reply {
     Status(Box<RemoteStatus>),
     Logout(RemoteLogout),
+    Trust(RemoteTrust),
 }
 #[derive(Clone)]
 pub struct RemoteHandle {
     tx: mpsc::Sender<Envelope>,
     status: watch::Receiver<RemoteStatus>,
+    trust: watch::Receiver<RemoteTrust>,
     cancel: CancellationToken,
     stopped: watch::Receiver<bool>,
     #[cfg(test)]
@@ -42,6 +47,7 @@ impl Default for RemoteHandle {
         Self {
             tx,
             status,
+            trust: watch::channel(RemoteTrust::default()).1,
             cancel: CancellationToken::new(),
             stopped,
             #[cfg(test)]
@@ -52,6 +58,36 @@ impl Default for RemoteHandle {
 impl RemoteHandle {
     pub fn status(&self) -> RemoteStatus {
         self.status.borrow().clone()
+    }
+    pub fn trust(&self) -> RemoteTrust {
+        self.trust.borrow().clone()
+    }
+    pub async fn set_pin(&self, pin: remote::Secret) -> Result<RemoteTrust, String> {
+        trust::validate_pin(&pin.0)?;
+        self.trust_command(Command::SetPin(pin)).await
+    }
+    pub async fn unlock_pin(&self) -> Result<RemoteTrust, String> {
+        self.trust_command(Command::UnlockPin).await
+    }
+    pub async fn revoke_device(&self, fingerprint: String) -> Result<RemoteTrust, String> {
+        self.trust_command(Command::RevokeDevice(fingerprint)).await
+    }
+    pub async fn record_failed_pin(&self) -> Result<RemoteTrust, String> {
+        self.trust_command(Command::RecordFailedPin).await
+    }
+    pub async fn record_paired(
+        &self,
+        public_key: Vec<u8>,
+        name: String,
+    ) -> Result<RemoteTrust, String> {
+        self.trust_command(Command::RecordPaired { public_key, name })
+            .await
+    }
+    async fn trust_command(&self, command: Command) -> Result<RemoteTrust, String> {
+        match self.request(command).await? {
+            Reply::Trust(trust) => Ok(trust),
+            _ => Err("Invalid remote reply".into()),
+        }
     }
     pub async fn start(
         &self,
@@ -70,7 +106,6 @@ impl RemoteHandle {
             origin,
             confirm_account,
             owner,
-            key: remote::HostKey::generate().map_err(|_| "Could not generate a host key")?,
         })
         .await
     }
@@ -91,6 +126,10 @@ impl RemoteHandle {
             Reply::Logout(r) => Ok(r),
             _ => Err("Invalid remote reply".into()),
         }
+    }
+    pub async fn reset_identity(&self) -> Result<RemoteTrust, String> {
+        self.trust_command(Command::ResetIdentity(Identity::generate()?))
+            .await
     }
     pub async fn shutdown(&self) {
         self.cancel.cancel();
@@ -134,12 +173,13 @@ impl RemoteHandle {
     }
 }
 
-pub fn spawn(root: PathBuf, events: crate::events::EventChannel) -> RemoteHandle {
-    spawn_with_store(
-        root.clone(),
-        Arc::new(OsStore::new(&root, cfg!(debug_assertions))),
-        events,
-    )
+pub fn spawn(root: PathBuf, events: crate::events::EventChannel, isolated: bool) -> RemoteHandle {
+    let store: Arc<dyn SecretStore> = if isolated {
+        Arc::new(store::MemoryStore::default())
+    } else {
+        Arc::new(OsStore::new(&root, cfg!(debug_assertions)))
+    };
+    spawn_with_store(root, store, events)
 }
 fn spawn_with_store(
     root: PathBuf,
@@ -175,6 +215,11 @@ fn spawn_with_clock(
         })
         .unwrap_or_default();
     let (status_tx, status) = watch::channel(initial_status);
+    let (trust_tx, trust) = watch::channel(RemoteTrust::default());
+    let status_tx = Snapshots {
+        status: status_tx,
+        trust: trust_tx,
+    };
     let rx = Arc::new(Mutex::new(rx));
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
@@ -217,6 +262,7 @@ fn spawn_with_clock(
     RemoteHandle {
         tx,
         status,
+        trust,
         cancel,
         stopped,
         #[cfg(test)]
@@ -224,11 +270,17 @@ fn spawn_with_clock(
     }
 }
 
+#[derive(Clone)]
+struct Snapshots {
+    status: watch::Sender<RemoteStatus>,
+    trust: watch::Sender<RemoteTrust>,
+}
+
 async fn run(
     root: PathBuf,
     store: Arc<dyn SecretStore>,
     events: crate::events::EventChannel,
-    status_tx: watch::Sender<RemoteStatus>,
+    status_tx: Snapshots,
     rx: Arc<Mutex<mpsc::Receiver<Envelope>>>,
     cancel: CancellationToken,
     clock: Clock,
@@ -238,20 +290,20 @@ async fn run(
     let preparation = tokio::task::spawn_blocking(move || -> Result<_, &'static str> {
         let client = transport::client()?;
         let saved = Saved::load(&prepare_root)?;
-        let secrets = match &saved {
-            Some(saved) => prepare_store
-                .get(&saved.origin)?
-                .and_then(|bytes| serde_json::from_slice::<Secrets>(&bytes).ok())
-                .filter(|s| s.v == 1 && remote::valid_credential(&s.credential.0)),
-            None => None,
-        };
-        Ok((client, saved, secrets))
+        let (identity, secrets) = store::restore(
+            prepare_store.as_ref(),
+            saved.as_ref().map(|s| s.origin.as_str()),
+        )?;
+        let trust = trust::Trust::load(&prepare_root)?;
+        Ok((client, saved, identity, secrets, trust))
     });
-    let (client, saved, secrets) = tokio::select! {
+    let (client, saved, identity, secrets, trust) = tokio::select! {
         prepared=preparation=>prepared.map_err(|_| "Remote startup worker failed")??,
         _=cancel.cancelled()=>return Ok(()),
     };
     let (mut machine, initial) = Machine::restore(saved, secrets, clock.now());
+    machine.identity = identity;
+    machine.trust = trust;
     machine.host = remote::HostInfo::current();
     let mut socket = None;
     let initialized = tokio::select! {
@@ -327,6 +379,37 @@ async fn run(
         };
         let logout = matches!(&input, Input::Command(Command::Logout));
         let starting = matches!(&input, Input::Command(Command::Start { .. }));
+        let trust_command = matches!(
+            &input,
+            Input::Command(
+                Command::SetPin(_)
+                    | Command::UnlockPin
+                    | Command::RevokeDevice(_)
+                    | Command::ResetIdentity(_)
+                    | Command::RecordFailedPin
+                    | Command::RecordPaired { .. }
+            )
+        );
+        let needs_identity = starting || matches!(&input, Input::Command(Command::SetPin(_)));
+        if needs_identity && machine.identity.is_none() {
+            let store = store.clone();
+            let identity = tokio::task::spawn_blocking(move || {
+                let identity = Identity::generate()?;
+                identity.save(store.as_ref())?;
+                Ok::<_, &'static str>(identity)
+            })
+            .await
+            .map_err(|_| "Host identity worker failed")?;
+            match identity {
+                Ok(identity) => machine.identity = Some(identity),
+                Err(error) => {
+                    if let Some(reply) = reply {
+                        let _ = reply.send(Err(error.into()));
+                    }
+                    continue;
+                }
+            }
+        }
         let effects = match machine.step(input, clock.now(), &mut rand::random) {
             Ok((effects, _)) => effects,
             Err(error) => {
@@ -380,6 +463,8 @@ async fn run(
             if let Some(reply) = reply {
                 let _ = reply.send(Ok(if logout {
                     Reply::Logout(outcome)
+                } else if trust_command {
+                    Reply::Trust(machine.trust())
                 } else {
                     Reply::Status(Box::new(machine.status.clone()))
                 }));
@@ -391,12 +476,16 @@ async fn run(
         }
     }
 }
-fn publish(
-    machine: &Machine,
-    events: &crate::events::EventChannel,
-    tx: &watch::Sender<RemoteStatus>,
-) {
-    if *tx.borrow() != machine.status {
+fn publish(machine: &Machine, events: &crate::events::EventChannel, tx: &Snapshots) {
+    let trust = machine.trust();
+    if *tx.trust.borrow() != trust {
+        tx.trust.send_replace(trust.clone());
+        events.emit("remote/trust", &trust);
+    }
+    publish_status(machine, events, tx);
+}
+fn publish_status(machine: &Machine, events: &crate::events::EventChannel, tx: &Snapshots) {
+    if *tx.status.borrow() != machine.status {
         let state = match machine.status.state {
             remote::RemoteState::Off => "off",
             remote::RemoteState::Enrolling { .. } => "enrolling",
@@ -411,7 +500,7 @@ fn publish(
             "remote: state {state}, origin {}",
             remote::redact(&machine.status.origin)
         );
-        tx.send_replace(machine.status.clone());
+        tx.status.send_replace(machine.status.clone());
         events.emit("remote/status", &machine.status);
     }
 }
@@ -424,7 +513,7 @@ async fn perform(
     store: &Arc<dyn SecretStore>,
     root: &std::path::Path,
     events: &crate::events::EventChannel,
-    tx: &watch::Sender<RemoteStatus>,
+    tx: &Snapshots,
     clock: &Clock,
 ) -> Result<RemoteLogout, &'static str> {
     let mut queue: std::collections::VecDeque<_> = effects.into();
@@ -466,7 +555,7 @@ async fn perform(
                 .await,
             )),
             Effect::Connect => {
-                publish(machine, events, tx);
+                publish_status(machine, events, tx);
                 close(socket).await;
                 if let (Some(s), Some(secrets)) = (&machine.saved, &machine.secrets) {
                     match transport::connect(
@@ -519,6 +608,25 @@ async fn perform(
                 .map_err(|_| "Remote secret-store worker failed")??;
                 None
             }
+            Effect::SaveTrust => {
+                let trust = machine.trust.clone();
+                let root = root.to_path_buf();
+                tokio::task::spawn_blocking(move || trust.save(&root))
+                    .await
+                    .map_err(|_| "Remote trust worker failed")??;
+                None
+            }
+            Effect::SaveIdentity => {
+                let store = store.clone();
+                let identity = machine
+                    .identity
+                    .clone()
+                    .ok_or("Host identity is unavailable")?;
+                tokio::task::spawn_blocking(move || identity.save(store.as_ref()))
+                    .await
+                    .map_err(|_| "Host identity worker failed")??;
+                None
+            }
             Effect::Save => {
                 if let Some(saved) = &machine.saved {
                     let saved = saved.clone();
@@ -546,7 +654,7 @@ async fn perform(
                 name,
                 account,
             } => {
-                publish(machine, events, tx);
+                publish_status(machine, events, tx);
                 let result: Result<remote::Empty, _> = transport::rpc(
                     client,
                     &origin,

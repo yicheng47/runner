@@ -6,7 +6,7 @@ A plan is written on its feature's branch and lands in the pull request with the
 
 ## Active
 
-- [`836-web-remote-control.md`](./836-web-remote-control.md) — web remote control ([#836](https://github.com/yicheng47/runner/issues/836)): the program record for the `nightly-remote` umbrella, which missions branch from and target, follows `main` by rebase, ships installed builds as the separate `remote-nightly` release and reaches `main` as one PR; Phase 1's desktop side merged into it in [#945](https://github.com/yicheng47/runner/pull/945).
+- [`836-web-remote-control/`](./836-web-remote-control/README.md) — web remote control ([#836](https://github.com/yicheng47/runner/issues/836)): the program record for the `nightly-remote` umbrella, which missions branch from and target, follows `main` by rebase with each mission squash-merged as one commit, ships installed builds as the separate `remote-nightly` release and reaches `main` as one PR. Phase 1's desktop side merged into it in [#945](https://github.com/yicheng47/runner/pull/945); Phase 2 is planned as host trust (m2) and the companion protocol (m3).
 
 The [Linux brief](briefs/823-linux.md) remains active in [PR #982](https://github.com/yicheng47/runner/pull/982).
 

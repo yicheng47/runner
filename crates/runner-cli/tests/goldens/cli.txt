@@ -1278,9 +1278,13 @@ Connect this computer to your remote access account
 Usage: runner remote [OPTIONS] <COMMAND>
 
 Commands:
-  login   Connect this computer to your account (interactive terminal required)
-  logout  Disconnect this computer and delete its local secrets
-  status  Show remote access status
+  login           Connect this computer to your account (interactive terminal required)
+  logout          Disconnect this computer and delete its enrollment credential
+  status          Show remote access status
+  pin             Set or change the 6-digit pairing PIN (interactive terminal required)
+  devices         List devices paired with this computer
+  revoke          Revoke a paired device by its fingerprint
+  reset-identity  Disconnect, unpair every device and create a new identity (interactive terminal required)
 
 Options:
       --json  Print the tool result as exact JSON
@@ -1315,9 +1319,60 @@ Options:
 # context: not running
 $ runner remote logout --help
 exit 0
-Disconnect this computer and delete its local secrets
+Disconnect this computer and delete its enrollment credential
 
 Usage: runner remote logout [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote pin --help
+exit 0
+Set or change the 6-digit pairing PIN (interactive terminal required)
+
+Usage: runner remote pin [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote devices --help
+exit 0
+List devices paired with this computer
+
+Usage: runner remote devices [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote revoke --help
+exit 0
+Revoke a paired device by its fingerprint
+
+Usage: runner remote revoke [OPTIONS] <FINGERPRINT>
+
+Arguments:
+  <FINGERPRINT>  
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+
+# context: not running
+$ runner remote reset-identity --help
+exit 0
+Disconnect, unpair every device and create a new identity (interactive terminal required)
+
+Usage: runner remote reset-identity [OPTIONS]
 
 Options:
       --json  Print the tool result as exact JSON
