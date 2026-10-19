@@ -327,7 +327,8 @@ async fn fake_service_app_enrollment_pause_restart_logout() {
         .start(Some(service.origin.clone()), false)
         .await
         .unwrap();
-    assert_ne!(connected.fingerprint, again.fingerprint);
+    assert_eq!(connected.fingerprint, again.fingerprint);
+    assert!(store.get(store::IDENTITY_NAME).unwrap().is_some());
     handle.cancel().await.unwrap();
     handle.shutdown().await;
 }
@@ -542,7 +543,9 @@ async fn saved_stop_is_the_initial_snapshot_before_the_task_runs() {
             &saved.origin,
             &serde_json::to_vec(&Secrets {
                 v: 1,
-                key: remote::Secret("test-key".into()),
+                key: Some(remote::Secret(remote::encode_key(
+                    &remote::HostKey::generate().unwrap().private,
+                ))),
                 credential: remote::Secret(format!("rhc_{}", "x".repeat(43))),
             })
             .unwrap(),
@@ -698,7 +701,7 @@ async fn rejected_and_replaced_socket_clients_do_not_own_another_claim() {
                 .unwrap();
         if replace {
             let second = second.unwrap();
-            assert_ne!(first.fingerprint, second.fingerprint);
+            assert_eq!(first.fingerprint, second.fingerprint);
             core.remote
                 .status_command(Command::OwnerGone(1))
                 .await
