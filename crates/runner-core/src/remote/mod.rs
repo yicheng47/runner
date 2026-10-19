@@ -278,7 +278,9 @@ mod tests {
 mod origin;
 mod status;
 pub use origin::{canonical_origin, same_origin, valid_relay_url};
-pub use status::{RemoteAccount, RemoteLogout, RemoteState, RemoteStatus};
+pub use status::{
+    PairedDevice, RemoteAccount, RemoteLogout, RemoteState, RemoteStatus, RemoteTrust,
+};
 
 pub fn valid_credential(value: &str) -> bool {
     value.strip_prefix("rhc_").is_some_and(|token| {
