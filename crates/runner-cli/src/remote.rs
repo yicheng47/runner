@@ -2,7 +2,7 @@ use clap::Subcommand;
 use runner_cli::client::{ClientError, SocketClient};
 use runner_core::{
     protocol::DaemonClient,
-    remote::{RemoteLogout, RemoteState, RemoteStatus},
+    remote::{RemoteLogout, RemoteState, RemoteStatus, RemoteTrust, Secret},
 };
 use std::io::{IsTerminal, Write};
 
@@ -13,24 +13,39 @@ pub enum RemoteCommand {
         #[arg(long)]
         server: Option<String>,
     },
-    /// Disconnect this computer and delete its local secrets.
+    /// Disconnect this computer and delete its enrollment credential.
     Logout,
     /// Show remote access status.
     Status,
+    /// Set or change the 6-digit pairing PIN (interactive terminal required).
+    Pin,
+    /// List devices paired with this computer.
+    Devices,
+    /// Revoke a paired device by its fingerprint.
+    Revoke { fingerprint: String },
+    /// Disconnect, unpair every device and create a new identity (interactive terminal required).
+    ResetIdentity,
 }
-const INTERACTIVE: &str = "`runner remote login` needs you at an interactive terminal outside an agent session. Use Runner → Settings → Remote access, or run it in your own terminal.";
+fn interactive_command(command: &RemoteCommand) -> Option<&'static str> {
+    match command {
+        RemoteCommand::Login { .. } => Some("login"),
+        RemoteCommand::Pin => Some("pin"),
+        RemoteCommand::ResetIdentity => Some("reset-identity"),
+        _ => None,
+    }
+}
 pub fn login_allowed(stdin_tty: bool, stdout_tty: bool, agent: bool) -> bool {
     stdin_tty && stdout_tty && !agent
 }
 pub fn run(command: &RemoteCommand, json: bool) -> i32 {
-    if matches!(command, RemoteCommand::Login { .. })
+    if interactive_command(command).is_some()
         && !login_allowed(
             std::io::stdin().is_terminal(),
             std::io::stdout().is_terminal(),
             std::env::var_os("RUNNER_HANDLE").is_some(),
         )
     {
-        eprintln!("{INTERACTIVE}");
+        eprintln!("`runner remote {}` needs you at an interactive terminal outside an agent session. Use Runner → Settings → Remote access, or run it in your own terminal.", interactive_command(command).unwrap_or_default());
         return 1;
     }
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -83,16 +98,76 @@ async fn execute(command: &RemoteCommand, json: bool) -> Result<i32, ClientError
     let mut status = typed(client.clone(), |c| c.remote_status()).await?;
     match command {
         RemoteCommand::Status => {
+            let trust = typed(client.clone(), |c| c.remote_trust()).await?;
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string(&status).map_err(|_| ClientError::Protocol(
-                        "Could not encode remote status".into()
-                    ))?
+                    serde_json::to_string(&status_with_trust(&status, &trust)).map_err(|_| {
+                        ClientError::Protocol("Could not encode remote status".into())
+                    })?
                 );
             } else {
-                print_status(&status);
+                print_status(&status, &trust);
             }
+            Ok(0)
+        }
+        RemoteCommand::Pin => {
+            println!(
+                "Runner’s service never sees this PIN, so it cannot pair a device on its own."
+            );
+            let pin = read_pin()?;
+            typed(client, move |c| c.remote_set_pin(pin)).await?;
+            println!("PIN saved. Devices already paired stay paired.");
+            Ok(0)
+        }
+        RemoteCommand::ResetIdentity => {
+            print!("Disconnect this computer, unpair every device and clear the PIN? [y/N] ");
+            std::io::stdout()
+                .flush()
+                .map_err(|_| ClientError::Protocol("Could not display confirmation".into()))?;
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|_| ClientError::Protocol("Could not read confirmation".into()))?;
+            if !matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                println!("Identity reset cancelled.");
+                return Ok(0);
+            }
+            let trust = typed(client.clone(), |c| c.remote_reset_identity()).await?;
+            println!("Identity reset. Set a new PIN before pairing devices.");
+            if let Some(fingerprint) = trust.fingerprint {
+                println!("Fingerprint  {fingerprint}");
+            }
+            if let Some(error) = typed(client, |c| c.remote_status()).await?.last_error {
+                println!("{error}");
+            }
+            Ok(0)
+        }
+        RemoteCommand::Devices => {
+            let trust = typed(client, |c| c.remote_trust()).await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&trust.devices).map_err(|_| ClientError::Protocol(
+                        "Could not encode paired devices".into()
+                    ))?
+                );
+            } else if trust.devices.is_empty() {
+                println!("No devices paired.");
+            } else {
+                for device in trust.devices {
+                    println!(
+                        "{}\n  Fingerprint  {}\n  Paired       {}\n  Last seen    {}",
+                        device.name, device.fingerprint, device.paired_at, device.last_seen_at
+                    );
+                }
+            }
+            Ok(0)
+        }
+        RemoteCommand::Revoke { fingerprint } => {
+            let fingerprint = fingerprint.clone();
+            typed(client, move |c| c.remote_revoke_device(fingerprint)).await?;
+            println!("Device revoked.");
             Ok(0)
         }
         RemoteCommand::Logout => {
@@ -221,7 +296,30 @@ async fn execute(command: &RemoteCommand, json: bool) -> Result<i32, ClientError
         }
     }
 }
-fn print_status(s: &RemoteStatus) {
+fn status_with_trust(status: &RemoteStatus, trust: &RemoteTrust) -> serde_json::Value {
+    let mut value = serde_json::to_value(status).expect("RemoteStatus serializes to JSON");
+    value["trust"] = serde_json::to_value(trust).expect("RemoteTrust serializes to JSON");
+    value
+}
+fn read_pin() -> Result<Secret, ClientError> {
+    let pin = rpassword::prompt_password("New PIN (6 digits): ")
+        .map_err(|_| ClientError::Protocol("Could not read PIN".into()))?;
+    let confirmation = rpassword::prompt_password("Repeat PIN: ")
+        .map_err(|_| ClientError::Protocol("Could not read PIN confirmation".into()))?;
+    confirmed_pin(pin, confirmation)
+}
+fn confirmed_pin(pin: String, confirmation: String) -> Result<Secret, ClientError> {
+    if pin != confirmation {
+        return Err(ClientError::Refused("The PINs do not match.".into()));
+    }
+    if pin.len() != 6 || !pin.bytes().all(|c| c.is_ascii_digit()) {
+        return Err(ClientError::Refused(
+            "The PIN must be exactly six digits.".into(),
+        ));
+    }
+    Ok(Secret(pin))
+}
+fn print_status(s: &RemoteStatus, trust: &RemoteTrust) {
     let state = match &s.state {
         RemoteState::Off => "not connected".into(),
         RemoteState::Enrolling { expires_at, .. } => {
@@ -255,10 +353,21 @@ fn print_status(s: &RemoteStatus) {
             s.host_id.as_deref().unwrap_or("unknown")
         );
     }
-    if let Some(fp) = &s.fingerprint {
+    if let Some(fp) = trust.fingerprint.as_ref().or(s.fingerprint.as_ref()) {
         println!("Fingerprint  {fp}");
     }
     println!("Service      {}", s.origin);
+    println!(
+        "PIN          {}",
+        if trust.pin_locked {
+            "locked — unlock in Settings"
+        } else if trust.pin_set {
+            "set"
+        } else {
+            "not set"
+        }
+    );
+    println!("Devices      {}", trust.devices.len());
     if let Some(e) = &s.last_error {
         println!("Last error   {e}");
     }
@@ -347,6 +456,41 @@ mod tests {
             let current = refresh_event(client, old_off).await.unwrap().unwrap();
             assert!(matches!(current.state, RemoteState::Connected { .. }));
         }
+    }
+    #[test]
+    fn pin_confirmation_validates_without_echoing_the_input() {
+        assert_eq!(
+            confirmed_pin("001234".into(), "001234".into()).unwrap().0,
+            "001234"
+        );
+        for (pin, repeat) in [
+            ("123456", "654321"),
+            ("12345", "12345"),
+            ("1234567", "1234567"),
+            ("0123456789", "0123456789"),
+            ("１２３４５６", "１２３４５６"),
+            ("12345x", "12345x"),
+        ] {
+            let error = confirmed_pin(pin.into(), repeat.into()).unwrap_err();
+            assert!(!error.to_string().contains(pin));
+            if pin == repeat {
+                assert_eq!(error.to_string(), "The PIN must be exactly six digits.");
+            }
+        }
+        for command in [RemoteCommand::Pin, RemoteCommand::ResetIdentity] {
+            assert!(interactive_command(&command).is_some());
+        }
+        for command in [
+            RemoteCommand::Devices,
+            RemoteCommand::Revoke {
+                fingerprint: "device".into(),
+            },
+        ] {
+            assert!(interactive_command(&command).is_none());
+        }
+        let value = status_with_trust(&RemoteStatus::default(), &RemoteTrust::default());
+        assert_eq!(value["state"]["kind"], "off");
+        assert_eq!(value["trust"]["pin_set"], false);
     }
     #[test]
     fn only_person_at_two_terminals_can_login() {
