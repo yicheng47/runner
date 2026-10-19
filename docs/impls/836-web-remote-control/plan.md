@@ -40,7 +40,7 @@ Phase 3 builds on both: the PIN exchange and the Noise handshakes, the relay's c
    - `runner remote reset-identity`, behind the same guard, asks `[y/N]` first.
    - `runner remote devices [--json]` and `runner remote revoke <fingerprint>` are allowed inside agent sessions.
    - `runner remote status` gains a PIN line and a device count. The CLI reference is regenerated with `make guide-cli`.
-4. **Settings**, in `runner-app/src/surfaces/settings/remote.rs`, built from the signed-off frames in `design/specs/836-web-remote-control.pen`: the PIN row with Set and Change, the locked row with Unlock, the device list with Revoke, and Reset identity behind the existing confirmation dialog. A warning toast when PIN entry locks while the app runs. English and Simplified Chinese strings. `docs/guide/guides/remote-access.md` gains Who can reach this computer.
+4. **Settings**, in `runner-app/src/surfaces/settings/remote.rs`, built from the signed-off frames in `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`: the PIN row with Set and Change, the locked row with Unlock, the device list with Revoke, and Reset identity behind the existing confirmation dialog. A warning toast when PIN entry locks while the app runs. English and Simplified Chinese strings. `docs/guide/guides/remote-access.md` gains Who can reach this computer.
 
 The new-device notification belongs to Phase 3, since only a pairing raises it.
 
@@ -79,7 +79,7 @@ Planning m2 surfaced details the spec did not state. Jason approved them with th
 
 ## Phase 3 — the end-to-end channel and live terminals
 
-Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals with the spec's terminal-size controller, the desktop pane's banner and `terminal_take_back`, and the new-device notification. [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so Phase 3 reruns its two-window steps when it changes the pane's size push, without blocking on it.
+Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals with the spec's terminal-size controller, the desktop pane's control card and `terminal_take_back`, and the new-device notification. [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so Phase 3 reruns its two-window steps when it changes the pane's size push, without blocking on it.
 
 ## Phase 4 — Tailscale
 
