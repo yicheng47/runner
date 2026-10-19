@@ -1,4 +1,8 @@
-use super::{persistence::Saved, store::Secrets, transport::Failure};
+use super::{
+    persistence::Saved,
+    store::{Identity, Secrets},
+    transport::Failure,
+};
 use chrono::{DateTime, Duration, Utc};
 use runner_core::remote::{self, *};
 
@@ -13,7 +17,6 @@ pub enum Command {
     Start {
         origin: Option<String>,
         confirm_account: bool,
-        key: HostKey,
         owner: Option<u64>,
     },
     Confirm(bool),
@@ -21,6 +24,15 @@ pub enum Command {
     Pause(bool),
     Retry,
     Logout,
+    ResetIdentity(Identity),
+    SetPin(Secret),
+    UnlockPin,
+    RevokeDevice(String),
+    RecordFailedPin,
+    RecordPaired {
+        public_key: Vec<u8>,
+        name: String,
+    },
     OwnerGone(u64),
     Shutdown,
 }
@@ -48,6 +60,8 @@ pub enum Effect {
     Close,
     Store,
     Save,
+    SaveIdentity,
+    SaveTrust,
     Delete(String),
     SignOut {
         origin: String,
@@ -68,6 +82,8 @@ struct Enrollment {
 #[derive(Default)]
 pub struct Machine {
     pub host: HostInfo,
+    pub identity: Option<Identity>,
+    pub trust: super::trust::Trust,
     pub status: RemoteStatus,
     pub saved: Option<Saved>,
     pub secrets: Option<Secrets>,
@@ -80,6 +96,19 @@ pub struct Machine {
     pub shutting_down: bool,
 }
 impl Machine {
+    pub fn trust(&self) -> RemoteTrust {
+        RemoteTrust {
+            fingerprint: self
+                .identity
+                .as_ref()
+                .and_then(|i| i.host_key().ok())
+                .map(|k| fingerprint(&k.public)),
+            pin_set: self.identity.as_ref().is_some_and(|i| i.pin.is_some()),
+            pin_locked: self.trust.pin_locked,
+            devices: self.trust.devices.clone(),
+        }
+    }
+
     pub fn restore(
         saved: Option<Saved>,
         secrets: Option<Secrets>,
@@ -154,7 +183,19 @@ impl Machine {
             .saved
             .as_ref()
             .is_some_and(|s| !s.activated && now >= s.claim_expires_at)
-            && !matches!(input, Input::Command(Command::Logout | Command::Shutdown))
+            && !matches!(
+                input,
+                Input::Command(
+                    Command::Logout
+                        | Command::ResetIdentity(_)
+                        | Command::SetPin(_)
+                        | Command::UnlockPin
+                        | Command::RevokeDevice(_)
+                        | Command::RecordFailedPin
+                        | Command::RecordPaired { .. }
+                        | Command::Shutdown
+                )
+            )
         {
             self.expire(&mut effects);
             return Ok((effects, self.deadline));
@@ -189,7 +230,6 @@ impl Machine {
                     Command::Start {
                         origin,
                         confirm_account,
-                        key,
                         owner,
                     } => {
                         if !matches!(
@@ -200,6 +240,11 @@ impl Machine {
                         ) {
                             return Err("This computer is already connected. Run `runner remote logout` first.".into());
                         }
+                        let key = self
+                            .identity
+                            .as_ref()
+                            .ok_or("Host identity is unavailable")?
+                            .host_key()?;
                         let origin =
                             canonical_origin(origin.as_deref().unwrap_or(&self.status.origin))
                                 .map_err(str::to_owned)?;
@@ -299,6 +344,44 @@ impl Machine {
                     Command::Logout => {
                         self.logout(&mut effects);
                     }
+                    Command::ResetIdentity(identity) => {
+                        self.logout(&mut effects);
+                        self.identity = Some(identity);
+                        self.trust = super::trust::Trust::default();
+                        effects.extend([Effect::SaveIdentity, Effect::SaveTrust]);
+                    }
+                    Command::SetPin(pin) => {
+                        super::trust::validate_pin(&pin.0)?;
+                        self.identity
+                            .as_mut()
+                            .ok_or("Host identity is unavailable")?
+                            .pin = Some(pin);
+                        effects.push(Effect::SaveIdentity);
+                    }
+                    Command::UnlockPin => {
+                        self.trust.unlock();
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RevokeDevice(fingerprint) => {
+                        if !self.trust.revoke(&fingerprint) {
+                            return Err(format!("No paired device has fingerprint {fingerprint}."));
+                        }
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RecordFailedPin => {
+                        if !self.trust().pin_set {
+                            return Err("Set a PIN before pairing a device.".into());
+                        }
+                        self.trust.record_failed_pin();
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RecordPaired { public_key, name } => {
+                        if !self.trust().pin_set {
+                            return Err("Set a PIN before pairing a device.".into());
+                        }
+                        self.trust.record_paired(&public_key, name, now)?;
+                        effects.push(Effect::SaveTrust);
+                    }
                     Command::Shutdown => {
                         effects.push(Effect::Close);
                         self.shutting_down = true;
@@ -371,8 +454,8 @@ impl Machine {
                             (self.enrollment.as_ref(), response.account, claim)
                         {
                             self.secrets = Some(Secrets {
-                                v: 1,
-                                key: Secret(encode_key(&e.key.private)),
+                                v: 2,
+                                key: None,
                                 credential: response.credential,
                             });
                             let account: RemoteAccount = account.into();
@@ -644,6 +727,9 @@ mod tests {
         DateTime::from_timestamp(1_800_000_000, 0).unwrap()
     }
     pub(super) fn command(m: &mut Machine, command: Command, at: DateTime<Utc>) -> Vec<Effect> {
+        if matches!(command, Command::Start { .. }) && m.identity.is_none() {
+            m.identity = Some(Identity::generate().unwrap());
+        }
         m.step(Input::Command(command), at, &mut || 9000).unwrap().0
     }
     pub(super) fn begin(confirm: bool) -> Machine {
@@ -653,7 +739,6 @@ mod tests {
             Command::Start {
                 origin: Some("https://runner.example".into()),
                 confirm_account: confirm,
-                key: HostKey::generate().unwrap(),
                 owner: Some(0),
             },
             now(),
@@ -700,7 +785,6 @@ mod tests {
                 Command::Start {
                     origin: Some("https://runner.example".into()),
                     confirm_account,
-                    key: HostKey::generate().unwrap(),
                     owner: Some(0),
                 },
                 now(),
@@ -741,7 +825,6 @@ mod tests {
                 Command::Start {
                     origin: None,
                     confirm_account,
-                    key: HostKey::generate().unwrap(),
                     owner: Some(0),
                 },
                 next,
@@ -769,7 +852,6 @@ mod tests {
                 Input::Command(Command::Start {
                     origin: None,
                     confirm_account: false,
-                    key: HostKey::generate().unwrap(),
                     owner: Some(0)
                 }),
                 now(),
@@ -855,11 +937,11 @@ mod tests {
         m.step(Input::Deadline, now() + Duration::seconds(100), &mut || 0)
             .unwrap();
         assert!(matches!(m.status.state, RemoteState::Reconnecting { .. }));
-        let key = m.secrets.as_ref().unwrap().key.0.clone();
+        let key = m.identity.as_ref().unwrap().key.0.clone();
         command(&mut m, Command::Pause(true), now());
         assert!(matches!(m.status.state, RemoteState::Paused));
         command(&mut m, Command::Pause(false), now());
-        assert_eq!(m.secrets.as_ref().unwrap().key.0, key);
+        assert_eq!(m.identity.as_ref().unwrap().key.0, key);
         for code in [4001, 4003] {
             m.step(
                 Input::Failure(Failure {
@@ -900,12 +982,74 @@ mod tests {
             Command::Start {
                 origin: None,
                 confirm_account: false,
-                key: HostKey::generate().unwrap(),
                 owner: Some(0),
             },
             now(),
         );
-        assert_ne!(encode_key(&m.enrollment.as_ref().unwrap().key.private), old);
+        assert_eq!(encode_key(&m.enrollment.as_ref().unwrap().key.private), old);
+    }
+    #[test]
+    fn reenrollment_keeps_host_key_after_logout_and_removal_and_reset_replaces_it() {
+        for removed in [false, true] {
+            let mut m = begin(false);
+            let old_key = m.identity.as_ref().unwrap().host_key().unwrap().public;
+            approve(&mut m);
+            welcome(&mut m, now());
+            if removed {
+                m.step(
+                    Input::Failure(Failure {
+                        retry: Retry::Stop(StopReason::Removed),
+                        ..Failure::network()
+                    }),
+                    now(),
+                    &mut || 0,
+                )
+                .unwrap();
+            } else {
+                command(&mut m, Command::Logout, now());
+            }
+            let effects = command(
+                &mut m,
+                Command::Start {
+                    origin: None,
+                    confirm_account: false,
+                    owner: None,
+                },
+                now(),
+            );
+            let request = effects
+                .iter()
+                .find_map(|e| {
+                    if let Effect::Start(r) = e {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            assert_eq!(request.host_key, encode_key(&old_key));
+            approve(&mut m);
+            let effects = command(
+                &mut m,
+                Command::ResetIdentity(Identity::generate().unwrap()),
+                now(),
+            );
+            assert!(matches!(
+                effects.as_slice(),
+                [
+                    Effect::Close,
+                    Effect::Delete(_),
+                    Effect::SignOut { .. },
+                    Effect::SaveIdentity,
+                    Effect::SaveTrust
+                ]
+            ));
+            assert!(matches!(m.status.state, RemoteState::Off));
+            assert_ne!(
+                m.identity.as_ref().unwrap().host_key().unwrap().public,
+                old_key
+            );
+        }
     }
     #[test]
     fn claim_deadlines_poll_slowdown_and_recovery() {

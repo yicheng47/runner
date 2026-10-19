@@ -12,6 +12,10 @@ Every public `runner` command and option below comes from the CLI shipped with t
 - [runner remote login](#runner-remote-login)
 - [runner remote logout](#runner-remote-logout)
 - [runner remote status](#runner-remote-status)
+- [runner remote pin](#runner-remote-pin)
+- [runner remote devices](#runner-remote-devices)
+- [runner remote revoke](#runner-remote-revoke)
+- [runner remote reset-identity](#runner-remote-reset-identity)
 - [runner daemon](#runner-daemon)
 - [runner daemon status](#runner-daemon-status)
 - [runner daemon stop](#runner-daemon-stop)
@@ -253,9 +257,13 @@ Connect this computer to your remote access account
 Usage: runner remote [OPTIONS] <COMMAND>
 
 Commands:
-  login   Connect this computer to your account (interactive terminal required)
-  logout  Disconnect this computer and delete its local secrets
-  status  Show remote access status
+  login           Connect this computer to your account (interactive terminal required)
+  logout          Disconnect this computer and delete its enrollment credential
+  status          Show remote access status
+  pin             Set or change the 6-digit pairing PIN (interactive terminal required)
+  devices         List devices paired with this computer
+  revoke          Revoke a paired device by its fingerprint
+  reset-identity  Disconnect, unpair every device and create a new identity (interactive terminal required)
 
 Options:
       --json  Print the tool result as exact JSON
@@ -280,7 +288,7 @@ Options:
 ## runner remote logout
 
 ```text
-Disconnect this computer and delete its local secrets
+Disconnect this computer and delete its enrollment credential
 
 Usage: runner remote logout [OPTIONS]
 
@@ -296,6 +304,61 @@ Options:
 Show remote access status
 
 Usage: runner remote status [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote pin
+
+```text
+Set or change the 6-digit pairing PIN (interactive terminal required)
+
+Usage: runner remote pin [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote devices
+
+```text
+List devices paired with this computer
+
+Usage: runner remote devices [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote revoke
+
+```text
+Revoke a paired device by its fingerprint
+
+Usage: runner remote revoke [OPTIONS] <FINGERPRINT>
+
+Arguments:
+  <FINGERPRINT>
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote reset-identity
+
+```text
+Disconnect, unpair every device and create a new identity (interactive terminal required)
+
+Usage: runner remote reset-identity [OPTIONS]
 
 Options:
       --json  Print the tool result as exact JSON
