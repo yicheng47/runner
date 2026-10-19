@@ -79,7 +79,7 @@ Planning m2 surfaced details the spec did not state. Jason approved them with th
 
 ## Phase 3 — the end-to-end channel and live terminals
 
-Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals, the new-device notification, and the multi-client resize fix [#838](https://github.com/yicheng47/runner/issues/838).
+Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals with the spec's terminal-size controller, the desktop pane's banner and `terminal_take_back`, and the new-device notification. [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so Phase 3 reruns its two-window steps when it changes the pane's size push, without blocking on it.
 
 ## Phase 4 — Tailscale
 
