@@ -25,6 +25,21 @@ pub struct HostKey {
     pub public: Vec<u8>,
 }
 impl HostKey {
+    pub fn from_private(encoded: &str) -> Result<Self, &'static str> {
+        use snow::resolvers::{CryptoResolver, DefaultResolver};
+        let private = STANDARD.decode(encoded).map_err(|_| "Invalid host key")?;
+        if private.len() != 32 {
+            return Err("Invalid host key");
+        }
+        let mut dh = DefaultResolver
+            .resolve_dh(&snow::params::DHChoice::Curve25519)
+            .ok_or("Could not restore host key")?;
+        dh.set(&private);
+        Ok(Self {
+            private,
+            public: dh.pubkey().to_vec(),
+        })
+    }
     pub fn generate() -> Result<Self, snow::Error> {
         let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s".parse()?;
         let key = snow::Builder::new(params).generate_keypair()?;
@@ -263,7 +278,9 @@ mod tests {
 mod origin;
 mod status;
 pub use origin::{canonical_origin, same_origin, valid_relay_url};
-pub use status::{RemoteAccount, RemoteLogout, RemoteState, RemoteStatus};
+pub use status::{
+    PairedDevice, RemoteAccount, RemoteLogout, RemoteState, RemoteStatus, RemoteTrust,
+};
 
 pub fn valid_credential(value: &str) -> bool {
     value.strip_prefix("rhc_").is_some_and(|token| {
@@ -272,4 +289,19 @@ pub fn valid_credential(value: &str) -> bool {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
     })
+}
+
+#[cfg(test)]
+mod host_key_tests {
+    use super::*;
+    #[test]
+    fn restores_public_key_and_rejects_malformed_private_keys() {
+        let key = HostKey::generate().unwrap();
+        let restored = HostKey::from_private(&encode_key(&key.private)).unwrap();
+        assert_eq!(restored.public, key.public);
+        assert_eq!(fingerprint(&restored.public), fingerprint(&key.public));
+        assert!(HostKey::from_private("not base64").is_err());
+        assert!(HostKey::from_private(&encode_key(&[1; 31])).is_err());
+        assert!(!format!("{restored:?}").contains(&encode_key(&key.private)));
+    }
 }

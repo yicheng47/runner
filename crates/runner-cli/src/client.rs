@@ -550,8 +550,15 @@ mod remote_tests {
             "remote_set_paused",
             "remote_retry",
             "remote_logout",
+            "remote_trust",
+            "remote_set_pin",
+            "remote_unlock_pin",
+            "remote_revoke_device",
+            "remote_reset_identity",
         ] {
-            assert!(call_daemon(&client, name, json!({})).is_err());
+            assert!(
+                matches!(call_daemon(&client, name, json!({})), Err(ClientError::Refused(message)) if message == "tool not found")
+            );
         }
     }
 }

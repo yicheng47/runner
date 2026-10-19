@@ -6,6 +6,16 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+impl Sample for crate::remote::RemoteTrust {
+    fn sample() -> Self {
+        Self::default()
+    }
+}
+impl Sample for crate::remote::Secret {
+    fn sample() -> Self {
+        Self("0123456789".into())
+    }
+}
 impl Sample for crate::remote::RemoteStatus {
     fn sample() -> Self {
         Self::default()
@@ -728,4 +738,22 @@ impl Sample for TerminalPalette {
             ansi: [[16, 17, 18]; 16],
         }
     }
+}
+
+#[test]
+fn remote_pin_request_redacts_debug_and_trust_contains_no_pin() {
+    let pin = "001234567890";
+    let request = Request::remote_set_pin {
+        pin: crate::remote::Secret(pin.into()),
+    };
+    assert!(!format!("{request:?}").contains(pin));
+    assert!(format!("{request:?}").contains("[redacted]"));
+    let trust = crate::remote::RemoteTrust {
+        pin_set: true,
+        ..Default::default()
+    };
+    let response = Response::remote_set_pin(Ok(trust));
+    assert!(!serde_json::to_string(&response).unwrap().contains(pin));
+    assert!(Request::remote_trust {}.is_fast());
+    assert!(!request.is_fast());
 }

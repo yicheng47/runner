@@ -896,6 +896,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if pane != SettingsPane::Remote {
+            self.dismiss_remote_dialog();
+        }
         if self.settings_page.pane == SettingsPane::Updates && pane != SettingsPane::Updates {
             self.pause_updates_pane(cx);
         }
@@ -1621,7 +1624,7 @@ impl NativeRoot {
         if self.route != AppRoute::Settings {
             return None;
         }
-        if self.settings_page.remote.confirm {
+        if self.remote_overlay_open() {
             return Some(self.remote_confirm_overlay(cx));
         }
         if self.settings_page.pane == SettingsPane::Agents {
