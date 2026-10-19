@@ -9,9 +9,9 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 | Mission | Scope | State |
 | --- | --- | --- |
 | m1 | Phase 1 ([#951](https://github.com/yicheng47/runner/issues/951)): connect a host to an account | Merged into `nightly-remote` on 2026-10-18 as [#945](https://github.com/yicheng47/runner/pull/945); #951 closed on 2026-10-19. The hosted-service pass on macOS covered connect, approve, pause, resume and disconnect; the other live checks are pending with Jason in [`836-connect-host.md`](../../tests/836-connect-host.md) and gate the umbrella's landing |
-| m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Running as a codex duo on `feat/836-m2-host-trust` since 2026-10-19; its Settings commit waits on the Pencil design |
-| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Waits on the spec's protocol section |
-| — | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with [#838](https://github.com/yicheng47/runner/issues/838) | Planned when its development starts |
+| m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Merged into `nightly-remote` on 2026-10-19 as [#957](https://github.com/yicheng47/runner/pull/957); its live checks wait on a `remote-nightly` build |
+| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Its Terminal size rule is in the spec (2026-10-19); waits on the rest of the protocol section |
+| — | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with the terminal-size controller and the desktop pane's banner | Planned when its development starts |
 | — | Phase 4 ([#954](https://github.com/yicheng47/runner/issues/954)): reach a host over Tailscale | Planned when its development starts |
 
 ## Decisions that bind
@@ -22,10 +22,12 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 - **Installed builds come from a separate release** (Jason, 2026-10-18; [#950](https://github.com/yicheng47/runner/pull/950)). `/nightly run remote` cuts `remote-nightly` from the umbrella, and `nightly` stays on `main`. Every channel shares the app's bundle id and data directory, so the umbrella adds no database migration: an install must be able to go back to `nightly` or production.
 - **Both routes are released together** (Jason, 2026-10-18): Tailscale for users worldwide and the invite-only hosted service for mainland China. The phases are ordered by how easily each part is built and tested, so the relay comes first and Tailscale follows Phase 3.
 - **The person decides who reaches their terminals** (Jason, 2026-10-19). The host trusts a device only after it has been paired with a PIN set at the host; the service decides whom it routes, and only the host decides whom it trusts. The spec's Client trust section has the model.
+- **A terminal has one size and one controller** (Jason, 2026-10-19): the desktop app or one browser. Opening a terminal in a browser takes control, leaving keeps the size, and typing at the desktop or Take back returns it. The phone's rule comes with #912, and [#838](https://github.com/yicheng47/runner/issues/838) stays outside it, rechecked in Phase 3 without blocking it. The spec's Terminal size section has the rule.
 - **It reaches `main` as one PR** once both routes pass Jason's testing. Its briefs and test records stay on it until then. Landing retires the umbrella's CI trigger and the `remote-nightly` channel.
 
 ## Open
 
 - Phase 1's remaining live checks, pending with Jason.
-- m2: the Pencil frames of the PIN, its lock, the device list and Reset identity, which its Settings commit waits on.
-- m3: the spec's protocol section.
+- m2's live checks, on a `remote-nightly` build.
+- m3: the rest of the spec's protocol section.
+- Phase 3: the Pencil frames of the desktop pane's terminal-size banner.

@@ -1,10 +1,10 @@
 # 836 — Web remote control
 
 > Tracking issue: [#836](https://github.com/yicheng47/runner/issues/836). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows first; Linux wherever `runnerd` runs ([#823](https://github.com/yicheng47/runner/issues/823)).
-> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model is written (2026-10-19); the companion protocol, the encrypted channel and terminals (Phases 2 and 3) are specified in full when their development starts, and Phase 4, the Tailscale route, is released together with the hosted service.
+> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19); the rest of the companion protocol, the encrypted channel and terminals (Phases 2 and 3) are specified in full when their development starts, and Phase 4, the Tailscale route, is released together with the hosted service.
 > Scope: Runner's side only, what runs on the person's computer: `runnerd`, the `runner` CLI and the desktop app. The web panel and the service are developed separately; this spec describes them only as far as Runner talks to them.
 > Design: `design/specs/836-web-remote-control.pen`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect.
-> Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (multi-client resize).
+> Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (the desktop's own second-window resize, separate from Terminal size).
 
 ## Motivation
 
@@ -459,7 +459,7 @@ New dependencies: `snow`; `tokio-tungstenite` without TLS features; `windows-sys
 
 ## Phase 2 — Companion protocol and client trust
 
-The companion protocol is specified in full when its development starts. The trust model is written first, because both routes and the service's browser channel build on it. Two constraints are settled:
+The companion protocol is specified in full when its development starts. The trust model is written first, because both routes and the service's browser channel build on it, and then Terminal size, because it is the protocol's one rule that a later version cannot change without changing the desktop app as well. Two constraints are settled:
 
 - **The protocol and the channel do not depend on the route (Jason, 2026-10-18).** The companion protocol and Phase 3's end-to-end channel run over any ordered, reliable byte stream; the relay's WebSocket is the first such stream, not part of either. A host trusts clients by per-device keys that it can list and revoke, not by the account session alone. Phase 4's Tailscale route, and any later direct route such as a same-network listener ([#912](https://github.com/yicheng47/runner/issues/912)), then adds only its listener, and reuses the protocol, the channel, the trust model and its pairing unchanged.
 - **The person decides who reaches their terminals (Jason, 2026-10-19).** The host trusts a device only after it has been paired with a PIN the person set at the host. Being signed in to the account is not enough: if it were, whoever runs the service, an administrator included, could open any host's terminals.
@@ -512,6 +512,50 @@ A pushed `remote/trust` event carries `RemoteTrust` whenever it changes. `runner
 **Proposed, settled with Phase 3's channel.** The PIN exchange is SPAKE2 ([RFC 9382](https://www.rfc-editor.org/rfc/rfc9382)) or CPace, bound to the host's identity key, and its output is the pre-shared key of the Noise `IK` handshake that pairs the device. Every later connection is plain `IK`: the client knows the host's identity key from pairing, and the host rejects a client key that is not on its list.
 
 Jason approved the PIN, its lock, Revoke and Reset identity frames on 2026-10-19, with Devices table option B (`eiIy3`) as the canonical connected state. The other references are `KNmA3` (no PIN/devices), `zSJNq` (locked/toast) and `T0hixs` (Reset identity). After live testing, Jason replaced the PIN design with the two-step option B: `K2ww03` (choose), `VckyU` (confirm) and the replacement `TLJNH` (step 1 over Settings), exported at 15:24 on 2026-10-19. Each input has six equal boxes, 48 px tall, 6 px radius, bg fill and border-strong border; the current box has a 1.5 px accent border and a caret. Entries accept ASCII digits only, Backspace removes the last digit, a six-digit paste fills the row, and copy/cut and native reads never expose digits. In m2, the table shows recorded last-seen times, without inferring a connected state, and its footer says pairing arrives in a later update; Jason approved this Phase 3 distinction through Runner on 2026-10-19.
+
+### Terminal size
+
+A session's terminal has one size. The PTY gives the program in it, a shell, Claude Code or Codex, one width and height, and the program draws for exactly that grid: its output is full of cursor movements computed for it, so the same bytes cannot be shown at a second size. Every client of a session therefore shows the same grid, and the rule below decides whose window sets it. It covers the desktop app and the browser; a phone client ([#912](https://github.com/yicheng47/runner/issues/912)) gets its own rule when it is designed.
+
+**One controller (Jason, 2026-10-19).** Each terminal has at most one controller: the desktop app, or one browser. The controller's viewport is the terminal's size, and every other client draws that grid. `runnerd` holds the controller in memory, changes it only as the table below says, and ignores a size from any client that is not the controller, so no client can start a resize fight, even by mistake. Without a browser the desktop is always the controller, and nothing changes from today. The rule follows how Orca's phone client shares a terminal with its desktop app, reviewed in Orca's source the same day: an explicit owner, and a way to take the terminal back. Orca's phone-specific parts, fitting to a phone's screen and locking the desktop's keyboard while the phone drives, are not part of it.
+
+| Event | Controller after it | Terminal size |
+| --- | --- | --- |
+| A browser opens the terminal, or clicks **Take control** | That browser | The browser's viewport |
+| The controlling browser's window changes size | Unchanged | Its new viewport |
+| Another browser opens the terminal | The newer browser | Its viewport |
+| A browser reattaches after its connection dropped | That browser if the terminal has no controller; otherwise unchanged | Its viewport if it became the controller; otherwise unchanged |
+| The controlling browser closes the terminal, or its connection ends | None | Unchanged |
+| The person types in a desktop pane showing the terminal, or clicks **Take back** | The desktop | The desktop pane's size |
+| `runnerd` starts | The desktop | As today |
+
+**Why opening takes control.** Opening a terminal in a browser is something the person does on purpose, so it is the signal: the host does not infer from typing or focus who is using which screen. Taking control on the first keystroke instead would resize the terminal under that keystroke. A reconnect is not something the person does, so it takes control only when nobody holds it: a dropped connection does not take the terminal back from a desktop that has taken it in the meantime. The browser says which of the two it is doing, and the host never guesses.
+
+**Why leaving keeps the size.** Every resize makes the program redraw, a shell its prompt and a TUI its whole screen, and reflows the history the host's terminal model keeps. When a browser leaves, usually nobody is at the desktop to see a restored size, so restoring at once would spend a reflow for nothing. The terminal keeps the browser's size until the desktop is used again, so the one reflow happens when the person is back and looking.
+
+**The desktop is the terminal's home.** Typing in a pane that shows the terminal takes control back, with no lock and no prompt first: `runnerd` resizes the terminal to the pane, then delivers the keystroke. **Take back** on the pane's banner does the same without typing. While a browser is the controller, or nobody is after a browser left, the pane does not push its own size: it draws the terminal's grid from the top left, with a banner that names who sized it from the paired device's name, such as Sized for Chrome on Windows, or says that the browser has left, and offers Take back. Several desktop windows showing one terminal are one controller, the desktop, and the app picks the size among them as it does today. The banner's frames are drawn in `design/specs/836-web-remote-control.pen` before Phase 3 builds them, including how a pane shows a grid larger than itself.
+
+**A browser that is not the controller** draws the terminal's grid scaled to fit its window, says who holds the size, the desktop or another browser, and offers **Take control**. Its input still reaches the terminal; only its size does not.
+
+**Messages.** The companion protocol carries the rule in four messages. Their envelope and exact fields are settled with the rest of the protocol:
+
+- `attach` names the session, gives the browser's viewport in columns and rows, and says `take` when the person opened the terminal or `ifFree` when the browser reattaches after a dropped connection.
+- `takeControl` gives the viewport, for Take control.
+- `viewport` gives the controlling browser's new viewport once its window has stopped changing for 100 ms; `runnerd` applies the latest and ignores one from a client that is not the controller.
+- `resized` goes to every client of the terminal whenever its size or controller changes: the size, the output sequence number it takes effect at, as the client protocol's `Resized` frame does today, and the controller as `you`, `desktop`, `browser` with the device's name, or `none`.
+
+A viewport below 20 columns or 8 rows is raised to that size. The desktop app gets the same state over the client protocol: the controller with each terminal's size, and a `terminal_take_back` request carrying the pane's size, which the app sends on Take back, and before the first keystroke into a pane it does not control; `runnerd` handles the two in order.
+
+**Not part of this rule.** [#838](https://github.com/yicheng47/runner/issues/838), the shell fragments a second desktop window leaves, is the app's own choice among its windows and stays outside this rule. The phone's rule, including fitting to a phone's screen, comes with #912.
+
+**Checks**, with Phase 3's adapter, in `runnerd`'s tests and with Jason on a `remote-nightly` build:
+
+- Opening a terminal in a browser resizes it to the browser and puts the desktop pane under its banner; a size from that pane is then ignored.
+- Typing in the desktop pane takes control back, the terminal is resized before the keystroke reaches it, and the browser switches to the scaled view with Take control.
+- Closing the browser's tab keeps the size, the banner says the browser has left, and typing at the desktop resizes the terminal to the pane.
+- A browser whose connection drops and returns keeps control when nobody took it, and does not take it back from a desktop that did.
+- Of two browsers, the one that opened the terminal last is the controller.
+- Without a browser the desktop behaves as before: TERM-RESIZE-01 and TERM-RESIZE-02 in the [terminal regression suite](../tests/regression/terminal.md) pass unchanged.
 
 ### Changes to Phase 1
 
