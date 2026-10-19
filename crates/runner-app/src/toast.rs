@@ -30,6 +30,8 @@ pub struct Toast {
     pub tone: ToastTone,
     pub duration_ms: Option<u64>,
     pub single_line: bool,
+    pub icon: Option<&'static str>,
+    pub bottom: bool,
 }
 
 #[derive(Debug, Default)]
@@ -63,6 +65,8 @@ impl ToastHost {
             tone,
             duration_ms,
             single_line: false,
+            icon: None,
+            bottom: false,
         });
         id
     }
@@ -75,6 +79,14 @@ impl ToastHost {
 
     pub fn make_single_line(&mut self) {
         if let Some(toast) = &mut self.active {
+            toast.single_line = true;
+        }
+    }
+
+    pub fn pin_lock_warning(&mut self) {
+        if let Some(toast) = &mut self.active {
+            toast.icon = Some("lock.svg");
+            toast.bottom = true;
             toast.single_line = true;
         }
     }
