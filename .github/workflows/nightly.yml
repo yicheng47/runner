@@ -7,8 +7,10 @@ on:
       platform:
         description: Platforms to build from one stamp and commit
         type: choice
-        default: both
+        default: all
         options:
+          - all
+          - linux
           - both
           - macos
           - windows
@@ -48,7 +50,7 @@ jobs:
 
   build-macos:
     needs: prepare
-    if: inputs.platform == 'both' || inputs.platform == 'macos'
+    if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -159,7 +161,7 @@ jobs:
 
   build-windows:
     needs: prepare
-    if: inputs.platform == 'both' || inputs.platform == 'windows'
+    if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
     runs-on: windows-latest
     timeout-minutes: 90
     defaults:
@@ -248,13 +250,63 @@ jobs:
             target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe.sig
           if-no-files-found: error
 
+  build-linux:
+    needs: prepare
+    if: inputs.platform == 'all' || inputs.platform == 'linux'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - name: Bootstrap checkout prerequisites
+        run: apt-get update && apt-get install -y ca-certificates git
+      - name: Check out dispatch commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Install Linux dependencies
+        run: ./script/linux/install-build-deps
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release-22.04-${{ matrix.arch }}
+          cache-on-failure: true
+      - name: Build Linux packages
+        env:
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.short_sha }}
+        run: ./script/bundle-linux --channel nightly --arch ${{ matrix.arch }}
+      - name: Verify Linux package metadata and layout
+        run: python3 script/linux/test-packaging.py --packages target/linux-packages
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-linux-${{ matrix.arch }}
+          path: target/linux-packages/Runner-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.*
+          if-no-files-found: error
+
   publish:
-    needs: [prepare, build-macos, build-windows]
+    needs: [prepare, build-macos, build-windows, build-linux]
     if: >-
       ${{ !cancelled() && needs.prepare.result == 'success' &&
-      ((inputs.platform == 'both' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success') ||
-      (inputs.platform == 'macos' && needs.build-macos.result == 'success' && needs.build-windows.result == 'skipped') ||
-      (inputs.platform == 'windows' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'success')) }}
+      ((inputs.platform == 'all' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success' && needs.build-linux.result == 'success') ||
+      (inputs.platform == 'both' && needs.build-macos.result == 'success' && needs.build-windows.result == 'success' && needs.build-linux.result == 'skipped') ||
+      (inputs.platform == 'macos' && needs.build-macos.result == 'success' && needs.build-windows.result == 'skipped' && needs.build-linux.result == 'skipped') ||
+      (inputs.platform == 'windows' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'success' && needs.build-linux.result == 'skipped') ||
+      (inputs.platform == 'linux' && needs.build-macos.result == 'skipped' && needs.build-windows.result == 'skipped' && needs.build-linux.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -274,28 +326,44 @@ jobs:
           fetch-depth: 0
 
       - name: Download macOS nightly artifacts
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         uses: actions/download-artifact@v4
         with:
           name: nightly-macos
           path: nightly-artifacts/macos
 
       - name: Download Windows nightly artifacts
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
         uses: actions/download-artifact@v4
         with:
           name: nightly-windows
           path: nightly-artifacts/windows
 
+      - name: Download Linux nightly artifacts
+        if: inputs.platform == 'all' || inputs.platform == 'linux'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-linux-*
+          path: nightly-artifacts/linux
+          merge-multiple: true
+
       - name: Validate selected artifacts before publishing
         run: |
-          if [[ "$PLATFORM" != "windows" ]]; then
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
             test -s "nightly-artifacts/macos/$DMG_NAME"
             python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast.xml "nightly-artifacts/macos/$DMG_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP"
           fi
-          if [[ "$PLATFORM" != "macos" ]]; then
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
             test -s "nightly-artifacts/windows/$SETUP_NAME"
             test -s "nightly-artifacts/windows/$SETUP_NAME.sig"
+          fi
+
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
+            for arch in x86_64 aarch64; do
+              for format in tar.gz deb rpm; do
+                test -s "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format"
+              done
+            done
           fi
 
       - name: Move the nightly tag to the built commit and compose release notes
@@ -340,37 +408,57 @@ jobs:
           fi
 
       - name: Publish macOS nightly assets
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
           gh release upload nightly "nightly-artifacts/macos/$DMG_NAME" --clobber
           gh release upload nightly nightly-artifacts/macos/appcast.xml --clobber
 
       - name: Publish Windows nightly assets
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
           gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME" --clobber
           gh release upload nightly "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
+
+      - name: Publish Linux nightly assets
+        if: inputs.platform == 'all' || inputs.platform == 'linux'
+        run: |
+          for arch in x86_64 aarch64; do
+            for format in tar.gz deb rpm; do
+              gh release upload nightly "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format" --clobber
+            done
+          done
 
       - name: Verify the public nightly release and downloads before pruning
         run: |
           gh release view nightly --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg setup "$SETUP_NAME" '
             .isPrerelease and (.isDraft | not) and
             ([.assets[].name] |
-              ($platform == "windows" or (index($dmg) != null and index("appcast.xml") != null)) and
-              ($platform == "macos" or (index($setup) != null and index($setup + ".sig") != null)))'
-          if [[ "$PLATFORM" != "windows" ]]; then
+              (($platform != "all" and $platform != "both" and $platform != "macos") or (index($dmg) != null and index("appcast.xml") != null)) and
+              (($platform != "all" and $platform != "both" and $platform != "windows") or (index($setup) != null and index($setup + ".sig") != null)))'
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
             curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$DMG_NAME" >/dev/null
             curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
             cmp nightly-artifacts/macos/appcast.xml "$RUNNER_TEMP/public-appcast.xml"
           fi
-          if [[ "$PLATFORM" != "macos" ]]; then
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
             curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$SETUP_NAME" >/dev/null
             curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
             cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
           fi
 
+          if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
+            assets=$(gh release view nightly --json assets --jq '.assets[].name')
+            for arch in x86_64 aarch64; do
+              for format in tar.gz deb rpm; do
+                name="Runner-$NIGHTLY_VERSION-linux-$arch.$format"
+                printf '%s\n' "$assets" | grep -Fxq "$name"
+                curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$name" >/dev/null
+              done
+            done
+          fi
+
       - name: Prune macOS nightlies to two builds
-        if: inputs.platform == 'both' || inputs.platform == 'macos'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
           pattern='^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$'
@@ -388,7 +476,7 @@ jobs:
           done <<< "$stale"
 
       - name: Prune Windows nightlies to two builds
-        if: inputs.platform == 'both' || inputs.platform == 'windows'
+        if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
           assets=$(gh release view nightly --json assets --jq '.assets[].name')
           pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
@@ -409,6 +497,24 @@ jobs:
               fi
             fi
           done <<< "$stale"
+
+      - name: Prune Linux nightlies to two stamps per architecture
+        if: inputs.platform == 'all' || inputs.platform == 'linux'
+        run: |
+          assets=$(gh release view nightly --json assets --jq '.assets[].name')
+          for arch in x86_64 aarch64; do
+            pattern="^Runner-nightly\\.[a-fA-F0-9]+\\.([0-9]{8})\\.([0-9]{4})-linux-$arch\\.(tar\\.gz|deb|rpm)$"
+            stamps=$(printf '%s\n' "$assets" | while IFS= read -r name; do
+              if [[ "$name" =~ $pattern ]]; then printf '%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; fi
+            done | sort -ru | sed -n '3,$p')
+            if printf '%s\n' "$stamps" | grep -Fxq "$BUILD_STAMP"; then echo 'error: refusing to prune current Linux packages' >&2; exit 1; fi
+            while IFS= read -r name; do
+              if [[ "$name" =~ $pattern ]]; then
+                stamp="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                if printf '%s\n' "$stamps" | grep -Fxq "$stamp"; then gh release delete-asset nightly "$name" --yes; fi
+              fi
+            done <<< "$assets"
+          done
 
       - name: Report completed nightly publication
         run: |

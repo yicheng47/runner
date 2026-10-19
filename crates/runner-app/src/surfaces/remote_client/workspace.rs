@@ -1239,7 +1239,7 @@ impl NativeRoot {
                     })
                     .on_action(move |_: &Copy, _, cx| {
                         if !crate::terminal::input::copy_selection(&copy_terminal, cx) {
-                            #[cfg(windows)]
+                            #[cfg(any(windows, target_os = "linux"))]
                             cx.propagate();
                         }
                     })

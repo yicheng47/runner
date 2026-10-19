@@ -1452,7 +1452,7 @@ fn a_lowercased_handle_undoes_to_before_the_keystroke_and_redoes() {
     page.visual.run_until_parked();
     assert_eq!(text(&mut page), format!("{suggested}a"));
 
-    let (undo, redo) = if cfg!(windows) {
+    let (undo, redo) = if cfg!(any(windows, target_os = "linux")) {
         ("ctrl-z", "ctrl-y")
     } else {
         ("cmd-z", "cmd-shift-z")

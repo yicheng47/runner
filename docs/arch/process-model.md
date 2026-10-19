@@ -65,7 +65,7 @@ A pane sends a one-way resize immediately. The daemon applies a controller's siz
 
 Spawn resolves command, environment, geometry and conversation identity in the daemon. PtyRuntime launches the child on its slave, owns process-tree cleanup and starts the reader. The manager installs the handle, creates the authoritative terminal and emits spawn. App attachment takes a snapshot and then the exact live stream.
 
-Natural exit drains output before the manager reconciles status and releases the terminal. Explicit stop asks the runtime to stop/reap children before clearing the handle. macOS uses SIGHUP and then process-group SIGKILL after its grace period, including captured descendants; Windows terminates the job and verifies root termination. Explicit cancellation does not promise all queued final bytes are painted.
+Natural exit drains output before the manager reconciles status and releases the terminal. Explicit stop asks the runtime to stop/reap children before clearing the handle. macOS and Linux use SIGHUP and then process-group SIGKILL after its grace period, including captured descendants (Linux discovers them from `/proc`); Windows terminates the job and verifies root termination. Explicit cancellation does not promise all queued final bytes are painted.
 
 Resume makes a new child/model under the same Runner session ID and restores the agent’s conversation when supported. Reattach connects to the existing child and current grid. These are separate operations.
 

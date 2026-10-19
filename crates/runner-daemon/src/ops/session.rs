@@ -1095,8 +1095,16 @@ pub fn session_start_runtime_with_speed(
     })
 }
 
-fn resolve_shell_command(shell: Option<String>) -> String {
-    crate::shell_path::configured_shell(shell).unwrap_or_else(|| {
+fn resolve_shell_command(shell: Option<String>) -> Result<String> {
+    let shell = crate::shell_path::configured_shell(shell);
+    #[cfg(target_os = "linux")]
+    {
+        shell
+            .or_else(crate::shell_path::account_login_shell)
+            .ok_or_else(|| Error::msg("Cannot determine the account login shell"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(shell.unwrap_or_else(|| {
         #[cfg(unix)]
         {
             "/bin/zsh".to_string()
@@ -1108,7 +1116,7 @@ fn resolve_shell_command(shell: Option<String>) -> String {
                 std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()),
             )
         }
-    })
+    }))
 }
 
 #[cfg(windows)]
@@ -1146,7 +1154,7 @@ pub fn session_start_shell_in(
         let conn = state.db.get()?;
         project::resolve_scope(&conn, &scope, cwd)?
     };
-    let command = resolve_shell_command(std::env::var("SHELL").ok());
+    let command = resolve_shell_command(std::env::var("SHELL").ok())?;
     let role = runtime_direct_role(Runtime::Shell.key(), Some(&command), None, None)?;
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
@@ -1304,9 +1312,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shell_command_uses_environment_value_with_zsh_fallback() {
-        assert_eq!(resolve_shell_command(Some("/bin/fish".into())), "/bin/fish");
-        assert_eq!(resolve_shell_command(None), "/bin/zsh");
-        assert_eq!(resolve_shell_command(Some("  ".into())), "/bin/zsh");
+        assert_eq!(
+            resolve_shell_command(Some("/bin/fish".into())).unwrap(),
+            "/bin/fish"
+        );
+        #[cfg(target_os = "linux")]
+        let fallback = crate::shell_path::account_login_shell().unwrap();
+        #[cfg(not(target_os = "linux"))]
+        let fallback = "/bin/zsh";
+        assert_eq!(resolve_shell_command(None).unwrap(), fallback);
+        assert_eq!(
+            resolve_shell_command(Some("  ".into())).unwrap(),
+            resolve_shell_command(None).unwrap()
+        );
     }
 
     #[cfg(windows)]
@@ -1329,7 +1347,7 @@ mod tests {
             pwsh.to_str().unwrap()
         );
         assert_eq!(
-            resolve_shell_command(Some("C:/Git/bin/bash.exe".into())),
+            resolve_shell_command(Some("C:/Git/bin/bash.exe".into())).unwrap(),
             "C:/Git/bin/bash.exe"
         );
     }

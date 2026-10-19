@@ -2224,7 +2224,9 @@ impl NativeRoot {
             .debug_selector(|| "START_CHAT_FORM".into())
             .flex()
             .flex_col()
-            .when(cfg!(windows), |content| content.w(rems(form_width / 16.)))
+            .when(cfg!(any(windows, target_os = "linux")), |content| {
+                content.w(rems(form_width / 16.))
+            })
             .gap_5()
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
             .children(

@@ -43,11 +43,13 @@ use anyhow::{Context as _, Result};
 use futures::StreamExt as _;
 #[cfg(all(target_os = "macos", not(test)))]
 use gpui::QuitMode;
+#[cfg(not(target_os = "linux"))]
+use gpui::SystemMenuType;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds, Context,
     CursorStyle, DragMoveEvent, Entity, FocusHandle, Global, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription, SystemMenuType,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription, TitlebarOptions,
+    Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::NativePaths;
 use runner_app::pane_layout::{
@@ -343,7 +345,7 @@ fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<Native
 
 #[cfg(not(test))]
 fn close_window(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     if cx.windows().len() == 1 {
         this.request_quit(window, cx);
         return;
@@ -1481,7 +1483,7 @@ fn run() -> Result<()> {
     print_startup_paths(&paths);
     let ui_settings_path = settings_path(&paths.app_data_dir);
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let application = gpui_platform::application();
     #[cfg(windows)]
     let application =
@@ -1527,10 +1529,13 @@ fn run() -> Result<()> {
         let home_dir = paths.home_dir.clone();
         #[cfg(test)]
         let home_dir = None;
-        #[cfg(all(not(test), not(windows)))]
+        #[cfg(all(not(test), target_os = "macos"))]
         let command_install_support = Some(CommandInstallSupport::system(PathBuf::from(
             "/usr/local/bin",
         )));
+        #[cfg(all(not(test), target_os = "linux"))]
+        let command_install_support =
+            Some(CommandInstallSupport::system(PathBuf::from("/usr/bin")));
         #[cfg(all(not(test), windows))]
         let command_install_support = Some(CommandInstallSupport::system(PathBuf::new()));
         #[cfg(test)]
@@ -1659,8 +1664,11 @@ fn run() -> Result<()> {
                 }
             });
         });
+        #[cfg(target_os = "macos")]
         cx.on_action(|_: &Hide, cx| cx.hide());
+        #[cfg(target_os = "macos")]
         cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+        #[cfg(target_os = "macos")]
         cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
         // Global action listeners run while GPUI still holds the active
         // window's update lease (both the key-binding and the menu-item
@@ -1793,12 +1801,17 @@ pub(crate) fn app_menus() -> Vec<Menu> {
             items: vec![
                 #[cfg(target_os = "macos")]
                 MenuItem::action(crate::i18n::text("ui.about_runner"), AboutRunner),
+                #[cfg(not(target_os = "linux"))]
                 MenuItem::action(crate::i18n::text("ui.check_for_updates"), CheckForUpdates),
                 MenuItem::separator(),
+                #[cfg(not(target_os = "linux"))]
                 MenuItem::os_submenu(crate::i18n::text("ui.services"), SystemMenuType::Services),
                 MenuItem::separator(),
+                #[cfg(not(target_os = "linux"))]
                 MenuItem::action(crate::i18n::text("ui.hide_runner"), Hide),
+                #[cfg(not(target_os = "linux"))]
                 MenuItem::action(crate::i18n::text("ui.hide_others"), HideOthers),
+                #[cfg(not(target_os = "linux"))]
                 MenuItem::action(crate::i18n::text("ui.show_all"), ShowAll),
                 MenuItem::separator(),
                 MenuItem::action(crate::i18n::text("ui.quit_runner"), Quit),
@@ -1896,7 +1909,10 @@ fn open_runner_window(
     let log_dir = cx.global::<GlobalNativePaths>().0.log_dir.clone();
     let core = app_store.read(cx).client.clone();
     let default_size = size(px(1440.), px(900.));
+    #[cfg(not(target_os = "linux"))]
     let fallback = Bounds::centered(None, default_size, cx);
+    #[cfg(target_os = "linux")]
+    let fallback = platform_ui::initial_window_bounds(default_size, None, cx);
     let (bounds, initial_window_state) = if label == "main" {
         let displays = window_state::display_rects(cx);
         let default_rect = displays.first().copied().unwrap_or(window_state::Rect {
@@ -1936,16 +1952,21 @@ fn open_runner_window(
         .and_then(|reference| window_origin_for_label(cx, &reference))
         .map(|origin| origin + point(px(32.), px(32.)))
         .unwrap_or(fallback.origin);
-        (
-            WindowBounds::Windowed(Bounds::new(origin, default_size)),
-            None,
-        )
+        #[cfg(target_os = "linux")]
+        let bounds = platform_ui::initial_window_bounds(default_size, Some(origin), cx);
+        #[cfg(not(target_os = "linux"))]
+        let bounds = Bounds::new(origin, default_size);
+        (WindowBounds::Windowed(bounds), None)
     };
     core.window_register(&label)?;
     let open_label = label.clone();
     let result = cx.open_window(
         WindowOptions {
             window_bounds: Some(bounds),
+            #[cfg(target_os = "linux")]
+            app_id: Some(platform_ui::DESKTOP_APP_ID.into()),
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(gpui::WindowDecorations::Client),
             window_background: runner_app::appearance::effective(
                 app_store.read(cx).settings.window_material,
                 cx,
@@ -1959,7 +1980,7 @@ fn open_runner_window(
                 // position makes its resize callback race the frame update and visibly jump.
                 traffic_light_position: None,
             }),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             titlebar: Some(TitlebarOptions {
                 title: Some("Runner".into()),
                 appears_transparent: true,
@@ -1981,7 +2002,7 @@ fn open_runner_window(
             });
             let weak = root.downgrade();
             window.on_window_should_close(cx, move |window, cx| {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 if cx.windows().len() == 1 {
                     let _ = weak.update(cx, |this, cx| this.request_quit(window, cx));
                     return false;

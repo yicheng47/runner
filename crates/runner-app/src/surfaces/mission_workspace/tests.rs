@@ -463,7 +463,11 @@ fn composer_tracks_keyboard_and_mouse_caret_moves_and_completes_without_resettin
         .composer
         .targets
         .is_empty()));
-    visual.simulate_keystrokes(if cfg!(windows) { "ctrl-z" } else { "cmd-z" });
+    visual.simulate_keystrokes(if cfg!(any(windows, target_os = "linux")) {
+        "ctrl-z"
+    } else {
+        "cmd-z"
+    });
     assert_eq!(
         input.read_with(&visual, |input, _| input.text().to_owned()),
         "please check @rev"
@@ -1845,7 +1849,7 @@ fn focused_mission_session_actions_match_the_active_tab_and_status() {
 }
 
 #[test]
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn slot_control_titles_follow_effective_bindings() {
     let mut overrides = keymap::KeymapOverrides::new();
     assert_eq!(

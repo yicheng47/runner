@@ -7,7 +7,9 @@ use futures::channel::oneshot;
 pub(crate) enum Permission {
     #[default]
     Unknown,
+    #[cfg(any(target_os = "macos", windows))]
     Allowed,
+    #[cfg(any(target_os = "macos", windows))]
     Denied,
 }
 
@@ -25,7 +27,7 @@ pub(super) fn request() -> oneshot::Receiver<()> {
 
 /// System Settings opens on Runner's own notification page when the link
 /// names the running app's bundle id.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub(crate) fn settings_url() -> String {
     macos_settings_url(platform::bundle_id())
 }
@@ -35,7 +37,7 @@ pub(crate) fn settings_url() -> String {
     "ms-settings:notifications".into()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 fn macos_settings_url(bundle_id: Option<String>) -> String {
     let page = "x-apple.systempreferences:com.apple.Notifications-Settings.extension";
     bundle_id.map_or_else(|| page.into(), |id| format!("{page}?id={id}"))
@@ -169,13 +171,13 @@ mod platform {
         rx
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     pub(super) fn bundle_id() -> Option<String> {
         None
     }
 }
 
-#[cfg(all(test, not(windows)))]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

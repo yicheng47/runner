@@ -1028,7 +1028,12 @@ mod tests {
                 font.fallbacks.unwrap().fallback_list(),
                 ["Microsoft YaHei", "Segoe UI"]
             );
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                font.fallbacks.clone().unwrap().fallback_list(),
+                runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
+            );
+            #[cfg(target_os = "macos")]
             assert_eq!(
                 font.fallbacks.unwrap().fallback_list(),
                 ["Microsoft YaHei", "sans-serif"]
@@ -1097,7 +1102,12 @@ mod tests {
             inter.fallbacks.unwrap().fallback_list(),
             ["Segoe UI", "Microsoft YaHei"]
         );
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            inter.fallbacks.clone().unwrap().fallback_list(),
+            runner_app::platform_fonts::APP_FONT_FALLBACKS
+        );
+        #[cfg(target_os = "macos")]
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
             [

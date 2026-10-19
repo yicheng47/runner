@@ -222,7 +222,7 @@ impl EntityInputHandler for TextField {
 }
 
 fn handle_key_down<T>(input: &mut TextBuffer, event: &KeyDownEvent, cx: &mut Context<T>) -> bool {
-    handle_key_down_for_platform(input, event, cx, cfg!(windows))
+    handle_key_down_for_platform(input, event, cx, cfg!(any(windows, target_os = "linux")))
 }
 
 pub(super) fn handle_key_down_for_platform<T>(

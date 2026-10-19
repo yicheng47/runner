@@ -88,6 +88,8 @@ impl DiscoveryState {
 pub fn resolve_login_shell_env() -> DiscoveryResult {
     let started = Instant::now();
     let shell = configured_shell(std::env::var("SHELL").ok());
+    #[cfg(target_os = "linux")]
+    let shell = shell.or_else(account_login_shell);
     let Some(shell) = shell else {
         return finish_discovery(
             None,
@@ -97,6 +99,42 @@ pub fn resolve_login_shell_env() -> DiscoveryResult {
         );
     };
     resolve_shell_env(&shell, RESOLVE_TIMEOUT, started)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn account_login_shell() -> Option<String> {
+    let mut size = 1024;
+    while size <= 1024 * 1024 {
+        let mut buffer = vec![0u8; size];
+        let mut entry = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::geteuid(),
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == libc::ERANGE {
+            size *= 2;
+            continue;
+        }
+        if status != 0 || result.is_null() {
+            return None;
+        }
+        let entry = unsafe { entry.assume_init() };
+        if entry.pw_shell.is_null() {
+            return None;
+        }
+        return configured_shell(Some(
+            unsafe { std::ffi::CStr::from_ptr(entry.pw_shell) }
+                .to_string_lossy()
+                .into_owned(),
+        ));
+    }
+    None
 }
 
 pub(crate) fn configured_shell(value: Option<String>) -> Option<String> {

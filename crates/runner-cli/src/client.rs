@@ -6,7 +6,11 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+#[cfg(not(target_os = "linux"))]
 pub const NOT_RUNNING_MESSAGE: &str = "Runner is not running. Open Runner and retry.";
+#[cfg(target_os = "linux")]
+pub const NOT_RUNNING_MESSAGE: &str =
+    "Runner is not running. Open Runner or run systemctl --user start runnerd and retry.";
 pub const BLOCKED_MESSAGE: &str = "Runner cannot be reached from this process: connecting to its socket was denied, which usually means a command sandbox. Run the same command again outside the sandbox.";
 pub const VERSION_SKEW_MESSAGE: &str = wire::PROTOCOL_MISMATCH;
 

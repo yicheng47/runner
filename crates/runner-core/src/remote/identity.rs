@@ -127,6 +127,7 @@ mod tests {
             ("macos", "aarch64", "arm64"),
             ("windows", "x86_64", "x86_64"),
             ("linux", "x86_64", "x86_64"),
+            ("linux", "aarch64", "arm64"),
         ] {
             let info =
                 HostInfo::normalized(&"主机".repeat(100), os, arch, &"版".repeat(30), "0.16.4");

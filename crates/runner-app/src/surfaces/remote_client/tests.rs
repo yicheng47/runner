@@ -5379,3 +5379,59 @@ fn remote_libraries_fit_narrow_zoomed_windows_in_both_languages() {
         });
     }
 }
+
+#[test]
+fn remote_terminal_keyboard_copy_interrupt_and_paste_follow_platform_bindings() {
+    use alacritty_terminal::{
+        index::{Column, Line, Point, Side},
+        selection::SelectionType,
+    };
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    cx.update(|cx| {
+        crate::keymap::install_bindings(cx, &crate::keymap::KeymapOverrides::new(), false)
+    });
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "remote-clipboard");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let terminal = window
+        .update(&mut visual, |root, window, cx| {
+            window.activate_window();
+            root.focus_remote_terminal("s", window, cx);
+            root.remote_window.as_ref().unwrap().terminals["s"]
+                .terminal
+                .clone()
+        })
+        .unwrap();
+    visual.run_until_parked();
+    fake.input.lock().unwrap().clear();
+    terminal.start_selection(
+        SelectionType::Simple,
+        Point::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    terminal.update_selection(Point::new(Line(0), Column(5)), Side::Right);
+    let selection = terminal.selection_text().unwrap();
+    visual.simulate_keystrokes(&crate::keymap::platform_default("cmd-c"));
+    assert_eq!(
+        visual.update(|_, cx| cx.read_from_clipboard().unwrap().text()),
+        Some(selection)
+    );
+    assert!(fake.input.lock().unwrap().is_empty());
+    terminal.clear_selection();
+    visual.simulate_keystrokes("ctrl-c");
+    visual.run_until_parked();
+    assert_eq!(fake.input.lock().unwrap().last().unwrap().1, b"\x03");
+    visual.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("remote paste".into()))
+    });
+    visual.simulate_keystrokes(&crate::keymap::platform_default("cmd-v"));
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().last().unwrap().1,
+        b"remote paste"
+    );
+}

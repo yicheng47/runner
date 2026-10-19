@@ -119,4 +119,43 @@ mod tests {
             assert_eq!(debug.to_string(), r"\\.\pipe\com.wycstudios.runner-dev");
         }
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_minimal_service_environment_respects_xdg_and_development_roots() {
+        if let Some(expected) = std::env::var_os("RUNNER_TEST_XDG_ROOT") {
+            let expected = PathBuf::from(expected);
+            let release = app_data_dir(false).unwrap();
+            let development = app_data_dir(true).unwrap();
+            assert_eq!(release, expected.join(app_identifier(false)));
+            assert_eq!(development, expected.join(app_identifier(true)));
+            assert_ne!(release, development);
+            assert_eq!(
+                daemon_endpoint(&release, false).0,
+                release.join("runnerd.sock")
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        for custom_xdg in [false, true] {
+            let home = root.path().join("home");
+            let expected = if custom_xdg {
+                root.path().join("xdg")
+            } else {
+                home.join(".local/share")
+            };
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "app_paths::tests::linux_minimal_service_environment_respects_xdg_and_development_roots"])
+                    .env_clear().env("HOME", home).env("RUNNER_TEST_XDG_ROOT", &expected);
+            if custom_xdg {
+                command.env("XDG_DATA_HOME", &expected);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "custom_xdg={custom_xdg}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
 }

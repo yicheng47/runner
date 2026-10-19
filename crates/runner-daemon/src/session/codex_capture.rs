@@ -503,7 +503,34 @@ fn open_rollout_paths_for_pid(pid: i32, sessions_root: &Path) -> std::io::Result
     Ok(paths)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn open_rollout_paths_for_pid(pid: i32, sessions_root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    if pid <= 1 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsafe capture pid",
+        ));
+    }
+    let root = sessions_root.canonicalize()?;
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
+        let entry = entry?;
+        let path = match std::fs::read_link(entry.path()) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if path.starts_with(&root) && is_rollout_file(&path) && path.is_file() {
+            paths
+                .push(sessions_root.join(path.strip_prefix(&root).expect("checked sessions root")));
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn open_rollout_paths_for_pid(pid: i32, sessions_root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let _ = (pid, sessions_root);
     Err(std::io::Error::new(
@@ -672,6 +699,25 @@ mod tests {
             })
         )
         .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_rollout_lookup_only_returns_open_rollouts_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let path = root.path().join("rollout-exact.jsonl");
+        let open = std::fs::File::create(&path).unwrap();
+        let _duplicate = open.try_clone().unwrap();
+        let _wrong_name = std::fs::File::create(root.path().join("other.jsonl")).unwrap();
+        let _foreign = std::fs::File::create(other.path().join("rollout-foreign.jsonl")).unwrap();
+        assert_eq!(
+            open_rollout_paths_for_pid(std::process::id() as i32, root.path()).unwrap(),
+            vec![path.canonicalize().unwrap()]
+        );
+        assert!(open_rollout_paths_for_pid(0, root.path()).is_err());
+        assert!(open_rollout_paths_for_pid(i32::MAX, root.path()).is_err());
+        drop(open);
     }
 
     #[test]

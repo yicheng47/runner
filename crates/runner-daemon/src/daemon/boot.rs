@@ -23,7 +23,7 @@ pub fn boot(
     // Mission shims exec `$APPDATA/bin/runner`, so the CLI must be in place
     // before any session spawns. Best-effort: a copy failure is reported and
     // the app keeps running (#480).
-    if background {
+    if background || cfg!(target_os = "linux") {
         if let Err(error) = runner_core::cli_install::install_runner_cli(&paths.app_data_dir) {
             eprintln!("Runner bundled agent CLI install failed: {error}");
         }

@@ -227,10 +227,18 @@ pub const CATPPUCCIN_LATTE: ThemeColors = ThemeColors {
 static ACTIVE_VARIANT: AtomicU8 = AtomicU8::new(ThemeVariant::Carbon as u8);
 
 pub fn set_active_variant(variant: ThemeVariant) {
+    #[cfg(any(test, debug_assertions))]
+    if testing::set_variant_if_scoped(variant) {
+        return;
+    }
     ACTIVE_VARIANT.store(variant as u8, Ordering::Relaxed);
 }
 
 pub fn active_variant() -> ThemeVariant {
+    #[cfg(any(test, debug_assertions))]
+    if let Some(variant) = testing::variant() {
+        return variant;
+    }
     match ACTIVE_VARIANT.load(Ordering::Relaxed) {
         value if value == ThemeVariant::CatppuccinMocha as u8 => ThemeVariant::CatppuccinMocha,
         value if value == ThemeVariant::RunnerLight as u8 => ThemeVariant::RunnerLight,
@@ -311,10 +319,18 @@ pub fn sidebar_selected_border() -> Hsla {
 static GLASS: AtomicBool = AtomicBool::new(false);
 
 pub fn set_glass(glass: bool) {
+    #[cfg(any(test, debug_assertions))]
+    if testing::set_glass_if_scoped(glass) {
+        return;
+    }
     GLASS.store(glass, Ordering::Relaxed);
 }
 
 pub fn is_glass() -> bool {
+    #[cfg(any(test, debug_assertions))]
+    if let Some(glass) = testing::glass() {
+        return glass;
+    }
     GLASS.load(Ordering::Relaxed)
 }
 
@@ -422,9 +438,102 @@ pub fn with_alpha(mut color: Hsla, alpha: f32) -> Hsla {
     color
 }
 
+#[cfg(any(test, debug_assertions))]
+pub mod testing {
+    use super::ThemeVariant;
+    use std::{cell::Cell, marker::PhantomData, rc::Rc};
+
+    #[derive(Clone, Copy)]
+    struct State {
+        variant: ThemeVariant,
+        glass: bool,
+    }
+
+    thread_local! { static OVERRIDE: Cell<Option<State>> = const { Cell::new(None) }; }
+
+    pub(super) fn variant() -> Option<ThemeVariant> {
+        OVERRIDE.get().map(|state| state.variant)
+    }
+
+    pub(super) fn glass() -> Option<bool> {
+        OVERRIDE.get().map(|state| state.glass)
+    }
+
+    pub(super) fn set_variant_if_scoped(variant: ThemeVariant) -> bool {
+        if let Some(mut state) = OVERRIDE.get() {
+            state.variant = variant;
+            OVERRIDE.set(Some(state));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn set_glass_if_scoped(glass: bool) -> bool {
+        if let Some(mut state) = OVERRIDE.get() {
+            state.glass = glass;
+            OVERRIDE.set(Some(state));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub struct ThemeScope {
+        previous: Option<State>,
+        _thread: PhantomData<Rc<()>>,
+    }
+
+    impl Drop for ThemeScope {
+        fn drop(&mut self) {
+            OVERRIDE.set(self.previous);
+        }
+    }
+
+    // Explicit opt-in also works for binary tests linking the non-test library.
+    pub fn scope() -> ThemeScope {
+        let state = State {
+            variant: super::active_variant(),
+            glass: super::is_glass(),
+        };
+        ThemeScope {
+            previous: OVERRIDE.replace(Some(state)),
+            _thread: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_theme_restores_outer_state_after_nested_scope_and_unwind() {
+        let outer = testing::scope();
+        set_active_variant(ThemeVariant::Carbon);
+        set_glass(true);
+        {
+            let _inner = testing::scope();
+            set_active_variant(ThemeVariant::RunnerLight);
+            set_glass(false);
+            assert_eq!(active_variant(), ThemeVariant::RunnerLight);
+            assert!(!is_glass());
+        }
+        assert_eq!(active_variant(), ThemeVariant::Carbon);
+        assert!(is_glass());
+        let result = std::panic::catch_unwind(|| {
+            let _inner = testing::scope();
+            set_active_variant(ThemeVariant::CatppuccinMocha);
+            set_glass(false);
+            panic!("unwind a theme scope");
+        });
+        assert!(result.is_err());
+        assert_eq!(active_variant(), ThemeVariant::Carbon);
+        assert!(is_glass());
+        drop(outer);
+        assert!(testing::variant().is_none());
+        assert!(testing::glass().is_none());
+    }
 
     #[test]
     fn glass_changes_only_chrome() {

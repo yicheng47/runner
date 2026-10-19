@@ -1715,7 +1715,7 @@ impl NativeRoot {
             .get(session_id)
             .is_some_and(|chat| crate::terminal::input::copy_selection(&chat.terminal, cx));
         if !copied {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             cx.propagate();
         }
     }

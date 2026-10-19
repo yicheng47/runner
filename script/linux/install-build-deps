@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run as root inside the Ubuntu 22.04 CI build container, or explicitly via sudo locally.
+set -eu
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates curl git build-essential pkg-config libssl-dev python3 \
+    clang libclang-dev libfontconfig1-dev libfreetype-dev \
+    libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libx11-xcb-dev \
+    libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+    libxcb-randr0-dev libxcb-xinput-dev libxcb-cursor-dev libegl1-mesa-dev \
+    libvulkan-dev xdg-utils fonts-noto-cjk dpkg-dev rpm binutils desktop-file-utils

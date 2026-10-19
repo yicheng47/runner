@@ -1482,6 +1482,7 @@ fn joined_mission_slot_uses_current_handle_and_counts_in_idle_projection() {
     assert_eq!(cx.shown_system_notifications().len(), 2);
 }
 
+#[cfg(any(target_os = "macos", windows))]
 #[test]
 fn pairing_notification_and_toast_open_remote_access_once_per_event() {
     use crate::app_store::RemotePairing;
@@ -1608,4 +1609,60 @@ fn pairing_copy_is_localized_in_both_languages() {
             "MacBook Air 现在可以访问这台电脑。"
         );
     });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_pairing_uses_desktop_delivery_and_an_actionable_toast_with_unknown_permission() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        install(cx);
+    });
+    let window = cx.add_window(|window, cx| {
+        NativeRoot::new(
+            "pairing-linux".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        )
+    });
+    let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| permission(cx)), Permission::Unknown);
+    store.update(&mut cx, |_, cx| {
+        cx.emit(crate::app_store::RemotePairing {
+            name: "Linux host".into(),
+            fingerprint: "fixture-fingerprint".into(),
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.shown_system_notifications().len(), 1);
+    window
+        .read_with(&cx, |root, _| {
+            let toast = root.toasts.active().unwrap();
+            assert_eq!(toast.message, "Linux host can now reach this computer.");
+            assert!(toast.open_remote && toast.bottom);
+        })
+        .unwrap();
+    let bounds = visual.debug_bounds("REMOTE_TOAST_ACTION").unwrap();
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    window
+        .read_with(&visual, |root, _| {
+            assert_eq!(root.route, AppRoute::Settings);
+            assert_eq!(
+                root.settings_page.pane,
+                crate::surfaces::SettingsPane::Remote
+            );
+            assert!(root.toasts.active().is_none());
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(cx.shown_system_notifications().len(), 1);
 }

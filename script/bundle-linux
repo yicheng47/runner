@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Build native Linux binaries and package one staged tree as tar.gz, deb and rpm."""
+import argparse
+import datetime
+import os
+from pathlib import Path
+import platform
+import shutil
+import struct
+import subprocess
+import tarfile
+import tempfile
+import json
+
+ROOT = Path(__file__).resolve().parent.parent
+ARCHES = {'x86_64': ('amd64', 'x86_64', 62), 'aarch64': ('arm64', 'aarch64', 183)}
+
+
+def run(*args, **kwargs):
+    subprocess.run(args, check=True, **kwargs)
+
+
+def verify_elf(path, arch):
+    with path.open('rb') as binary:
+        header = binary.read(20)
+    if len(header) < 20 or header[:6] != b'\x7fELF\x02\x01' or struct.unpack('<H', header[18:20])[0] != ARCHES[arch][2]:
+        raise SystemExit(f'{path} is not a Linux ELF64 executable for {arch}')
+
+
+def package_identity(version, channel, stamp, sha):
+    label = version if channel == 'production' else f'{channel}.{sha[:7]}.{stamp}'
+    metadata_channel = channel.replace('-', '.')
+    deb_version = version if channel == 'production' else f'{version}~{metadata_channel}.{stamp}.{sha[:7]}'
+    rpm_release = '1' if channel == 'production' else f'0.{metadata_channel}.{stamp}.{sha[:7]}'
+    return label, deb_version, rpm_release
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--channel', choices=['production', 'nightly', 'remote-nightly'], default='production')
+    parser.add_argument('--arch', choices=ARCHES, default=platform.machine())
+    parser.add_argument('--output-dir', type=Path, default=ROOT / 'target/linux-packages')
+    parser.add_argument('--formats', default='tar,deb,rpm')
+    args = parser.parse_args()
+    if args.arch not in ARCHES:
+        parser.error('Only Linux x86_64 and aarch64 are supported')
+    formats = args.formats.split(',')
+    if not formats or set(formats) - {'tar', 'deb', 'rpm'}:
+        parser.error('--formats must select tar,deb,rpm')
+    metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version', '1', '--no-deps'], cwd=ROOT))
+    version = next(package['version'] for package in metadata['packages'] if package['name'] == 'runner-app').split('-')[0]
+    stamp = os.environ.get('RUNNER_BUILD_STAMP', datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d.%H%M'))
+    sha = os.environ.get('RUNNER_BUILD_SHA') or subprocess.check_output(['git', 'rev-parse', '--short=7', 'HEAD'], cwd=ROOT, text=True).strip()
+    import re
+    if not re.fullmatch(r'\d{8}\.\d{4}', stamp) or not re.fullmatch(r'[0-9a-fA-F]{7,40}', sha):
+        parser.error('Invalid build stamp or SHA')
+    label, package_version, rpm_release = package_identity(version, args.channel, stamp, sha)
+    if platform.system() != 'Linux' or platform.machine() != args.arch:
+        parser.error('Build and package on a native matching Linux host')
+    target = f'{args.arch}-unknown-linux-gnu'
+    env = dict(os.environ, RUNNER_BUILD_STAMP=stamp, RUNNER_BUILD_SHA=sha,
+               RUNNER_RELEASE_CHANNEL=args.channel, RUNNER_MARKETING_VERSION=version if args.channel == 'production' else ('Remote Nightly' if args.channel == 'remote-nightly' else 'Nightly'))
+    # Always build both inputs with the production data namespace; never re-label prebuilt/debug bytes.
+    run('cargo', '--config', 'profile.release.debug-assertions=false', 'build', '--locked', '--release',
+        '--target', target, '-p', 'runner-app', '-p', 'runner-cli', cwd=ROOT, env=env)
+    binary_dir = Path(metadata['target_directory']) / target / 'release'
+    for name in ['Runner', 'runner-agent-cli']:
+        verify_elf(binary_dir / name, args.arch)
+    symbols = subprocess.check_output(['readelf', '--version-info', str(binary_dir / 'Runner'), str(binary_dir / 'runner-agent-cli')], text=True)
+    glibc_versions = [tuple(map(int, value.split('.'))) for value in re.findall(r'\bGLIBC_(\d+(?:\.\d+)+)', symbols)]
+    glibc = '.'.join(map(str, max([(2, 35), *glibc_versions])))
+    cxx_versions = [tuple(map(int, value.split('.'))) for value in re.findall(r'\bGLIBCXX_(\d+(?:\.\d+)+)', symbols)]
+    cxx = '.'.join(map(str, max(cxx_versions))) if cxx_versions else None
+    deb_cxx = ''
+    if cxx and 'deb' in formats:
+        installed_cxx = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', 'libstdc++6'], text=True).strip()
+        deb_cxx = f', libstdc++6 (>= {installed_cxx})'
+    rpm_cxx = f', libstdc++.so.6(GLIBCXX_{cxx})(64bit)' if cxx else ''
+    out = args.output_dir.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='runner-linux-', dir=out) as temp:
+        temp = Path(temp)
+        tree = temp / f'Runner-{label}-linux-{args.arch}'
+        app = tree / 'lib/runner'
+        app.mkdir(parents=True)
+        for name in ['Runner', 'runner-agent-cli']:
+            shutil.copy2(binary_dir / name, app / name)
+            (app / name).chmod(0o755)
+        shutil.copy2(app / 'runner-agent-cli', app / 'runnerd')
+        (app / 'build-platform.txt').write_text(f'architecture={args.arch}\nglibc-minimum={glibc}\n' + (Path('/etc/os-release').read_text() if Path('/etc/os-release').exists() else ''))
+        (app / 'install-layout-v1').write_text('runner-linux-package-v1\n')
+        shutil.copy2(ROOT / 'script/linux/install.sh', app / 'install.sh')
+        shutil.copy2(ROOT / 'script/linux/install.sh', tree / 'install.sh')
+        for source, dest in [
+            ('packaging/linux/runnerd.service', 'lib/systemd/user/runnerd.service'),
+            ('packaging/linux/runner.desktop', 'share/applications/runner.desktop'),
+            ('assets/icon.png', 'share/icons/hicolor/256x256/apps/runner.png'),
+            ('assets/icon.png', 'lib/runner/icon.png'),
+        ]:
+            target = tree / dest
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / source, target)
+        if 'tar' in formats:
+            with tarfile.open(out / f'{tree.name}.tar.gz', 'w:gz') as archive:
+                archive.add(tree, arcname=tree.name)
+        stage = temp / 'package'
+        shutil.copytree(tree / 'lib', stage / 'usr/lib', symlinks=True)
+        shutil.copytree(tree / 'share', stage / 'usr/share')
+        aliases = (ROOT / 'packaging/linux/package-aliases.sh').read_text()
+        deb_arch, rpm_arch, _ = ARCHES[args.arch]
+        if 'deb' in formats:
+            control = stage / 'DEBIAN'
+            control.mkdir()
+            for script, case, action in [
+                ('preinst', 'install|upgrade', 'check'),
+                ('postinst', 'configure|abort-upgrade|abort-remove|abort-deconfigure', 'install'),
+                ('prerm', 'remove|deconfigure', 'remove'),
+                ('postrm', 'remove|purge', 'remove'),
+            ]:
+                path = control / script
+                path.write_text('#!/bin/sh\nset -eu\ncase "${1:-}" in ' + case + ') ;; *) exit 0 ;; esac\nset -- ' + action + '\n' + aliases)
+                path.chmod(0o755)
+            (control / 'control').write_text(f'''Package: runner
+Version: {package_version}
+Architecture: {deb_arch}
+Maintainer: Runner maintainers <jason3gb@gmail.com>
+Section: devel
+Priority: optional
+Depends: libc6 (>= {glibc}){deb_cxx}, libfontconfig1, libfreetype6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0, libwayland-egl1, libxcb1, libxcb-render0, libxcb-shape0, libxcb-xfixes0, libxcb-randr0, libxcb-xinput0, libxcb-cursor0, libegl1, libvulkan1, xdg-utils
+Recommends: fonts-noto-cjk, xdg-desktop-portal, dbus-user-session
+Description: Local desktop cockpit for CLI coding agents
+ Native GPUI app, runner CLI and opt-in runnerd user service.
+''')
+            run('dpkg-deb', '--root-owner-group', '--build', str(stage), str(out / f'{tree.name}.deb'))
+            shutil.rmtree(control)
+        if 'rpm' in formats:
+            top = temp / 'rpmbuild'
+            for directory in ['BUILD', 'BUILDROOT', 'RPMS', 'SOURCES', 'SPECS', 'SRPMS']:
+                (top / directory).mkdir(parents=True)
+            spec = top / 'SPECS/runner.spec'
+            spec.write_text(f'''Name: runner
+Version: {version}
+Release: {rpm_release}
+Summary: Local desktop cockpit for CLI coding agents
+License: MIT
+URL: https://github.com/yicheng47/runner
+BuildArch: {rpm_arch}
+AutoReqProv: no
+Requires: glibc >= {glibc}{rpm_cxx}, fontconfig, freetype, libxkbcommon, libxkbcommon-x11, wayland-libs, libxcb, libglvnd-egl, vulkan-loader, xdg-utils
+%description
+Native GPUI app, runner CLI and opt-in runnerd user service.
+%install
+mkdir -p %{{buildroot}}
+cp -a "{stage}/usr" %{{buildroot}}/
+%pre
+set -- check
+{aliases}
+%post
+set -- install
+{aliases}
+%preun
+if [ "$1" -ne 0 ]; then exit 0; fi
+set -- remove
+{aliases}
+%files
+/usr/lib/runner
+/usr/lib/systemd/user/runnerd.service
+/usr/share/applications/runner.desktop
+/usr/share/icons/hicolor/256x256/apps/runner.png
+''')
+            run('rpmbuild', '--define', f'_topdir {top}', '--define', '_build_id_links none', '--define', '__os_install_post %{nil}', '--target', rpm_arch, '-bb', str(spec))
+            built = list((top / 'RPMS').rglob('*.rpm'))
+            if len(built) != 1:
+                raise SystemExit('Expected exactly one RPM')
+            shutil.copy2(built[0], out / f'{tree.name}.rpm')
+    print(f'Packages: {out} ({args.arch}; {label})')
+
+
+if __name__ == '__main__':
+    main()

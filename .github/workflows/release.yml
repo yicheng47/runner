@@ -300,8 +300,55 @@ jobs:
             target/x86_64-pc-windows-msvc/release/Runner-Setup-${{ needs.prepare.outputs.version }}.${{ needs.prepare.outputs.stamp }}-x64.exe.sig
           if-no-files-found: error
 
+  build-linux:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - name: Bootstrap checkout prerequisites
+        run: apt-get update && apt-get install -y ca-certificates git
+      - name: Check out dispatch commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - name: Install Linux dependencies
+        run: ./script/linux/install-build-deps
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-release-22.04-${{ matrix.arch }}
+          cache-on-failure: true
+      - name: Build Linux packages
+        env:
+          RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
+          RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.sha }}
+        run: ./script/bundle-linux --channel production --arch ${{ matrix.arch }}
+      - name: Verify Linux package metadata and layout
+        run: python3 script/linux/test-packaging.py --packages target/linux-packages
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: target/linux-packages/Runner-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}.*
+          if-no-files-found: error
+
   publish:
-    needs: [prepare, build-macos, build-windows]
+    needs: [prepare, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

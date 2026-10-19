@@ -190,10 +190,7 @@ fn history(root: &Path, cwd: &str, key: &str) {
         db.execute("INSERT INTO session_v2 VALUES (?1)", [key])
             .unwrap();
     }
-    let claude_project: String = cwd
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect();
+    let claude_project = crate::runtimes::claude_code::claude_code_project_dir(cwd);
     for path in [
         root.join(".claude/projects")
             .join(claude_project)

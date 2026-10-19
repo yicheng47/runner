@@ -541,11 +541,11 @@ fn mouse_modifiers(modifiers: gpui::Modifiers) -> MouseModifiers {
 }
 
 fn link_modifier(modifiers: gpui::Modifiers) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         modifiers.control
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         modifiers.platform || modifiers.control
     }
@@ -1965,7 +1965,7 @@ mod tests {
                 platform: true,
                 ..Default::default()
             }),
-            !cfg!(windows),
+            cfg!(target_os = "macos"),
         );
         assert!(link_modifier(gpui::Modifiers {
             control: true,

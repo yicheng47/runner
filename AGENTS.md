@@ -63,6 +63,8 @@ CI runs Clippy and workspace tests with the `ci` Cargo profile, which uses light
 
 On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecars, or `.\make.cmd build` to build only. Add `--release` for optimized binaries under `target\release`; the default development binaries are under `target\debug`. Use `.\make.cmd clean` to remove the Cargo target directory, or `.\make.cmd clean --release` to clean only release outputs; close the development app and finish other builds first. Installed apps, user data, Rust toolchains, and Cargo's shared dependency cache are kept. The script works in PowerShell and Command Prompt without GNU Make; use the native Cargo commands in [Local Windows development](docs/arch/windows.md#local-windows-development) for checks.
 
+Linux development uses `make run` and the same Cargo commands. See [Linux development](docs/arch/linux.md) for dependencies, dual-architecture builds, packages and the opt-in user service. Linux has no app updater; `make clippy` runs its updater-feature pass only on macOS/Windows.
+
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
 ## Test Scope
@@ -90,7 +92,7 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 ## Engineering Conventions
 
 - Follow existing local patterns before adding new abstractions.
-- Keep platform window chrome in `crates/runner-app/src/platform_ui/{macos,windows}.rs` and font mappings in the adjacent `fonts_{macos,windows}.rs`, selected at compile time. Windows layout changes must preserve the macOS implementation; share sidebar and workspace content across platforms.
+- Keep platform window chrome in `crates/runner-app/src/platform_ui/{macos,windows,linux}.rs` and font mappings in the adjacent `fonts_{macos,windows,linux}.rs`, selected at compile time. Windows/Linux custom chrome is shared in `desktop.rs`; layout changes must preserve the macOS implementation; share sidebar and workspace content across platforms.
 - Keep changes scoped to the request. Avoid unrelated refactors.
 - A pull request that changes user-visible behavior (commands, settings, shortcuts or screens) updates the relevant `docs/guide/` pages in the same pull request. Feature specs name the guide pages they affect. Regenerate the CLI reference with `make guide-cli` when CLI help changes; CI checks it on both platforms.
 - Do not revert user changes. If the working tree is dirty, inspect first and

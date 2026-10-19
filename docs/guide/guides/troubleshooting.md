@@ -62,3 +62,11 @@ Start a new session after changing a registration or global skill switch. These 
 Find the Runner version in **Runner → About Runner** on macOS, or **Settings → About** on either platform. The macOS About window shows the app icon, version and build identity, and copyright. Released builds include their commit identifier; local development builds show `dev`.
 
 Open **Settings → Diagnostics → Open log folder**. Include the Runner version, operating system, agent CLI and version, the steps that failed, and the visible error in a [GitHub issue](https://github.com/yicheng47/runner/issues/new). Share only the relevant log excerpt after removing secrets and private conversation content. Keep the original sessions and logs until you have captured the evidence; deleting application data is not a first troubleshooting step.
+
+## Linux local builds
+
+For source builds, graphics prerequisites, packages and WSL setup see [Linux development on main](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md). If the CLI is used over SSH, start `runnerd` with `systemctl --user start runnerd` first; remote CLI calls do not auto-start it. A minimal user service resolves the account login shell for PATH discovery. Check `systemctl --user status runnerd` and the log directory inside the selected XDG data root.
+
+Linux notification permissions are managed by your desktop. Runner cannot query a universal permission status; confirm the desktop notification daemon and portal backend are available. Clipboard text is supported by GPUI, while clipboard file paths and the app updater are not available. WSL systemd services do not keep an idle distro alive.
+
+In a normal Linux window, drag an edge or corner to resize. The middle caption button toggles maximize and restore; maximized/fullscreen windows have no resize border. New windows use the desktop's reported logical display bounds. If the compositor does not report a separate work area, panel/taskbar space may be included in those bounds. Include the desktop/session type and whether maximize, restore or edge dragging failed when reporting a window-control problem.

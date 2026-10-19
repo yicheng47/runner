@@ -171,3 +171,77 @@ jobs:
           path: target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
+
+  rust-linux:
+    name: Rust / Linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            nextest-platform: linux
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            nextest-platform: linux-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ubuntu:22.04
+      options: --init
+    timeout-minutes: 60
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - name: Bootstrap checkout prerequisites
+        run: apt-get update && apt-get install -y ca-certificates git
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install Linux dependencies
+        run: ./script/linux/install-build-deps
+      - name: Install Node for embedded pi extension tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal --component clippy,rustfmt
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install nextest
+        shell: bash
+        run: curl -LsSf https://get.nexte.st/0.9.148/${{ matrix.nextest-platform }} | tar zxf - -C "$HOME/.cargo/bin"
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-22.04-${{ matrix.arch }}
+          cache-on-failure: false
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
+      - name: Test
+        run: |
+          useradd --create-home runner-ci
+          chown -R runner-ci:runner-ci "$GITHUB_WORKSPACE" "$HOME/.cargo" "$HOME/.rustup"
+          # Later CLI and lockfile checks run as root against this checkout.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          runuser -u runner-ci -- env CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
+            cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci --timings
+      - name: Check generated CLI reference
+        run: |
+          cargo build --locked -p runner-cli --profile ci
+          python3 script/generate-cli-reference.py --runner target/ci/runner-agent-cli --check
+      - name: Test Linux installer ownership
+        run: python3 script/linux/test-packaging.py
+      - name: Check Linux desktop entry
+        run: desktop-file-validate packaging/linux/runner.desktop
+      - name: Verify lockfile is committed
+        run: git diff --exit-code -- Cargo.lock
+      - name: Upload build timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-timings-linux-${{ matrix.arch }}
+          path: target/cargo-timings/*.html
+          if-no-files-found: ignore
+          retention-days: 7

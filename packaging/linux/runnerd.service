@@ -1,0 +1,14 @@
+# Runner managed user service
+[Unit]
+Description=Runner coding agent daemon
+Documentation=https://github.com/yicheng47/runner
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/runner/runnerd
+Restart=no
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

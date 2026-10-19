@@ -11,6 +11,59 @@ use runner_core::protocol::terminal::TerminalFrame;
 use runner_core::protocol::wire::Hello;
 use runner_core::protocol::{DaemonClient, ProjectScope};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn fresh_headless_daemon_installs_real_shim_and_starts_shell_without_shell_env() {
+    let mut daemon = Daemon::new();
+    let source = daemon
+        .launch
+        .source
+        .parent()
+        .unwrap()
+        .join(runner_core::cli_install::AGENT_SOURCE_BIN_NAME);
+    std::fs::copy(&daemon.launch.source, source).unwrap();
+    assert!(!daemon.launch.paths.app_data_dir.join("bin/runner").exists());
+
+    daemon.child = Some(
+        daemon
+            .command()
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", daemon.launch.paths.home_dir.as_ref().unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let transport = daemon.connect();
+    let client = DaemonClient::new(transport.clone());
+    let installed = daemon.launch.paths.app_data_dir.join("bin/runner");
+    assert_eq!(
+        daemon_process::executable_hash(&installed).unwrap(),
+        daemon.hash
+    );
+    let shim_dir = runner_daemon::cli_install::install_session_runner_shim(
+        &daemon.launch.paths.app_data_dir,
+        None,
+        "headless-fixture",
+        "worker",
+        &daemon.root.path().join("events.ndjson"),
+        None,
+    )
+    .unwrap();
+    let result = Command::new(shim_dir.join("runner"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let shell = daemon.shell(&client);
+    assert!(!shell.id.is_empty());
+    transport.shutdown(true).unwrap();
+    daemon.stopped();
+}
+
 #[test]
 fn persistent_hook_reporter_delivers_to_real_isolated_daemon() {
     use runner_core::protocol::hook;

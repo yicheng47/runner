@@ -694,7 +694,7 @@ fn health_status_reports_not_running_with_exit_three() {
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "Runner is not running. Open Runner and retry.\n"
+        format!("{}\n", runner_cli::client::NOT_RUNNING_MESSAGE)
     );
 }
 
@@ -715,7 +715,7 @@ fn direct_chat_handle_only_reaches_not_running_path() {
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "Runner is not running. Open Runner and retry.\n"
+        format!("{}\n", runner_cli::client::NOT_RUNNING_MESSAGE)
     );
 }
 

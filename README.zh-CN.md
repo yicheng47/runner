@@ -53,6 +53,8 @@
 
 > Alpha · 原生支持 macOS（Apple Silicon）和 Windows（x64）。
 
+Linux ARM64 和 x86_64 支持正在开发，提供本地 tarball、Debian 和 RPM 打包路径。Linux 下载尚未发布；请参阅 [Linux 构建与安装说明](docs/arch/linux.md) 和 [验证状态](docs/tests/823-linux-support.md)。
+
 Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 mission feed 一起工作。会话和历史记录都保存在你的机器上。
 
 ## 功能

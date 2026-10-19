@@ -1,0 +1,422 @@
+use gpui::{deferred, svg, Div, WindowControlArea};
+
+use crate::surfaces::app_shell::alpha;
+use crate::*;
+use runner_app::ui::CAPTION_BUTTON_WIDTH;
+
+const TITLEBAR_HEIGHT: f32 = 32.;
+
+// The chrome titlebar already reserves the band macOS Settings pads for, so
+// the content starts at the same window height on both platforms.
+pub(crate) const SETTINGS_DRAG_INSET: f32 = 0.;
+pub(crate) const SETTINGS_CONTENT_TOP: f32 = 56. - TITLEBAR_HEIGHT;
+
+pub(crate) const PRIMARY_MODIFIER: &str = "Ctrl";
+#[cfg(windows)]
+pub(crate) const SHORTCUT_REQUIREMENTS_KEY: &str =
+    "ui.shortcuts_must_include_ctrl_alt_or_win_function_keys_can_be_used_alone";
+
+#[cfg(target_os = "linux")]
+pub(crate) const SHORTCUT_REQUIREMENTS_KEY: &str =
+    "ui.shortcuts_must_include_ctrl_alt_or_super_function_keys_can_be_used_alone";
+
+pub(crate) fn primary_modifier_held(modifiers: gpui::Modifiers) -> bool {
+    modifiers.control
+}
+
+pub(crate) fn other_shortcut_modifiers_held(modifiers: gpui::Modifiers) -> bool {
+    modifiers.platform || modifiers.alt || modifiers.shift || modifiers.function
+}
+
+pub(crate) fn sidebar_row_wrapper(id: SharedString) -> gpui::Stateful<Div> {
+    div().id(id).relative().w_full().flex().flex_col()
+}
+
+pub(crate) fn sidebar_section() -> Div {
+    div().flex_none().w_full().flex().flex_col()
+}
+
+#[cfg(windows)]
+pub(crate) fn update_hint_tooltip(
+    version: &str,
+    state: &runner_app::updater::UpdateState,
+) -> String {
+    if matches!(state, runner_app::updater::UpdateState::Ready { .. }) {
+        crate::i18n::tf(
+            "format.runner_is_ready_to_install",
+            &[("version", version.to_string())],
+        )
+    } else {
+        crate::i18n::tf(
+            "format.runner_is_available",
+            &[("version", version.to_string())],
+        )
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn activate_update_hint(_updater: &Entity<Updater>, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(
+        Box::new(crate::surfaces::update_dialog::OpenUpdateDialog),
+        cx,
+    );
+}
+
+pub(crate) fn sync_traffic_lights(_: &Window, _: f32) {}
+
+pub(crate) fn finish_window_close(window: &mut Window) -> bool {
+    // Let GPUI own HWND destruction instead of also running Windows' default WM_CLOSE handler.
+    window.remove_window();
+    false
+}
+
+pub(crate) fn navigation_left(_window: &Window, zoom: f32) -> f32 {
+    16. * zoom
+}
+
+impl NativeRoot {
+    pub(crate) fn decorate_window(
+        &self,
+        root: Div,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let frame = div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme::sidebar())
+            .child(
+                div()
+                    .debug_selector(|| "WINDOW_CAPTION_BAR".into())
+                    .relative()
+                    .w_full()
+                    .h(px(TITLEBAR_HEIGHT * self.settings(cx).app_zoom))
+                    .flex_none()
+                    .child(deferred(self.render_windows_titlebar(window, cx)).with_priority(200)),
+            )
+            .child(div().relative().w_full().flex_1().min_h(px(0.)).child(root));
+        #[cfg(target_os = "linux")]
+        let frame = super::linux::resize_frame(frame, window);
+        frame
+    }
+
+    pub(crate) fn render_main_titlebar_drag_area(
+        &self,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
+    }
+
+    pub(crate) fn render_settings_titlebar_drag_area(
+        &self,
+        _id: &'static str,
+        _area: Div,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
+    }
+
+    pub(crate) fn render_sidebar_titlebar(
+        &self,
+        _window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        Some(
+            div()
+                .flex_none()
+                .h(px(12. * self.settings(cx).app_zoom))
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn render_window_navigation(
+        &self,
+        _window: &Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        None
+    }
+
+    fn render_windows_navigation(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let zoom = self.settings(cx).app_zoom;
+        let sidebar_root = cx.entity();
+        let back_root = cx.entity();
+        let forward_root = cx.entity();
+        let in_settings = self.route == AppRoute::Settings;
+        let (can_go_back, can_go_forward) = self.page_navigation_state();
+        Some(
+            div()
+                .occlude()
+                .debug_selector(|| "WINDOW_TITLEBAR_CONTROLS".into())
+                .absolute()
+                .left(px(navigation_left(window, zoom)))
+                .top(px(2. * zoom))
+                .flex_none()
+                .h(px(28. * zoom))
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .debug_selector(|| "WINDOW_SIDEBAR_TOGGLE".into())
+                        .child(
+                            IconButton::new(
+                                "sidebar-toggle",
+                                if self.sidebar_collapsed {
+                                    "panel-left-hidden.svg"
+                                } else {
+                                    "panel-left-open.svg"
+                                },
+                            )
+                            .tooltip(crate::i18n::text("ui.toggle_sidebar"))
+                            .disabled(in_settings)
+                            .on_press(move |window, cx| {
+                                sidebar_root.update(cx, |this, cx| {
+                                    this.toggle_window_sidebar(window, cx);
+                                });
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "WINDOW_PREVIOUS_PAGE".into())
+                        .child(
+                            IconButton::new("window-previous-page", "chevron-left.svg")
+                                .tooltip(crate::i18n::text("ui.previous_page"))
+                                .disabled(!can_go_back)
+                                .on_press(move |window, cx| {
+                                    back_root.update(cx, |this, cx| {
+                                        this.navigate_runtime_page(-1, window, cx)
+                                    });
+                                }),
+                        ),
+                )
+                .child(
+                    div().debug_selector(|| "WINDOW_NEXT_PAGE".into()).child(
+                        IconButton::new("window-next-page", "chevron-right.svg")
+                            .tooltip(crate::i18n::text("ui.next_page"))
+                            .disabled(!can_go_forward)
+                            .on_press(move |window, cx| {
+                                forward_root.update(cx, |this, cx| {
+                                    this.navigate_runtime_page(1, window, cx)
+                                });
+                            }),
+                    ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_windows_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let zoom = self.settings(cx).app_zoom;
+        let caption_width = if window.is_fullscreen() {
+            0.
+        } else {
+            3. * CAPTION_BUTTON_WIDTH * zoom
+        };
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .items_center()
+            .bg(theme::sidebar())
+            .font(crate::app_settings::app_font())
+            .child(
+                self.render_titlebar_drag_area(
+                    "windows-titlebar-drag",
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .ml(px(128. * zoom))
+                        .mr(px(caption_width))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(12. * zoom))
+                        .text_color(theme::muted())
+                        .child("Runner"),
+                    cx,
+                ),
+            )
+            .children(self.render_windows_navigation(window, cx))
+            .children(self.render_caption_buttons(window, cx))
+            .into_any_element()
+    }
+
+    pub(crate) fn render_caption_buttons(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+        if window.is_fullscreen() {
+            return None;
+        }
+        let zoom = self.settings(cx).app_zoom;
+        let maximize_icon = if window.is_maximized() {
+            "copy.svg"
+        } else {
+            "square.svg"
+        };
+        Some(
+            div()
+                .debug_selector(|| "WINDOW_CAPTION_CONTROLS".into())
+                .absolute()
+                .top_0()
+                .right_0()
+                .h(px(TITLEBAR_HEIGHT * zoom))
+                .flex()
+                .children(
+                    [
+                        ("caption-minimize", WindowControlArea::Min, "minus.svg"),
+                        ("caption-maximize", WindowControlArea::Max, maximize_icon),
+                        ("caption-close", WindowControlArea::Close, "close.svg"),
+                    ]
+                    .into_iter()
+                    .map(|(id, area, icon)| {
+                        let close = matches!(area, WindowControlArea::Close);
+                        div()
+                            .id(id)
+                            .group(id)
+                            .w(px(CAPTION_BUTTON_WIDTH * zoom))
+                            .h_full()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .occlude()
+                            .window_control_area(area)
+                            .when(cfg!(target_os = "linux"), |button| {
+                                button.on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    match id {
+                                        "caption-minimize" => window.minimize_window(),
+                                        "caption-maximize" => window.zoom_window(),
+                                        _ => window.dispatch_action(Box::new(CloseWindow), cx),
+                                    }
+                                })
+                            })
+                            .hover(move |button| {
+                                button.bg(if close {
+                                    theme::window_close_hover()
+                                } else {
+                                    alpha(theme::sidebar_selected(), 0.6)
+                                })
+                            })
+                            .child(
+                                svg()
+                                    .flex_none()
+                                    .path(icon)
+                                    .size(px(10. * zoom))
+                                    .text_color(theme::muted())
+                                    .group_hover(id, move |icon| {
+                                        icon.text_color(if close {
+                                            theme::window_close_hover_ink()
+                                        } else {
+                                            theme::text()
+                                        })
+                                    }),
+                            )
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    struct UpdateTriggerTestView {
+        focus: FocusHandle,
+        updater: Entity<Updater>,
+        opened: bool,
+    }
+
+    impl Render for UpdateTriggerTestView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .track_focus(&self.focus)
+                .on_action(cx.listener(
+                    |this, _: &crate::surfaces::update_dialog::OpenUpdateDialog, _, _| {
+                        this.opened = true;
+                    },
+                ))
+        }
+    }
+
+    #[test]
+    fn update_indicator_requests_the_dialog_without_opening_a_browser() {
+        let mut cx = gpui::TestAppContext::single();
+        let window = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            UpdateTriggerTestView {
+                focus,
+                updater: cx.new(|cx| Updater::new(false, PathBuf::new(), cx)),
+                opened: false,
+            }
+        });
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |view, window, cx| {
+                activate_update_hint(&view.updater, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |view, _, cx| {
+                assert!(view.opened);
+                assert!(!view.updater.read(cx).is_checking());
+            })
+            .unwrap();
+        assert!(cx.opened_url().is_none());
+    }
+
+    #[test]
+    fn update_indicator_visibility_and_tooltip_follow_state() {
+        use runner_app::updater::{UpdateInfo, UpdateState, UpdateStep};
+        let info = UpdateInfo::new("0.8.2");
+        for state in [
+            UpdateState::UpToDate { checking: false },
+            UpdateState::Downloading {
+                received: 1,
+                total: 2,
+            },
+            UpdateState::Available {
+                info: info.clone(),
+                installer_url: "url".into(),
+                sig_url: None,
+            },
+            UpdateState::Ready {
+                info: info.clone(),
+                path: PathBuf::from("verified.exe"),
+            },
+            UpdateState::Failed {
+                step: UpdateStep::Verify,
+                message: "test".into(),
+                info: Some(info),
+            },
+        ] {
+            let ready = matches!(state, UpdateState::Ready { .. });
+            assert_eq!(
+                state.available().is_some(),
+                !matches!(
+                    state,
+                    UpdateState::UpToDate { .. } | UpdateState::Downloading { .. }
+                )
+            );
+            assert_eq!(
+                update_hint_tooltip("0.8.2", &state),
+                if ready {
+                    "Runner 0.8.2 is ready to install"
+                } else {
+                    "Runner 0.8.2 is available"
+                }
+            );
+        }
+    }
+}

@@ -16,7 +16,9 @@ use crate::app_store::{AppStore, StoreRevisions};
 use crate::{global_app_store, AppRoute, NativeRoot};
 
 mod permission;
-pub(crate) use permission::{settings_url, Permission};
+#[cfg(not(target_os = "linux"))]
+pub(crate) use permission::settings_url;
+pub(crate) use permission::Permission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reason {
@@ -380,9 +382,15 @@ fn pairing_content(pairing: &crate::app_store::RemotePairing) -> SystemNotificat
 impl NotificationController {
     fn paired(&mut self, pairing: &crate::app_store::RemotePairing, cx: &mut Context<Self>) {
         let notification = pairing_content(pairing);
-        if self.permission == Permission::Allowed {
+        #[cfg(target_os = "linux")]
+        let system_notification = true;
+        #[cfg(not(target_os = "linux"))]
+        let system_notification = self.permission == Permission::Allowed;
+        if system_notification {
             cx.show_system_notification(notification);
-        } else {
+        }
+        // Linux cannot report delivery permission, so keep the pairing visible in-app too.
+        if !system_notification || cfg!(target_os = "linux") {
             let window = cx
                 .active_window()
                 .and_then(|window| window.downcast::<NativeRoot>())

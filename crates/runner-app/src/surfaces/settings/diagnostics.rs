@@ -34,9 +34,9 @@ impl DiagnosticsPane {
 
 impl Render for DiagnosticsPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let logs_label = crate::i18n::text("ui.reveal_logs_in_finder");
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let logs_label = crate::i18n::text("ui.open_log_folder");
         let logs_description = crate::i18n::text(
             "ui.open_the_folder_containing_runner_log_so_you_can_attach_it_to_a_bug_report",

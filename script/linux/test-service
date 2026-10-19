@@ -1,0 +1,23 @@
+#!/bin/sh
+# Coordinator-only: real systemd user units; no app UI or agents.
+set -eu
+cd "$(dirname "$0")/../.."
+command -v systemd-run >/dev/null
+systemctl --user show-environment >/dev/null
+source_sha=$(git rev-parse --short=7 HEAD)
+task_target=$(uname -m)-unknown-linux-gnu
+for stamp in 20000101.0001 20000101.0002; do
+    # Distinct explicit fixture labels ensure the optimizer retains distinct bytes.
+    # These are validation binaries, never downloadable production/nightly packages.
+    RUNNER_BUILD_STAMP=$stamp RUNNER_BUILD_SHA=$source_sha \
+    RUNNER_MARKETING_VERSION="runner-823-service-fixture-$stamp" \
+    CARGO_BUILD_JOBS=2 cargo --config profile.release.debug-assertions=false build --locked --release --target "$task_target" -p runner-cli
+    fixture=target/linux-validation/service-fixtures/$stamp
+    mkdir -p "$fixture"
+    cp "target/$task_target/release/runner-agent-cli" "$fixture/runner-agent-cli"
+    cp "target/$task_target/release/runner-agent-cli" "$fixture/runnerd"
+    sha256sum "$fixture/runner-agent-cli" "$fixture/runnerd"
+done
+CARGO_BUILD_JOBS=2 cargo run --locked -p runner-cli --example linux_service_check --profile ci -- \
+    target/linux-validation/service-fixtures/20000101.0001 \
+    target/linux-validation/service-fixtures/20000101.0002

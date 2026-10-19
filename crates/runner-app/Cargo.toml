@@ -64,3 +64,10 @@ gpui = { package = "gpui-pre", version = "=0.3.7", features = ["test-support"] }
 [dev-dependencies]
 runner-daemon = { path = "../runner-daemon" }
 runner-terminal = { path = "../runner-terminal", features = ["test-support"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", default-features = false, features = ["font-kit", "wayland", "x11"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, features = ["test-support"] }

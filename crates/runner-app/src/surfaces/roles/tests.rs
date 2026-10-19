@@ -619,7 +619,12 @@ fn entity_pages_keep_the_sidebar_cluster_when_it_collapses() {
             .debug_bounds("WINDOW_TITLEBAR_CONTROLS")
             .unwrap();
         let chrome = page.visual.debug_bounds("APP_CHROME").unwrap();
-        let controls_y = chrome.top() + px(if cfg!(windows) { -16. } else { 30. });
+        let controls_y = chrome.top()
+            + px(if cfg!(any(windows, target_os = "linux")) {
+                -16.
+            } else {
+                30.
+            });
         assert_eq!(controls.center().y, controls_y, "{route:?}");
         assert_eq!(controls.size.width, px(92.), "{route:?}");
         assert_eq!(controls.size.height, px(28.), "{route:?}");

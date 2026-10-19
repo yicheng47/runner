@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use chrono::Utc;
 use gpui::prelude::*;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use gpui::MouseButton;
 use gpui::{
     div, px, rems, svg, AnyElement, App, BoxShadow, CursorStyle, FontWeight, KeyDownEvent,
@@ -143,7 +143,7 @@ impl MissionWorkspace {
                 div()
                     .id("mission-rail-resize")
                     .map(|handle| {
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         let handle = handle.occlude();
                         handle
                     })
@@ -589,6 +589,18 @@ impl MissionWorkspace {
                     Err(format!("Finder exited with status {status}"))
                 }
             }
+            #[cfg(target_os = "linux")]
+            {
+                let status = Command::new("xdg-open")
+                    .arg(cwd)
+                    .status()
+                    .map_err(|error| error.to_string())?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(format!("File manager exited with status {status}"))
+                }
+            }
             #[cfg(windows)]
             {
                 Command::new("explorer.exe")
@@ -690,6 +702,8 @@ impl MissionWorkspace {
                         let reveal = cwd.clone();
                         #[cfg(target_os = "macos")]
                         let reveal_label = crate::i18n::text("ui.reveal_in_finder");
+                        #[cfg(target_os = "linux")]
+                        let reveal_label = crate::i18n::text("ui.open_working_directory");
                         #[cfg(windows)]
                         let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
                         Tooltip::new(
@@ -875,7 +889,7 @@ fn rail_view_button(
     div()
         .id(id)
         .map(|button| {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
             button
         })

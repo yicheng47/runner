@@ -70,7 +70,7 @@ impl PinField {
         }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
-        let command = if cfg!(windows) {
+        let command = if cfg!(any(windows, target_os = "linux")) {
             modifiers.control
         } else {
             modifiers.platform
@@ -297,8 +297,12 @@ mod tests {
                 );
                 assert_eq!(adjusted, Some(0..6));
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string("clipboard marker".into()));
-                let command = if cfg!(windows) { "ctrl" } else { "cmd" };
-                for key in ["c", "x"] {
+                let command = if cfg!(any(windows, target_os = "linux")) {
+                    "ctrl"
+                } else {
+                    "cmd"
+                };
+                for key in ["a", "c", "x", "z", "y"] {
                     field.key_down(
                         &KeyDownEvent {
                             keystroke: gpui::Keystroke::parse(&format!("{command}-{key}")).unwrap(),
@@ -320,8 +324,21 @@ mod tests {
                     assert!(field.value().0 == "001234");
                 }
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string("009876".into()));
+                field.key_down(
+                    &KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse(&format!("{command}-v")).unwrap(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert!(field.value().0 == "009876");
+                field.disabled = true;
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string("123456".into()));
                 field.paste(cx);
                 assert!(field.value().0 == "009876");
+                field.disabled = false;
                 field.key_down(
                     &KeyDownEvent {
                         keystroke: gpui::Keystroke::parse("backspace").unwrap(),

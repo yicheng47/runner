@@ -10,6 +10,7 @@ pub trait SecretStore: Send + Sync {
 }
 
 pub struct OsStore {
+    #[cfg(any(target_os = "macos", windows, test))]
     namespace: String,
     #[cfg(unix)]
     file: Option<FileStore>,
@@ -27,9 +28,10 @@ impl OsStore {
         };
         store
     }
-    fn named(_root: &Path, namespace: &str) -> Self {
+    fn named(_root: &Path, _namespace: &str) -> Self {
         Self {
-            namespace: namespace.into(),
+            #[cfg(any(target_os = "macos", windows, test))]
+            namespace: _namespace.into(),
             #[cfg(unix)]
             file: if cfg!(target_os = "macos") {
                 None
@@ -158,6 +160,19 @@ struct FileStore {
 }
 #[cfg(unix)]
 impl FileStore {
+    fn validate_root(&self) -> StoreResult<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = match std::fs::symlink_metadata(&self.root) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err("Secret directory metadata failed"),
+        };
+        if !meta.is_dir() || meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o022 != 0 {
+            return Err("Secret directory must be owned by this user and not writable by others");
+        }
+        Ok(true)
+    }
+
     fn path(&self, name: &str) -> PathBuf {
         use sha2::{Digest, Sha256};
         let filename = match name {
@@ -175,6 +190,9 @@ impl FileStore {
 impl SecretStore for FileStore {
     fn get(&self, origin: &str) -> StoreResult<Option<Vec<u8>>> {
         use std::os::unix::fs::MetadataExt;
+        if !self.validate_root()? {
+            return Ok(None);
+        }
         let path = self.path(origin);
         let mut file = match std::fs::OpenOptions::new()
             .read(true)
@@ -197,7 +215,13 @@ impl SecretStore for FileStore {
     }
     fn put(&self, origin: &str, value: &[u8]) -> StoreResult<()> {
         use std::io::Write;
-        std::fs::create_dir_all(&self.root).map_err(|_| "Secret directory creation failed")?;
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.root)
+            .map_err(|_| "Secret directory creation failed")?;
+        self.validate_root()?;
         let mut file = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o600))
             .tempfile_in(&self.root)
@@ -212,6 +236,9 @@ impl SecretStore for FileStore {
         Ok(())
     }
     fn delete(&self, origin: &str) -> StoreResult<()> {
+        if !self.validate_root()? {
+            return Ok(());
+        }
         match std::fs::remove_file(self.path(origin)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -715,6 +742,62 @@ mod client_key_tests {
 #[cfg(all(test, unix))]
 mod file_tests {
     use super::*;
+    #[test]
+    fn file_store_rejects_writable_or_symlinked_roots_without_changing_existing_modes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("private");
+        let store = FileStore { root: path.clone() };
+        assert!(store.get(IDENTITY_NAME).unwrap().is_none());
+        store.put(IDENTITY_NAME, b"fixture").unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770)).unwrap();
+        assert!(store.get(IDENTITY_NAME).is_err());
+        assert!(store.put(IDENTITY_NAME, b"replacement").is_err());
+        assert!(store.delete(IDENTITY_NAME).is_err());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(&path, &linked).unwrap();
+        let linked_store = FileStore { root: linked };
+        assert!(linked_store.get(IDENTITY_NAME).is_err());
+        assert!(linked_store.put(IDENTITY_NAME, b"replacement").is_err());
+        assert_eq!(store.get(IDENTITY_NAME).unwrap().unwrap(), b"fixture");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_release_launchers_share_identity_across_restarts_but_not_development() {
+        let base = tempfile::tempdir().unwrap();
+        let release = base
+            .path()
+            .join(runner_core::app_paths::app_identifier(false));
+        let development = base
+            .path()
+            .join(runner_core::app_paths::app_identifier(true));
+        let app = OsStore::new(&release, false);
+        let identity = Identity::generate().unwrap();
+        identity.save(&app).unwrap();
+        let service = OsStore::new(&release, false);
+        let cli = OsStore::new(&release, false);
+        assert_eq!(
+            Identity::load(&service).unwrap().unwrap().key.0,
+            identity.key.0
+        );
+        assert_eq!(Identity::load(&cli).unwrap().unwrap().key.0, identity.key.0);
+        let dev = OsStore::new(&development, true);
+        assert!(Identity::load(&dev).unwrap().is_none());
+        let dev_identity = Identity::generate().unwrap();
+        dev_identity.save(&dev).unwrap();
+        assert_ne!(dev_identity.key.0, identity.key.0);
+        assert_eq!(Identity::load(&app).unwrap().unwrap().key.0, identity.key.0);
+    }
+
     #[test]
     fn file_items_are_independent_private_and_reject_unsafe_files() {
         let root = tempfile::tempdir().unwrap();

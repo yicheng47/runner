@@ -21,6 +21,9 @@ pub mod platform_fonts;
 #[cfg(windows)]
 #[path = "platform_ui/fonts_windows.rs"]
 pub mod platform_fonts;
+#[cfg(target_os = "linux")]
+#[path = "platform_ui/fonts_linux.rs"]
+pub mod platform_fonts;
 pub mod terminal_ime;
 pub mod terminal_paste;
 pub mod terminal_resize;

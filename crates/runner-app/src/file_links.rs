@@ -169,6 +169,14 @@ fn open_argv(target: &FileLinkTarget) -> Vec<String> {
     ]
 }
 
+#[cfg(target_os = "linux")]
+fn open_argv(target: &FileLinkTarget) -> Vec<String> {
+    vec![
+        "xdg-open".into(),
+        target.path.to_string_lossy().into_owned(),
+    ]
+}
+
 #[cfg(windows)]
 fn open_argv(target: &FileLinkTarget) -> Vec<String> {
     vec![
@@ -222,7 +230,11 @@ mod tests {
 
     #[test]
     fn link_tooltip_teaches_the_gesture_then_names_the_action() {
-        let modifier = if cfg!(windows) { "Ctrl" } else { "⌘" };
+        let modifier = if cfg!(any(windows, target_os = "linux")) {
+            "Ctrl"
+        } else {
+            "⌘"
+        };
         let url = LinkTarget::Url("https://example.com".into());
         assert_eq!(
             link_tooltip(&url, false, FileLinkEditor::Zed, None),
