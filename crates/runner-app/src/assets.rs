@@ -21,6 +21,7 @@ pub const JETBRAINS_MONO_FONTS: [&[u8]; 4] = [
     include_bytes!("../../../assets/fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf"),
 ];
 const LIST_FILTER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M7 12h10M10 19h4"/></svg>"#;
+const KEY_ROUND: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 17.4a1 1 0 0 0-.3.7V21a1 1 0 0 0 1 1H6v-2h2v-2h2l3.4-3.4a6.5 6.5 0 1 0-4-4Z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/></svg>"#;
 const GLOBE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a16 16 0 0 1 0 20 16 16 0 0 1 0-20"/></svg>"#;
 const TICKET: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9a3 3 0 0 1 0 6v3a1 1 0 0 0 1 1h18a1 1 0 0 0 1-1v-3a3 3 0 0 1 0-6V6a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1Z"/><path d="M13 5v2m0 4v2m0 4v2"/></svg>"#;
 const PLUG_ZAP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.3 20.3a2.4 2.4 0 0 0 3.4 0L12 18l-6-6-2.3 2.3a2.4 2.4 0 0 0 0 3.4Z"/><path d="m2 22 3-3"/><path d="M7.5 13.5 10 11M10.5 16.5 13 14"/><path d="m18 3-4 4h6l-4 4"/></svg>"#;
@@ -178,6 +179,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("panel-bottom-open.svg", PANEL_BOTTOM_OPEN),
     ("settings.svg", SETTINGS),
     ("globe.svg", GLOBE),
+    ("key-round.svg", KEY_ROUND),
     ("ticket.svg", TICKET),
     ("plug-zap.svg", PLUG_ZAP),
     ("lock.svg", LOCK),

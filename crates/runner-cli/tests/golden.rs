@@ -677,6 +677,10 @@ fn help_cases() -> Vec<Case> {
         vec!["remote", "status", "--help"],
         vec!["remote", "login", "--help"],
         vec!["remote", "logout", "--help"],
+        vec!["remote", "pin", "--help"],
+        vec!["remote", "devices", "--help"],
+        vec!["remote", "revoke", "--help"],
+        vec!["remote", "reset-identity", "--help"],
         vec!["project", "--help"],
         vec!["role", "--help"],
         vec!["crew", "--help"],
@@ -963,6 +967,26 @@ fn normalization_preserves_fixed_offsets_and_non_build_hashes() {
         )),
         "pid         <PID>\nexe_sha256  <EXE_SHA256>\nnext_offset  692\n"
     );
+}
+
+#[test]
+fn remote_revoke_unknown_fingerprint_reports_refusal_and_exits_one() {
+    let mut fixture = Fixture::new();
+    fixture.start();
+    for inside in [false, true] {
+        let output = fixture
+            .command(inside)
+            .args(["remote", "revoke", "typo"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            "No paired device has fingerprint typo."
+        );
+    }
+    assert!(!fixture.data.join("remote-trust.json").exists());
 }
 
 #[test]
