@@ -17,6 +17,11 @@ macro_rules! daemon_api {
         remote_set_paused(paused: bool => bool = { paused }) -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore, paused: bool| { crate::daemon::block_on(core.remote.pause(paused)).map_err(crate::error::Error::msg) };
         remote_retry() -> $crate::remote::RemoteStatus [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.retry()).map_err(crate::error::Error::msg) };
         remote_logout() -> $crate::remote::RemoteLogout [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.logout()).map_err(crate::error::Error::msg) };
+        remote_trust() -> $crate::remote::RemoteTrust [true] => |core: &crate::AppCore| { Ok(core.remote.trust()) };
+        remote_set_pin(pin: $crate::remote::Secret => $crate::remote::Secret = { pin }) -> $crate::remote::RemoteTrust [false] => |core: &crate::AppCore, pin: runner_core::remote::Secret| { crate::daemon::block_on(core.remote.set_pin(pin)).map_err(crate::error::Error::msg) };
+        remote_unlock_pin() -> $crate::remote::RemoteTrust [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.unlock_pin()).map_err(crate::error::Error::msg) };
+        remote_revoke_device(fingerprint: String => String = { fingerprint }) -> $crate::remote::RemoteTrust [false] => |core: &crate::AppCore, fingerprint: String| { crate::daemon::block_on(core.remote.revoke_device(fingerprint)).map_err(crate::error::Error::msg) };
+        remote_reset_identity() -> $crate::remote::RemoteTrust [false] => |core: &crate::AppCore| { crate::daemon::block_on(core.remote.reset_identity()).map_err(crate::error::Error::msg) };
         app_version() -> String [true] => |core: &crate::AppCore| { Ok(core.app_version.clone()) };
         hook_report(report: HookReport => HookReport = { report }) -> () [true] => |_core: &crate::AppCore, _report: HookReport| { Err(crate::error::Error::msg("hook admission requires a reporter connection")) };
         mission_list(crew_id: Option<String> => Option<String> = { crew_id }) -> Vec<Mission> [false] => |core: &crate::AppCore, crew_id: Option<String>| { crate::ops::mission::mission_list(core, crew_id) };
