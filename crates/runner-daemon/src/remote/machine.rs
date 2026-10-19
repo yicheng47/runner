@@ -25,6 +25,14 @@ pub enum Command {
     Retry,
     Logout,
     ResetIdentity(Identity),
+    SetPin(Secret),
+    UnlockPin,
+    RevokeDevice(String),
+    RecordFailedPin,
+    RecordPaired {
+        public_key: Vec<u8>,
+        name: String,
+    },
     OwnerGone(u64),
     Shutdown,
 }
@@ -53,6 +61,7 @@ pub enum Effect {
     Store,
     Save,
     SaveIdentity,
+    SaveTrust,
     Delete(String),
     SignOut {
         origin: String,
@@ -74,6 +83,7 @@ struct Enrollment {
 pub struct Machine {
     pub host: HostInfo,
     pub identity: Option<Identity>,
+    pub trust: super::trust::Trust,
     pub status: RemoteStatus,
     pub saved: Option<Saved>,
     pub secrets: Option<Secrets>,
@@ -86,6 +96,19 @@ pub struct Machine {
     pub shutting_down: bool,
 }
 impl Machine {
+    pub fn trust(&self) -> RemoteTrust {
+        RemoteTrust {
+            fingerprint: self
+                .identity
+                .as_ref()
+                .and_then(|i| i.host_key().ok())
+                .map(|k| fingerprint(&k.public)),
+            pin_set: self.identity.as_ref().is_some_and(|i| i.pin.is_some()),
+            pin_locked: self.trust.pin_locked,
+            devices: self.trust.devices.clone(),
+        }
+    }
+
     pub fn restore(
         saved: Option<Saved>,
         secrets: Option<Secrets>,
@@ -162,7 +185,16 @@ impl Machine {
             .is_some_and(|s| !s.activated && now >= s.claim_expires_at)
             && !matches!(
                 input,
-                Input::Command(Command::Logout | Command::ResetIdentity(_) | Command::Shutdown)
+                Input::Command(
+                    Command::Logout
+                        | Command::ResetIdentity(_)
+                        | Command::SetPin(_)
+                        | Command::UnlockPin
+                        | Command::RevokeDevice(_)
+                        | Command::RecordFailedPin
+                        | Command::RecordPaired { .. }
+                        | Command::Shutdown
+                )
             )
         {
             self.expire(&mut effects);
@@ -315,7 +347,40 @@ impl Machine {
                     Command::ResetIdentity(identity) => {
                         self.logout(&mut effects);
                         self.identity = Some(identity);
+                        self.trust = super::trust::Trust::default();
+                        effects.extend([Effect::SaveIdentity, Effect::SaveTrust]);
+                    }
+                    Command::SetPin(pin) => {
+                        super::trust::validate_pin(&pin.0)?;
+                        self.identity
+                            .as_mut()
+                            .ok_or("Host identity is unavailable")?
+                            .pin = Some(pin);
                         effects.push(Effect::SaveIdentity);
+                    }
+                    Command::UnlockPin => {
+                        self.trust.unlock();
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RevokeDevice(fingerprint) => {
+                        if !self.trust.revoke(&fingerprint) {
+                            return Err(format!("No paired device has fingerprint {fingerprint}."));
+                        }
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RecordFailedPin => {
+                        if !self.trust().pin_set {
+                            return Err("Set a PIN before pairing a device.".into());
+                        }
+                        self.trust.record_failed_pin();
+                        effects.push(Effect::SaveTrust);
+                    }
+                    Command::RecordPaired { public_key, name } => {
+                        if !self.trust().pin_set {
+                            return Err("Set a PIN before pairing a device.".into());
+                        }
+                        self.trust.record_paired(&public_key, name, now)?;
+                        effects.push(Effect::SaveTrust);
                     }
                     Command::Shutdown => {
                         effects.push(Effect::Close);
@@ -975,7 +1040,8 @@ mod tests {
                     Effect::Close,
                     Effect::Delete(_),
                     Effect::SignOut { .. },
-                    Effect::SaveIdentity
+                    Effect::SaveIdentity,
+                    Effect::SaveTrust
                 ]
             ));
             assert!(matches!(m.status.state, RemoteState::Off));
