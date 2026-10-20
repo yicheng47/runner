@@ -32,7 +32,12 @@ impl Trust {
             v.version == 1 && v.failed_pins <= 5 && (v.failed_pins == 5) == v.pin_locked
         });
         match value {
-            Some(value) => Ok(value),
+            Some(mut value) => {
+                for device in &mut value.devices {
+                    device.connected = false;
+                }
+                Ok(value)
+            }
             None => {
                 log::warn!(
                     "remote: invalid remote-trust.json; preserving as remote-trust.json.bad"
@@ -56,7 +61,11 @@ impl Trust {
         let mut file = builder
             .tempfile_in(root)
             .map_err(|_| "Could not create remote trust file")?;
-        serde_json::to_writer(&mut file, self).map_err(|_| "Could not serialize remote trust")?;
+        let mut saved = self.clone();
+        for device in &mut saved.devices {
+            device.connected = false;
+        }
+        serde_json::to_writer(&mut file, &saved).map_err(|_| "Could not serialize remote trust")?;
         file.flush().map_err(|_| "Could not write remote trust")?;
         file.as_file()
             .sync_all()
@@ -100,6 +109,7 @@ impl Trust {
                 public_key: encode_key(public_key),
                 paired_at: now,
                 last_seen_at: now,
+                connected: false,
             });
         }
         self.failed_pins = 0;

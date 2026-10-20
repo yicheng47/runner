@@ -2,6 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
+pub mod channel;
 mod messages;
 mod overview;
 mod status;
