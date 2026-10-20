@@ -74,7 +74,7 @@ The crew may fold them into one commit if the first does not stand alone.
 
 #### Checks
 
-- **Fixtures** under `runner-core/src/companion/fixtures/`, one per message, read with the round trip Phase 1's `remote/fixtures` uses: each file parses, and serializing it gives the same JSON. The compatibility files from the spec: the handshake both ways and a version mismatch, an unknown field, a version 1 message without later fields, an unknown status and an unknown push.
+- **Fixtures** under `runner-core/src/companion/fixtures/`, one per message, read with the round trip Phase 1's `remote/fixtures` uses: each ordinary file parses, and serializing it gives the same JSON. Per Jason's PR #966 follow-up, unknown-field compatibility files instead decode and compare to the known-field form, without changing their wire meaning. The compatibility files from the spec: the handshake both ways and a version mismatch, an unknown field, a version 1 message without later fields, an unknown status and an unknown push.
 - **Status flattening**, one test per row of the spec's table, from `AgentStatus` values.
 - **The version choice**: overlapping ranges, no overlap, and a client offering versions out of order.
 - **Chunking**: empty input, exactly 32 KiB, and one byte over.
