@@ -1,0 +1,14 @@
+{
+  "type": "feedAppended",
+  "mission": "01M50000000000000000000000",
+  "entries": [
+    {
+      "id": "01ME9000000000000000000000",
+      "ts": "2026-10-20T04:00:06Z",
+      "from": "coder",
+      "to": [],
+      "kind": "futureKind",
+      "future": true
+    }
+  ]
+}

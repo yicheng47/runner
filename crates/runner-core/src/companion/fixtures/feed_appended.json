@@ -1,0 +1,62 @@
+{
+  "type": "feedAppended",
+  "mission": "01M50000000000000000000000",
+  "entries": [
+    {
+      "id": "01ME0000000000000000000000",
+      "ts": "2026-10-20T04:00:00Z",
+      "from": "coder",
+      "to": [],
+      "kind": "message",
+      "text": "Ready for review."
+    },
+    {
+      "id": "01ME0000000000000000000001",
+      "ts": "2026-10-20T04:00:01Z",
+      "from": "coder",
+      "to": [],
+      "kind": "ask",
+      "question": "01MA0000000000000000000000",
+      "prompt": "Run the full suite?",
+      "choices": [
+        "Yes",
+        "No"
+      ]
+    },
+    {
+      "id": "01ME0000000000000000000002",
+      "ts": "2026-10-20T04:00:02Z",
+      "from": "coder",
+      "to": [],
+      "kind": "ask",
+      "question": "01MA0000000000000000000000",
+      "prompt": "Any follow-ups?",
+      "choices": null
+    },
+    {
+      "id": "01ME0000000000000000000003",
+      "ts": "2026-10-20T04:00:03Z",
+      "from": "coder",
+      "to": [],
+      "kind": "answer",
+      "question": "01MA0000000000000000000000",
+      "text": "Yes"
+    },
+    {
+      "id": "01ME0000000000000000000004",
+      "ts": "2026-10-20T04:00:04Z",
+      "from": "coder",
+      "to": [],
+      "kind": "signal",
+      "signal": "human_said",
+      "payload": {
+        "text": "Continue",
+        "nested": [
+          1,
+          true,
+          null
+        ]
+      }
+    }
+  ]
+}

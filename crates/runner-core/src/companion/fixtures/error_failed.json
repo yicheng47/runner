@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 24,
+  "code": "failed",
+  "message": "The host could not write to the terminal."
+}

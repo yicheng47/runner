@@ -1,0 +1,6 @@
+{
+  "type": "futurePush",
+  "future": {
+    "hello": "world"
+  }
+}
