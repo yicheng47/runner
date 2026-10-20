@@ -10,7 +10,23 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
-pub type Socket = WebSocketStream<reqwest::Upgraded>;
+pub trait Connection: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> Connection for T {}
+impl std::fmt::Debug for dyn Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RelayConnection([redacted])")
+    }
+}
+pub type Socket = WebSocketStream<Box<dyn Connection>>;
+
+#[cfg(test)]
+pub struct TestSocket(pub Box<Socket>);
+#[cfg(test)]
+impl std::fmt::Debug for TestSocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TestSocket([redacted])")
+    }
+}
 pub struct Failure {
     pub code: String,
     pub message: String,
@@ -144,12 +160,19 @@ pub async fn connect(
         return Err(Failure::protocol());
     }
     let upgraded = response.upgrade().await.map_err(|_| Failure::network())?;
+    socket(Box::new(upgraded), host).await
+}
+
+pub async fn socket(upgraded: Box<dyn Connection>, host: &HostInfo) -> Result<Socket, Failure> {
     let config = WebSocketConfig::default()
-        .max_message_size(Some(remote::MAX_CONTROL_SIZE))
-        .max_frame_size(Some(remote::MAX_CONTROL_SIZE));
+        .max_message_size(Some(remote::MAX_RELAY_SIZE))
+        .max_frame_size(Some(remote::MAX_RELAY_SIZE));
     let mut socket = WebSocketStream::from_raw_socket(upgraded, Role::Client, Some(config)).await;
-    let hello = serde_json::to_string(&Control::Hello { host: host.clone() })
-        .map_err(|_| Failure::protocol())?;
+    let hello = serde_json::to_string(&Control::Hello {
+        host: host.clone(),
+        features: vec!["channels".into()],
+    })
+    .map_err(|_| Failure::protocol())?;
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         socket.send(Message::Text(hello.into())),

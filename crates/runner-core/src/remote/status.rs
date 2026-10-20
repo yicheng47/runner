@@ -90,4 +90,6 @@ pub struct PairedDevice {
     pub public_key: String,
     pub paired_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
+    #[serde(default)]
+    pub connected: bool,
 }

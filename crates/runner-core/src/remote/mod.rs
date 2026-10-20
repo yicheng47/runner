@@ -10,6 +10,7 @@ pub const DEFAULT_ORIGIN: &str = "https://runner.yeelinks.com.cn";
 pub const SUBPROTOCOL: &str = "runner-relay.v1";
 pub const RPC_PATH: &str = "/api/runner_server.v1.HostEnrollmentService/";
 pub const MAX_CONTROL_SIZE: usize = 64 * 1024;
+pub const MAX_RELAY_SIZE: usize = crate::companion::channel::MAX_FRAME + 4;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -140,6 +141,8 @@ pub enum Control {
     Hello {
         #[serde(default)]
         host: HostInfo,
+        #[serde(default)]
+        features: Vec<String>,
     },
     Welcome {
         #[serde(default, rename = "hostId")]
@@ -149,6 +152,12 @@ pub enum Control {
         #[serde(default)]
         account: Account,
     },
+    #[serde(rename = "channelOpen")]
+    ChannelOpen { channel: u32 },
+    #[serde(rename = "channelClosed")]
+    ChannelClosed { channel: u32 },
+    #[serde(rename = "closeChannel")]
+    CloseChannel { channel: u32 },
     #[serde(other)]
     Unknown,
 }
@@ -234,6 +243,13 @@ mod tests {
         round_trip::<Empty>("signout.json");
         round_trip::<Control>("hello.json");
         round_trip::<Control>("welcome.json");
+        for name in [
+            "channel_open.json",
+            "channel_closed.json",
+            "close_channel.json",
+        ] {
+            round_trip::<Control>(name);
+        }
     }
     #[test]
     fn identity_and_secrets() {
