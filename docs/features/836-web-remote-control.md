@@ -1,7 +1,7 @@
 # 836 — Web remote control
 
 > Tracking issue: [#836](https://github.com/yicheng47/runner/issues/836). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows first; Linux wherever `runnerd` runs ([#823](https://github.com/yicheng47/runner/issues/823)).
-> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19), and the rest of the companion protocol (2026-10-20); the encrypted channel and the adapter that serves the protocol (Phase 3) are specified in full when its development starts, and Phase 4, the Tailscale route, is released together with the hosted service.
+> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19), and the rest of the companion protocol (2026-10-20); the encrypted channel and the adapter that serves the protocol (Phase 3) were drafted on 2026-10-20 for review, and Phase 4, the Tailscale route, is released together with the hosted service.
 > Scope: Runner's side only, what runs on the person's computer: `runnerd`, the `runner` CLI and the desktop app. The web panel and the service are developed separately; this spec describes them only as far as Runner talks to them.
 > Design: `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect. Terminal size's desktop states are in `runner/desktop/specs/836-terminal-size.pen`.
 > Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (the desktop's own second-window resize, separate from Terminal size).
@@ -509,7 +509,7 @@ A pushed `remote/trust` event carries `RemoteTrust` whenever it changes. `runner
 
 **The limit, stated plainly.** A browser runs the web panel's code as the service serves it. A service that sent malicious code to a person's browser could capture the PIN as it is typed and pair a device of its own, or use a paired browser's key while the page is open, though it could not copy that key out. Pairing stops the service from reaching any host on its own, silently and at scale; it does not make a browser safe from the site that serves it. A device paired this way still appears in the list and raises the notification. A native client whose code does not come from the service, such as the iOS app ([#912](https://github.com/yicheng47/runner/issues/912)), does not have this limit.
 
-**Proposed, settled with Phase 3's channel.** The PIN exchange is SPAKE2 ([RFC 9382](https://www.rfc-editor.org/rfc/rfc9382)) or CPace, bound to the host's identity key, and its output is the pre-shared key of the Noise `IK` handshake that pairs the device. Every later connection is plain `IK`: the client knows the host's identity key from pairing, and the host rejects a client key that is not on its list.
+**Settled with Phase 3's channel.** Phase 3's Channel section specifies the exchange: CPace, whose output is the pre-shared key of the Noise `XXpsk3` handshake that pairs the device. Every later connection is plain `IK`: the client knows the host's identity key from pairing, and the host rejects a client key that is not on its list.
 
 Jason approved the PIN, its lock, Revoke and Reset identity frames on 2026-10-19, with Devices table option B (`eiIy3`) as the canonical connected state. The other references are `KNmA3` (no PIN/devices), `zSJNq` (locked/toast) and `T0hixs` (Reset identity). After live testing, Jason replaced the PIN design with the two-step option B: `K2ww03` (choose), `VckyU` (confirm) and the replacement `TLJNH` (step 1 over Settings), exported at 15:24 on 2026-10-19. Each input has six equal boxes, 48 px tall, 6 px radius, bg fill and border-strong border; the current box has a 1.5 px accent border and a caret. Entries accept ASCII digits only, Backspace removes the last digit, a six-digit paste fills the row, and copy/cut and native reads never expose digits. In m2, the table shows recorded last-seen times, without inferring a connected state, and its footer says pairing arrives in a later update; Jason approved this Phase 3 distinction through Runner on 2026-10-19.
 
@@ -689,3 +689,157 @@ The stable identity key changes what Phase 1 built on the umbrella. The changes 
 
 - Enrollment sends the identity key instead of a fresh one, and Disconnect and removal no longer delete it. The enrollment item keeps only the credential. A host enrolled before the change adopts its enrollment item's key as its identity key, so it keeps its fingerprint and does not enroll again.
 - Enrolling again keeps the fingerprint; Reset identity is the way to a new one. #951's live check that enrolling again gives a fresh fingerprint becomes: enrolling again keeps it, and Reset identity changes it.
+
+## Phase 3 — The end-to-end channel and live terminals
+
+> Status: drafted on 2026-10-20. Jason approved building it the same day with the choices marked *proposed* as drafted, without reviewing every detail; a mission that finds one wrong raises it rather than working around it.
+
+Phase 3 lets a paired browser reach the host's tabs, missions and terminals through the service, which forwards bytes it cannot read. It adds three layers under Phase 2's companion protocol, and the parts of the desktop that a browser's presence changes:
+
+| Layer | What it does | Spoken by |
+| --- | --- | --- |
+| Companion protocol (Phase 2) | Requests, pushes and terminal streams as JSON messages | `runnerd`'s adapter and the web panel |
+| Records | Splits messages into frames and paces each direction | Both ends of the channel |
+| Channel | Pairs a device with the PIN, authenticates both ends, and encrypts everything after | Both ends of the channel |
+| Route | Carries a channel's frames between the two ends | The relay, through the service's `/relay/client` and `/relay/host`; Phase 4 adds Tailscale |
+
+The service builds its side of the route, and the web panel builds the channel, the records and the protocol from this section. The channel's test vectors are golden files in Runner, as the protocol's are, and the web panel's tests replay them.
+
+### The route: channels over `/relay/host`
+
+The service joins each browser connection it routes to a host to that host's existing connection as a **channel**. The browser's side, `/relay/client`, with its sign-in check and close codes, is the service's; this is what the host sees.
+
+- **Capability.** From Phase 3 on, the host's `hello` carries `"features":["channels"]`. The service routes browsers only to a host that sent it, and tells a browser that an older host needs a Runner update.
+- **Opening.** The service sends `{"type":"channelOpen","channel":17}`. `channel` is a number from 1 to 4,294,967,295 that the service does not reuse on this host connection.
+- **Frames.** A channel's frames travel as binary WebSocket frames: the channel number in 4 bytes, big-endian, then one channel frame of at most 65,536 bytes, so a binary frame is at most 65,540 bytes. The service forwards each channel frame unchanged and in order within its channel, without the number on the browser's side, and never parses one. Text frames keep Phase 1's 64 KiB limit.
+- **Closing.** The service sends `{"type":"channelClosed","channel":17}` when the browser's WebSocket ends, or when it ends the channel itself on sign-out, a password change, the account's deactivation or the host's removal. The host sends `{"type":"closeChannel","channel":17}` to end one, and the service then closes that browser's WebSocket. A frame for a channel that is not open is dropped, since one can cross a close. Closing the host connection, for a pause, a disconnect, the daemon stopping or a drop, ends every channel; a browser opens a new one when the host is back.
+- **Limits.** The host serves at most 16 channels at once and rejects any beyond that with `busy`. It closes a channel whose handshake has not finished within 30 seconds of `channelOpen`. The records' credit, below, bounds what a channel has in flight in each direction, so the service needs no more than that per channel and direction; it may close a channel with more than 1 MiB waiting.
+
+### The channel
+
+A channel is a sequence of channel frames each way, each delivered whole and in order. On the relay each is one binary frame; Phase 4's TCP route will prefix each with its length. A channel frame starts with one byte naming its kind:
+
+| Byte | Frame | From | Body |
+| --- | --- | --- | --- |
+| `0x01` | `connect` | browser | Noise `IK` message 1 |
+| `0x02` | `accept` | host | Noise `IK` message 2 |
+| `0x03` | `pair` | browser | `sid` (16 bytes), CPace's `Ya` (32 bytes), Noise `XXpsk3` message 1 |
+| `0x04` | `pairReply` | host | CPace's `Yb` (32 bytes), Noise `XXpsk3` message 2 |
+| `0x05` | `pairFinish` | browser | Noise `XXpsk3` message 3 |
+| `0x06` | `data` | both | One Noise transport message |
+| `0x07` | `reject` | host | A reason in ASCII, below; the host then closes the channel |
+
+A browser's first frame is `connect` when it holds a key for this host, and `pair` otherwise. After the handshake every frame is `data`. A frame out of order or of the wrong length, or a Noise message that fails, ends the channel with `badHandshake` before the handshake completes, and without a `reject` after it, except for the `pairFinish` authentication failures counted below.
+
+**Noise** (*proposed*). Both handshakes use X25519, ChaCha20-Poly1305 and SHA-256: `Noise_XXpsk3_25519_ChaChaPoly_SHA256` to pair, with the prologue `runner-pair-v1`, and `Noise_IK_25519_ChaChaPoly_SHA256` to connect, with the prologue `runner-connect-v1`, both in ASCII. Every handshake payload is empty except the third pairing message's. The host's static key is its identity key. The browser's static key for a host is the X25519 key it keeps for that host as a non-extractable WebCrypto key, which computes the handshake's Diffie-Hellman results without leaving the browser. `snow` implements both patterns on the host; in the browser, X25519 and SHA-256 are in WebCrypto, and ChaCha20-Poly1305 comes from an audited library such as `@noble/ciphers`. Pairing uses `XX` rather than Phase 2's proposed `IK` because the browser takes the host's key from inside the exchange, and `IK` needs it beforehand.
+
+**The PIN exchange** (*proposed*) is CPace, the balanced PAKE the CFRG selected: [draft-irtf-cfrg-cpace-21](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/), in the RFC Editor's queue, with the suite CPACE-RISTR255-SHA512 and its test vectors in appendix B.3, in initiator-responder mode. It is one message each way, it has no constants anyone must trust, and its pieces are at hand: ristretto255 in `curve25519-dalek`, which `snow` already brings in, and in `@noble/curves`. SPAKE2 ([RFC 9382](https://www.rfc-editor.org/rfc/rfc9382)), the other candidate, is a final RFC but depends on fixed points M and N whose honest generation everyone must trust. The inputs:
+
+| CPace input | Value |
+| --- | --- |
+| `PRS` | The PIN, its six ASCII digits |
+| `CI` | `runner-pair-v1` in ASCII |
+| `sid` | 16 random bytes the browser picks for this attempt |
+| `ADa`, `ADb` | Empty |
+
+**Pairing a device.**
+
+1. The browser makes its X25519 key for this host, picks `sid` and its CPace scalar, and sends `pair`.
+2. The host rejects with `noPin` when no PIN is set and with `pinLocked` while PIN entry is locked. Otherwise it computes `Yb` from its stored PIN, then CPace's ISK, and answers `pairReply`; Noise's second message carries the host's identity key.
+3. The browser computes the ISK, sets its first 32 bytes as Noise's PSK, and sends `pairFinish`. Its payload is `{"name":"Chrome on Windows"}`, the name the device gives itself, 1 to 64 bytes of UTF-8; the host stores it with control characters removed.
+4. The host sets the same PSK and reads the third message. Only the same PIN on both sides gives the same ISK, so a different PIN fails here. Every in-order, structurally valid `pairFinish` that fails authentication counts: the host records a failed attempt and rejects with `wrongPin`, or with `pinLocked` when this failure locked PIN entry. Authentication failure cannot distinguish a wrong PIN from ciphertext or tag tampering, so both count (Jason, 2026-10-20). Invalid kinds, order, lengths or CPace points, and successfully decrypted invalid payloads, are `badHandshake` and do not count. The host checks the lock again before reading a `pairFinish`, and reads them one at a time, so parallel attempts cannot get past five guesses. On success it records the device, its public key from the handshake, its name and the time, which resets the count.
+5. The browser trusts the host's identity key once the host's first `data` frame decrypts, since only a host that knew the PIN could have derived its keys. It keeps that key beside its own and checks it on every later `connect`. A browser that fails to pair discards the key it made.
+
+What a relaying party learns, the service included: neither the PIN nor anything to test guesses against offline. CPace's two messages are group elements that reveal nothing about the PIN without a secret scalar, and nothing keyed by the ISK is sent before the third message. An active party gets one guess per attempt: against the host, five in a row before PIN entry locks; against a browser, one each time the person types the PIN.
+
+**Connecting.** A paired browser sends `connect` to the identity key it kept. The host reads the browser's static key from it and rejects with `unknownDevice` when the key is not on its device list, as after Revoke, or when it cannot read the message at all, as after Reset identity changed its key. Otherwise it answers `accept`, updates the device's last-seen time, and the channel is open. On `unknownDevice` the browser forgets its keys for this host and offers to pair again.
+
+**Reject reasons** travel in the clear, so the service can forge or drop one. A browser only shows them, and pairs again after `unknownDevice`, which it could be tricked into but which costs nothing the PIN prompt does not already expose to the page.
+
+| Reason | When | The web panel says |
+| --- | --- | --- |
+| `noPin` | No PIN is set | Set a PIN on the computer first |
+| `pinLocked` | PIN entry is locked | Unlock PIN entry in Settings on the computer |
+| `wrongPin` | The PIN did not match | Wrong PIN |
+| `unknownDevice` | The browser's key is not paired, or the host's key changed | Pair this browser again |
+| `busy` | 16 channels are open | Too many browsers are connected |
+| `badHandshake` | A malformed, unexpected or failing handshake frame | Reload and try again |
+
+**Transport.** After either handshake, Noise's two cipher states encrypt `data` frames, one each way, with Noise's counter nonces, which the route's ordering keeps in step. A frame that fails to decrypt ends the channel. A channel lasts as long as its route connection and is never rekeyed. Revoke closes every channel opened with that device's key at once; Reset identity closes every channel as it disconnects; changing the PIN closes none.
+
+### Records
+
+The plaintext of each `data` frame is one record, whose first byte names it:
+
+| Byte | Record | Body |
+| --- | --- | --- |
+| `0x00` | `part` | Part of a companion message; more of it follows |
+| `0x01` | `end` | The last part of a companion message, or all of a short one |
+| `0x02` | `credit` | 4 bytes, big-endian: how many more message bytes the other side may send |
+
+A `credit` must grant a positive number of bytes and must not raise the sender's allowance above its starting 512 KiB; zero, excessive credit and sending beyond the granted allowance end the channel. This bounds both accounting and buffering.
+
+A record's body is at most 65,518 bytes, the Noise limit less its tag and the record's byte. A message is the bodies of its `part` records and its `end` record, in order, at most 1 MiB in all, the companion limit; a longer one ends the channel. The parts of different messages do not interleave.
+
+**Credit** (*proposed*). Each side sends message bytes, the bodies of `part` and `end` records, only as far as the other side's credit allows, and each starts with 512 KiB. A receiver grants credit back as it finishes with bytes: a whole message once it has handled it, which for the browser means after writing output into its terminal, and the parts of a message still arriving as it buffers them, so a message larger than the credit still arrives. It sends `credit` once it owes 64 KiB or more, or when it has handled everything that arrived. At 512 KiB per round trip, a 100 ms route carries about 5 MiB/s, far more than terminals produce.
+
+Credit is what makes the protocol's Falling behind work over a relay. While a channel has none, terminal output waits on the host in that terminal's queue, and a queue past 1 MiB is dropped for a fresh snapshot when credit returns. Results, errors and pushes other than terminal output are sent first, in the order they are made; the terminal streams then share the credit in turn, a chunk each, so one busy terminal does not hold up the others. Within a terminal, `result`, `snapshot`, `output` and `resized` keep their order.
+
+**Vector format.** `runner-core/src/companion/channel/vectors/cpace-b3.json` holds the draft's initiator-responder inputs and outputs. `channel.json` is format 1: lowercase hex octet strings, fixed `inputs` (static and ephemeral private keys, CPace scalar source bytes, `sid`, the PIN and name), suite/prologue/associated-data values, the ISK and PSK, public keys, every reject reason, a relay envelope, and the ordered `pair`, `connect`, `wrongPin` and `unknownDevice` frame arrays. The `records` array follows the successful pairing and names each sender, its plaintext record and complete encrypted channel frame, in order; the two directions keep separate Noise counters. Scalar source bytes have their top four bits cleared, per draft 21 section 8.3; a resulting zero scalar is resampled. Fixed ephemeral keys are for replay only; production samples fresh ephemeral keys. These published keys and PINs are test values.
+
+The host bounds each channel's inbound queue to 1 MiB of accounted bytes (frame length plus 64 bytes per queued frame), and its pending companion replies to 1 MiB; exceeding either closes only that channel. A channel without send credit continues accepting incoming credit and does not wait in the relay's socket loop.
+
+### The adapter
+
+`runnerd` serves the companion protocol on each open channel through an adapter in `runner-daemon/src/companion/`, which reads and changes `AppCore`'s state as the client protocol's handlers do. The browser's first message is `hello`; anything else ends the channel. `welcome`'s `features` lists every version 1 request. A failure in one channel's task ends that channel and is logged; it never stops `runnerd`, its sessions or the other channels.
+
+| Message | What it reads or changes |
+| --- | --- |
+| `overview` | The sidebar's nodes, tabs and missions, with their order, pins and split trees; projects; each session's kind, title, runtime, working directory, status and unread mark; missions' members, pending asks and drawer shells. The push follows each `AppEvent` that changes any of them, at most once every 250 ms |
+| `status` | Each change to a session's observed status or unread mark |
+| `feed`, `follow`, `unfollow` | The mission's event log, read as `runner mission feed` reads it, and a watch for appended entries while followed |
+| `answer`, `post` | The desktop's answer card and composer, as the person |
+| `attach`, `detach` | A terminal subscription, `attach_terminal`, with the snapshot's scrollback cut to `history` lines, and Terminal size's controller; `take` clears the session's unread mark |
+| `input` | The terminal's input queue, observed as the desktop's typing is, so draft-aware delivery and status detection see it |
+| `takeControl`, `viewport` | The controller, below |
+| `closed` | The session's terminal ending, with the reason |
+
+The client protocol's subscriber queue already turns a subscriber that falls behind into a resync; the adapter answers one with a fresh snapshot, as the protocol's Falling behind says.
+
+`runnerd.log` records channels opening and closing with the device's fingerprint, and failed handshakes with their reason, at info level. It never records a PIN, an ISK, a key, a message body or terminal bytes.
+
+### Terminal size in `runnerd` and the desktop
+
+This implements Phase 2's Terminal size rule.
+
+- **`runnerd`.** Each live terminal has a controller in memory: the desktop, a browser with its channel and device name, or none, and the desktop when `runnerd` starts. A size from the client protocol applies only while the desktop controls; `attach` with `take`, `takeControl` and `viewport` apply for the browser that sent them, and `attach` with `ifFree` only when nobody controls. A controlling browser's `detach`, or its channel closing, leaves no controller and the size unchanged.
+- **Client protocol.** The controller travels with the size: the terminal's snapshot, metadata and `Resized` frame carry it as the desktop, a browser with its name, or none. A new `terminal_take_back(session_id, cols, rows)` makes the desktop the controller and resizes the terminal to the pane. The client protocol is locked to the build, so these change it freely.
+- **The app.** A pane whose terminal the desktop does not control stops pushing its size and draws the card from `836-terminal-size.pen`: Controlled from Chrome on Windows with Take back, or the browser has left with Continue here. A tab or mission whose terminals a browser controls draws one card below its tab bar. Take back, Continue here or Enter on the card sends `terminal_take_back` for each terminal under it, at its own pane's size. Phase 3 reruns #838's two-window steps once the pane's size push changes, without blocking on them.
+
+### The desktop and the CLI
+
+- **A new device.** A pairing pushes `remote/paired` with the device's name and fingerprint. The app shows a system notification through its notifications, Chrome on Windows can now reach this computer, which opens Settings → Remote access, and a toast instead when system notifications are off.
+- **The device list.** `RemoteTrust`'s devices gain `connected`, true while a channel opened with the device's key is open. Settings shows Connected now in place of a connected device's last-seen time and drops m2's footer that pairing comes in a later update. `runner remote devices` shows the same.
+- **Designs** before the app's commits: the connected row and the paired toast, in `836-web-remote-control.pen` beside m2's Devices table `eiIy3`.
+- **The guide.** `docs/guide/guides/remote-access.md` gains pairing a browser, opening tabs and terminals from it, and taking a terminal back.
+
+### Changes to Phases 1 and 2
+
+- `hello` on `/relay/host` gains `features`; binary frames carry channels instead of being ignored, and the WebSocket's limit for them is 65,540 bytes.
+- Phase 2's proposed exchange is settled here: CPace, `XXpsk3` to pair and `IK` afterwards. The browser makes its key before the third pairing message, not after success, since `XX` sends it there; it discards the key if pairing fails.
+
+### Verification
+
+- **Vectors,** in `runner-core/src/companion/channel/vectors/`: CPace's appendix B.3 vectors for ristretto255; a complete pairing and a complete connect with fixed keys, scalars and `sid`, frame by frame in hex; a wrong PIN; `unknownDevice`; and a record sequence with `credit`. The host's tests replay the browser's side, and the web panel's tests replay the host's.
+- **`runnerd`,** with a Rust test client over an in-process relay: pairing and connecting; each reject reason; PIN entry locking at the fifth failure, including five parallel attempts; Revoke and Reset identity closing channels; a message over 1 MiB ending the channel; a reader that grants no credit stalls only its own channel and gets a fresh snapshot once it grants again; each request against a test core; and the controller table from Terminal size.
+- **Secrets:** no PIN, ISK, key, message body or terminal byte in a log line or `Debug` output.
+- **Live,** with Jason on a `remote-nightly` build and the service's Phase 3 deployed: pair Chrome from another network and see the notification and the Connected now row; open a terminal, type and resize; see in the service's frame capture that it relays only ciphertext; five wrong PINs lock PIN entry and Unlock restores it; Revoke closes the browser's terminal at once; Pause closes it and resuming lets it connect again; a dropped network reconnects to a fresh snapshot without replaying input; and Terminal size's checks.
+
+### Open questions
+
+| Question | Proposal | Settle |
+| --- | --- | --- |
+| The PIN exchange | CPace, CPACE-RISTR255-SHA512, draft 21 | Accepted on 2026-10-20 |
+| The Noise suites | `XXpsk3` to pair and `IK` to connect, with X25519, ChaCha20-Poly1305 and SHA-256 | Accepted on 2026-10-20 |
+| The starting credit | 512 KiB each way | Accepted on 2026-10-20; measured in live testing |
+| How Phase 3 is split into missions | Channel, then adapter, then desktop; see the [plan](../impls/836-web-remote-control/plan.md#phase-3--the-end-to-end-channel-and-live-terminals) | Accepted on 2026-10-20 |

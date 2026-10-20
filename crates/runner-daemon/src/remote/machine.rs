@@ -9,6 +9,8 @@ use runner_core::remote::{self, *};
 #[derive(Debug)]
 pub enum Command {
     #[cfg(test)]
+    TestSocket(super::transport::TestSocket),
+    #[cfg(test)]
     TestDeadline,
     #[cfg(test)]
     TestClaimDeadline,
@@ -203,6 +205,10 @@ impl Machine {
         match input {
             Input::Command(command) => {
                 match command {
+                    #[cfg(test)]
+                    Command::TestSocket(_) => {
+                        return Err("Test socket belongs to the socket loop".into())
+                    }
                     #[cfg(test)]
                     Command::TestDeadline => return self.step(Input::Deadline, now, rng),
                     #[cfg(test)]
@@ -574,6 +580,9 @@ impl Machine {
                 effects.push(Effect::Save);
             }
             Input::Text(text) => {
+                if text.len() > MAX_CONTROL_SIZE {
+                    return self.step(Input::Failure(Failure::protocol()), now, rng);
+                }
                 let input = match serde_json::from_str::<Control>(&text) {
                     Ok(Control::Welcome {
                         host_id,
