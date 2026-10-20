@@ -1,0 +1,10 @@
+{
+  "type": "post",
+  "id": 16,
+  "mission": "01M50000000000000000000000",
+  "to": [
+    "coder",
+    "reviewer"
+  ],
+  "text": "Please check the fixtures."
+}

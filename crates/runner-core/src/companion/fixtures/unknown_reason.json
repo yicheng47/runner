@@ -1,0 +1,7 @@
+{
+  "type": "status",
+  "session": "01M60000000000000000000000",
+  "status": "needsYou",
+  "reason": "futureReason",
+  "unread": false
+}

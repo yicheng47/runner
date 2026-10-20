@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 24,
+  "code": "notRunning",
+  "message": "The session has no live terminal."
+}
