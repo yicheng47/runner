@@ -1,0 +1,11 @@
+{
+  "type": "resized",
+  "session": "01M60000000000000000000000",
+  "seq": 11,
+  "cols": 100,
+  "rows": 30,
+  "controller": {
+    "kind": "futureController",
+    "name": "future device"
+  }
+}
