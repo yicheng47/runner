@@ -2,7 +2,7 @@
 
 Program record for [feature 836](../../features/836-web-remote-control.md) ([#836](https://github.com/yicheng47/runner/issues/836)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind every mission. [plan.md](plan.md) has each phase in detail, and [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../briefs/) as `836-m{n}-{slug}.md`; Phase 1's predates this directory as `836-connect-host.md`. The designs are `runner/desktop/specs/836-web-remote-control.pen` and `836-terminal-size.pen` in `yeelinks_design`.
 
-## Status (2026-10-19)
+## Status (2026-10-20)
 
 Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issue per phase.
 
@@ -10,7 +10,7 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 | --- | --- | --- |
 | m1 | Phase 1 ([#951](https://github.com/yicheng47/runner/issues/951)): connect a host to an account | Merged into `nightly-remote` on 2026-10-18 as [#945](https://github.com/yicheng47/runner/pull/945); #951 closed on 2026-10-19. The hosted-service pass on macOS covered connect, approve, pause, resume and disconnect; the other live checks are pending with Jason in [`836-connect-host.md`](../../tests/836-connect-host.md) and gate the umbrella's landing |
 | m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Merged into `nightly-remote` on 2026-10-19 as [#957](https://github.com/yicheng47/runner/pull/957); its live checks wait on a `remote-nightly` build |
-| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Its Terminal size rule is in the spec (2026-10-19); waits on the rest of the protocol section |
+| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Its Terminal size rule is in the spec, with its desktop frames approved by Jason on 2026-10-20; he approved the rest of the protocol section the same day. Planned, waiting to start |
 | — | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with the terminal-size controller and the desktop pane's control card | Planned when its development starts |
 | — | Phase 4 ([#954](https://github.com/yicheng47/runner/issues/954)): reach a host over Tailscale | Planned when its development starts |
 
@@ -29,5 +29,4 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 
 - Phase 1's remaining live checks, pending with Jason.
 - m2's live checks, on a `remote-nightly` build.
-- m3: the rest of the spec's protocol section.
-- Terminal size's desktop frames, `runner/desktop/specs/836-terminal-size.pen` in `yeelinks_design`: Jason's review.
+- m3: the mission, as [plan.md](plan.md#m3--companion-protocol-v1) lays out.

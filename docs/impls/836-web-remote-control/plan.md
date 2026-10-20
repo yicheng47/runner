@@ -59,13 +59,39 @@ A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m2-host-trust`
 
 ### m3 — companion protocol v1
 
-Planned in full once the spec's protocol section exists. Already fixed:
+The types and golden files of the spec's Companion protocol section, in `runner-core` alone. Nothing serves them yet: no channel, nothing in `runnerd`, the CLI or the app, so nothing a person can see changes and no guide page does either.
 
-- Its own module, `runner-core/src/companion/`, apart from the build-locked client protocol in `protocol/`, because clients update independently of the host.
-- A golden JSON file for every message, handshake and error under the module's `fixtures/`, parsed and produced by the types, including missing default fields and unknown fields. The service's browser client decodes the same files.
-- Types and fixtures only: serving them from `runnerd`'s state is Phase 3's adapter.
+#### Commits
 
-It lands like m2, on `feat/836-m3-companion-protocol` with its brief as `836-m3-companion-protocol.md`.
+1. **The envelope, handshake and versions**, in `runner-core/src/companion/`, a module of its own beside the build-locked `protocol/`.
+   - Two message enums, one per direction, tagged by `type`, with camelCase names. A request carries its `id`; `result` and `error` answer it; a push has none.
+   - `hello` and `welcome`, the version choice (the highest both speak, else `unsupportedVersion` with the host's range), `features`, and the error codes.
+   - A base64 bytes type for terminal data, the 1 MiB message limit and the 32 KiB chunk size as constants, and a helper that splits terminal bytes into chunks.
+   - The compatibility rules as code: unknown fields ignored; fields added later defaulted; each enum's fallback; an unknown push decoded as unknown rather than an error.
+2. **The messages**: the overview and its split tree, status with its flattening from `AgentStatus`, the feed and its entries, `follow`, `answer` and `post`, and the terminal messages (`attach`, `snapshot`, `output`, `resized`, `input`, `takeControl`, `viewport`, `detach`, `closed`).
+
+The crew may fold them into one commit if the first does not stand alone.
+
+#### Checks
+
+- **Fixtures** under `runner-core/src/companion/fixtures/`, one per message, read with the round trip Phase 1's `remote/fixtures` uses: each file parses, and serializing it gives the same JSON. The compatibility files from the spec: the handshake both ways and a version mismatch, an unknown field, a version 1 message without later fields, an unknown status and an unknown push.
+- **Status flattening**, one test per row of the spec's table, from `AgentStatus` values.
+- **The version choice**: overlapping ranges, no overlap, and a client offering versions out of order.
+- **Chunking**: empty input, exactly 32 KiB, and one byte over.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+
+There is no live check: m3 changes nothing a person can run.
+
+#### Easy to get wrong
+
+- Answering an unknown request with `unknownRequest` needs its `id`, so a request is decoded in two steps: its `type` and `id` first, then the body.
+- `serde(other)` covers only unit variants: an unknown push or status needs its own fallback variant, tested by its fixture.
+- Base64 is the standard alphabet with padding, which the browser's `atob` and `btoa` read and write.
+- The golden files are the web panel's contract too: their paths and names are part of it, and a change to one is a protocol change.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m3-companion-protocol` on `feat/836-m3-companion-protocol`, with its brief as `836-m3-companion-protocol.md`, and a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration.
 
 ### Spec additions before m2
 
