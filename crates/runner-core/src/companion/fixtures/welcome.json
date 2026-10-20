@@ -1,0 +1,13 @@
+{
+  "type": "welcome",
+  "version": 1,
+  "name": "Jason’s Mac",
+  "runnerVersion": "0.9.0",
+  "platform": "macos",
+  "features": [
+    "answer",
+    "post",
+    "takeControl",
+    "viewport"
+  ]
+}

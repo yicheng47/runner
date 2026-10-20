@@ -1,10 +1,10 @@
 # 836 — Web remote control
 
 > Tracking issue: [#836](https://github.com/yicheng47/runner/issues/836). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows first; Linux wherever `runnerd` runs ([#823](https://github.com/yicheng47/runner/issues/823)).
-> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model is written (2026-10-19); the companion protocol, the encrypted channel and terminals (Phases 2 and 3) are specified in full when their development starts, and Phase 4, the Tailscale route, is released together with the hosted service.
+> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19), and the rest of the companion protocol (2026-10-20); the encrypted channel and the adapter that serves the protocol (Phase 3) are specified in full when its development starts, and Phase 4, the Tailscale route, is released together with the hosted service.
 > Scope: Runner's side only, what runs on the person's computer: `runnerd`, the `runner` CLI and the desktop app. The web panel and the service are developed separately; this spec describes them only as far as Runner talks to them.
-> Design: `design/specs/836-web-remote-control.pen`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect.
-> Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (multi-client resize).
+> Design: `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect. Terminal size's desktop states are in `runner/desktop/specs/836-terminal-size.pen`.
+> Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (the desktop's own second-window resize, separate from Terminal size).
 
 ## Motivation
 
@@ -459,7 +459,7 @@ New dependencies: `snow`; `tokio-tungstenite` without TLS features; `windows-sys
 
 ## Phase 2 — Companion protocol and client trust
 
-The companion protocol is specified in full when its development starts. The trust model is written first, because both routes and the service's browser channel build on it. Two constraints are settled:
+The trust model was written first, because both routes and the service's browser channel build on it, then Terminal size, because it is the protocol's one rule that a later version cannot change without changing the desktop app as well, and then the rest of the companion protocol. Two constraints are settled:
 
 - **The protocol and the channel do not depend on the route (Jason, 2026-10-18).** The companion protocol and Phase 3's end-to-end channel run over any ordered, reliable byte stream; the relay's WebSocket is the first such stream, not part of either. A host trusts clients by per-device keys that it can list and revoke, not by the account session alone. Phase 4's Tailscale route, and any later direct route such as a same-network listener ([#912](https://github.com/yicheng47/runner/issues/912)), then adds only its listener, and reuses the protocol, the channel, the trust model and its pairing unchanged.
 - **The person decides who reaches their terminals (Jason, 2026-10-19).** The host trusts a device only after it has been paired with a PIN the person set at the host. Being signed in to the account is not enough: if it were, whoever runs the service, an administrator included, could open any host's terminals.
@@ -512,6 +512,176 @@ A pushed `remote/trust` event carries `RemoteTrust` whenever it changes. `runner
 **Proposed, settled with Phase 3's channel.** The PIN exchange is SPAKE2 ([RFC 9382](https://www.rfc-editor.org/rfc/rfc9382)) or CPace, bound to the host's identity key, and its output is the pre-shared key of the Noise `IK` handshake that pairs the device. Every later connection is plain `IK`: the client knows the host's identity key from pairing, and the host rejects a client key that is not on its list.
 
 Jason approved the PIN, its lock, Revoke and Reset identity frames on 2026-10-19, with Devices table option B (`eiIy3`) as the canonical connected state. The other references are `KNmA3` (no PIN/devices), `zSJNq` (locked/toast) and `T0hixs` (Reset identity). After live testing, Jason replaced the PIN design with the two-step option B: `K2ww03` (choose), `VckyU` (confirm) and the replacement `TLJNH` (step 1 over Settings), exported at 15:24 on 2026-10-19. Each input has six equal boxes, 48 px tall, 6 px radius, bg fill and border-strong border; the current box has a 1.5 px accent border and a caret. Entries accept ASCII digits only, Backspace removes the last digit, a six-digit paste fills the row, and copy/cut and native reads never expose digits. In m2, the table shows recorded last-seen times, without inferring a connected state, and its footer says pairing arrives in a later update; Jason approved this Phase 3 distinction through Runner on 2026-10-19.
+
+### Companion protocol
+
+What a browser and `runnerd` say to each other once Phase 3's channel is open. It is a protocol of its own, apart from the client protocol the desktop app and the CLI use: that one is locked to the build and refuses a client from any other build, while the web panel updates when the service deploys and a host updates when its person installs a release. The companion protocol is therefore versioned, and each side copes with a peer that is newer or older. Its types live in `runner-core/src/companion/`, and every message has a golden JSON file in its `fixtures/`, which the host's tests and the web panel's tests both decode, so neither side can drift from the other without a test failing.
+
+**Version 1 covers** what a person needs away from the desktop: every tab, mission and session with its live status, a mission's feed, answering a mission's question and sending it a message, and every terminal, to see, type in and size under Terminal size's rule. Starting, stopping, archiving and deleting sessions and missions, and the app's settings, stay on the desktop. An agent's own approval prompt is answered by typing in its terminal, as at the desktop.
+
+**Messages.** Each message is one JSON object in UTF-8, carried whole by the channel, and its `type` names it; type and field names are camelCase. Terminal bytes, output and input, are base64 strings. That costs a third more on terminal output than a binary frame would, in exchange for one decoder and golden files a person can read; a binary form can be added later as a new push without a new version, if a measurement asks for it. A message is at most 1 MiB, and the host sends terminal bytes in chunks of at most 32 KiB, so output from several terminals interleaves and no terminal holds up the others. There are three kinds:
+
+- A **request**, from the browser, carries an `id`, a number the browser picks and does not reuse on that connection. The host answers each request exactly once, with `result` carrying the same `id`, or with `error`.
+- A **push**, from the host, has no `id`: the overview, statuses, feed entries and terminal output.
+- The **handshake**, `hello` and `welcome`, is the first message in each direction.
+
+```json
+{"type":"feed","id":12,"mission":"01M5945GYZ2Q4XT9YA10CE2HM1","limit":50}
+{"type":"result","id":12,"result":{"entries":[],"before":null}}
+{"type":"error","id":12,"code":"notFound","message":"No mission has that id."}
+```
+
+**The handshake and versions.** The browser's `hello` lists the protocol versions it speaks and names the client, `web`, with its build. The host answers `welcome` with the highest version both speak, the computer's name, Runner's version, the platform, and `features`, the optional requests it serves. If they share no version, the host answers `error` with code `unsupportedVersion` and the range it speaks, then closes the channel, and the panel tells the person which side needs updating.
+
+- Within a version, changes only add: an optional field, a push, a request listed in `features`, or a value of an enum. Each side ignores fields it does not know, a browser ignores pushes it does not know, and a host answers a request it does not know with `unknownRequest`.
+- Every field added after version 1 is first released has a default, so a message from an older peer still decodes.
+- Every enum names the value a reader falls back to when it meets a value it does not know.
+- A change that adding cannot make, such as removing or retyping a field or changing what one means, is a new version. A host speaks every version from 1 to its newest, and the web panel keeps speaking an old version for as long as a supported Runner release needs it, so either side may be the newer one.
+
+**Version 1 wire details (m3, 2026-10-20).** The golden files settle the field names and the otherwise open cases:
+
+- `hello` is `{"type":"hello","versions":[1],"client":"web","build":"web-20261020"}`. `welcome` has `version`, `name`, `runnerVersion`, `platform` (an open string, initially `macos`, `windows` or `linux`) and `features`, an array of request names. The client's name and build, runtime names and feature names are open strings, rather than closed enums.
+- The version mismatch is `{"type":"error","id":null,"code":"unsupportedVersion","message":"No supported companion protocol version in common.","versions":{"min":1,"max":1}}`. An error without a readable numeric request `id` has `id:null`; otherwise it answers that `id`. Other errors do not carry `versions`. The host's `ClientMessage::decode` entry point returns a `badRequest` error with the readable `id` even when the body or type is invalid, so the adapter can answer without parsing the message again. A missing or invalid ID, non-object message or invalid JSON yields an uncorrelated error with `id:null`. Invalid bodies name the request and the missing or invalid field in a short English message, for example `attach: missing field cols.` or `attach: field cols must be an unsigned 16-bit integer.` These diagnostics use known field names and expected types, never supplied values or terminal data.
+- Requests that return no data answer `{"type":"result","id":18,"result":null}`. The overview result is the overview object directly; the overview push has its `projects`, `tabs`, `missions` and `sessions` alongside `type`. `feedAppended` has `mission` and `entries`; entries are in append order, while a feed page is newest first. Entry `ts` is a UTC RFC 3339 string. Signal names and their payloads remain as the event log holds them.
+- `to` in `post` and feed entries is an array of handles; `[]` means everyone. An ask without choices has `choices:null`, in the overview and feed alike. A tab or mission with no project has `project:null`; a shell with no agent runtime has `runtime:null`. A session's `cwd` is a string when known and `null` when unavailable; a missing `cwd` defaults to `null`, as the stored session model permits no recorded working directory.
+- All empty optional fields are written as `null`, including `before`, `reason`, `history` and empty pane `session`. Missing optional fields still decode; `attach` with missing or null `history` uses 1,000 lines. `snapshot.more` is a required boolean, false on its final chunk. An empty byte slice produces no chunks; an empty snapshot is represented by one final snapshot message with `data:""` and `more:false`.
+- `resized.controller` is an object tagged by `kind`: `{"kind":"you"}`, `{"kind":"desktop"}`, `{"kind":"browser","name":"Chrome on Windows"}` or `{"kind":"none"}`. `closed` has `session` and `reason`, with reasons `exited`, `stopped`, `archived` and `unknown`.
+- Unknown string enum values retain their spelling when serialized; the types' `effective()` methods give their version 1 meaning: status → `idle`, needs-you reason → `unknown`, mission state → `stopped`, session kind → `chat`, split direction → `row`, attach control → `ifFree`, close reason → `unknown`, error code → `failed` (show its message). An unknown controller means `none`; an unknown pane shape means an empty pane; an unknown feed kind is retained as unknown and ignored. Unknown pushes are retained as unknown and ignored; unknown requests retain both their type and `id` and produce `unknownRequest`. Known message types ignore and discard unknown fields; only unknown request, push, feed, controller and pane variants retain their uninterpreted payloads.
+- Host messages dispatch by `type` alone. Only `result` and `error` validate a correlation `id` in their bodies. An `id` added to a push may be a string, such as an event ULID. Known pushes ignore and discard it; unknown pushes retain it in their uninterpreted payload.
+
+Version 1 has no fields added after its release yet. `v1_without_later_fields.json` is a version 1 `hello`; its test also decodes it with a test-only newer reader whose added capability defaults to false. This proves the addition rule without inventing a released field. Fixture filenames under `runner-core/src/companion/fixtures/` are part of the shared contract: `overview_request.json` and `overview_push.json` distinguish directions; `result_*.json` distinguish result payloads; `unknown_*.json` exercise compatibility.
+
+**Requests.**
+
+| Request | Fields | Result |
+| --- | --- | --- |
+| `overview` | | The overview, below |
+| `feed` | `mission`, `before`, `limit` | A page of the mission's feed, newest first, with `before`, the cursor for the page before it, or `null` at the start |
+| `follow`, `unfollow` | `mission` | Starts or stops `feedAppended` for that mission |
+| `answer` | `mission`, `question`, `text` | Answers one of the mission's pending asks, as the desktop's answer card does; a choice is answered with its text |
+| `post` | `mission`, `to`, `text` | Sends the mission a message from the person, to everyone or to named handles |
+| `attach` | `session`, `cols`, `rows`, `control`, `history` | Starts the terminal's stream: `snapshot`, then `output` and `resized` |
+| `input` | `session`, `data` | Writes bytes to the terminal |
+| `takeControl`, `viewport` | `session`, `cols`, `rows` | Terminal size's rule |
+| `detach` | `session` | Ends the terminal's stream |
+
+**Pushes.**
+
+| Push | When |
+| --- | --- |
+| `overview` | A tab, mission or session was added, removed, renamed, moved or laid out again, or a mission's asks changed. It carries the whole overview, at most once every 250 ms |
+| `status` | One session's status or unread mark changed: `session`, `status`, `reason`, `unread` |
+| `feedAppended` | New entries in a followed mission's feed |
+| `snapshot` | After `attach`, and again whenever the browser has fallen behind: `session`, `seq`, `cols`, `rows`, `data`, and `more` while chunks follow |
+| `output` | `session`, `seq`, `data` |
+| `resized` | Terminal size's rule |
+| `closed` | The session's terminal has ended, it exited or was stopped or archived, with `reason`; the browser drops the stream |
+
+**The overview** mirrors the desktop's sidebar, since what the sidebar holds is what a browser opens:
+
+```json
+{"projects":[{"id":"01KZ…","name":"runner"}],
+ "tabs":[{"id":"01M5…","project":"01KZ…","name":"Review","pinned":false,
+          "panes":{"split":"row","sizes":[0.5,0.5],"a":{"session":"01M6…"},"b":{"session":"01M7…"}},
+          "shells":[]}],
+ "missions":[{"id":"01M5…","project":"01KZ…","title":"836 m2 — host trust","crew":"codex duo","state":"running","pinned":false,
+              "members":[{"handle":"coder","session":"01M8…","lead":true},{"handle":"reviewer","session":"01M9…","lead":false}],
+              "asks":[{"question":"01MA…","from":"coder","prompt":"Run the full suite?","choices":["Yes","No"]}],
+              "shells":["01MB…"]}],
+ "sessions":{"01M6…":{"kind":"chat","title":"Fix the feed","runtime":"codex","cwd":"/Users/me/runner","status":"working","reason":null,"unread":false}}}
+```
+
+- Projects, tabs and missions come in the sidebar's order, with `pinned` marking the pinned ones. Archived ones are not listed.
+- A tab's `panes` is its split tree, as `runnerd` keeps it in the tab's node: a pane names its session, or `null` when it is empty, and a split has its orientation, `row` or `column`, the two sizes as fractions, and its halves `a` and `b`. `shells` are the shells in the tab's terminal drawer.
+- A mission has its `state`, `running` or `stopped`, its members by handle with the lead marked, its pending asks, and the shells in its drawer.
+- Each session appears once, under `sessions`, with its `kind`, `chat`, `agent` for a mission member, or `shell`, and its title, runtime, working directory, status and unread mark.
+
+**Status** is one value per session, flattened from `runnerd`'s observation, with the unread mark beside it: true when the session finished a turn the person has not looked at, the desktop's unread dot.
+
+| `status` | When |
+| --- | --- |
+| `needsYou` | The session waits on the person; `reason` is `approval`, `answer` or `unknown` |
+| `working` | An agent is working |
+| `idle` | An agent is waiting for a prompt, or a shell is running |
+| `starting` | Starting or resuming |
+| `stopped` | The process has ended |
+| `error` | It failed to start, or crashed |
+
+A browser treats a status it does not know as `idle`. Opening a session's terminal with `take` clears its unread mark, as looking at it on the desktop does.
+
+**The feed** is a mission's event log as the desktop's feed shows it, without the session-status and inbox-read noise that `runner mission feed` also leaves out. Each entry has its `id`, `ts`, `from`, `to` and `kind`: a `message` with its `text`; an `ask` with its `question`, `prompt` and `choices`; an `answer` with its `question` and `text`; or a `signal` with its name in `signal` and its payload as the log holds it, which a browser may show by name alone. `before` is opaque to the browser.
+
+**Terminals.**
+
+- `attach` is answered with `result`, then the `snapshot` in chunks, then `output` and `resized` in order. The snapshot is the host's terminal as it stands, serialized as the escape sequences that rebuild it: the screen, the cursor and the terminal's modes, with at most `history` lines of scrollback, 1,000 when it is left out, since a full scrollback can be megabytes over a slow route. The browser writes it into a fresh terminal emulator, xterm.js in the web panel, and then applies output in order.
+- `seq` counts the terminal's output chunks, as the client protocol does today: the snapshot holds everything up to its `seq`, each `output` carries the next one, and `resized` names the chunk its size takes effect at.
+- **Falling behind.** The host keeps a short queue of output for each terminal and browser. When a browser falls so far behind that the queue fills, the host drops the queue and sends a fresh `snapshot` in its place, and the browser replaces its screen with it: the person sees a jump, never garbled output. It is the client protocol's resync, without a round trip.
+- `input` carries bytes as the browser's terminal produces them, keys, pastes and mouse reports alike, and they reach the PTY as the desktop's typing does. Any attached browser may type; only the controller sets the size.
+- `detach`, or the channel closing, ends the stream. `closed` tells the browser that the terminal itself has gone, and why.
+
+**Errors.** Every error has an English `message` that a browser may show as it is; a browser that does not know a code shows the message.
+
+| `code` | When |
+| --- | --- |
+| `unsupportedVersion` | The two sides share no version; it carries the host's range |
+| `badRequest` | A message does not decode, or a field is out of range |
+| `unknownRequest` | The host does not serve that request |
+| `notFound` | No such session, mission or question |
+| `notRunning` | The session has no live terminal to attach to |
+| `failed` | The host could not do it; the message says why |
+
+**Fixtures.** One golden file for every message, and for: the handshake in both directions and a version mismatch; a message with a field the reader does not know; a version 1 message without fields added later; and a status and a push the reader does not know. The types parse and produce each ordinary file unchanged. Unknown-field compatibility files decode to the same known-field form as their ordinary counterparts; their extra fields are ignored and need not be reproduced. The web panel's decoder is tested against the same files. Serving the protocol from `runnerd`'s state is Phase 3's adapter.
+
+Jason approved this section on 2026-10-20 with the choices it makes: `answer` and `post` in version 1, JSON with base64 terminal bytes, 1,000 lines of history by default, starting and stopping left to the desktop, and `take` clearing the unread mark.
+
+### Terminal size
+
+A session's terminal has one size. The PTY gives the program in it, a shell, Claude Code or Codex, one width and height, and the program draws for exactly that grid: its output is full of cursor movements computed for it, so the same bytes cannot be shown at a second size. Every client of a session therefore shows the same grid, and the rule below decides whose window sets it. It covers the desktop app and the browser; a phone client ([#912](https://github.com/yicheng47/runner/issues/912)) gets its own rule when it is designed.
+
+**One controller (Jason, 2026-10-19).** Each terminal has at most one controller: the desktop app, or one browser. The controller's viewport is the terminal's size, and every other client draws that grid. `runnerd` holds the controller in memory, changes it only as the table below says, and ignores a size from any client that is not the controller, so no client can start a resize fight, even by mistake. Without a browser the desktop is always the controller, and nothing changes from today. The rule follows how Orca's phone client shares a terminal with its desktop app, reviewed in Orca's source the same day: an explicit owner, and a way to take the terminal back. Orca's phone-specific part, fitting to a phone's screen, is not part of it.
+
+| Event | Controller after it | Terminal size |
+| --- | --- | --- |
+| A browser opens the terminal, or clicks **Take control** | That browser | The browser's viewport |
+| The controlling browser's window changes size | Unchanged | Its new viewport |
+| Another browser opens the terminal | The newer browser | Its viewport |
+| A browser reattaches after its connection dropped | That browser if the terminal has no controller; otherwise unchanged | Its viewport if it became the controller; otherwise unchanged |
+| The controlling browser closes the terminal, or its connection ends | None | Unchanged |
+| The person clicks **Take back** or **Continue here** on a desktop pane showing the terminal | The desktop | The desktop pane's size |
+| `runnerd` starts | The desktop | As today |
+
+**Why opening takes control.** Opening a terminal in a browser is something the person does on purpose, so it is the signal: the host does not infer from typing or focus who is using which screen. Taking control on the first keystroke instead would resize the terminal under that keystroke. A reconnect is not something the person does, so it takes control only when nobody holds it: a dropped connection does not take the terminal back from a desktop that has taken it in the meantime. The browser says which of the two it is doing, and the host never guesses.
+
+**Why leaving keeps the size.** Every resize makes the program redraw, a shell its prompt and a TUI its whole screen, and reflows the history the host's terminal model keeps. When a browser leaves, usually nobody is at the desktop to see a restored size, so restoring at once would spend a reflow for nothing. The terminal keeps the browser's size until the person continues at the desktop, so the one reflow happens when they are back and looking.
+
+**The desktop pane while another client controls (Jason, 2026-10-19).** The pane is covered the way the two-window case covers a duplicate chat: a scrim over the terminal and a centered card naming who controls it from the paired device's name, such as Controlled from Chrome on Windows, with **Take back**. When the browser has left, the card says so, that the terminal is still at the browser's size, and offers **Continue here**. Either button, or Enter on the card, sends `terminal_take_back`, which resizes the terminal to the pane and returns control to the desktop. Taking back is always this deliberate step: keystrokes in a covered pane go to the card, so none lands in a terminal a browser is using. The pane draws no grid sized for another device and does not push its own size, so nothing has to be scaled or cropped to fit it, and the terminal behind the scrim is only a faint reminder of what is there; watching a browser's session from the desktop is left for later. Several desktop windows showing one terminal are one controller, the desktop, and the app picks the size among them as it does today.
+
+**A tab or a mission opens as a unit (Jason, 2026-10-19).** A browser opens what the desktop's sidebar holds, a tab or a mission, and takes every terminal in it. The companion protocol's overview lists the desktop's tabs with their split layouts, which `runnerd` already keeps as its tab nodes, so a split tab opens in the browser as the desktop shows it. Opening a tab or a mission attaches each of its terminals with `take`, at the size of that terminal's pane in the browser. A chat has no sidebar row of its own, only its tab, so it is never taken apart from the rest of its split. The controller stays per terminal in `runnerd`, and the desktop draws one card over the whole tab or mission below its tab bar; Take back returns each terminal to its own pane.
+
+The frames are in `runner/desktop/specs/836-terminal-size.pen` in `yeelinks_design`: a browser has control, the browser has left, a browser opened a split tab, light theme with Chinese strings, and the existing two-window overlay for comparison.
+
+**A browser that is not the controller** draws the terminal's grid scaled to fit its window, says who holds the size, the desktop or another browser, and offers **Take control**. Its input still reaches the terminal; only its size does not.
+
+**Messages.** The companion protocol carries the rule in four messages, in its envelope above:
+
+- `attach` names the session, gives the browser's viewport in columns and rows, and says `take` when the person opened the terminal or `ifFree` when the browser reattaches after a dropped connection.
+- `takeControl` gives the viewport, for Take control.
+- `viewport` gives the controlling browser's new viewport once its window has stopped changing for 100 ms; `runnerd` applies the latest and ignores one from a client that is not the controller.
+- `resized` goes to every client of the terminal whenever its size or controller changes: the size, the output sequence number it takes effect at, as the client protocol's `Resized` frame does today, and the controller as `you`, `desktop`, `browser` with the device's name, or `none`.
+
+A viewport below 20 columns or 8 rows is raised to that size. The desktop app gets the same state over the client protocol: the controller with each terminal's size, and a `terminal_take_back` request carrying the pane's size, which the app sends on Take back or Continue here.
+
+**Not part of this rule.** [#838](https://github.com/yicheng47/runner/issues/838), the shell fragments a second desktop window leaves, is the app's own choice among its windows and stays outside this rule. The phone's rule, including fitting to a phone's screen, comes with #912.
+
+**Checks**, with Phase 3's adapter, in `runnerd`'s tests and with Jason on a `remote-nightly` build:
+
+- Opening a terminal in a browser resizes it to the browser and covers the desktop pane with its card; a size from that pane is then ignored, and a keystroke in it does not reach the terminal.
+- Take back on the card, or Enter, resizes the terminal to the pane, removes the card, and switches the browser to the scaled view with Take control.
+- Closing the browser's tab keeps the size, the card says the browser has left, and Continue here resizes the terminal to the pane.
+- Opening a desktop split tab, or a mission, in a browser takes every terminal in it and covers the whole desktop tab or mission with one card, and Take back resizes each terminal to its own pane.
+- A browser whose connection drops and returns keeps control when nobody took it, and does not take it back from a desktop that did.
+- Of two browsers, the one that opened the terminal last is the controller.
+- Without a browser the desktop behaves as before: TERM-RESIZE-01 and TERM-RESIZE-02 in the [terminal regression suite](../tests/regression/terminal.md) pass unchanged.
 
 ### Changes to Phase 1
 

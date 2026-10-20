@@ -40,7 +40,7 @@ Phase 3 builds on both: the PIN exchange and the Noise handshakes, the relay's c
    - `runner remote reset-identity`, behind the same guard, asks `[y/N]` first.
    - `runner remote devices [--json]` and `runner remote revoke <fingerprint>` are allowed inside agent sessions.
    - `runner remote status` gains a PIN line and a device count. The CLI reference is regenerated with `make guide-cli`.
-4. **Settings**, in `runner-app/src/surfaces/settings/remote.rs`, built from the signed-off frames in `design/specs/836-web-remote-control.pen`: the PIN row with Set and Change, the locked row with Unlock, the device list with Revoke, and Reset identity behind the existing confirmation dialog. A warning toast when PIN entry locks while the app runs. English and Simplified Chinese strings. `docs/guide/guides/remote-access.md` gains Who can reach this computer.
+4. **Settings**, in `runner-app/src/surfaces/settings/remote.rs`, built from the signed-off frames in `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`: the PIN row with Set and Change, the locked row with Unlock, the device list with Revoke, and Reset identity behind the existing confirmation dialog. A warning toast when PIN entry locks while the app runs. English and Simplified Chinese strings. `docs/guide/guides/remote-access.md` gains Who can reach this computer.
 
 The new-device notification belongs to Phase 3, since only a pairing raises it.
 
@@ -59,13 +59,39 @@ A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m2-host-trust`
 
 ### m3 — companion protocol v1
 
-Planned in full once the spec's protocol section exists. Already fixed:
+The types and golden files of the spec's Companion protocol section, in `runner-core` alone. Nothing serves them yet: no channel, nothing in `runnerd`, the CLI or the app, so nothing a person can see changes and no guide page does either.
 
-- Its own module, `runner-core/src/companion/`, apart from the build-locked client protocol in `protocol/`, because clients update independently of the host.
-- A golden JSON file for every message, handshake and error under the module's `fixtures/`, parsed and produced by the types, including missing default fields and unknown fields. The service's browser client decodes the same files.
-- Types and fixtures only: serving them from `runnerd`'s state is Phase 3's adapter.
+#### Commits
 
-It lands like m2, on `feat/836-m3-companion-protocol` with its brief as `836-m3-companion-protocol.md`.
+1. **The envelope, handshake and versions**, in `runner-core/src/companion/`, a module of its own beside the build-locked `protocol/`.
+   - Two message enums, one per direction, tagged by `type`, with camelCase names. A request carries its `id`; `result` and `error` answer it; a push has none.
+   - `hello` and `welcome`, the version choice (the highest both speak, else `unsupportedVersion` with the host's range), `features`, and the error codes.
+   - A base64 bytes type for terminal data, the 1 MiB message limit and the 32 KiB chunk size as constants, and a helper that splits terminal bytes into chunks.
+   - The compatibility rules as code: unknown fields ignored; fields added later defaulted; each enum's fallback; an unknown push decoded as unknown rather than an error.
+2. **The messages**: the overview and its split tree, status with its flattening from `AgentStatus`, the feed and its entries, `follow`, `answer` and `post`, and the terminal messages (`attach`, `snapshot`, `output`, `resized`, `input`, `takeControl`, `viewport`, `detach`, `closed`).
+
+The crew may fold them into one commit if the first does not stand alone.
+
+#### Checks
+
+- **Fixtures** under `runner-core/src/companion/fixtures/`, one per message, read with the round trip Phase 1's `remote/fixtures` uses: each ordinary file parses, and serializing it gives the same JSON. Per Jason's PR #966 follow-up, unknown-field compatibility files instead decode and compare to the known-field form, without changing their wire meaning. The compatibility files from the spec: the handshake both ways and a version mismatch, an unknown field, a version 1 message without later fields, an unknown status and an unknown push.
+- **Status flattening**, one test per row of the spec's table, from `AgentStatus` values.
+- **The version choice**: overlapping ranges, no overlap, and a client offering versions out of order.
+- **Chunking**: empty input, exactly 32 KiB, and one byte over.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+
+There is no live check: m3 changes nothing a person can run.
+
+#### Easy to get wrong
+
+- Answering an unknown request with `unknownRequest` needs its `id`, so a request is decoded in two steps: its `type` and `id` first, then the body.
+- `serde(other)` covers only unit variants: an unknown push or status needs its own fallback variant, tested by its fixture.
+- Base64 is the standard alphabet with padding, which the browser's `atob` and `btoa` read and write.
+- The golden files are the web panel's contract too: their paths and names are part of it, and a change to one is a protocol change.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m3-companion-protocol` on `feat/836-m3-companion-protocol`, with its brief as `836-m3-companion-protocol.md`, and a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration.
 
 ### Spec additions before m2
 
@@ -79,7 +105,7 @@ Planning m2 surfaced details the spec did not state. Jason approved them with th
 
 ## Phase 3 — the end-to-end channel and live terminals
 
-Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals, the new-device notification, and the multi-client resize fix [#838](https://github.com/yicheng47/runner/issues/838).
+Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals with the spec's terminal-size controller, the desktop pane's control card and `terminal_take_back`, and the new-device notification. [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so Phase 3 reruns its two-window steps when it changes the pane's size push, without blocking on it.
 
 ## Phase 4 — Tailscale
 
