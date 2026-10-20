@@ -5451,6 +5451,7 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
+ "curve25519-dalek",
  "fs2",
  "hostname",
  "libc",

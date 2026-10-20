@@ -10,8 +10,8 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 | --- | --- | --- |
 | m1 | Phase 1 ([#951](https://github.com/yicheng47/runner/issues/951)): connect a host to an account | Merged into `nightly-remote` on 2026-10-18 as [#945](https://github.com/yicheng47/runner/pull/945); #951 closed on 2026-10-19. The hosted-service pass on macOS covered connect, approve, pause, resume and disconnect; the other live checks are pending with Jason in [`836-connect-host.md`](../../tests/836-connect-host.md) and gate the umbrella's landing |
 | m2 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): host trust, the stable identity key, the PIN and its lock, and the device list | Merged into `nightly-remote` on 2026-10-19 as [#957](https://github.com/yicheng47/runner/pull/957); its live checks wait on a `remote-nightly` build |
-| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Its Terminal size rule is in the spec, with its desktop frames approved by Jason on 2026-10-20; he approved the rest of the protocol section the same day. Planned, waiting to start |
-| — | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with the terminal-size controller and the desktop pane's control card | Planned when its development starts |
+| m3 | Phase 2 ([#952](https://github.com/yicheng47/runner/issues/952)): the companion protocol v1 | Merged into `nightly-remote` on 2026-10-20 as [#966](https://github.com/yicheng47/runner/pull/966); it has no live check |
+| m4–m6 | Phase 3 ([#953](https://github.com/yicheng47/runner/issues/953)): the end-to-end channel, pairing, the adapter and live terminals, with the terminal-size controller and the desktop pane's control card | The spec's Phase 3 section was drafted and approved on 2026-10-20; [plan.md](plan.md#phase-3--the-end-to-end-channel-and-live-terminals) splits it into three missions. m4, the channel, started the same day as a codex duo mission |
 | — | Phase 4 ([#954](https://github.com/yicheng47/runner/issues/954)): reach a host over Tailscale | Planned when its development starts |
 
 ## Decisions that bind
@@ -29,4 +29,5 @@ Remote control is the focus of 0.17. #836 is the parent issue, with one sub-issu
 
 - Phase 1's remaining live checks, pending with Jason.
 - m2's live checks, on a `remote-nightly` build.
-- m3: the mission, as [plan.md](plan.md#m3--companion-protocol-v1) lays out.
+- m4, the mission, as [plan.md](plan.md#m4--the-channel) lays out; m5 and m6 are planned in detail when m4 is under review.
+- The service's R1 and R2 in `runner_server` can start from the approved spec.
