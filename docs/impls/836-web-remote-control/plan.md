@@ -105,7 +105,57 @@ Planning m2 surfaced details the spec did not state. Jason approved them with th
 
 ## Phase 3 — the end-to-end channel and live terminals
 
-Planned when its development starts, after Phase 2's spec sections. It carries the PIN exchange and both Noise handshakes, the relay's client channel, the adapter that serves the companion protocol from `runnerd`'s state, terminals with the spec's terminal-size controller, the desktop pane's control card and `terminal_take_back`, and the new-device notification. [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so Phase 3 reruns its two-window steps when it changes the pane's size push, without blocking on it.
+Proposed on 2026-10-20 with the spec's Phase 3 section. Jason approved starting it the same day with the spec's proposals as drafted, without reviewing every detail, so a crew raises any detail it finds wrong through Runner rather than working around it. Three missions, each one pull request into `nightly-remote`, in order:
+
+| Mission | What | Waits on |
+| --- | --- | --- |
+| m4 — channel | The route's frames on `/relay/host` and `hello`'s `features`; the channel in `runner-core/src/companion/channel/`, CPace, both Noise handshakes, records and credit, with its vectors; pairing and connecting in `runnerd` against `remote-trust.json`, Revoke and Reset identity closing channels; the `remote/paired` event and `connected` in `RemoteTrust` and `runner remote devices`; the adapter's `hello` and `welcome` alone. No change to the app | — |
+| m5 — adapter | The overview, status and terminal requests (`attach`, `input`, `takeControl`, `viewport`, `detach`) with their pushes; the snapshot's history limit; the controller in `runnerd` and its client-protocol changes, without the card. `feed`, `follow`, `unfollow`, `answer` and `post` are left out of `welcome`'s `features` for a later mission, which needs no protocol version (Jason, 2026-10-20) | m4 |
+| m6 — desktop | The control card over panes, tabs and missions, Take back and Continue here, and the pane's size push; the pairing notification and the Connected now row; #838's two-window rerun; the guide | m5; the frames for the notification and the row |
+
+### m4 — the channel
+
+#### Commits
+
+1. **The channel**, in `runner-core/src/companion/channel/`, with no I/O.
+   - CPace, CPACE-RISTR255-SHA512 from draft 21, initiator-responder, on `curve25519-dalek`'s ristretto255 (`RistrettoPoint::from_uniform_bytes` for the generator) and `sha2`'s SHA-512, with the identity check on `K`. Both crates are already in `Cargo.lock` through `snow`; they become direct dependencies at the same versions, with no new crate in the lockfile.
+   - The frame kinds and their parsing, then the handshakes as pure state machines that take frames in and give frames and outcomes out: the host's (`pair` → `pairReply` → `pairFinish`, `connect` → `accept`, `reject`) and a browser's, used by the tests and the vectors. `snow`'s `XXpsk3` with the PSK set at position 3 from the ISK's first 32 bytes, and `IK`.
+   - Records: encoding, a message's assembly with the 1 MiB limit, and credit, which is the sender's remaining allowance and the receiver's owed bytes with the 64 KiB threshold.
+   - Vectors in `vectors/`, JSON with hex bytes: appendix B.3's CPace vectors; a pairing, a connect, a wrong PIN and `unknownDevice`, frame by frame, from fixed static keys, ephemeral keys (`snow`'s `fixed_ephemeral_key_for_testing_only`), CPace scalars and `sid`; and a record sequence with `credit`.
+2. **The route and pairing in `runnerd`**, in `runner-daemon/src/remote/`.
+   - `hello` gains `"features":["channels"]`, with its golden file. `channelOpen` and `channelClosed` are read, `closeChannel` is sent, and binary frames are routed by channel number. `tokio-tungstenite`'s size limit applies to every message, so it becomes 65,540 bytes and the 64 KiB text limit is kept in code.
+   - One task per channel, fed by the remote task, whose writer sends every channel's frames; at most 16 channels; the 30-second handshake deadline; a frame for a channel that is not open is dropped.
+   - Pairing against the identity item's PIN and `Trust`: `noPin` and `pinLocked` at `pair`, the lock checked again at `pairFinish`, `pairFinish` frames read one at a time, `record_failed_pin` and `record_paired`. Connecting against the device list, updating `last_seen_at`.
+   - Revoke closes that device's channels; Reset identity, Pause, Disconnect and the connection dropping close all of them. `RemoteTrust`'s devices gain `connected`, and a pairing pushes `remote/paired` with the name and fingerprint.
+   - After the handshake, records and credit, and the companion handshake alone: `hello` is answered with `welcome`, whose `features` is empty, and every request with `unknownRequest`. m5 serves the rest.
+3. **The CLI**: `runner remote devices` and its `--json` show `connected`. Regenerate the CLI reference if help text changes.
+
+#### Checks
+
+- **Vectors**: CPace's appendix B.3; each channel vector reproduced from the browser's side and from the host's side.
+- **The channel**: each reject reason; a frame out of order, of the wrong length or failing decryption; a non-canonical or identity ristretto point; a message over 1 MiB; parts of two messages interleaved; credit, so a sender stops at zero and resumes on `credit`, and `credit` is owed at 64 KiB.
+- **`runnerd`**, with the existing fake service and a test browser over it: pairing and connecting end to end to `welcome`; PIN entry locking at the fifth wrong PIN, including five `pairFinish` frames sent at once; Unlock; Revoke closing the device's open channel; Reset identity, Pause and Disconnect closing all; the 17th channel rejected with `busy`; the handshake deadline on a fake clock; a frame for an unknown channel dropped; a reader that grants no credit holding up only its own channel; `connected` and `remote/paired`.
+- **Secrets**: no PIN, ISK, key, frame or record body in a log line or `Debug` output.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+
+There is no live check: until the service's R1 and R2 exist, nothing can open a channel to a real host.
+
+#### Easy to get wrong
+
+- In `XXpsk3` the host must set the PSK before reading the third message, and the PSK is the ISK's first 32 bytes, not the ISK.
+- CPace rejects a point that does not decode as canonical ristretto255 and a `K` that is the identity; both are `badHandshake`, never a counted wrong PIN.
+- Count every in-order, structurally valid `pairFinish` authentication failure, including ciphertext or tag tampering: it is indistinguishable from a wrong PIN (Jason, 2026-10-20). Invalid kinds, order, lengths or CPace points, and successfully decrypted invalid payloads, are `badHandshake` without counting.
+- The relay's writer is shared by every channel: one channel without credit must not block the socket, the heartbeat or the other channels.
+- A channel's task failing ends that channel and is logged; it never ends the remote task or `runnerd`.
+- Tests do not sleep and reach no network.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m4-channel` on `feat/836-m4-channel`, with its brief as [`../briefs/836-m4-channel.md`](../briefs/836-m4-channel.md), and a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration.
+
+m4 ends at the companion handshake so that the service's browser channel can be tested live against a real host before the adapter exists. The service's side runs alongside in `runner_server`: R1, `/relay/client` and the host's channel frames, and R2, the channel in TypeScript against m4's vectors, can start from the approved spec; R3 and R4, the host and terminal pages, are designed first. The first live terminal needs m4, m5, R1, R2 and a bare R4; m6 makes the desktop side right and can follow.
+
+[#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so m6 reruns its two-window steps when it changes the pane's size push, without blocking on it.
 
 ## Phase 4 — Tailscale
 

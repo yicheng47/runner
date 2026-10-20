@@ -157,8 +157,8 @@ async fn execute(command: &RemoteCommand, json: bool) -> Result<i32, ClientError
             } else {
                 for device in trust.devices {
                     println!(
-                        "{}\n  Fingerprint  {}\n  Paired       {}\n  Last seen    {}",
-                        device.name, device.fingerprint, device.paired_at, device.last_seen_at
+                        "{}\n  Fingerprint  {}\n  Paired       {}\n  Last seen    {}\n  Connected    {}",
+                        device.name, device.fingerprint, device.paired_at, device.last_seen_at, device.connected
                     );
                 }
             }
