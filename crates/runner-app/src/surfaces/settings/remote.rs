@@ -1832,6 +1832,7 @@ mod tests {
                                         public_key: String::new(),
                                         paired_at: now,
                                         last_seen_at: now,
+                                        connected: false,
                                     })
                                     .collect(),
                             });
