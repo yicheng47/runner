@@ -1,3 +1,4 @@
+mod channels;
 mod machine;
 mod persistence;
 pub mod store;
@@ -23,6 +24,10 @@ use tokio_util::sync::CancellationToken;
 struct Envelope {
     command: Command,
     reply: oneshot::Sender<Result<Reply, String>>,
+}
+struct Inbox {
+    commands: Mutex<mpsc::Receiver<Envelope>>,
+    trust_writes: std::sync::OnceLock<Arc<channels::TrustWrites>>,
 }
 pub enum Reply {
     Status(Box<RemoteStatus>),
@@ -220,7 +225,10 @@ fn spawn_with_clock(
         status: status_tx,
         trust: trust_tx,
     };
-    let rx = Arc::new(Mutex::new(rx));
+    let rx = Arc::new(Inbox {
+        commands: Mutex::new(rx),
+        trust_writes: std::sync::OnceLock::new(),
+    });
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
     let (stopped_tx, stopped) = watch::channel(false);
@@ -281,7 +289,7 @@ async fn run(
     store: Arc<dyn SecretStore>,
     events: crate::events::EventChannel,
     status_tx: Snapshots,
-    rx: Arc<Mutex<mpsc::Receiver<Envelope>>>,
+    inbox: Arc<Inbox>,
     cancel: CancellationToken,
     clock: Clock,
 ) -> Result<(), &'static str> {
@@ -306,6 +314,7 @@ async fn run(
     machine.trust = trust;
     machine.host = remote::HostInfo::current();
     let mut socket = None;
+    let trust_writes = &inbox.trust_writes;
     let initialized = tokio::select! {
         result = perform(
         &mut machine,
@@ -317,6 +326,7 @@ async fn run(
         &events,
         &status_tx,
         &clock,
+        trust_writes,
     )
      => Some(result),
         _ = cancel.cancelled() => None,
@@ -330,8 +340,9 @@ async fn run(
             return Ok(());
         }
     }
-    let mut rx = rx.lock().await;
+    let mut rx = inbox.commands.lock().await;
     let mut pending_start: Option<oneshot::Sender<Result<Reply, String>>> = None;
+    let mut channels: Option<channels::Channels> = None;
     loop {
         publish(&machine, &events, &status_tx);
         let deadline = machine.deadline.map(|at| {
@@ -358,9 +369,48 @@ async fn run(
                 (Input::Command(e.command), Some(e.reply))
             }
             _ = delay => (Input::Deadline, None),
+            completion = async {
+                match trust_writes.get() { Some(writes) => writes.next().await, None => std::future::pending().await }
+            } => {
+                trust_writes.get().unwrap().complete(completion, channels.as_mut(), &mut machine, &root, &events);
+                if let Some(routes) = &channels { routes.sync(&mut machine); }
+                publish(&machine, &events, &status_tx);
+                continue;
+            },
+            event = async {
+                match &mut channels { Some(routes) => routes.next().await, None => std::future::pending().await }
+            } => {
+                let output = channels.as_mut().unwrap().handle(event, &mut machine, &root, &clock, &events);
+                let input = match output {
+                    Some(frame) => match send_frames(&mut socket, [frame]).await {
+                        Ok(()) => { channels.as_ref().unwrap().sync(&mut machine); publish(&machine, &events, &status_tx); continue; },
+                        Err(f) => Input::Failure(f),
+                    },
+                    None => { channels.as_ref().unwrap().sync(&mut machine); publish(&machine, &events, &status_tx); continue; },
+                };
+                (input, None)
+            },
             frame = read => {
                 let input = match frame {
-                    Some(Ok(Message::Text(text))) => Input::Text(text.to_string()),
+                    Some(Ok(Message::Text(text))) => {
+                        if text.len() <= remote::MAX_CONTROL_SIZE && matches!(machine.status.state, remote::RemoteState::Connected { .. }) {
+                            match serde_json::from_str::<remote::Control>(&text) {
+                                Ok(remote::Control::ChannelOpen { channel }) => {
+                                    let writes=trust_writes.get_or_init(||Arc::new(channels::TrustWrites::default())).clone();
+                                    let routes = channels.get_or_insert_with(||channels::Channels::new(writes));
+                                    if let Err(reason) = routes.open(channel, &machine) {
+                                        let frames = [Message::Binary(runner_core::companion::channel::wrap(channel, &reason.frame()).into()), channels::close_message(channel)];
+                                        let _ = send_frames(&mut socket, frames).await;
+                                    }
+                                }
+                                Ok(remote::Control::ChannelClosed { channel }) => {
+                                    if let Some(routes) = &mut channels { routes.closed(channel); }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Input::Text(text.to_string())
+                    },
                     Some(Ok(Message::Close(frame))) => {
                         let code = frame.map(|f| u16::from(f.code)).unwrap_or(1006);
                         log::info!("remote close: {code}");
@@ -370,13 +420,28 @@ async fn run(
                         if let Some(s) = &mut socket { let _ = s.send(Message::Pong(bytes)).await; }
                         Input::Frame
                     }
-                    Some(Ok(Message::Binary(_))) => { log::info!("remote: ignored binary frame"); Input::Frame }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if let (Some(routes), Some((id, frame))) = (&mut channels, runner_core::companion::channel::unwrap(&bytes)) {
+                            if !routes.feed(id, frame) { let _ = send_frames(&mut socket, [channels::close_message(id)]).await; }
+                        }
+                        Input::Frame
+                    }
                     Some(Ok(_)) => Input::Frame,
                     _ => Input::Failure(transport::Failure::network()),
                 };
                 (input, None)
             }
         };
+        #[cfg(test)]
+        if let Input::Command(Command::TestSocket(test)) = input {
+            socket = Some(*test.0);
+            machine.status.state = remote::RemoteState::Connected { since: clock.now() };
+            machine.deadline = Some(clock.now() + chrono::Duration::seconds(75));
+            if let Some(reply) = reply {
+                let _ = reply.send(Ok(Reply::Status(Box::new(machine.status.clone()))));
+            }
+            continue;
+        }
         let logout = matches!(&input, Input::Command(Command::Logout));
         let starting = matches!(&input, Input::Command(Command::Start { .. }));
         let trust_command = matches!(
@@ -410,6 +475,10 @@ async fn run(
                 }
             }
         }
+        let revoke = match &input {
+            Input::Command(Command::RevokeDevice(fingerprint)) => Some(fingerprint.clone()),
+            _ => None,
+        };
         let effects = match machine.step(input, clock.now(), &mut rand::random) {
             Ok((effects, _)) => effects,
             Err(error) => {
@@ -419,6 +488,10 @@ async fn run(
                 continue;
             }
         };
+        let frames = channels::transition(&mut channels, &mut machine, &effects, revoke.as_deref());
+        if !frames.is_empty() {
+            let _ = send_frames(&mut socket, frames).await;
+        }
         if starting {
             if let Some(previous) = pending_start.take() {
                 let _ = previous.send(Err("Enrollment replaced.".into()));
@@ -435,6 +508,7 @@ async fn run(
             &events,
             &status_tx,
             &clock,
+            trust_writes,
         )
          => Some(result),
             _ = cancel.cancelled() => None,
@@ -446,6 +520,16 @@ async fn run(
                 return Ok(());
             }
         };
+        if socket.is_none() {
+            channels = None;
+        }
+        if let Some(routes) = &channels {
+            routes.sync(&mut machine);
+        } else {
+            for device in &mut machine.trust.devices {
+                device.connected = false;
+            }
+        }
         publish(&machine, &events, &status_tx);
         let waiting_for_code =
             matches!(machine.status.state, remote::RemoteState::Off) && machine.deadline.is_some();
@@ -515,6 +599,7 @@ async fn perform(
     events: &crate::events::EventChannel,
     tx: &Snapshots,
     clock: &Clock,
+    trust_writes: &std::sync::OnceLock<Arc<channels::TrustWrites>>,
 ) -> Result<RemoteLogout, &'static str> {
     let mut queue: std::collections::VecDeque<_> = effects.into();
     let mut outcome = RemoteLogout::Removed;
@@ -611,9 +696,13 @@ async fn perform(
             Effect::SaveTrust => {
                 let trust = machine.trust.clone();
                 let root = root.to_path_buf();
-                tokio::task::spawn_blocking(move || trust.save(&root))
-                    .await
-                    .map_err(|_| "Remote trust worker failed")??;
+                if let Some(writes) = trust_writes.get() {
+                    writes.save(trust, root).await?;
+                } else {
+                    tokio::task::spawn_blocking(move || trust.save(&root))
+                        .await
+                        .map_err(|_| "Remote trust worker failed")??;
+                }
                 None
             }
             Effect::SaveIdentity => {
@@ -681,6 +770,19 @@ async fn perform(
         }
     }
     Ok(outcome)
+}
+async fn send_frames(
+    socket: &mut Option<transport::Socket>,
+    frames: impl IntoIterator<Item = Message>,
+) -> Result<(), transport::Failure> {
+    let socket = socket.as_mut().ok_or_else(transport::Failure::network)?;
+    for frame in frames {
+        tokio::time::timeout(std::time::Duration::from_secs(10), socket.send(frame))
+            .await
+            .map_err(|_| transport::Failure::network())?
+            .map_err(|_| transport::Failure::network())?;
+    }
+    Ok(())
 }
 async fn close(socket: &mut Option<transport::Socket>) {
     if let Some(mut s) = socket.take() {
