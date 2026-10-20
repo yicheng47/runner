@@ -45,6 +45,8 @@ const HOST_FIXTURES: &[&str] = &[
     "feed_appended",
     "snapshot",
     "snapshot_final",
+    "snapshot_rep",
+    "snapshot_rep_unfinished",
     "output",
     "resized",
     "resized_desktop",
@@ -707,4 +709,22 @@ fn browser_sizes_clamp_both_axes_to_the_approved_bounds() {
         assert_eq!(attach.clamped_size(), expected);
         assert_eq!(viewport.clamped_size(), expected);
     }
+}
+
+#[test]
+fn snapshot_continuation_defaults_and_validation() {
+    let mut value = fixture("snapshot_rep_unfinished");
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.preceding_char, Some('c'));
+    assert_eq!(snapshot.unfinished_len, 3);
+    value.as_object_mut().unwrap().remove("precedingChar");
+    value.as_object_mut().unwrap().remove("unfinishedLen");
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.preceding_char, None);
+    assert_eq!(snapshot.unfinished_len, 0);
+    value["precedingChar"] = json!("two");
+    assert!(serde_json::from_value::<Snapshot>(value.clone()).is_err());
+    value["precedingChar"] = json!(null);
+    value["unfinishedLen"] = json!(-1);
+    assert!(serde_json::from_value::<Snapshot>(value).is_err());
 }

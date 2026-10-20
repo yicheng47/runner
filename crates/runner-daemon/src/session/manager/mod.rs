@@ -592,6 +592,7 @@ struct SessionState {
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
     next_subscriber_id: u64,
+    companion_terminals: Vec<Weak<terminal::CompanionTerminal>>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
@@ -1302,6 +1303,7 @@ impl SessionManager {
                 .as_ref()
                 .is_some_and(|current| !Arc::ptr_eq(current, &terminal))
             {
+                state.finish_companion_terminals();
                 for (_, queue) in state.subscribers.drain(..) {
                     queue.close();
                 }
@@ -1664,7 +1666,9 @@ impl SessionManager {
 
     fn record_exit_status(&self, session_id: &str, exit_code: Option<i32>, crashed: bool) {
         if let Some(session) = self.session_state(session_id) {
-            session.lock().unwrap().model.apply(
+            let mut session = session.lock().unwrap();
+            session.finish_companion_terminals();
+            session.model.apply(
                 SessionEvent::Exited {
                     code: exit_code,
                     crashed,

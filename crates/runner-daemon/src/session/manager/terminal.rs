@@ -130,6 +130,46 @@ impl TerminalSubscription for Frames {
     }
 }
 
+pub struct CompanionTerminal {
+    state: Weak<Mutex<SessionState>>,
+    history: usize,
+    final_snapshot: Mutex<Option<runner_core::protocol::terminal::TerminalSnapshot>>,
+}
+impl CompanionTerminal {
+    pub fn attach(&self) -> Result<TerminalAttachment> {
+        let state = self.state.upgrade();
+        let mut state = state.as_ref().map(|state| state.lock().unwrap());
+        if let Some(snapshot) = self.final_snapshot.lock().unwrap().take() {
+            let queue = Arc::new(FrameQueue::default());
+            queue.close();
+            return Ok(TerminalAttachment {
+                subscriber_id: 0,
+                snapshot,
+                frames: Box::new(Frames(queue)),
+            });
+        }
+        let state = state
+            .as_mut()
+            .ok_or_else(|| Error::msg("terminal released"))?;
+        SessionManager::attach_terminal_locked(state, self.history)
+    }
+}
+impl SessionState {
+    pub(super) fn finish_companion_terminals(&mut self) {
+        for source in self
+            .companion_terminals
+            .drain(..)
+            .filter_map(|source| source.upgrade())
+        {
+            if let Some(model) = &self.terminal {
+                let mut snapshot = model.snapshot_with_history(self.output_seq, source.history);
+                snapshot.controller = self.controller.wire();
+                *source.final_snapshot.lock().unwrap() = Some(snapshot);
+            }
+        }
+    }
+}
+
 struct Host {
     manager: Weak<SessionManager>,
     pool: DbPool,
@@ -206,6 +246,7 @@ impl SessionManager {
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
+        state.finish_companion_terminals();
         for (_, queue) in state.subscribers.drain(..) {
             queue.close();
         }
@@ -288,10 +329,37 @@ impl SessionManager {
             .session_state(id)
             .ok_or_else(|| Error::msg(format!("session not found: {id}")))?;
         let mut state = state.lock().unwrap();
+        Self::attach_terminal_locked(&mut state, history)
+    }
+    pub fn attach_companion_terminal(
+        &self,
+        id: &str,
+        history: usize,
+    ) -> Result<(TerminalAttachment, Arc<CompanionTerminal>)> {
+        let state = self
+            .session_state(id)
+            .ok_or_else(|| Error::msg("terminal not found"))?;
+        let source = Arc::new(CompanionTerminal {
+            state: Arc::downgrade(&state),
+            history: history.min(5000),
+            final_snapshot: Mutex::new(None),
+        });
+        let mut state = state.lock().unwrap();
+        let attachment = Self::attach_terminal_locked(&mut state, source.history)?;
+        state
+            .companion_terminals
+            .retain(|source| source.strong_count() != 0);
+        state.companion_terminals.push(Arc::downgrade(&source));
+        Ok((attachment, source))
+    }
+    fn attach_terminal_locked(
+        state: &mut SessionState,
+        history: usize,
+    ) -> Result<TerminalAttachment> {
         let model = state
             .terminal
             .as_ref()
-            .ok_or_else(|| Error::msg(format!("terminal not found: {id}")))?;
+            .ok_or_else(|| Error::msg("terminal not found"))?;
         let mut snapshot = model.snapshot_with_history(state.output_seq, history);
         snapshot.controller = state.controller.wire();
         state.next_subscriber_id += 1;

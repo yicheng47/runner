@@ -28,6 +28,7 @@ struct Envelope {
 struct Inbox {
     commands: Mutex<mpsc::Receiver<Envelope>>,
     trust_writes: std::sync::OnceLock<Arc<channels::TrustWrites>>,
+    companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
 }
 pub enum Reply {
     Status(Box<RemoteStatus>),
@@ -36,6 +37,7 @@ pub enum Reply {
 }
 #[derive(Clone)]
 pub struct RemoteHandle {
+    companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
     tx: mpsc::Sender<Envelope>,
     status: watch::Receiver<RemoteStatus>,
     trust: watch::Receiver<RemoteTrust>,
@@ -50,6 +52,7 @@ impl Default for RemoteHandle {
         let (_, status) = watch::channel(RemoteStatus::default());
         let (_, stopped) = watch::channel(true);
         Self {
+            companion: Default::default(),
             tx,
             status,
             trust: watch::channel(RemoteTrust::default()).1,
@@ -61,6 +64,9 @@ impl Default for RemoteHandle {
     }
 }
 impl RemoteHandle {
+    pub fn set_companion_core(&self, core: Arc<dyn crate::companion::core::Core>) {
+        let _ = self.companion.set(core);
+    }
     pub fn status(&self) -> RemoteStatus {
         self.status.borrow().clone()
     }
@@ -225,7 +231,9 @@ fn spawn_with_clock(
         status: status_tx,
         trust: trust_tx,
     };
+    let companion = Arc::new(std::sync::OnceLock::new());
     let rx = Arc::new(Inbox {
+        companion: companion.clone(),
         commands: Mutex::new(rx),
         trust_writes: std::sync::OnceLock::new(),
     });
@@ -268,6 +276,7 @@ fn spawn_with_clock(
         stopped_tx.send_replace(true);
     });
     RemoteHandle {
+        companion,
         tx,
         status,
         trust,
@@ -397,7 +406,7 @@ async fn run(
                             match serde_json::from_str::<remote::Control>(&text) {
                                 Ok(remote::Control::ChannelOpen { channel }) => {
                                     let writes=trust_writes.get_or_init(||Arc::new(channels::TrustWrites::default())).clone();
-                                    let routes = channels.get_or_insert_with(||channels::Channels::new(writes));
+                                    let routes = channels.get_or_insert_with(||channels::Channels::new(writes, inbox.companion.clone()));
                                     if let Err(reason) = routes.open(channel, &machine) {
                                         let frames = [Message::Binary(runner_core::companion::channel::wrap(channel, &reason.frame()).into()), channels::close_message(channel)];
                                         let _ = send_frames(&mut socket, frames).await;

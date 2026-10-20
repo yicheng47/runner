@@ -393,6 +393,10 @@ pub struct Snapshot {
     pub rows: u16,
     pub data: TerminalBytes,
     pub more: bool,
+    #[serde(default)]
+    pub preceding_char: Option<char>,
+    #[serde(default)]
+    pub unfinished_len: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

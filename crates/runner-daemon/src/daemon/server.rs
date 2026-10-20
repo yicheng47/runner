@@ -185,6 +185,11 @@ async fn serve_with_listener(
         core.events.clone(),
         config.isolated,
     );
+    let companion_core = Arc::new(core.clone());
+    core.remote
+        .set_companion_core(Arc::new(crate::companion::core::DaemonCore(
+            Arc::downgrade(&companion_core),
+        )));
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
