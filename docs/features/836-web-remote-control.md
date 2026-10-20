@@ -669,7 +669,7 @@ The frames are in `runner/desktop/specs/836-terminal-size.pen` in `yeelinks_desi
 - `viewport` gives the controlling browser's new viewport once its window has stopped changing for 100 ms; `runnerd` applies the latest and ignores one from a client that is not the controller.
 - `resized` goes to every client of the terminal whenever its size or controller changes: the size, the output sequence number it takes effect at, as the client protocol's `Resized` frame does today, and the controller as `you`, `desktop`, `browser` with the device's name, or `none`.
 
-A viewport below 20 columns or 8 rows is raised to that size. The desktop app gets the same state over the client protocol: the controller with each terminal's size, and a `terminal_take_back` request carrying the pane's size, which the app sends on Take back or Continue here.
+A browser viewport is clamped to 20–512 columns and 8–256 rows: a smaller viewport is raised to the minimum, and a larger one is lowered to the maximum, in `attach`, `takeControl` and `viewport` alike (Jason, 2026-10-20). Desktop sizes are unchanged. The desktop app gets the same state over the client protocol: the controller with each terminal's size, and a `terminal_take_back` request carrying the pane's size, which the app sends on Take back or Continue here.
 
 **Not part of this rule.** [#838](https://github.com/yicheng47/runner/issues/838), the shell fragments a second desktop window leaves, is the app's own choice among its windows and stays outside this rule. The phone's rule, including fitting to a phone's screen, comes with #912.
 

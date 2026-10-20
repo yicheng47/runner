@@ -586,6 +586,7 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     output_seq: u64,
+    controller: terminal::Controller,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
@@ -599,6 +600,7 @@ struct SessionState {
     pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
+    last_exit_was_killed: bool,
 }
 
 impl SessionState {
@@ -1304,6 +1306,8 @@ impl SessionManager {
                     queue.close();
                 }
             }
+            state.last_exit_was_killed = false;
+            state.controller = terminal::Controller::Desktop;
             state.terminal = Some(terminal);
             state.terminal_input = Some(input);
             state.terminal_input_worker = Some(worker);
@@ -1951,6 +1955,7 @@ impl SessionManager {
         let was_killed = {
             let mut state = state.lock().unwrap();
             let was_killed = state.killed;
+            state.last_exit_was_killed = was_killed;
             state.killed = false;
             was_killed
         };

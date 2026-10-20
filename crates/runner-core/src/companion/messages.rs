@@ -257,7 +257,7 @@ impl AttachRequest {
     }
 
     pub fn clamped_size(&self) -> (u16, u16) {
-        (self.cols.max(20), self.rows.max(8))
+        (self.cols.clamp(20, 512), self.rows.clamp(8, 256))
     }
 }
 
@@ -280,7 +280,7 @@ pub struct ViewportRequest {
 
 impl ViewportRequest {
     pub fn clamped_size(&self) -> (u16, u16) {
-        (self.cols.max(20), self.rows.max(8))
+        (self.cols.clamp(20, 512), self.rows.clamp(8, 256))
     }
 }
 

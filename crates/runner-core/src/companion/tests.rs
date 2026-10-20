@@ -680,3 +680,31 @@ fn status_unread_is_independent_of_the_flattened_status() {
     value.unread_since = Some(1);
     assert!(SessionStatus::from(&value).unread);
 }
+
+#[test]
+fn browser_sizes_clamp_both_axes_to_the_approved_bounds() {
+    for (cols, rows, expected) in [
+        (0, 0, (20, 8)),
+        (80, 24, (80, 24)),
+        (u16::MAX, u16::MAX, (512, 256)),
+        (10, u16::MAX, (20, 256)),
+        (u16::MAX, 1, (512, 8)),
+    ] {
+        let attach = AttachRequest {
+            id: 1,
+            session: "test".into(),
+            cols,
+            rows,
+            control: ControlMode::Take,
+            history: None,
+        };
+        let viewport = ViewportRequest {
+            id: 2,
+            session: "test".into(),
+            cols,
+            rows,
+        };
+        assert_eq!(attach.clamped_size(), expected);
+        assert_eq!(viewport.clamped_size(), expected);
+    }
+}

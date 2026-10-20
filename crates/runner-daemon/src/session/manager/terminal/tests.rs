@@ -1740,7 +1740,8 @@ fn resize_is_broadcast_to_every_subscriber_except_its_origin() {
         TerminalFrame::Resized {
             seq: 1,
             cols: 96,
-            rows: 32
+            rows: 32,
+            ..
         }
     ));
     core.sessions
@@ -1788,4 +1789,216 @@ fn mirror_attach_preserves_rep_after_cursor_and_charset_changes() {
         drop(original);
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn browser_controller_follows_the_terminal_size_table() {
+    use runner_core::protocol::terminal::TerminalController;
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("control", (80, 24), &core.db, &events)
+        .unwrap();
+    let state = core.sessions.session_state("control").unwrap();
+    assert!(matches!(
+        state.lock().unwrap().controller,
+        super::Controller::Desktop
+    ));
+    core.sessions.resize("control", 90, 30, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (90, 30)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 10, 2, true, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (20, 8)
+    );
+    assert_eq!(
+        core.sessions
+            .attach_terminal("control")
+            .unwrap()
+            .snapshot
+            .controller,
+        TerminalController::Browser {
+            channel: 1,
+            name: "First".into()
+        }
+    );
+    let seq = state.lock().unwrap().output_seq;
+    core.sessions.resize("control", 100, 40, &core.db).unwrap();
+    assert_eq!(state.lock().unwrap().output_seq, seq);
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (20, 8)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 70, 20, false, true, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, false, true, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (70, 20)
+    );
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, true, false, &core.db)
+        .unwrap();
+    core.sessions.release_browser("control", 1);
+    assert_eq!(
+        core.sessions.browser_controller("control", 2),
+        runner_core::companion::Controller::You
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions.release_browser_channel(2);
+    assert_eq!(
+        core.sessions.browser_controller("control", 1),
+        runner_core::companion::Controller::None
+    );
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions.resize("control", 120, 35, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (50, 10)
+    );
+    core.sessions
+        .take_back_terminal("control", 120, 35, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (120, 35)
+    );
+    assert_eq!(
+        core.sessions.browser_controller("control", 2),
+        runner_core::companion::Controller::Desktop
+    );
+    core.sessions.release_browser_channel(1);
+    core.sessions.resize("control", 125, 37, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (125, 37)
+    );
+}
+
+#[test]
+fn snapshot_history_limit_keeps_screen_modes_and_newest_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("history", (30, 8), &core.db, &events)
+        .unwrap();
+    let model = core.sessions.terminal_model("history").unwrap();
+    model.configure_named(100, "block");
+    let bytes = (0..30)
+        .map(|i| format!("line-{i:02}\r\n"))
+        .collect::<String>();
+    core.sessions
+        .ingest_output_chunk("history", None, bytes.as_bytes(), events.as_ref());
+    let full = core.sessions.attach_terminal("history").unwrap().snapshot;
+    let limited = core
+        .sessions
+        .attach_terminal_with_history("history", 2)
+        .unwrap()
+        .snapshot;
+    let screen = core
+        .sessions
+        .attach_terminal_with_history("history", 0)
+        .unwrap()
+        .snapshot;
+    assert_eq!(limited.seq, full.seq);
+    assert_eq!((limited.cols, limited.rows), (30, 8));
+    assert!(full.bytes.windows(7).any(|bytes| bytes == b"line-00"));
+    assert!(!limited.bytes.windows(7).any(|bytes| bytes == b"line-00"));
+    assert!(limited.bytes.windows(7).any(|bytes| bytes == b"line-29"));
+    assert!(screen.bytes.len() < limited.bytes.len());
+    assert!(limited.bytes.len() < full.bytes.len());
+    assert_eq!(model.snapshot(99).bytes, full.bytes);
+}
+
+#[test]
+fn browser_viewports_clamp_to_the_approved_bounds_without_changing_desktop_sizes() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("bounds", (80, 24), &core.db, &events)
+        .unwrap();
+    for (take, viewport) in [(true, false), (false, true)] {
+        core.sessions
+            .browser_resize(
+                "bounds",
+                1,
+                "Browser",
+                u16::MAX,
+                u16::MAX,
+                take,
+                viewport,
+                &core.db,
+            )
+            .unwrap();
+        assert_eq!(
+            core.sessions.terminal_model("bounds").unwrap().size(),
+            (512, 256)
+        );
+        core.sessions
+            .browser_resize("bounds", 1, "Browser", 1, 1, false, true, &core.db)
+            .unwrap();
+        assert_eq!(
+            core.sessions.terminal_model("bounds").unwrap().size(),
+            (20, 8)
+        );
+    }
+    core.sessions
+        .take_back_terminal("bounds", 10, 4, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("bounds").unwrap().size(),
+        (10, 4)
+    );
+}
+
+#[test]
+fn terminal_close_reason_retains_an_intentional_stop_after_exit_consumes_the_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("stopped", (80, 24), &core.db, &events)
+        .unwrap();
+    core.sessions
+        .session_state("stopped")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .killed = true;
+    assert!(core.sessions.take_killed("stopped"));
+    assert!(core.sessions.terminal_was_stopped("stopped"));
+    core.sessions
+        .prepare_unlisted_terminal("stopped", (80, 24), &core.db, &events)
+        .unwrap();
+    assert!(!core.sessions.terminal_was_stopped("stopped"));
 }

@@ -867,11 +867,17 @@ fn forward_terminal(
                 send_chunks(tx, wire::OUTPUT, id, Some(seq), &bytes)?;
                 continue;
             }
-            Ok(TerminalFrame::Resized { seq, cols, rows }) => {
+            Ok(TerminalFrame::Resized {
+                seq,
+                cols,
+                rows,
+                controller,
+            }) => {
                 let mut frame = wire::numbered(wire::RESIZED, id);
                 frame.payload.extend_from_slice(&seq.to_le_bytes());
                 frame.payload.extend_from_slice(&cols.to_le_bytes());
                 frame.payload.extend_from_slice(&rows.to_le_bytes());
+                frame.payload.extend(serde_json::to_vec(&controller)?);
                 frame
             }
             Ok(TerminalFrame::Resync) => wire::numbered(wire::RESYNC, id),

@@ -670,7 +670,8 @@ record!(TerminalMetadata {
     live_cwd,
     link_cwd,
     cols,
-    rows
+    rows,
+    controller
 });
 record!(RuntimeUpdateCommand {
     session_id,
@@ -681,6 +682,11 @@ record!(RuntimeUpdateCommand {
     shell_path,
     size
 });
+impl Sample for TerminalController {
+    fn sample() -> Self {
+        Self::Desktop
+    }
+}
 impl Sample for InputEvent {
     fn sample() -> Self {
         Self::Paste {
