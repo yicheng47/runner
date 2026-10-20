@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 7,
+  "code": "badRequest",
+  "message": "attach: missing field cols."
+}
