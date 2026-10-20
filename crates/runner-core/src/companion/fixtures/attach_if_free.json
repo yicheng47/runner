@@ -1,0 +1,9 @@
+{
+  "type": "attach",
+  "id": 19,
+  "session": "01M60000000000000000000000",
+  "cols": 100,
+  "rows": 30,
+  "control": "ifFree",
+  "history": null
+}

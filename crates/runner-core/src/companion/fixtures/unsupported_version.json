@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "id": null,
+  "code": "unsupportedVersion",
+  "message": "No supported companion protocol version in common.",
+  "versions": {
+    "min": 1,
+    "max": 1
+  }
+}

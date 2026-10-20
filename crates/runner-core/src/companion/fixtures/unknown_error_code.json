@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 24,
+  "code": "futureError",
+  "message": "A future host error."
+}
