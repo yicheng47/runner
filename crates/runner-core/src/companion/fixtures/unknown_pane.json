@@ -1,0 +1,113 @@
+{
+  "type": "overview",
+  "projects": [
+    {
+      "id": "01KZ0000000000000000000000",
+      "name": "runner"
+    }
+  ],
+  "tabs": [
+    {
+      "id": "01MT0000000000000000000000",
+      "project": "01KZ0000000000000000000000",
+      "name": "Review",
+      "pinned": false,
+      "panes": {
+        "futureLayout": [
+          "s1",
+          "s2"
+        ]
+      },
+      "shells": []
+    }
+  ],
+  "missions": [
+    {
+      "id": "01M50000000000000000000000",
+      "project": null,
+      "title": "836 m3 — companion protocol",
+      "crew": "codex duo",
+      "state": "running",
+      "pinned": true,
+      "members": [
+        {
+          "handle": "coder",
+          "session": "01M80000000000000000000000",
+          "lead": true
+        },
+        {
+          "handle": "reviewer",
+          "session": "01M90000000000000000000000",
+          "lead": false
+        }
+      ],
+      "asks": [
+        {
+          "question": "01MA0000000000000000000000",
+          "from": "coder",
+          "prompt": "Run the full suite?",
+          "choices": [
+            "Yes",
+            "No"
+          ]
+        },
+        {
+          "question": "01MA1000000000000000000000",
+          "from": "reviewer",
+          "prompt": "Which detail needs clarification?",
+          "choices": null
+        }
+      ],
+      "shells": [
+        "01MB0000000000000000000000"
+      ]
+    }
+  ],
+  "sessions": {
+    "01M60000000000000000000000": {
+      "kind": "chat",
+      "title": "Fix the feed",
+      "runtime": "codex",
+      "cwd": "/Users/me/runner",
+      "status": "working",
+      "reason": null,
+      "unread": false
+    },
+    "01M70000000000000000000000": {
+      "kind": "shell",
+      "title": "Shell",
+      "runtime": null,
+      "cwd": "/tmp",
+      "status": "idle",
+      "reason": null,
+      "unread": false
+    },
+    "01M80000000000000000000000": {
+      "kind": "agent",
+      "title": "Coder",
+      "runtime": "codex",
+      "cwd": "/tmp",
+      "status": "needsYou",
+      "reason": "answer",
+      "unread": true
+    },
+    "01M90000000000000000000000": {
+      "kind": "agent",
+      "title": "Reviewer",
+      "runtime": "codex",
+      "cwd": null,
+      "status": "idle",
+      "reason": null,
+      "unread": false
+    },
+    "01MB0000000000000000000000": {
+      "kind": "shell",
+      "title": "Mission shell",
+      "runtime": null,
+      "cwd": "/tmp",
+      "status": "idle",
+      "reason": null,
+      "unread": false
+    }
+  }
+}

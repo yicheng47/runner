@@ -1,0 +1,11 @@
+{
+  "type": "hello",
+  "versions": [
+    1
+  ],
+  "client": "web",
+  "build": "web-20261020",
+  "futureMetadata": {
+    "ignored": true
+  }
+}
