@@ -1,0 +1,7 @@
+{
+  "type": "futureRequest",
+  "id": 24,
+  "future": {
+    "hello": "world"
+  }
+}

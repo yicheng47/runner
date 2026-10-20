@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 24,
+  "code": "unknownRequest",
+  "message": "The host does not serve that request."
+}

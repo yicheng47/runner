@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "id": 12,
+  "code": "notFound",
+  "message": "No mission has that id."
+}

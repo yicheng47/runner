@@ -5,6 +5,7 @@ pub mod addressing;
 pub mod app_paths;
 pub mod cli_install;
 pub mod command_install;
+pub mod companion;
 pub mod daemon_process;
 pub mod error;
 pub mod event_log;
