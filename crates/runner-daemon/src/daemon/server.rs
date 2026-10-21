@@ -185,6 +185,11 @@ async fn serve_with_listener(
         core.events.clone(),
         config.isolated,
     );
+    let companion_core = Arc::new(core.clone());
+    core.remote
+        .set_companion_core(Arc::new(crate::companion::core::DaemonCore(
+            Arc::downgrade(&companion_core),
+        )));
     core.sessions.set_hook_endpoint(config.endpoint.clone());
     #[cfg(unix)]
     let daemon_file = Identity::new(config.endpoint.clone())?;
@@ -868,11 +873,17 @@ fn forward_terminal(
                 send_chunks(tx, wire::OUTPUT, id, Some(seq), &bytes)?;
                 continue;
             }
-            Ok(TerminalFrame::Resized { seq, cols, rows }) => {
+            Ok(TerminalFrame::Resized {
+                seq,
+                cols,
+                rows,
+                controller,
+            }) => {
                 let mut frame = wire::numbered(wire::RESIZED, id);
                 frame.payload.extend_from_slice(&seq.to_le_bytes());
                 frame.payload.extend_from_slice(&cols.to_le_bytes());
                 frame.payload.extend_from_slice(&rows.to_le_bytes());
+                frame.payload.extend(serde_json::to_vec(&controller)?);
                 frame
             }
             Ok(TerminalFrame::Resync) => wire::numbered(wire::RESYNC, id),

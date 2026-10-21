@@ -450,7 +450,9 @@ impl TerminalMirror {
                     };
                     match frame {
                         TerminalFrame::Output { seq, bytes } => mirror.feed_output(seq, &bytes),
-                        TerminalFrame::Resized { seq, cols, rows } => {
+                        TerminalFrame::Resized {
+                            seq, cols, rows, ..
+                        } => {
                             let mut sequence = mirror.sequence.lock().unwrap();
                             if seq > sequence.last {
                                 sequence.last = seq;
@@ -1790,6 +1792,7 @@ mod tests {
                         bytes: Vec::new(),
                         unfinished_len: 0,
                         preceding_char: None,
+                        controller: Default::default(),
                     },
                     frames: Box::new(Frames {
                         rx,

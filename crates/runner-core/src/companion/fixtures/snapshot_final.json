@@ -5,5 +5,7 @@
   "cols": 100,
   "rows": 30,
   "data": "",
-  "more": false
+  "more": false,
+  "precedingChar": null,
+  "unfinishedLen": 0
 }

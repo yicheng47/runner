@@ -1759,7 +1759,8 @@ fn resize_is_broadcast_to_every_subscriber_except_its_origin() {
         TerminalFrame::Resized {
             seq: 1,
             cols: 96,
-            rows: 32
+            rows: 32,
+            ..
         }
     ));
     core.sessions
@@ -1807,4 +1808,560 @@ fn mirror_attach_preserves_rep_after_cursor_and_charset_changes() {
         drop(original);
         std::thread::yield_now();
     }
+}
+
+#[test]
+fn browser_controller_follows_the_terminal_size_table() {
+    use runner_core::protocol::terminal::TerminalController;
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("control", (80, 24), &core.db, &events)
+        .unwrap();
+    let state = core.sessions.session_state("control").unwrap();
+    assert!(matches!(
+        state.lock().unwrap().controller,
+        super::Controller::Desktop
+    ));
+    core.sessions.resize("control", 90, 30, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (90, 30)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 10, 2, true, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (20, 8)
+    );
+    assert_eq!(
+        core.sessions
+            .attach_terminal("control")
+            .unwrap()
+            .snapshot
+            .controller,
+        TerminalController::Browser {
+            channel: 1,
+            name: "First".into()
+        }
+    );
+    let seq = state.lock().unwrap().output_seq;
+    core.sessions.resize("control", 100, 40, &core.db).unwrap();
+    assert_eq!(state.lock().unwrap().output_seq, seq);
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (20, 8)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 70, 20, false, true, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, false, true, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (70, 20)
+    );
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, true, false, &core.db)
+        .unwrap();
+    core.sessions.release_browser("control", 1);
+    assert_eq!(
+        core.sessions.browser_controller("control", 2),
+        runner_core::companion::Controller::You
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions.release_browser_channel(2);
+    assert_eq!(
+        core.sessions.browser_controller("control", 1),
+        runner_core::companion::Controller::None
+    );
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions.resize("control", 120, 35, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (80, 25)
+    );
+    core.sessions
+        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (50, 10)
+    );
+    core.sessions
+        .take_back_terminal("control", 120, 35, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("control", 2, "Second", 80, 25, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (120, 35)
+    );
+    assert_eq!(
+        core.sessions.browser_controller("control", 2),
+        runner_core::companion::Controller::Desktop
+    );
+    core.sessions.release_browser_channel(1);
+    core.sessions.resize("control", 125, 37, &core.db).unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("control").unwrap().size(),
+        (125, 37)
+    );
+}
+
+#[test]
+fn snapshot_history_limit_keeps_screen_modes_and_newest_history() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("history", (30, 8), &core.db, &events)
+        .unwrap();
+    let model = core.sessions.terminal_model("history").unwrap();
+    model.configure_named(100, "block");
+    let bytes = (0..30)
+        .map(|i| format!("line-{i:02}\r\n"))
+        .collect::<String>();
+    core.sessions
+        .ingest_output_chunk("history", None, bytes.as_bytes(), events.as_ref());
+    let full = core.sessions.attach_terminal("history").unwrap().snapshot;
+    let limited = core
+        .sessions
+        .attach_terminal_with_history("history", 2)
+        .unwrap()
+        .snapshot;
+    let screen = core
+        .sessions
+        .attach_terminal_with_history("history", 0)
+        .unwrap()
+        .snapshot;
+    assert_eq!(limited.seq, full.seq);
+    assert_eq!((limited.cols, limited.rows), (30, 8));
+    assert!(full.bytes.windows(7).any(|bytes| bytes == b"line-00"));
+    assert!(!limited.bytes.windows(7).any(|bytes| bytes == b"line-00"));
+    assert!(limited.bytes.windows(7).any(|bytes| bytes == b"line-29"));
+    assert!(screen.bytes.len() < limited.bytes.len());
+    assert!(limited.bytes.len() < full.bytes.len());
+    assert_eq!(model.snapshot(99).bytes, full.bytes);
+}
+
+#[test]
+fn browser_viewports_clamp_to_the_approved_bounds_without_changing_desktop_sizes() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("bounds", (80, 24), &core.db, &events)
+        .unwrap();
+    for (take, viewport) in [(true, false), (false, true)] {
+        core.sessions
+            .browser_resize(
+                "bounds",
+                1,
+                "Browser",
+                u16::MAX,
+                u16::MAX,
+                take,
+                viewport,
+                &core.db,
+            )
+            .unwrap();
+        assert_eq!(
+            core.sessions.terminal_model("bounds").unwrap().size(),
+            (512, 256)
+        );
+        core.sessions
+            .browser_resize("bounds", 1, "Browser", 1, 1, false, true, &core.db)
+            .unwrap();
+        assert_eq!(
+            core.sessions.terminal_model("bounds").unwrap().size(),
+            (20, 8)
+        );
+    }
+    core.sessions
+        .take_back_terminal("bounds", 10, 4, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.terminal_model("bounds").unwrap().size(),
+        (10, 4)
+    );
+}
+
+#[test]
+fn terminal_close_reason_retains_an_intentional_stop_after_exit_consumes_the_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("stopped", (80, 24), &core.db, &events)
+        .unwrap();
+    core.sessions
+        .session_state("stopped")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .killed = true;
+    assert!(core.sessions.take_killed("stopped"));
+    assert!(core.sessions.terminal_was_stopped("stopped"));
+    core.sessions
+        .prepare_unlisted_terminal("stopped", (80, 24), &core.db, &events)
+        .unwrap();
+    assert!(!core.sessions.terminal_was_stopped("stopped"));
+}
+
+#[test]
+fn browser_input_uses_the_terminal_queue_and_the_desktop_input_observation() {
+    use crate::companion::core::{Core, DaemonCore};
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let core = Arc::new(test_core_with_runtime(temp.path(), runtime as _));
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "probe", "probe", "trae", "probe");
+        crate::ops::role::get(&conn, "probe").unwrap()
+    };
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(temp.path().to_str().unwrap()),
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+            None,
+        )
+        .unwrap();
+    let (input, queued) = std::sync::mpsc::channel();
+    core.sessions
+        .session_state(&spawned.id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal_input = Some(input);
+    let model = core.sessions.terminal_model(&spawned.id).unwrap();
+    let backend = DaemonCore(Arc::downgrade(&core));
+    model.publish_input(model.feed_output(1, "\x1b[2;1H❯ Try a task".as_bytes()));
+    let before = model.input_reset_guard();
+    let terminal = model.term.lock();
+    let (start, started) = std::sync::mpsc::channel();
+    let input_core = Arc::downgrade(&core);
+    let session = spawned.id.clone();
+    let input_thread = std::thread::spawn(move || {
+        start.send(()).unwrap();
+        DaemonCore(input_core).input(&session, b"h").unwrap();
+    });
+    started.recv_timeout(Duration::from_secs(2)).unwrap();
+    let premature = queued.recv_timeout(Duration::from_millis(250));
+    drop(terminal);
+    assert!(
+        matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "input became available before its observation could read the pre-echo grid"
+    );
+    assert_eq!(queued.recv_timeout(Duration::from_secs(2)).unwrap(), b"h");
+    assert!(model.input_reset_guard() > before);
+    let observation = model
+        .feed_output(2, "\r\x1b[K❯ h".as_bytes())
+        .expect("the echo confirms the draft");
+    assert_eq!(
+        observation.state,
+        runner_terminal::input_state::InputState::Drafting
+    );
+    model.publish_input(Some(observation));
+    assert!(matches!(
+        core.sessions.delivery_readiness(&spawned.id),
+        crate::router::DeliveryReadiness::Drafting
+    ));
+    input_thread.join().unwrap();
+    for bytes in [
+        b"hello".as_slice(),
+        b"\r",
+        b"\x1b[200~line one\nline two\x1b[201~",
+        b"\x1b[A",
+    ] {
+        let guard = model.input_reset_guard();
+        backend.input(&spawned.id, bytes).unwrap();
+        assert_eq!(queued.recv_timeout(Duration::from_secs(2)).unwrap(), bytes);
+        assert!(model.input_reset_guard() > guard);
+    }
+    core.sessions.kill(&spawned.id).unwrap();
+}
+
+#[test]
+fn companion_snapshot_rep_continuation_fixtures_match_host() {
+    use runner_core::companion::{HostMessage, Snapshot, TerminalBytes};
+    for (name, unfinished, output) in [
+        ("snapshot_rep", &b""[..], &b"\x1b[3b"[..]),
+        ("snapshot_rep_unfinished", &b"\x1b[3"[..], &b"b"[..]),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("rep", (20, 8), &core.db, &events)
+            .unwrap();
+        core.sessions
+            .ingest_output_chunk("rep", None, b"abc", events.as_ref());
+        if !unfinished.is_empty() {
+            core.sessions
+                .ingest_output_chunk("rep", None, unfinished, events.as_ref());
+        }
+        let snapshot = core
+            .sessions
+            .attach_terminal_with_history("rep", 0)
+            .unwrap()
+            .snapshot;
+        assert_eq!(snapshot.preceding_char, Some('c'));
+        assert_eq!(snapshot.unfinished_len, unfinished.len());
+        let message = HostMessage::Snapshot(Snapshot {
+            session: "rep".into(),
+            seq: snapshot.seq,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            data: TerminalBytes(snapshot.bytes),
+            more: false,
+            preceding_char: snapshot.preceding_char,
+            unfinished_len: snapshot.unfinished_len,
+        });
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runner-core/src/companion/fixtures")
+            .join(format!("{name}.json"));
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(message).unwrap(), expected);
+        core.sessions
+            .ingest_output_chunk("rep", None, output, events.as_ref());
+        let model = core.sessions.terminal_model("rep").unwrap();
+        assert_eq!(visible_lines(&model.term.lock())[0], "abcccc");
+    }
+}
+
+async fn companion_next(
+    adapter: &mut crate::companion::Adapter,
+) -> runner_core::companion::HostMessage {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(bytes) = adapter.next(true).await.unwrap() {
+                return serde_json::from_slice(&bytes).unwrap();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn companion_backlog_sends_final_snapshot_after_exit_for_both_queue_limits() {
+    use crate::companion::{
+        core::{Core, DaemonCore},
+        tests::{wait_for_buffered, with_output_held},
+    };
+    use runner_core::companion::*;
+    for (subscriber_overflow, killed) in
+        [(true, false), (false, false), (true, true), (false, true)]
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = Arc::new(test_core_with_runtime(temp.path(), runtime.clone()));
+        let role = {
+            let conn = core.db.get().unwrap();
+            crate::test_support::insert_test_role(&conn, "probe", "probe", "trae", "probe");
+            crate::ops::role::get(&conn, "probe").unwrap()
+        };
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &role,
+                None,
+                None,
+                None,
+                None,
+                Some(temp.path().to_str().unwrap()),
+                Some(80),
+                Some(24),
+                &core.app_data_dir,
+                core.db.clone(),
+                Arc::new(core.session_events()),
+                None,
+            )
+            .unwrap();
+        let backend = Arc::new(DaemonCore(Arc::downgrade(&core)));
+        let mut adapter =
+            crate::companion::Adapter::new(backend.clone(), 77, "test".into()).unwrap();
+        adapter
+            .request(ClientMessage::Attach(AttachRequest {
+                id: 1,
+                session: spawned.id.clone(),
+                cols: 80,
+                rows: 24,
+                control: ControlMode::Take,
+                history: Some(0),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            companion_next(&mut adapter).await,
+            HostMessage::Result(_)
+        ));
+        let HostMessage::Snapshot(initial) = companion_next(&mut adapter).await else {
+            panic!()
+        };
+        assert!(matches!(
+            companion_next(&mut adapter).await,
+            HostMessage::Resized(_)
+        ));
+        core.sessions
+            .ingest_output_chunk(&spawned.id, None, b"before", &core.session_events());
+        let HostMessage::Output(output) = companion_next(&mut adapter).await else {
+            panic!()
+        };
+        assert!(output.seq > initial.seq);
+        let state = core.sessions.session_state(&spawned.id).unwrap();
+        let source = state.lock().unwrap().companion_terminals[0].clone();
+        let model = Arc::downgrade(&core.sessions.terminal_model(&spawned.id).unwrap());
+        let burst = vec![b'x'; MAX_MESSAGE_SIZE + 1];
+        let ingest = |chunk: &[u8]| {
+            core.sessions
+                .ingest_output_chunk(&spawned.id, None, chunk, &core.session_events())
+        };
+        if subscriber_overflow {
+            with_output_held(&adapter, || {
+                for chunk in burst.chunks(8 * 1024) {
+                    ingest(chunk);
+                }
+            });
+        } else {
+            for (i, chunk) in burst.chunks(8 * 1024).enumerate() {
+                ingest(chunk);
+                wait_for_buffered(&adapter, i + 1).await;
+            }
+        }
+        core.sessions
+            .take_back_terminal(&spawned.id, 512, 100, &core.db)
+            .unwrap();
+        core.sessions.ingest_output_chunk(
+            &spawned.id,
+            None,
+            b"\r\nFINAL-MARKER",
+            &core.session_events(),
+        );
+        if killed {
+            core.sessions.kill(&spawned.id).unwrap();
+        } else {
+            runtime
+                .stop(&core.sessions.live_runtime_session(&spawned.id).unwrap())
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while core.sessions.session_live(&spawned.id) || (!killed && model.upgrade().is_some())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(backend.clone().attach(&spawned.id, 0).is_err());
+        assert!(state.lock().unwrap().companion_terminals.is_empty());
+        wait_for_buffered(&adapter, usize::MAX).await;
+        let mut final_bytes = Vec::new();
+        let mut seq = None;
+        loop {
+            let HostMessage::Snapshot(snapshot) = companion_next(&mut adapter).await else {
+                panic!("expected final snapshot")
+            };
+            assert_eq!((snapshot.cols, snapshot.rows), (512, 100));
+            assert!(snapshot.seq > output.seq);
+            assert_eq!(*seq.get_or_insert(snapshot.seq), snapshot.seq);
+            final_bytes.extend_from_slice(&snapshot.data.0);
+            if !snapshot.more {
+                break;
+            }
+        }
+        assert!(final_bytes.len() < MAX_MESSAGE_SIZE);
+        assert!(final_bytes
+            .windows(b"FINAL-MARKER".len())
+            .any(|w| w == b"FINAL-MARKER"));
+        let HostMessage::Resized(resized) = companion_next(&mut adapter).await else {
+            panic!()
+        };
+        assert_eq!(resized.seq, seq.unwrap());
+        assert_eq!((resized.cols, resized.rows), (512, 100));
+        let HostMessage::Closed(closed) = companion_next(&mut adapter).await else {
+            panic!()
+        };
+        assert_eq!(
+            closed.reason,
+            if killed {
+                ClosedReason::Stopped
+            } else {
+                ClosedReason::Exited
+            }
+        );
+        assert!(source.upgrade().is_none());
+        assert!(adapter.next(true).await.unwrap().is_none());
+    }
+}
+
+#[tokio::test]
+async fn companion_final_snapshot_outlives_registry_without_retaining_the_terminal() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("final", (20, 8), &core.db, &events)
+        .unwrap();
+    let (attachment, source) = core.sessions.attach_companion_terminal("final", 2).unwrap();
+    core.sessions
+        .detach_terminal("final", attachment.subscriber_id);
+    drop(attachment);
+    let model = Arc::downgrade(&core.sessions.terminal_model("final").unwrap());
+    for _ in 0..30 {
+        core.sessions
+            .ingest_output_chunk("final", None, b"history\r\n", events.as_ref());
+    }
+    core.sessions
+        .ingest_output_chunk("final", None, b"FINAL-MARKER", events.as_ref());
+    let state = core.sessions.session_state("final").unwrap();
+    state.lock().unwrap().finish_companion_terminals();
+    core.sessions.discard_unlisted_terminal("final");
+    drop(state);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while model.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut final_attachment = source.attach().unwrap();
+    assert!(final_attachment.frames.recv().is_err());
+    assert!(final_attachment
+        .snapshot
+        .bytes
+        .windows(12)
+        .any(|w| w == b"FINAL-MARKER"));
+    assert!(source.attach().is_err(), "final state is consumed once");
+    let mut term = runner_terminal::replay::new_term(20, 8);
+    let mut parser: alacritty_terminal::vte::ansi::Processor =
+        alacritty_terminal::vte::ansi::Processor::new();
+    parser.advance(&mut term, &final_attachment.snapshot.bytes);
+    assert!(term.grid().history_size() <= 2);
 }
