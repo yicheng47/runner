@@ -66,6 +66,14 @@ impl TrackedProcessor {
 }
 
 pub fn serialize<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8> {
+    serialize_with_history(term, unfinished, usize::MAX)
+}
+
+pub fn serialize_with_history<T: EventListener>(
+    term: &Term<T>,
+    unfinished: &[u8],
+    history: usize,
+) -> Vec<u8> {
     let state = term.snapshot_state();
     let alt = term.mode().contains(TermMode::ALT_SCREEN);
     let (primary, primary_keyboard) = if alt {
@@ -86,14 +94,14 @@ pub fn serialize<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8>
         keyboard_stack(&mut out, state.inactive_keyboard_mode_stack);
         out.push_str("\x1b[?1049l");
     }
-    grid(&mut out, primary);
+    grid(&mut out, primary, history);
     cursor(&mut out, primary, &primary.saved_cursor, 0);
     out.push_str("\x1b7");
     cursor(&mut out, primary, &primary.cursor, 0);
     keyboard_stack(&mut out, primary_keyboard);
     if alt {
         out.push_str("\x1b[?1049h");
-        grid(&mut out, term.grid());
+        grid(&mut out, term.grid(), history);
         cursor(&mut out, term.grid(), &term.grid().saved_cursor, 0);
         out.push_str("\x1b7");
         keyboard_stack(&mut out, state.keyboard_mode_stack);
@@ -199,7 +207,7 @@ fn keyboard_stack(out: &mut String, stack: &[KeyboardModes]) {
     }
 }
 
-fn grid(out: &mut String, grid: &Grid<Cell>) {
+fn grid(out: &mut String, grid: &Grid<Cell>, history: usize) {
     out.push_str("\x1b[3g");
     for column in 1..grid.columns() {
         write!(out, "\x1b[{}G\x1bH", column + 1).unwrap();
@@ -207,7 +215,7 @@ fn grid(out: &mut String, grid: &Grid<Cell>) {
     out.push_str("\x1b[?7h\x1b[H\x1b[0m\x1b]8;;\x1b\\");
     let mut previous = None;
     let mut previous_link = None;
-    for line in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
+    for line in -(grid.history_size().min(history) as i32)..grid.screen_lines() as i32 {
         let row = &grid[Line(line)];
         for column in 0..grid.columns() {
             let cell = &row[Column(column)];

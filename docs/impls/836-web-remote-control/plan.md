@@ -157,6 +157,45 @@ m4 ends at the companion handshake so that the service's browser channel can be 
 
 [#838](https://github.com/yicheng47/runner/issues/838) is not part of it, since the controller treats every desktop window as one. Jason could not reproduce it on 2026-10-19, so m6 reruns its two-window steps when it changes the pane's size push, without blocking on it.
 
+### m5 — the adapter, terminals first
+
+m4 merged as [#975](https://github.com/yicheng47/runner/pull/975): a paired browser gets `welcome` with empty `features`, and every request after it gets `unknownRequest`, from `serve` in `runner-daemon/src/remote/channels.rs`. m5 replaces that loop's request handling with the adapter.
+
+#### Commits
+
+1. **The controller and the snapshot's history**, in the session manager and `runner-terminal`.
+   - Each live terminal gains its controller in memory: the desktop, a browser with its channel and device name, or none; the desktop when `runnerd` starts. `resize_with_origin` applies a client-protocol size only while the desktop controls. Without a browser nothing changes: the desktop always controls, and TERM-RESIZE-01 and TERM-RESIZE-02 must pass unchanged.
+   - Browser-side operations for the adapter: attach with `take` or `ifFree`, take control, a viewport from the controller, and release on detach or channel close, each following Terminal size's table, with the 20×8 minimum.
+   - The client protocol carries the controller with the size, in the snapshot, the metadata and `Resized`, and gains `terminal_take_back(session_id, cols, rows)`. The app compiles against it and ignores the controller until m6; it changes nowhere else.
+   - `TerminalModel` gains a snapshot whose scrollback is cut to a number of lines; the client protocol's own snapshot is unchanged.
+2. **The adapter**, in `runner-daemon/src/companion/`.
+   - `AppCore` owns the remote handle, so the adapter reaches `AppCore` without a reference cycle: a narrow trait the daemon implements over a `Weak<AppCore>`, which the tests implement over a fake.
+   - `overview` from the sidebar's nodes, projects, sessions, `session_status_snapshot` and the nodes' viewed and completed marks; its push follows each `AppEvent` that changes any of them, at most once every 250 ms. `status` pushes for one session's status or unread change. The status flattening is m3's.
+   - `attach`, `input`, `takeControl`, `viewport` and `detach`: the snapshot in 32 KiB chunks with `seq`, then `output` and `resized` from the subscription, `closed` when the terminal ends, and a fresh snapshot for the subscription's resync. An attached stream owns a history-limited final snapshot across process exit, without retaining the terminal model or allowing stopped-session attaches. Snapshot chunks also carry REP and unfinished-parser continuation metadata for the xterm decoder. `take` marks the session's node viewed.
+   - `input` reaches the terminal's input queue and the input observation the desktop's typing feeds, so draft-aware delivery and status detection see a browser's typing. The adapter classifies the bytes: a bracketed paste as a paste, a lone carriage return as submit, printable text as content, and the rest as navigation.
+   - The send order from the spec's Records section: results, errors and other pushes first; terminal streams then share the credit in turn, a chunk each; a terminal's queue past 1 MiB is dropped for a fresh snapshot.
+   - `welcome`'s `features` lists `overview`, `attach`, `input`, `takeControl`, `viewport` and `detach`. `feed`, `follow`, `unfollow`, `answer` and `post` keep answering `unknownRequest`.
+
+#### Checks
+
+- **The controller**: every row of Terminal size's table, a desktop size ignored while a browser controls, the minimum size, and a browser's channel closing; the existing terminal-size tests unchanged.
+- **The adapter**, over m4's test browser and a fake core: the overview's shape against m3's fixtures, its 250 ms coalescing on a fake clock, `status`; `attach` with the history limit, chunking and `seq`, `output`, `resized`, `closed` and resync; `input` reaching the queue and its observation; the send order, a busy terminal not holding up another, and the 1 MiB queue becoming a snapshot; subscriber overflow and adapter overflow followed by exit both deliver final snapshot/resized/closed and release state; shared REP fixtures and the xterm 6.0.0 headless decoder check cover attach/resync and unfinished parser bytes; requests outside `features` answered `unknownRequest`.
+- **Secrets and logs**: no message body or terminal byte in a log line.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+- **Live, pending for Jason on macOS and Windows**: TERM-RESIZE-01, TERM-RESIZE-02, TERM-INPUT-01 and the draft-held mission message check. Jason removed QA from m5 on 2026-10-21; after clean review the mission proceeds directly to commits, push, PR and CI. A browser cannot reach the host until the service's R1 and R2 exist, so the adapter has no live check of its own.
+
+#### Easy to get wrong
+
+- The desktop's size push is unchanged without a browser: the controller check must not delay, reorder or drop a desktop resize while the desktop controls.
+- A resize from a browser must reach the desktop app as `Resized`, as a resize from another desktop window does today, so the app redraws at the new grid.
+- The overview push is coalesced but never lost: the last change inside a 250 ms window is always sent.
+- `seq` continues across a resync's fresh snapshot; the browser drops everything before it.
+- The adapter holds no `Arc<AppCore>`; a channel outliving `runnerd`'s shutdown must not keep the core alive.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m5-adapter` on `feat/836-m5-adapter`, with its brief as [`../briefs/836-m5-adapter.md`](../briefs/836-m5-adapter.md), run by coder and reviewer after Jason removed the qa slot on 2026-10-21; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration.
+
 ## Phase 4 — Tailscale
 
 Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged.
