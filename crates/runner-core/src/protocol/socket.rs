@@ -468,6 +468,7 @@ impl SocketTransport {
                 let rows = binary.u16()?;
                 let unfinished_len = binary.u64()? as usize;
                 let preceding_char = char::from_u32(binary.u32()?);
+                let controller = serde_json::from_slice(binary.0)?;
                 if let Some(pending) = self.attaching.lock().unwrap().get_mut(&id) {
                     pending.subscriber.store(subscriber, Ordering::Relaxed);
                     pending.snapshot = Some(TerminalSnapshot {
@@ -477,6 +478,7 @@ impl SocketTransport {
                         bytes: Vec::new(),
                         unfinished_len,
                         preceding_char,
+                        controller,
                     });
                 }
             }
@@ -531,6 +533,7 @@ impl SocketTransport {
                                 seq: binary.u64()?,
                                 cols: binary.u16()?,
                                 rows: binary.u16()?,
+                                controller: serde_json::from_slice(binary.0)?,
                             });
                         }
                         wire::RESYNC => queue.push(TerminalFrame::Resync),

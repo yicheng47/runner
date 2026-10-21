@@ -353,6 +353,10 @@ impl TerminalModel {
     }
 
     pub fn snapshot(&self, seq: u64) -> TerminalSnapshot {
+        self.snapshot_with_history(seq, usize::MAX)
+    }
+
+    pub fn snapshot_with_history(&self, seq: u64, history: usize) -> TerminalSnapshot {
         let parser = self.parser.lock().unwrap();
         let term = self.term.lock();
         let unfinished = parser.boundary.unfinished();
@@ -360,9 +364,10 @@ impl TerminalModel {
             seq,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
-            bytes: crate::snapshot::serialize(&*term, unfinished),
+            bytes: crate::snapshot::serialize_with_history(&*term, unfinished, history),
             unfinished_len: unfinished.len(),
             preceding_char: parser.processor.preceding_char(),
+            controller: Default::default(),
         }
     }
 

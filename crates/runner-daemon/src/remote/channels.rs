@@ -55,6 +55,7 @@ pub(super) enum Decision {
     Open {
         transport: Box<Transport>,
         reply: Option<Vec<u8>>,
+        name: String,
     },
     Reject(Reject),
 }
@@ -77,6 +78,7 @@ pub(super) struct Channels {
     tx: mpsc::Sender<Event>,
     rx: mpsc::Receiver<Event>,
     pub writes: Arc<TrustWrites>,
+    companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
 }
 
 pub(super) struct TrustWrites {
@@ -211,6 +213,13 @@ impl TrustWrites {
                 Decision::Open {
                     transport: Box::new(transport),
                     reply: response,
+                    name: machine
+                        .trust
+                        .devices
+                        .iter()
+                        .find(|device| device.fingerprint == fingerprint)
+                        .map(|device| device.name.clone())
+                        .unwrap_or_default(),
                 }
             }
             Ok((None, Some(response), _)) => Decision::Reply(response),
@@ -238,13 +247,17 @@ impl Drop for Channels {
     }
 }
 impl Channels {
-    pub fn new(writes: Arc<TrustWrites>) -> Self {
+    pub fn new(
+        writes: Arc<TrustWrites>,
+        companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(64);
         Self {
             entries: HashMap::new(),
             tx,
             rx,
             writes,
+            companion,
         }
     }
     pub fn open(&mut self, id: u32, machine: &Machine) -> Result<(), Reject> {
@@ -268,12 +281,17 @@ impl Channels {
                 .unwrap_or_else(|| machine.host.hostname.clone()),
             runner_version: machine.host.runner_version.clone(),
             platform: machine.host.platform.clone(),
-            features: Vec::new(),
+            features: crate::companion::FEATURES
+                .iter()
+                .map(|name| (*name).into())
+                .collect(),
         };
+        let companion = self.companion.clone();
         let task = tokio::spawn(async move {
-            let result = AssertUnwindSafe(serve(id, instance, rx, &tx, deadline, welcome))
-                .catch_unwind()
-                .await;
+            let result =
+                AssertUnwindSafe(serve(id, instance, rx, &tx, deadline, welcome, companion))
+                    .catch_unwind()
+                    .await;
             let reason = match result {
                 Ok(Ok(())) => "closed",
                 Ok(Err(reason)) => reason,
@@ -622,6 +640,7 @@ async fn serve(
     tx: &mpsc::Sender<Event>,
     deadline: Instant,
     welcome: companion::Welcome,
+    core: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
 ) -> Result<(), &'static str> {
     let handshake = async {
         loop {
@@ -637,11 +656,15 @@ async fn serve(
             .map_err(|_| "route closed")?;
             match rx.await.map_err(|_| "route closed")? {
                 Decision::Reply(frame) => send(tx, id, instance, frame).await?,
-                Decision::Open { transport, reply } => {
+                Decision::Open {
+                    transport,
+                    reply,
+                    name,
+                } => {
                     if let Some(frame) = reply {
                         send(tx, id, instance, frame).await?;
                     }
-                    return Ok::<_, &'static str>(Some(*transport));
+                    return Ok::<_, &'static str>(Some((*transport, name)));
                 }
                 Decision::Reject(reason) => {
                     send(tx, id, instance, reason.frame()).await?;
@@ -657,18 +680,29 @@ async fn serve(
             return Err("handshake deadline");
         }
     };
-    let Some(transport) = transport else {
+    let Some((transport, name)) = transport else {
         return Ok(());
     };
     let mut records = Records::new(transport);
     let mut hello = false;
+    let mut adapter = None;
     let mut pending = VecDeque::new();
     let mut queued = 0;
     let mut ending = false;
     loop {
+        if let Some(adapter) = &mut adapter {
+            crate::companion::Adapter::in_flight(adapter, records.queued_bytes());
+        }
         if !records.sending() {
-            if let Some(message) = pending.pop_front() {
+            let message = if let Some(message) = pending.pop_front() {
                 queued -= Vec::<u8>::len(&message);
+                Some(message)
+            } else if let Some(adapter) = &mut adapter {
+                crate::companion::Adapter::next(adapter, records.send_credit() > 0).await?
+            } else {
+                None
+            };
+            if let Some(message) = message {
                 records.queue(message).map_err(|_| "message too large")?;
             }
         }
@@ -679,8 +713,20 @@ async fn serve(
         if ending && !records.sending() && pending.is_empty() {
             return Ok(());
         }
-        let frame = input.recv().await.ok_or("route closed")?.frame;
+        let incoming = tokio::select! {
+            frame = input.recv() => Some(frame.ok_or("route closed")?.frame),
+            changed = async {
+                match &mut adapter { Some(adapter) => crate::companion::Adapter::changed(adapter).await, None => std::future::pending().await }
+            }, if !ending => { changed?; None }
+        };
+        let Some(frame) = incoming else {
+            continue;
+        };
         if let Some(bytes) = records.receive(&frame).map_err(|_| "invalid record")? {
+            if ending {
+                records.handled();
+                continue;
+            }
             let response = if !hello {
                 let companion::ClientMessage::Hello(greeting) =
                     companion::ClientMessage::decode(&bytes).map_err(|_| "hello required")?
@@ -689,34 +735,50 @@ async fn serve(
                 };
                 hello = true;
                 match (companion::VersionRange { min: 1, max: 1 }).negotiate(&greeting.versions) {
-                    Ok(_) => companion::HostMessage::Welcome(welcome.clone()),
+                    Ok(_) => {
+                        let core = core.get().ok_or("core unavailable")?;
+                        let mut serving =
+                            crate::companion::Adapter::new(core.clone(), instance, name.clone())
+                                .map_err(|_| "core unavailable")?;
+                        serving.initialize().await?;
+                        adapter = Some(serving);
+                        Some(companion::HostMessage::Welcome(welcome.clone()))
+                    }
                     Err(error) => {
                         ending = true;
-                        companion::HostMessage::Error(*error)
+                        Some(companion::HostMessage::Error(*error))
                     }
                 }
             } else {
                 match companion::ClientMessage::decode(&bytes) {
-                    Err(error) => companion::HostMessage::Error(*error),
+                    Err(error) => Some(companion::HostMessage::Error(*error)),
                     Ok(companion::ClientMessage::Hello(_)) => return Err("unexpected hello"),
-                    Ok(_) => {
-                        let envelope: serde_json::Value = serde_json::from_slice(&bytes)
-                            .map_err(|_| "invalid companion message")?;
-                        companion::HostMessage::Error(companion::ErrorMessage {
-                            id: envelope.get("id").and_then(|v| v.as_u64()),
-                            code: companion::ErrorCode::UnknownRequest,
-                            message: "The host does not serve that request.".into(),
-                            versions: None,
-                        })
+                    Ok(message) => {
+                        adapter
+                            .as_mut()
+                            .ok_or("hello required")?
+                            .request(message)
+                            .await?;
+                        None
                     }
                 }
             };
-            let bytes = serde_json::to_vec(&response).map_err(|_| "companion encoding failed")?;
-            queued += bytes.len();
-            if queued + records.queued_bytes() > companion::MAX_MESSAGE_SIZE {
-                return Err("reply queue full");
+            if let Some(response) = response {
+                if hello && !matches!(response, companion::HostMessage::Welcome(_)) {
+                    if let Some(adapter) = &mut adapter {
+                        adapter.push(response)?;
+                        records.handled();
+                        continue;
+                    }
+                }
+                let bytes =
+                    serde_json::to_vec(&response).map_err(|_| "companion encoding failed")?;
+                queued += bytes.len();
+                if queued + records.queued_bytes() > companion::MAX_MESSAGE_SIZE {
+                    return Err("reply queue full");
+                }
+                pending.push_back(bytes);
             }
-            pending.push_back(bytes);
             records.handled();
         }
     }

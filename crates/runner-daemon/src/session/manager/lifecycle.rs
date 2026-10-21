@@ -15,6 +15,7 @@ impl SessionManager {
         let mut model_workers = Vec::new();
         for state in states {
             let mut state = state.lock().unwrap();
+            state.finish_companion_terminals();
             state.terminal_input.take();
             if let Some(model) = state.terminal.take() {
                 model_workers.extend(model.take_workers());
@@ -277,6 +278,7 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
+                state.finish_companion_terminals();
                 state.terminal = None;
                 state.terminal_input = None;
                 for (_, queue) in state.subscribers.drain(..) {

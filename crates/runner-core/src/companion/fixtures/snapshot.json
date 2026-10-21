@@ -5,5 +5,7 @@
   "cols": 100,
   "rows": 30,
   "data": "G1sySg==",
-  "more": true
+  "more": true,
+  "precedingChar": null,
+  "unfinishedLen": 0
 }
