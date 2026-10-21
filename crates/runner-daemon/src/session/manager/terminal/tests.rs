@@ -1319,11 +1319,12 @@ fn user_input_vertical_resize_and_mouse_mode_clear_selection() {
 
     select();
     terminal.resize(8, 4);
+    assert!(wait_until(Duration::from_secs(2), || terminal.size() == (8, 4)));
     assert!(terminal.selection_text().is_none());
 
     select();
     terminal
-        .feed_output(&output(1, "\x1b[?1000h\x1b[?1006h"))
+        .feed_output(&output(2, "\x1b[?1000h\x1b[?1006h"))
         .unwrap();
     assert!(terminal.selection_text().is_none());
 }
@@ -1742,7 +1743,82 @@ fn attach_and_output_share_the_sequence_parse_lock() {
 }
 
 #[test]
-fn resize_is_broadcast_to_every_subscriber_except_its_origin() {
+fn desktop_resize_keeps_the_mirror_at_the_browser_size() {
+    use runner_terminal::terminal::TerminalMirror;
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("mirror-size", (80, 24), &core.db, &events)
+        .unwrap();
+    let client = crate::daemon::InProcessTransport::client(core.clone());
+    let mirror = TerminalMirror::attach(client, "mirror-size".into(), Arc::new(|| {})).unwrap();
+    let model = core.sessions.terminal_model("mirror-size").unwrap();
+    core.sessions
+        .browser_resize("mirror-size", 1, "Chrome", 37, 29, true, false, &core.db)
+        .unwrap();
+    assert!(wait_until(Duration::from_secs(2), || mirror.size() == (37, 29)));
+
+    mirror.resize(96, 32);
+    assert_eq!(mirror.size(), (37, 29));
+    assert_eq!(model.size(), (37, 29));
+    core.sessions
+        .ingest_output_chunk("mirror-size", None, b"\x1b[29;35HabcDEF", events.as_ref());
+    assert!(wait_until(Duration::from_secs(2), || mirror
+        .output_activity()
+        .last_seq
+        == 2));
+    assert_eq!(
+        visible_lines(&mirror.term.lock()),
+        visible_lines(&model.term.lock())
+    );
+
+    core.sessions.release_browser("mirror-size", 1);
+    assert!(wait_until(Duration::from_secs(2), || mirror
+        .output_activity()
+        .last_seq
+        == 3));
+    mirror.resize(120, 35);
+    assert_eq!(mirror.size(), (37, 29));
+    mirror.reattach().unwrap();
+    assert_eq!(mirror.size(), model.size());
+}
+
+#[test]
+fn desktop_resize_updates_the_origin_mirror_in_frame_order() {
+    use runner_terminal::terminal::TerminalMirror;
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("desktop-size", (80, 24), &core.db, &events)
+        .unwrap();
+    let client = crate::daemon::InProcessTransport::client(core.clone());
+    let mirror = TerminalMirror::attach(client, "desktop-size".into(), Arc::new(|| {})).unwrap();
+    let model = core.sessions.terminal_model("desktop-size").unwrap();
+
+    for (index, (cols, rows)) in [(96, 32), (40, 12), (120, 35)].into_iter().enumerate() {
+        mirror.resize(cols, rows);
+        core.sessions.ingest_output_chunk(
+            "desktop-size",
+            None,
+            format!("\x1b[{rows};{}HabcDEF", cols - 2).as_bytes(),
+            events.as_ref(),
+        );
+        assert!(wait_until(Duration::from_secs(2), || mirror
+            .output_activity()
+            .last_seq
+            == (index as u64 + 1) * 2));
+        assert_eq!(mirror.size(), (cols, rows));
+        assert_eq!(
+            visible_lines(&mirror.term.lock()),
+            visible_lines(&model.term.lock())
+        );
+    }
+}
+
+#[test]
+fn resize_is_broadcast_to_every_subscriber_including_its_origin() {
     use runner_core::protocol::terminal::TerminalFrame;
     let temp = tempfile::tempdir().unwrap();
     let core = test_core(temp.path());
@@ -1754,15 +1830,17 @@ fn resize_is_broadcast_to_every_subscriber_except_its_origin() {
     let mut origin = client.attach("resize").unwrap();
     let mut other = client.attach("resize").unwrap();
     client.resize("resize", origin.subscriber_id, 96, 32);
-    assert!(matches!(
-        other.frames.recv().unwrap(),
-        TerminalFrame::Resized {
-            seq: 1,
-            cols: 96,
-            rows: 32,
-            ..
-        }
-    ));
+    for attachment in [&mut origin, &mut other] {
+        assert!(matches!(
+            attachment.frames.recv().unwrap(),
+            TerminalFrame::Resized {
+                seq: 1,
+                cols: 96,
+                rows: 32,
+                ..
+            }
+        ));
+    }
     core.sessions
         .ingest_output_chunk("resize", None, b"after", events.as_ref());
     assert!(matches!(

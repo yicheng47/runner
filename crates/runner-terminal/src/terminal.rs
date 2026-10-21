@@ -802,7 +802,6 @@ impl TerminalMirror {
         if self.size() == (cols, rows) {
             return;
         }
-        self.resize_local(cols, rows);
         self.client.resize(
             &self.session_id,
             self.subscriber_id.load(Ordering::Relaxed),

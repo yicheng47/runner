@@ -70,10 +70,10 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let terminal = bridge.attach(&spawned.id).unwrap();
     assert_eq!(terminal.size(), (80, 24));
     terminal.resize(96, 32);
-    assert_eq!(terminal.size(), (96, 32));
 
     terminal.submit_text("manager-owned-pty").unwrap();
     let rendered = wait_for_text(&terminal, "manager-owned-pty");
+    assert_eq!(terminal.size(), (96, 32));
 
     runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert_eq!(bridge.live_session_count(), 0);
