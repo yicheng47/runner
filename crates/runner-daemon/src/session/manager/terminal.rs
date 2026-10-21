@@ -11,6 +11,65 @@ use super::*;
 
 const FRAME_CAPACITY: usize = 64;
 
+#[derive(Clone, Default, PartialEq)]
+pub(super) enum Controller {
+    #[default]
+    Desktop,
+    Browser {
+        channel: u64,
+        name: String,
+    },
+    None,
+}
+impl Controller {
+    pub(super) fn wire(&self) -> runner_core::protocol::terminal::TerminalController {
+        use runner_core::protocol::terminal::TerminalController as Wire;
+        match self {
+            Self::Desktop => Wire::Desktop,
+            Self::Browser { channel, name } => Wire::Browser {
+                channel: *channel,
+                name: name.clone(),
+            },
+            Self::None => Wire::None,
+        }
+    }
+}
+pub(super) enum ResizeControl {
+    Desktop,
+    TakeBack,
+    Browser {
+        channel: u64,
+        name: String,
+        take: bool,
+        viewport: bool,
+    },
+}
+impl ResizeControl {
+    pub(super) fn apply(self, controller: &mut Controller) -> bool {
+        match self {
+            Self::Desktop => *controller == Controller::Desktop,
+            Self::TakeBack => {
+                *controller = Controller::Desktop;
+                true
+            }
+            Self::Browser {
+                channel,
+                name,
+                take,
+                viewport,
+            } => {
+                let owns = matches!(controller, Controller::Browser { channel: owner, .. } if *owner == channel);
+                if take || owns && viewport || !viewport && *controller == Controller::None {
+                    *controller = Controller::Browser { channel, name };
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct QueueState {
     frames: VecDeque<TerminalFrame>,
@@ -67,6 +126,46 @@ impl TerminalSubscription for Frames {
                 return Err(ClientError::msg("terminal stream closed"));
             }
             state = self.0.ready.wait(state).unwrap();
+        }
+    }
+}
+
+pub struct CompanionTerminal {
+    state: Weak<Mutex<SessionState>>,
+    history: usize,
+    final_snapshot: Mutex<Option<runner_core::protocol::terminal::TerminalSnapshot>>,
+}
+impl CompanionTerminal {
+    pub fn attach(&self) -> Result<TerminalAttachment> {
+        let state = self.state.upgrade();
+        let mut state = state.as_ref().map(|state| state.lock().unwrap());
+        if let Some(snapshot) = self.final_snapshot.lock().unwrap().take() {
+            let queue = Arc::new(FrameQueue::default());
+            queue.close();
+            return Ok(TerminalAttachment {
+                subscriber_id: 0,
+                snapshot,
+                frames: Box::new(Frames(queue)),
+            });
+        }
+        let state = state
+            .as_mut()
+            .ok_or_else(|| Error::msg("terminal released"))?;
+        SessionManager::attach_terminal_locked(state, self.history)
+    }
+}
+impl SessionState {
+    pub(super) fn finish_companion_terminals(&mut self) {
+        for source in self
+            .companion_terminals
+            .drain(..)
+            .filter_map(|source| source.upgrade())
+        {
+            if let Some(model) = &self.terminal {
+                let mut snapshot = model.snapshot_with_history(self.output_seq, source.history);
+                snapshot.controller = self.controller.wire();
+                *source.final_snapshot.lock().unwrap() = Some(snapshot);
+            }
         }
     }
 }
@@ -147,9 +246,12 @@ impl SessionManager {
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
+        state.finish_companion_terminals();
         for (_, queue) in state.subscribers.drain(..) {
             queue.close();
         }
+        state.last_exit_was_killed = false;
+        state.controller = Controller::Desktop;
         state.terminal = Some(model);
         state.terminal_input = Some(input);
         state.terminal_input_worker = Some(worker);
@@ -216,15 +318,50 @@ impl SessionManager {
         Ok(model)
     }
     pub fn attach_terminal(&self, id: &str) -> Result<TerminalAttachment> {
+        self.attach_terminal_with_history(id, usize::MAX)
+    }
+    pub fn attach_terminal_with_history(
+        &self,
+        id: &str,
+        history: usize,
+    ) -> Result<TerminalAttachment> {
         let state = self
             .session_state(id)
             .ok_or_else(|| Error::msg(format!("session not found: {id}")))?;
         let mut state = state.lock().unwrap();
+        Self::attach_terminal_locked(&mut state, history)
+    }
+    pub fn attach_companion_terminal(
+        &self,
+        id: &str,
+        history: usize,
+    ) -> Result<(TerminalAttachment, Arc<CompanionTerminal>)> {
+        let state = self
+            .session_state(id)
+            .ok_or_else(|| Error::msg("terminal not found"))?;
+        let source = Arc::new(CompanionTerminal {
+            state: Arc::downgrade(&state),
+            history: history.min(5000),
+            final_snapshot: Mutex::new(None),
+        });
+        let mut state = state.lock().unwrap();
+        let attachment = Self::attach_terminal_locked(&mut state, source.history)?;
+        state
+            .companion_terminals
+            .retain(|source| source.strong_count() != 0);
+        state.companion_terminals.push(Arc::downgrade(&source));
+        Ok((attachment, source))
+    }
+    fn attach_terminal_locked(
+        state: &mut SessionState,
+        history: usize,
+    ) -> Result<TerminalAttachment> {
         let model = state
             .terminal
             .as_ref()
-            .ok_or_else(|| Error::msg(format!("terminal not found: {id}")))?;
-        let snapshot = model.snapshot(state.output_seq);
+            .ok_or_else(|| Error::msg("terminal not found"))?;
+        let mut snapshot = model.snapshot_with_history(state.output_seq, history);
+        snapshot.controller = state.controller.wire();
         state.next_subscriber_id += 1;
         let subscriber_id = state.next_subscriber_id;
         let queue = Arc::new(FrameQueue::default());
@@ -294,10 +431,101 @@ impl SessionManager {
     ) -> Result<()> {
         self.resize_with_origin(id, cols, rows, pool, Some(origin))
     }
+    pub fn take_back_terminal(
+        &self,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        pool: &Arc<DbPool>,
+    ) -> Result<()> {
+        self.resize_controlled(id, cols, rows, pool, None, ResizeControl::TakeBack)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn browser_resize(
+        &self,
+        id: &str,
+        channel: u64,
+        name: &str,
+        cols: u16,
+        rows: u16,
+        take: bool,
+        viewport: bool,
+        pool: &Arc<DbPool>,
+    ) -> Result<()> {
+        self.terminal_model(id)?;
+        self.resize_controlled(
+            id,
+            cols.clamp(20, 512),
+            rows.clamp(8, 256),
+            pool,
+            None,
+            ResizeControl::Browser {
+                channel,
+                name: name.into(),
+                take,
+                viewport,
+            },
+        )
+    }
+    pub fn release_browser(&self, id: &str, channel: u64) {
+        if let Some(state) = self.session_state(id) {
+            let mut state = state.lock().unwrap();
+            if matches!(state.controller, Controller::Browser { channel: owner, .. } if owner == channel)
+            {
+                state.controller = Controller::None;
+                if let Some(model) = &state.terminal {
+                    let (cols, rows) = model.size();
+                    state.output_seq += 1;
+                    let seq = state.output_seq;
+                    Self::push_frame(
+                        &mut state,
+                        TerminalFrame::Resized {
+                            seq,
+                            cols,
+                            rows,
+                            controller: runner_core::protocol::terminal::TerminalController::None,
+                        },
+                        None,
+                    );
+                }
+            }
+        }
+    }
+    pub fn release_browser_channel(&self, channel: u64) {
+        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.release_browser(&id, channel);
+        }
+    }
+    pub fn terminal_was_stopped(&self, id: &str) -> bool {
+        self.session_state(id).is_some_and(|state| {
+            let state = state.lock().unwrap();
+            state.killed || state.last_exit_was_killed
+        })
+    }
+    pub fn browser_controller(&self, id: &str, channel: u64) -> runner_core::companion::Controller {
+        use runner_core::companion::Controller as Wire;
+        self.session_state(id)
+            .map(|state| match &state.lock().unwrap().controller {
+                Controller::Desktop => Wire::Desktop,
+                Controller::None => Wire::None,
+                Controller::Browser { channel: owner, .. } if *owner == channel => Wire::You,
+                Controller::Browser { name, .. } => Wire::Browser { name: name.clone() },
+            })
+            .unwrap_or(Wire::None)
+    }
 }
 
 pub fn metadata(core: &crate::AppCore, id: &str) -> Result<TerminalMetadata> {
-    let model = core.sessions.terminal_model(id)?;
+    let state = core
+        .sessions
+        .session_state(id)
+        .ok_or_else(|| Error::msg("terminal not found"))?;
+    let state = state.lock().unwrap();
+    let model = state
+        .terminal
+        .as_ref()
+        .ok_or_else(|| Error::msg("terminal not found"))?;
     let (cols, rows) = model.size();
     Ok(TerminalMetadata {
         title: model.title(),
@@ -305,6 +533,7 @@ pub fn metadata(core: &crate::AppCore, id: &str) -> Result<TerminalMetadata> {
         link_cwd: None,
         cols,
         rows,
+        controller: state.controller.wire(),
     })
 }
 pub fn link_cwd(core: &crate::AppCore, id: &str) -> Result<Option<PathBuf>> {

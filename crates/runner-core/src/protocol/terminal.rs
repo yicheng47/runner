@@ -22,6 +22,18 @@ pub enum InputEvent {
     Composing { composing: bool },
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TerminalController {
+    #[default]
+    Desktop,
+    Browser {
+        channel: u64,
+        name: String,
+    },
+    None,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TerminalMetadata {
     pub title: String,
@@ -29,12 +41,21 @@ pub struct TerminalMetadata {
     pub link_cwd: Option<PathBuf>,
     pub cols: u16,
     pub rows: u16,
+    pub controller: TerminalController,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TerminalFrame {
-    Output { seq: u64, bytes: Vec<u8> },
-    Resized { seq: u64, cols: u16, rows: u16 },
+    Output {
+        seq: u64,
+        bytes: Vec<u8>,
+    },
+    Resized {
+        seq: u64,
+        cols: u16,
+        rows: u16,
+        controller: TerminalController,
+    },
     Resync,
 }
 
@@ -43,6 +64,7 @@ pub struct TerminalSnapshot {
     pub seq: u64,
     pub cols: u16,
     pub rows: u16,
+    pub controller: TerminalController,
     pub bytes: Vec<u8>,
     pub unfinished_len: usize,
     pub preceding_char: Option<char>,

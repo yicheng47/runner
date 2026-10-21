@@ -11,12 +11,18 @@ use serde_json::Value;
 struct Relay {
     routes: Option<Channels>,
     writes: Arc<TrustWrites>,
+    companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
     machine: Machine,
     root: tempfile::TempDir,
     events: crate::events::EventChannel,
 }
 impl Relay {
     fn new() -> Self {
+        Self::with_core(Arc::new(crate::companion::tests::Fake::default()))
+    }
+    fn with_core(core: Arc<dyn crate::companion::core::Core>) -> Self {
+        let companion = Arc::new(std::sync::OnceLock::new());
+        assert!(companion.set(core).is_ok());
         let mut identity = Identity::generate().unwrap();
         identity.pin = Some(Secret("012345".into()));
         let mut machine = Machine::default();
@@ -40,8 +46,9 @@ impl Relay {
         machine.host = remote::HostInfo::normalized("test-host", "macos", "arm64", "test", "test");
         let writes = Arc::new(TrustWrites::default());
         Self {
-            routes: Some(Channels::new(writes.clone())),
+            routes: Some(Channels::new(writes.clone(), companion.clone())),
             writes,
+            companion,
             machine,
             root: tempfile::tempdir().unwrap(),
             events: crate::events::EventChannel::new(),
@@ -153,7 +160,10 @@ async fn pairs_connects_welcomes_and_refuses_requests_over_the_relay() {
     let (mut browser, host) = relay.pair_finish(1, "012345").await;
     let welcome = relay.hello(1, &mut browser).await;
     assert_eq!(welcome["type"], "welcome");
-    assert_eq!(welcome["features"], serde_json::json!([]));
+    assert_eq!(
+        welcome["features"],
+        serde_json::json!(crate::companion::FEATURES)
+    );
     assert_eq!(relay.machine.trust.devices.len(), 1);
     assert!(relay.machine.trust.devices[0].connected);
     assert_eq!(events.try_recv().unwrap().name, "remote/paired");
@@ -164,7 +174,7 @@ async fn pairs_connects_welcomes_and_refuses_requests_over_the_relay() {
         .unwrap();
     relay.flush(1, &mut browser);
     let error = relay.message(1, &mut browser).await;
-    assert_eq!(error["code"], "unknownRequest");
+    assert_eq!(error["type"], "result");
     assert_eq!(error["id"], 7);
     let (connecting, connect) = BrowserConnect::start(
         NoiseKeys {
@@ -379,7 +389,7 @@ async fn failed_pairing_persistence_survives_route_loss_and_blocks_provisional_i
     let completion = relay.writes.next().await;
     assert!(!completion.saved);
     std::fs::remove_dir(relay.root.path().join("remote-trust.json")).unwrap();
-    relay.routes = Some(Channels::new(relay.writes.clone()));
+    relay.routes = Some(Channels::new(relay.writes.clone(), relay.companion.clone()));
     relay.open(1);
     let (_, connect) = BrowserConnect::start(
         NoiseKeys {
@@ -455,7 +465,7 @@ async fn persisted_pairing_after_route_loss_cannot_open_a_reused_channel_number(
         &[Effect::Close],
         None,
     );
-    relay.routes = Some(Channels::new(relay.writes.clone()));
+    relay.routes = Some(Channels::new(relay.writes.clone(), relay.companion.clone()));
     relay.open(1);
     relay.writes.complete(
         completion,
@@ -615,7 +625,7 @@ async fn a_trust_write_does_not_hold_up_an_open_channel() {
         .queue(br#"{"type":"overview","id":9}"#.to_vec())
         .unwrap();
     relay.flush(1, &mut first);
-    assert_eq!(relay.message(1, &mut first).await["code"], "unknownRequest");
+    assert_eq!(relay.message(1, &mut first).await["type"], "result");
     release.send(()).unwrap();
     thread.join().unwrap();
     assert_eq!(relay.hello(2, &mut second).await["type"], "welcome");
@@ -644,6 +654,7 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
         Arc::new(MemoryStore::default()),
         crate::events::EventChannel::new(),
     );
+    handle.set_companion_core(Arc::new(crate::companion::tests::Fake::default()));
     handle.set_pin(Secret("012345".into())).await.unwrap();
     let (host_io, peer_io) = tokio::io::duplex(remote::MAX_RELAY_SIZE * 2);
     let mut peer = WebSocketStream::from_raw_socket(peer_io, Role::Server, None).await;
@@ -705,7 +716,10 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
         if let Some(bytes) = browser.receive(frame).unwrap() {
             let welcome: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(welcome["type"], "welcome");
-            assert_eq!(welcome["features"], serde_json::json!([]));
+            assert_eq!(
+                welcome["features"],
+                serde_json::json!(crate::companion::FEATURES)
+            );
             break;
         }
     }
@@ -785,4 +799,62 @@ async fn a_browser_without_credit_does_not_block_other_channels() {
     let record = raw_record(&mut relay, 1, &mut browser).await;
     assert_eq!(record[0], 1);
     assert!(record.len() > 1);
+}
+
+#[tokio::test]
+async fn adapter_serves_overview_terminal_and_input_over_the_encrypted_channel() {
+    let fake = Arc::new(crate::companion::tests::Fake::default());
+    let mut relay = Relay::with_core(fake.clone());
+    let (mut browser, _) = relay.pair_finish(1, "012345").await;
+    let welcome = relay.hello(1, &mut browser).await;
+    assert_eq!(
+        welcome["features"],
+        serde_json::json!(crate::companion::FEATURES)
+    );
+    browser
+        .queue(br#"{"type":"overview","id":1}"#.to_vec())
+        .unwrap();
+    relay.flush(1, &mut browser);
+    let overview = relay.message(1, &mut browser).await;
+    let golden: Value = serde_json::from_slice(include_bytes!(
+        "../../../../runner-core/src/companion/fixtures/result_overview.json"
+    ))
+    .unwrap();
+    assert_eq!(overview["result"], golden["result"]);
+    browser.queue(br#"{"type":"attach","id":2,"session":"terminal","cols":80,"rows":24,"control":"take","history":3}"#.to_vec()).unwrap();
+    relay.flush(1, &mut browser);
+    assert_eq!(
+        relay.message(1, &mut browser).await,
+        serde_json::json!({"type":"result","id":2,"result":null})
+    );
+    let snapshot = relay.message(1, &mut browser).await;
+    assert_eq!(snapshot["type"], "snapshot");
+    assert_eq!(snapshot["more"], false);
+    assert_eq!(relay.message(1, &mut browser).await["type"], "resized");
+    browser
+        .queue(br#"{"type":"input","id":3,"session":"terminal","data":"aGVsbG8="}"#.to_vec())
+        .unwrap();
+    relay.flush(1, &mut browser);
+    assert_eq!(relay.message(1, &mut browser).await["id"], 3);
+    {
+        let input = fake.input.lock().unwrap();
+        assert_eq!(input[0].1, b"hello");
+        assert!(
+            matches!(&input[0].2, runner_core::protocol::terminal::InputEvent::Key { kind: runner_core::protocol::terminal::InputKind::Content { text } } if text == "hello")
+        );
+    }
+    browser
+        .queue(br#"{"type":"post","id":4,"mission":"ignored","to":[],"text":"ignored"}"#.to_vec())
+        .unwrap();
+    relay.flush(1, &mut browser);
+    assert_eq!(
+        relay.message(1, &mut browser).await["code"],
+        "unknownRequest"
+    );
+    assert_eq!(*fake.history.lock().unwrap(), [3]);
+    browser
+        .queue(br#"{"type":"detach","id":5,"session":"terminal"}"#.to_vec())
+        .unwrap();
+    relay.flush(1, &mut browser);
+    assert_eq!(relay.message(1, &mut browser).await["id"], 5);
 }
