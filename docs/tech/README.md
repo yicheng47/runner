@@ -6,6 +6,7 @@ Dependency notes name the crate version they were written against; internal code
 
 ## Notes
 
+- [`remote-control.md`](./remote-control.md) — how a browser reaches a terminal through the relay (#836): two outbound connections, the five layers a byte is wrapped in, PIN pairing with CPace inside Noise `XXpsk3`, reconnecting with `IK`, records and credit, the adapter and the terminal-size controller, with Mermaid diagrams and a reading path; `snow` 0.9.6 at `nightly-remote` `9842cee0`.
 - [`runtime-adapters.md`](./runtime-adapters.md) — a first walkthrough of the runtime adapter refactor: agent identity, adapters, session orchestration, and the PTY process layer, with a Mermaid launch diagram and a code reading path.
 - [`terminal-rendering.md`](./terminal-rendering.md) — the path from a PTY read to painted pixels inside Runner: the terminal model crate, the bridge, the GPUI element, and the four design decisions that shape it.
 - [`alacritty-terminal.md`](./alacritty-terminal.md) — `alacritty_terminal` 0.26 as an emulator without a window: the vte parser, the Handler vocabulary, the Term and its ring-buffer grid, cells, colors, modes, reflow, and the event channel back to the PTY.
