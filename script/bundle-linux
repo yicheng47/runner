@@ -27,6 +27,14 @@ def verify_elf(path, arch):
         raise SystemExit(f'{path} is not a Linux ELF64 executable for {arch}')
 
 
+def normalize_package_permissions(root):
+    # Package ownership alone does not remove a builder's group-writable umask.
+    for path in [root, *root.rglob('*')]:
+        if path.is_symlink():
+            continue
+        path.chmod(0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+
+
 def package_identity(version, channel, stamp, sha):
     label = version if channel == 'production' else f'{channel}.{sha[:7]}.{stamp}'
     metadata_channel = channel.replace('-', '.')
@@ -101,12 +109,14 @@ def main():
             target = tree / dest
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / source, target)
+        normalize_package_permissions(tree)
         if 'tar' in formats:
             with tarfile.open(out / f'{tree.name}.tar.gz', 'w:gz') as archive:
                 archive.add(tree, arcname=tree.name)
         stage = temp / 'package'
         shutil.copytree(tree / 'lib', stage / 'usr/lib', symlinks=True)
         shutil.copytree(tree / 'share', stage / 'usr/share')
+        normalize_package_permissions(stage)
         aliases = (ROOT / 'packaging/linux/package-aliases.sh').read_text()
         deb_arch, rpm_arch, _ = ARCHES[args.arch]
         if 'deb' in formats:

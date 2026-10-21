@@ -127,6 +127,48 @@ class VersionTests(unittest.TestCase):
             (packages / f'{name}.rpm').unlink()
             self.assertNotEqual(subprocess.run(command, env=env, capture_output=True).returncode, 0)
 
+    def test_package_modes_do_not_inherit_a_group_writable_umask(self):
+        with tempfile.TemporaryDirectory(prefix='r823-modes-', dir=ROOT / 'target') as scratch:
+            scratch = Path(scratch)
+            binaries = scratch / 'target/aarch64-unknown-linux-gnu/release'
+            binaries.mkdir(parents=True)
+            for name in ['Runner', 'runner-agent-cli']:
+                (binaries / name).write_bytes(b'\x7fELF\x02\x01' + bytes(12) + (183).to_bytes(2, 'little'))
+            output = scratch / 'packages'
+            metadata = dict(target_directory=str(scratch / 'target'),
+                            packages=[dict(name='runner-app', version='0.16.7')])
+            def command_output(command, **kwargs):
+                if command[:2] == ['cargo', 'metadata']:
+                    return json.dumps(metadata).encode()
+                self.assertEqual(command[0], 'readelf')
+                return 'GLIBC_2.35'
+            package_stages = []
+            def build(*command, **kwargs):
+                if command[0] == 'cargo':
+                    return
+                self.assertEqual(command[0], 'dpkg-deb')
+                stage = Path(command[-2])
+                package_stages.append(stage)
+                for path in [stage / 'usr', stage / 'usr/lib/runner', stage / 'usr/lib/runner/install-layout-v1']:
+                    self.assertEqual(path.stat().st_mode & 0o022, 0, str(path))
+            previous_umask = os.umask(0o002)
+            try:
+                with mock.patch.object(sys, 'argv', ['bundle-linux', '--arch', 'aarch64', '--formats', 'tar,deb', '--output-dir', str(output)]), \
+                     mock.patch.object(self.bundle.platform, 'system', return_value='Linux'), \
+                     mock.patch.object(self.bundle.platform, 'machine', return_value='aarch64'), \
+                     mock.patch.object(self.bundle.subprocess, 'check_output', side_effect=command_output), \
+                     mock.patch.object(self.bundle, 'run', side_effect=build), \
+                     mock.patch.dict(os.environ, RUNNER_BUILD_STAMP='20261021.0001', RUNNER_BUILD_SHA='61ad55f'):
+                    self.bundle.main()
+            finally:
+                os.umask(previous_umask)
+            self.assertEqual(len(package_stages), 1)
+            with tarfile.open(next(output.glob('*.tar.gz'))) as archive:
+                for member in archive.getmembers():
+                    self.assertEqual(member.mode & 0o022, 0, member.name)
+                    if member.isdir():
+                        self.assertEqual(member.mode, 0o755, member.name)
+
     def test_prebuilt_binary_inputs_are_rejected(self):
         # Even real ci binaries cannot be re-labelled as production package inputs.
         result = subprocess.run(['python3', str(ROOT / 'script/bundle-linux'), '--binary-dir', str(ROOT / 'target/ci')], capture_output=True, text=True)
