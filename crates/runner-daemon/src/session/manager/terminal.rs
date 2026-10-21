@@ -416,20 +416,21 @@ impl SessionManager {
             .expect("spawn terminal input thread");
         (tx, worker)
     }
-    pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame, except: Option<u64>) {
+    pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame) {
         state
             .subscribers
-            .retain(|(id, queue)| except == Some(*id) || queue.push(frame.clone()));
+            .retain(|(_, queue)| queue.push(frame.clone()));
     }
     pub fn resize_terminal(
         &self,
         id: &str,
-        origin: u64,
+        _origin: u64,
         cols: u16,
         rows: u16,
         pool: &Arc<DbPool>,
     ) -> Result<()> {
-        self.resize_with_origin(id, cols, rows, pool, Some(origin))
+        // The sender also adopts the accepted size from the ordered frame stream.
+        self.resize(id, cols, rows, pool)
     }
     pub fn take_back_terminal(
         &self,
@@ -438,7 +439,7 @@ impl SessionManager {
         rows: u16,
         pool: &Arc<DbPool>,
     ) -> Result<()> {
-        self.resize_controlled(id, cols, rows, pool, None, ResizeControl::TakeBack)
+        self.resize_controlled(id, cols, rows, pool, ResizeControl::TakeBack)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn browser_resize(
@@ -458,7 +459,6 @@ impl SessionManager {
             cols.clamp(20, 512),
             rows.clamp(8, 256),
             pool,
-            None,
             ResizeControl::Browser {
                 channel,
                 name: name.into(),
@@ -485,7 +485,6 @@ impl SessionManager {
                             rows,
                             controller: runner_core::protocol::terminal::TerminalController::None,
                         },
-                        None,
                     );
                 }
             }
