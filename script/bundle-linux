@@ -37,7 +37,7 @@ def package_identity(version, channel, stamp, sha):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channel', choices=['production', 'nightly', 'remote-nightly'], default='production')
+    parser.add_argument('--channel', choices=['production', 'nightly'], default='production')
     parser.add_argument('--arch', choices=ARCHES, default=platform.machine())
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'target/linux-packages')
     parser.add_argument('--formats', default='tar,deb,rpm')
@@ -59,7 +59,7 @@ def main():
         parser.error('Build and package on a native matching Linux host')
     target = f'{args.arch}-unknown-linux-gnu'
     env = dict(os.environ, RUNNER_BUILD_STAMP=stamp, RUNNER_BUILD_SHA=sha,
-               RUNNER_RELEASE_CHANNEL=args.channel, RUNNER_MARKETING_VERSION=version if args.channel == 'production' else ('Remote Nightly' if args.channel == 'remote-nightly' else 'Nightly'))
+               RUNNER_RELEASE_CHANNEL=args.channel, RUNNER_MARKETING_VERSION=version if args.channel == 'production' else 'Nightly')
     # Always build both inputs with the production data namespace; never re-label prebuilt/debug bytes.
     run('cargo', '--config', 'profile.release.debug-assertions=false', 'build', '--locked', '--release',
         '--target', target, '-p', 'runner-app', '-p', 'runner-cli', cwd=ROOT, env=env)
@@ -89,6 +89,7 @@ def main():
         shutil.copy2(app / 'runner-agent-cli', app / 'runnerd')
         (app / 'build-platform.txt').write_text(f'architecture={args.arch}\nglibc-minimum={glibc}\n' + (Path('/etc/os-release').read_text() if Path('/etc/os-release').exists() else ''))
         (app / 'install-layout-v1').write_text('runner-linux-package-v1\n')
+        (app / 'release-info.json').write_text(json.dumps(dict(label=label, arch=args.arch, channel=args.channel, stamp=stamp, version=version)) + '\n')
         shutil.copy2(ROOT / 'script/linux/install.sh', app / 'install.sh')
         shutil.copy2(ROOT / 'script/linux/install.sh', tree / 'install.sh')
         for source, dest in [

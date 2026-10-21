@@ -21,6 +21,8 @@ package=$prefix/lib/runner
 unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/runnerd.service
 managed() { [ ! -L "$package" ] && [ -f "$package/install-layout-v1" ] && [ "$(cat "$package/install-layout-v1")" = runner-linux-package-v1 ]; }
 owned_link() { [ -L "$1" ] && [ "$(readlink "$1")" = "$2" ]; }
+icon_target=../../../../../lib/runner/icon.png
+owned_icon() { owned_link "$icon" "$icon_target" || { [ ! -L "$icon" ] && cmp -s "$icon" "$package/icon.png"; }; }
 if "$uninstall"; then
     managed || { echo 'No managed Runner installation at this prefix' >&2; exit 1; }
     for name in runner runnerd runner-app; do
@@ -33,7 +35,7 @@ if "$uninstall"; then
     desktop=$prefix/share/applications/runner.desktop
     if [ ! -L "$desktop" ] && [ -f "$desktop" ] && grep -Fqx "X-Runner-Prefix=$prefix" "$desktop"; then rm "$desktop"; fi
     icon=$prefix/share/icons/hicolor/256x256/apps/runner.png
-    [ ! -L "$icon" ] && cmp -s "$icon" "$package/icon.png" && rm "$icon" || :
+    owned_icon && rm "$icon" || :
     rm -rf -- "$package"
     echo 'Runner removed. User data and running sessions are retained. If enabled, stop/disable runnerd before uninstalling; run systemctl --user daemon-reload afterwards.'
     exit 0
@@ -62,7 +64,7 @@ if [ -e "$desktop" ] || [ -L "$desktop" ]; then
 fi
 icon=$prefix/share/icons/hicolor/256x256/apps/runner.png
 if [ -e "$icon" ] || [ -L "$icon" ]; then
-    if [ -L "$icon" ] || ! managed || ! cmp -s "$icon" "$package/icon.png"; then
+    if ! managed || ! owned_icon; then
         echo "Refusing to replace foreign icon: $icon" >&2; exit 1
     fi
 fi
@@ -92,6 +94,8 @@ desktop_escaped=$(printf '%s' "$desktop_escaped" | sed 's/\\/\\\\/g')
     done < "$root/share/applications/runner.desktop"
     printf 'X-Runner-Prefix=%s\n' "$prefix"
 } > "$prefix/share/applications/runner.desktop"
-cp "$root/share/icons/hicolor/256x256/apps/runner.png" "$prefix/share/icons/hicolor/256x256/apps/runner.png"
+# Keep desktop ownership stable when in-app updates exchange only lib/runner.
+ln -s "$icon_target" "$stage/icon-link"
+mv -f -- "$stage/icon-link" "$icon"
 echo "Installed Runner under $prefix. Add $prefix/bin to PATH."
 echo 'The user service is not enabled. Run systemctl --user daemon-reload before optionally starting runnerd.'

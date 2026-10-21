@@ -63,7 +63,7 @@ CI runs Clippy and workspace tests with the `ci` Cargo profile, which uses light
 
 On Windows, use `.\make.cmd run` to build and start the app with its CLI sidecars, or `.\make.cmd build` to build only. Add `--release` for optimized binaries under `target\release`; the default development binaries are under `target\debug`. Use `.\make.cmd clean` to remove the Cargo target directory, or `.\make.cmd clean --release` to clean only release outputs; close the development app and finish other builds first. Installed apps, user data, Rust toolchains, and Cargo's shared dependency cache are kept. The script works in PowerShell and Command Prompt without GNU Make; use the native Cargo commands in [Local Windows development](docs/arch/windows.md#local-windows-development) for checks.
 
-Linux development uses `make run` and the same Cargo commands. See [Linux development](docs/arch/linux.md) for dependencies, dual-architecture builds, packages and the opt-in user service. Linux has no app updater; `make clippy` runs its updater-feature pass only on macOS/Windows.
+Linux development uses `make run` and the same Cargo commands. See [Linux development](docs/arch/linux.md) for dependencies, dual-architecture builds, packages and the opt-in user service. Linux updater checks and installs signed packages; `make clippy` runs its updater-feature pass only on macOS/Windows.
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 

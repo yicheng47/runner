@@ -340,6 +340,15 @@ jobs:
         run: ./script/bundle-linux --channel production --arch ${{ matrix.arch }}
       - name: Verify Linux package metadata and layout
         run: python3 script/linux/test-packaging.py --packages target/linux-packages
+      - name: Install Node for update signing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Sign Linux packages for in-app updates
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./script/linux/sign-updates target/linux-packages "Runner-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}"
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:

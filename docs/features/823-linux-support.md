@@ -5,7 +5,7 @@ Related: [#823](https://github.com/yicheng47/runner/issues/823). The current imp
 Runner supports Linux ARM64 and x86_64 with the native GPUI app, daemon and CLI.
 X11 and Wayland share the existing Windows-style window controls and Ctrl bindings.
 Linux uses fontconfig with Noto CJK fallbacks. macOS and Windows behavior is retained.
-There is no Linux in-app updater or macOS wake/notification-permission integration.
+Linux supports signed in-app installation updates; see [the update spec](823-linux-updates.md). macOS wake/notification-permission integration does not apply.
 
 The daemon retains Unix IPC ownership, bounded startup/shutdown and SSH no-autostart.
 Linux discovers descendants through /proc and Codex rollouts through exact open file

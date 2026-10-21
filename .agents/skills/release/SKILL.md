@@ -29,7 +29,7 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 
 ## `notes <version>`
 
-Release notes are **bilingual**: the full English text first, then the same content in 中文 inside a `<details>` block so the page reads as English-only until a reader expands it (GitHub has no tabs; a collapsed block is the nearest thing, and both in-app updaters open the release page in a browser where it renders). 0.8.3 used a horizontal rule instead; every release since 0.8.4 ships the collapsed form. A draft with only the workflow's one-line stub is not ready to publish.
+Release notes are **bilingual**: the full English text first, then the same content in 中文 inside a `<details>` block so the page reads as English-only until a reader expands it (GitHub has no tabs; a collapsed block is the nearest thing, and the in-app updaters open the release page in a browser where it renders). 0.8.3 used a horizontal rule instead; every release since 0.8.4 ships the collapsed form. A draft with only the workflow's one-line stub is not ready to publish.
 
 Source the content from `git log v<previous>..v<version> --no-merges --format='- %s (%h)'` and the closed issues those commits reference. Write for users, not for the repo: what changed for them, in their words, one bullet per change with the issue number at the end. Skip internal work (tests, CI, docs, refactors) unless it changes what users see.
 
@@ -51,9 +51,9 @@ Runner <version> is a <bug-fix | feature> release for macOS, Windows and Linux o
 - **macOS, Apple Silicon:** download `Runner-<version>-arm64.dmg`, or update through Sparkle. The app is signed and notarized.
 - **Windows x64, Windows 10 version 1809 or later:** download `Runner-Setup-<version>.<stamp>-x64.exe`. The installer, app, and CLI sidecars are Authenticode-signed by Open Source Developer Yicheng Wang. You can also update through Settings → Updates → Update, then choose Install and restart. Settings, chats, and missions are retained.
 
-- **Linux ARM64/x86_64:** use `Runner-<version>-linux-<aarch64|x86_64>.tar.gz`, `.deb` or `.rpm`; install/update through the same package installer. The opt-in user service is disabled on install, and uninstall retains user data. Linux artifacts are unsigned in the initial implementation.
+- **Linux ARM64/x86_64:** use `Runner-<version>-linux-<aarch64|x86_64>.tar.gz`, `.deb` or `.rpm`; install/update through the same package installer. The opt-in user service is disabled on install, and uninstall retains user data. Each Linux package carries a matching minisign signature verified by the in-app updater.
 
-Windows ARM64 and Intel Macs are not supported. Linux ARM64/x86_64 downloads use tar/deb/rpm packages; there is no in-app Linux updater. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
+Windows ARM64 and Intel Macs are not supported. Linux ARM64/x86_64 downloads use tar/deb/rpm packages; signed in-app updates support managed tar installations and system-authorized APT/DNF installation. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
 
 **Full changelog:** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
@@ -71,7 +71,7 @@ Runner <version> 是 macOS、Windows 和 Linux 上基于 <previous> 的<修复�
 ## 下载与升级
 ...
 
-Windows ARM64 和 Intel Mac 暂不支持。Linux ARM64/x86_64 提供 tar/deb/rpm 包，不含应用内更新；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
+Windows ARM64 和 Intel Mac 暂不支持。Linux ARM64/x86_64 提供 tar/deb/rpm 包及对应 minisign 签名，支持应用内验证更新：用户 tar 安装原子替换，系统包经授权由 APT/DNF 安装；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
 
 **完整变更记录：** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 

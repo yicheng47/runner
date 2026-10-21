@@ -291,6 +291,15 @@ jobs:
         run: ./script/bundle-linux --channel nightly --arch ${{ matrix.arch }}
       - name: Verify Linux package metadata and layout
         run: python3 script/linux/test-packaging.py --packages target/linux-packages
+      - name: Install Node for update signing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+      - name: Sign Linux packages for in-app updates
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: ./script/linux/sign-updates target/linux-packages "Runner-${{ needs.prepare.outputs.version }}-linux-${{ matrix.arch }}"
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -362,6 +371,7 @@ jobs:
             for arch in x86_64 aarch64; do
               for format in tar.gz deb rpm; do
                 test -s "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format"
+                test -s "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig"
               done
             done
           fi
@@ -425,6 +435,7 @@ jobs:
           for arch in x86_64 aarch64; do
             for format in tar.gz deb rpm; do
               gh release upload nightly "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format" --clobber
+              gh release upload nightly "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig" --clobber
             done
           done
 
@@ -452,7 +463,10 @@ jobs:
               for format in tar.gz deb rpm; do
                 name="Runner-$NIGHTLY_VERSION-linux-$arch.$format"
                 printf '%s\n' "$assets" | grep -Fxq "$name"
+                printf '%s\n' "$assets" | grep -Fxq "$name.sig"
                 curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/nightly/$name" >/dev/null
+                curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/nightly/$name.sig" --output "$RUNNER_TEMP/linux-update.sig"
+                cmp "nightly-artifacts/linux/$name.sig" "$RUNNER_TEMP/linux-update.sig"
               done
             done
           fi
@@ -511,7 +525,10 @@ jobs:
             while IFS= read -r name; do
               if [[ "$name" =~ $pattern ]]; then
                 stamp="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
-                if printf '%s\n' "$stamps" | grep -Fxq "$stamp"; then gh release delete-asset nightly "$name" --yes; fi
+                if printf '%s\n' "$stamps" | grep -Fxq "$stamp"; then
+                  gh release delete-asset nightly "$name" --yes
+                  if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then gh release delete-asset nightly "$name.sig" --yes; fi
+                fi
               fi
             done <<< "$assets"
           done

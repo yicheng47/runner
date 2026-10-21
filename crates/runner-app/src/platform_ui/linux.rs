@@ -7,6 +7,36 @@ use gpui::{
 };
 use std::rc::Rc;
 
+#[cfg(target_os = "linux")]
+pub(crate) fn update_hint_tooltip(
+    version: &str,
+    state: &runner_app::updater::UpdateState,
+) -> String {
+    if matches!(state, runner_app::updater::UpdateState::Ready { .. }) {
+        crate::i18n::tf(
+            "format.runner_is_ready_to_install",
+            &[("version", version.to_string())],
+        )
+    } else {
+        crate::i18n::tf(
+            "format.runner_is_available",
+            &[("version", version.to_string())],
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn activate_update_hint(
+    _updater: &gpui::Entity<runner_app::updater::Updater>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.dispatch_action(
+        Box::new(crate::surfaces::update_dialog::OpenUpdateDialog),
+        cx,
+    );
+}
+
 const RESIZE_BORDER: f32 = 6.;
 pub(crate) const DESKTOP_APP_ID: &str = "runner";
 

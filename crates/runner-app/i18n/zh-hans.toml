@@ -1402,3 +1402,7 @@
 "ui.desktop_notifications" = "桌面通知"
 "ui.desktop_notification_delivery_settings" = "通知送达取决于桌面通知服务。请在桌面设置中配置横幅和声音。"
 "ui.linux_package_command_removal" = "由 Linux 软件包安装。请使用其安装程序或软件包管理器卸载。"
+"ui.linux_updates_description" = "Runner 在启动时和每六小时检查更新。下载内容会在安装前验签。系统安装包可能需要管理员授权。"
+"ui.linux_update_install_description" = "Runner 安装更新后重新启动。会话将按已保存的恢复设置重启。系统安装包可能要求管理员授权。"
+"ui.installing_runner_update" = "正在安装 Runner 更新…"
+"ui.linux_update_authorizing" = "如出现系统授权窗口，请完成授权。安装完成后 Runner 将重新启动。"

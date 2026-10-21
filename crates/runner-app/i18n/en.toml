@@ -1402,3 +1402,7 @@
 "ui.desktop_notifications" = "Desktop notifications"
 "ui.desktop_notification_delivery_settings" = "Delivery depends on your desktop notification service. Configure banners and sound in your desktop settings."
 "ui.linux_package_command_removal" = "Installed with the Linux package. Use its installer or package manager to remove it."
+"ui.linux_updates_description" = "Runner checks for updates at startup and every six hours. Downloads are verified before installation. System packages may require administrator authorization."
+"ui.linux_update_install_description" = "Runner installs the update, then restarts. Your sessions restart under your saved resume settings. System packages may ask for administrator authorization."
+"ui.installing_runner_update" = "Installing Runner update…"
+"ui.linux_update_authorizing" = "Complete system authorization if prompted. Runner will restart after installation finishes."

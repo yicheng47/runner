@@ -65,6 +65,7 @@ curl() {
   while (( $# )); do
     case "$1" in
       https:*/appcast.xml) source=nightly-artifacts/macos/appcast.xml ;;
+      https:*/Runner-*-linux-*.sig) source="nightly-artifacts/linux/${1##*/}" ;;
       https:*/*.sig) source="nightly-artifacts/windows/$SETUP_NAME.sig" ;;
       --output) cp "$source" "$2"; return ;;
     esac
@@ -133,6 +134,7 @@ class NightlyTests(unittest.TestCase):
         self.linux = self.root / 'nightly-artifacts/linux'
         self.linux.mkdir(parents=True, exist_ok=True)
         self.linux_names = [f'Runner-{VERSION}-linux-{arch}.{ext}' for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+        self.linux_names += [name + ".sig" for name in self.linux_names]
         for name in self.linux_names:
             (self.linux / name).write_bytes(b'Linux package fixture')
         self.appcast = self.mac / 'appcast.xml'
@@ -231,20 +233,23 @@ class NightlyTests(unittest.TestCase):
                     self.assertNotEqual(self.publish().returncode, 0)
                     self.assertFalse(any('delete-asset' in line for line in self.calls()))
             self.env.update(FAIL_UPLOAD='', FAIL_DOWNLOAD='')
-            removed = self.linux / self.linux_names[0]
-            removed.rename(removed.with_suffix('.saved'))
-            try:
-                self.assets([])
-                Path(self.env['CALLS']).write_text('')
-                self.assertNotEqual(self.publish().returncode, 0)
-                self.assertEqual(self.calls(), [])
-            finally:
-                removed.with_suffix('.saved').rename(removed)
+            self.assertFalse(any(line.startswith('gh run') for line in self.calls()))
+            for missing in [self.linux_names[0], self.linux_names[-1]]:
+                removed = self.linux / missing
+                removed.rename(removed.with_suffix('.saved'))
+                try:
+                    self.assets([])
+                    Path(self.env['CALLS']).write_text('')
+                    self.assertNotEqual(self.publish().returncode, 0)
+                    self.assertEqual(self.calls(), [])
+                finally:
+                    removed.with_suffix('.saved').rename(removed)
 
     def test_linux_retention_keeps_two_stamps_and_does_not_prune_other_platforms(self):
         self.env['PLATFORM'] = 'linux'
         old = [f'Runner-nightly.abc1234.202608{day:02}.0100-linux-{arch}.{ext}'
                for day in [1, 2, 3] for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+        old += [name + ".sig" for name in old]
         foreign = ['unrelated.txt', 'appcast.xml', 'Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner-Setup-nightly.abc1234.20260801.0100-x64.exe']
         self.assets(old + foreign)
         result = self.publish()

@@ -87,19 +87,45 @@ class VersionTests(unittest.TestCase):
         self.assertIn('nightly.20261017.0000.aaaaaaa', newer[2])
         self.assertEqual(self.bundle.package_identity('0.16.2', 'production', '20261017.0000', 'aaaaaaa'), ('0.16.2', '0.16.2', '1'))
 
-    def test_remote_nightly_identity_preserves_channel_and_stamp_order(self):
-        older = self.bundle.package_identity('0.16.5', 'remote-nightly', '20261016.2359', 'fffffff')
-        newer = self.bundle.package_identity('0.16.5', 'remote-nightly', '20261017.0000', 'aaaaaaa')
-        self.assertEqual(older[0], 'remote-nightly.fffffff.20261016.2359')
-        self.assertEqual(newer, ('remote-nightly.aaaaaaa.20261017.0000',
-                                 '0.16.5~remote.nightly.20261017.0000.aaaaaaa',
-                                 '0.remote.nightly.20261017.0000.aaaaaaa'))
-        if shutil.which('dpkg'):
-            run_captured(['dpkg', '--compare-versions', older[1], 'lt', newer[1]])
-        if shutil.which('rpm'):
-            expression = "%{lua: print(rpm.vercmp('" + older[2] + "', '" + newer[2] + "'))}"
-            with tempfile.TemporaryDirectory(prefix='r823-rpm-', dir=ROOT / 'target') as database:
-                self.assertEqual(run_captured(['rpm', '--dbpath', database, '--eval', expression]).stdout.strip(), '-1')
+    def test_retired_remote_nightly_channel_is_refused_before_building(self):
+        result = run_captured([sys.executable, str(ROOT / 'script/bundle-linux'), '--channel', 'remote-nightly'], check=False)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('invalid choice', result.stderr)
+
+    def test_update_signing_requires_all_packages_and_the_trusted_key(self):
+        with tempfile.TemporaryDirectory(prefix='r823-sign-', dir=ROOT / 'target') as scratch:
+            scratch = Path(scratch)
+            script = scratch / 'script/linux/sign-updates'
+            script.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / 'script/linux/sign-updates', script)
+            key = scratch / 'packaging/windows-update-public-key'
+            key.parent.mkdir()
+            fixtures = ROOT / 'crates/runner-app/tests/fixtures/updates'
+            shutil.copy2(fixtures / 'public-key', key)
+            tool = scratch / 'bin/npx'
+            tool.parent.mkdir()
+            tool.write_text('#!/bin/sh\nfor arg do package=$arg; done\ncp "$FIXTURE_SIGNATURE" "$package.sig"\n')
+            tool.chmod(0o755)
+            packages = scratch / 'packages'
+            packages.mkdir()
+            name = 'Runner-99.0.0-linux-aarch64'
+            for ext in ['tar.gz', 'deb', 'rpm']:
+                (packages / f'{name}.{ext}').write_bytes((fixtures / 'installer.txt').read_bytes())
+            env = dict(os.environ, PATH=str(tool.parent) + os.pathsep + os.environ['PATH'],
+                       TAURI_SIGNING_PRIVATE_KEY='test-only-placeholder',
+                       TAURI_SIGNING_PRIVATE_KEY_PASSWORD='',
+                       FIXTURE_SIGNATURE=str(fixtures / 'installer.txt.sig'))
+            command = ['bash', str(script), str(packages), name]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list(packages.glob('*.sig'))), 3)
+            shutil.copy2(ROOT / 'packaging/windows-update-public-key', key)
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('does not match', result.stderr)
+            shutil.copy2(fixtures / 'public-key', key)
+            (packages / f'{name}.rpm').unlink()
+            self.assertNotEqual(subprocess.run(command, env=env, capture_output=True).returncode, 0)
 
     def test_prebuilt_binary_inputs_are_rejected(self):
         # Even real ci binaries cannot be re-labelled as production package inputs.
@@ -223,6 +249,34 @@ class InstallerTests(unittest.TestCase):
         desktop = (self.prefix / 'share/applications/runner.desktop').read_text()
         self.assertIn('\\$dollar', desktop)
         self.assertEqual(self.install('--uninstall').returncode, 0)
+
+    def test_tar_icon_tracks_app_directory_updates_and_remains_owned(self):
+        self.assertEqual(self.install().returncode, 0)
+        icon = self.prefix / 'share/icons/hicolor/256x256/apps/runner.png'
+        package = self.prefix / 'lib/runner'
+        self.assertTrue(icon.is_symlink())
+        self.assertEqual(icon.read_bytes(), b'ICON')
+        # Older tar installers copied the icon; a manual install migrates an owned copy.
+        icon.unlink()
+        icon.write_bytes(b'ICON')
+        self.assertEqual(self.install().returncode, 0)
+        self.assertTrue(icon.is_symlink())
+        next_package = self.root / 'next-runner'
+        shutil.copytree(package, next_package)
+        (next_package / 'icon.png').write_bytes(b'NEXT-RELEASE-ICON')
+        package.rename(self.root / 'previous-runner')
+        next_package.rename(package)
+        self.assertEqual(icon.read_bytes(), b'NEXT-RELEASE-ICON')
+        (self.tree / 'lib/runner/icon.png').write_bytes(b'NEXT-RELEASE-ICON')
+        (self.tree / 'share/icons/hicolor/256x256/apps/runner.png').write_bytes(b'NEXT-RELEASE-ICON')
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(icon.is_symlink())
+        self.assertEqual(icon.read_bytes(), b'NEXT-RELEASE-ICON')
+        result = self.install('--uninstall')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(icon.exists())
+        self.assertFalse(icon.is_symlink())
 
     def test_upgrade_and_uninstall_preserve_replaced_foreign_icons(self):
         self.assertEqual(self.install().returncode, 0)

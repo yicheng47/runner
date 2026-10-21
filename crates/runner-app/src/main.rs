@@ -564,7 +564,7 @@ struct NativeRoot {
     terminal_close_confirm: Option<TerminalCloseConfirm>,
     pending_pane_closes: HashMap<String, PendingPaneClose>,
     pending_tab_close: Option<PendingTabClose>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
     quit_dialog: Option<Entity<surfaces::quit_dialog::QuitDialog>>,
     agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
@@ -967,7 +967,7 @@ impl NativeRoot {
             terminal_close_confirm: None,
             pending_pane_closes: HashMap::new(),
             pending_tab_close: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             update_dialog: None,
             quit_dialog: None,
             agent_update: None,
@@ -1017,9 +1017,9 @@ impl NativeRoot {
             _activation_subscription: None,
             _bounds_subscription: None,
             _project_cwd_subscription: None,
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             _updater_subscription: cx.observe(&updater, |_, _, cx| cx.notify()),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             _updater_subscription: cx.observe_in(&updater, window, |root, updater, window, cx| {
                 if matches!(
                     updater.read(cx).state(),
@@ -1552,19 +1552,19 @@ fn run() -> Result<()> {
             )
         });
         let keymap_overrides = app_store.read(cx).settings.keymap_overrides.clone();
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let automatically_check_for_updates =
             app_store.read(cx).settings.automatically_check_for_updates;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let automatically_download_updates =
             app_store.read(cx).settings.automatically_download_updates;
         keymap::install_bindings(cx, &keymap_overrides, false);
         cx.set_global(GlobalAppStore(app_store));
         notifications::install(cx);
         cx.set_global(GlobalNativePaths(paths.clone()));
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(automatically_check_for_updates, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| {
             Updater::new(
                 automatically_download_updates,
@@ -2071,6 +2071,14 @@ fn print_startup_paths(paths: &NativePaths) {
 
 #[cfg(not(test))]
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = runner_app::updater::linux::run_installer() {
+        if let Err(error) = result {
+            eprintln!("Runner update failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = run() {
         let message = format!("{error:#}");
         runner_app::logging::startup_failure(&message);
@@ -2078,6 +2086,10 @@ fn main() {
         #[cfg(windows)]
         show_startup_error(&message);
         std::process::exit(1);
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(error) = runner_app::updater::linux::relaunch() {
+        eprintln!("Runner relaunch failed: {error:#}");
     }
 }
 

@@ -46,8 +46,8 @@ patch is unchanged by the rebase. Scoped Mac/Linux app tests, workspace Clippy, 
 prompt checks passed, as did Mac updater Clippy, CLI reference checks and
 formatting. The new commit's hosted CI remains separate from the previous run. WSL/WSLg,
 x86_64 native GUI, X11 and native RPM installation remain unverified; Linux
-in-app updates are not implemented. The user's requested updater assessment is
-separate from the Linux foundation delivered by this branch.
+in-app update implementation is tracked by `docs/features/823-linux-updates.md`
+and its separate scoped validation record.
 
 ### Earlier 0.16.6 integration
 

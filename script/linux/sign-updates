@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+: "${TAURI_SIGNING_PRIVATE_KEY:?Missing updater signing key}"
+: "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:=}"
+root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
+folder=${1:?Usage: sign-updates PACKAGE_DIR PACKAGE_BASENAME}
+name=${2:?Usage: sign-updates PACKAGE_DIR PACKAGE_BASENAME}
+for format in tar.gz deb rpm; do
+  package="$folder/$name.$format"
+  test -s "$package"
+  npx --yes @tauri-apps/cli@2.10.1 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$package"
+  python3 - "$root/packaging/windows-update-public-key" "$package.sig" <<'PY'
+import base64
+from pathlib import Path
+import sys
+public_key = base64.b64decode(Path(sys.argv[1]).read_text().splitlines()[1])
+signature = base64.b64decode(base64.b64decode(Path(sys.argv[2]).read_bytes()).decode().splitlines()[1])
+if public_key[2:10] != signature[2:10]:
+    raise SystemExit('Linux update signature does not match the public key trusted by Runner')
+PY
+done

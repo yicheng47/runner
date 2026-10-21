@@ -558,24 +558,15 @@ impl NativeRoot {
             actions = actions.child(
                 div()
                     .debug_selector(|| "ACCOUNT_CHECK_UPDATES".into())
-                    .child({
-                        #[cfg(not(target_os = "linux"))]
-                        let action = self.settings_link(
+                    .child(
+                        self.settings_link(
                             SettingsPane::Updates,
                             "remote-updates",
                             "remote.check_updates",
                             cx,
-                        );
-                        #[cfg(target_os = "linux")]
-                        let action = Button::new(
-                            "remote-updates",
-                            crate::i18n::text("remote.check_updates"),
                         )
-                        .on_press(|_, cx| {
-                            cx.open_url("https://github.com/yicheng47/runner/releases/latest")
-                        });
-                        action.variant(ButtonVariant::Primary)
-                    }),
+                        .variant(ButtonVariant::Primary),
+                    ),
             );
         }
         let title = match reason {

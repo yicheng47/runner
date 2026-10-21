@@ -42,7 +42,7 @@ impl Render for DiagnosticsPane {
             "ui.open_the_folder_containing_runner_log_so_you_can_attach_it_to_a_bug_report",
         )
         .to_owned();
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let logs_description = runner_app::updater::global_updater(cx)
             .read(cx)
             .install_log_path()

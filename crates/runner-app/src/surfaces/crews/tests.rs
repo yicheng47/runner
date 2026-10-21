@@ -522,9 +522,9 @@ fn crew_page_harness(label: &str) -> CrewPageHarness {
     cx.update(|cx| {
         cx.set_global(crate::GlobalAppStore(store.clone()));
         cx.set_global(crate::WindowLayoutCheckpoint::default());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| crate::Updater::new(false, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(crate::GlobalUpdater(updater));
     });

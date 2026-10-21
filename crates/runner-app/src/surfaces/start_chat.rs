@@ -3622,9 +3622,9 @@ pub(super) mod tests {
         );
         let mut cx = TestAppContext::single();
         cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(false, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(GlobalUpdater(updater));
         let store = cx.new(|cx| {

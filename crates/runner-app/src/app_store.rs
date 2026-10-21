@@ -307,7 +307,7 @@ pub(crate) struct AppStore {
     pub(crate) missions: Vec<MissionSummary>,
     pub(crate) session_statuses: BTreeMap<String, runner_core::protocol::status::AgentStatus>,
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     mission_agent_ids: std::collections::BTreeSet<String>,
     pub(crate) live_session_count: usize,
     pub(crate) settings: AppSettings,
@@ -677,7 +677,7 @@ impl AppStore {
             missions: Vec::new(),
             session_statuses: BTreeMap::new(),
             session_activity: BTreeMap::new(),
-            #[cfg(any(windows, test))]
+            #[cfg(any(windows, target_os = "linux", test))]
             mission_agent_ids: Default::default(),
             live_session_count: 0,
             resolved_locale: runner_app::i18n::active_locale(),
@@ -746,7 +746,7 @@ impl AppStore {
                 let _ = weak.update(cx, |this, cx| {
                     match result {
                         Ok(missions) => {
-                            #[cfg(any(windows, test))]
+                            #[cfg(any(windows, target_os = "linux", test))]
                             match mission_agent_ids(&core, &missions) {
                                 Ok(ids) => this.mission_agent_ids = ids,
                                 Err(error) => this.record_error(error.to_string()),
@@ -979,7 +979,7 @@ impl AppStore {
     fn refresh_missions_blocking_inner(&mut self) {
         match self.client.mission_list_summary_impl(None) {
             Ok(missions) => {
-                #[cfg(any(windows, test))]
+                #[cfg(any(windows, target_os = "linux", test))]
                 match mission_agent_ids(&self.client, &missions) {
                     Ok(ids) => self.mission_agent_ids = ids,
                     Err(error) => self.record_error(error.to_string()),
@@ -991,7 +991,7 @@ impl AppStore {
         }
     }
 
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     pub(crate) fn working_agent_count(&self) -> usize {
         self.session_statuses
             .iter()
@@ -1066,7 +1066,7 @@ impl AppStore {
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn mission_agent_ids(
     client: &DaemonClient,
     missions: &[MissionSummary],
@@ -1631,9 +1631,9 @@ pub(crate) fn test_lifecycle_store(
         cx.set_global(crate::app_store::GlobalAppStore(store.clone()));
         cx.set_global(crate::WindowLayoutCheckpoint::default());
         cx.set_global(runner_app::lifecycle::QuitState::default());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| crate::Updater::new(false, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| crate::Updater::new(false, root.join("updates"), cx));
         cx.set_global(crate::GlobalUpdater(updater));
     });

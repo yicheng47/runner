@@ -46,7 +46,7 @@ Initial main and secondary windows select an enumerated display even when Waylan
 
 The contract follows the locked [GPUI 0.3.7 source](https://static.crates.io/crates/gpui-pre/0.3.7/download) and [Linux backend 0.3.7 source](https://static.crates.io/crates/gpui-pre-linux/0.3.7/download), both from Zed `1a28cff4b409169bac058bca40dfbfeb7621d19b`. The official `window_shadow.rs` example uses explicit resize requests for client decorations. The Wayland backend reports no primary display and restores its retained normal bounds when unmaximizing, so initial restore bounds must be usable before maximize.
 
-Linux uses the existing custom desktop titlebar and Ctrl shortcuts. Text copy/paste uses GPUI; clipboard file paths are currently unsupported. Window material is solid. There is no Linux in-app updater, Hide/Hide Others or macOS wake observer. Notifications are submitted to GPUI's desktop backend; Runner cannot query a universal Linux permission status or open a universal notification-settings URL, so Settings describes desktop-managed delivery without claiming permission is granted. Agent CLI Update remains separate from app updates.
+Linux uses the existing custom desktop titlebar and Ctrl shortcuts. Text copy/paste uses GPUI; clipboard file paths are currently unsupported. Window material is solid. Hide/Hide Others and the macOS wake observer do not apply. Signed application updates are described below. Notifications are submitted to GPUI's desktop backend; Runner cannot query a universal Linux permission status or open a universal notification-settings URL, so Settings describes desktop-managed delivery without claiming permission is granted. Agent CLI Update remains separate from app updates.
 
 Linux windows use the desktop application ID `runner`, matching `runner.desktop`
 and its `StartupWMClass`. GPUI forwards this window option to Wayland's app ID
@@ -67,7 +67,7 @@ Build on a matching Linux architecture. The bundler always builds both inputs wi
 python3 script/linux/test-packaging.py --packages target/linux-packages
 ```
 
-Outputs are `Runner-<version>-linux-<x86_64|aarch64>.tar.gz`, `.deb` and `.rpm`. Nightlies substitute `nightly.<sha>.<UTC stamp>` for the version label; `--channel remote-nightly` uses `remote-nightly.<sha>.<UTC stamp>` and the Remote Nightly display label, matching the separate upstream channel. Debian/RPM metadata keeps the UTC stamp before the commit for upgrade ordering. Debian metadata uses `amd64`/`arm64`, RPM uses `x86_64`/`aarch64`; ELF machine validation prevents mislabelling. All formats share one staging tree and include the app, sidecar, real same-byte `runnerd`, desktop entry, icon and user service. Packaging uses `dpkg-deb` and `rpmbuild`, without nfpm or a runtime download. Linux artifacts are unsigned in this initial implementation.
+Outputs are `Runner-<version>-linux-<x86_64|aarch64>.tar.gz`, `.deb` and `.rpm`. Nightlies substitute `nightly.<sha>.<UTC stamp>` for the version label. Debian/RPM metadata keeps the UTC stamp before the commit for upgrade ordering. Debian metadata uses `amd64`/`arm64`, RPM uses `x86_64`/`aarch64`; ELF machine validation prevents mislabelling. All formats share one staging tree and include the app, sidecar, real same-byte `runnerd`, desktop entry, icon and user service. Packaging uses `dpkg-deb` and `rpmbuild`, without nfpm or a runtime download. Local packaging alone does not sign artifacts. Release/nightly builds run `script/linux/sign-updates` and publish a detached `.sig` for each package using the existing updater signing key.
 
 The tarball installs per user:
 
@@ -81,6 +81,8 @@ cd Runner-<version>-linux-aarch64
 # Remove application files, retaining data:
 ~/.local/lib/runner/install.sh --uninstall
 ```
+
+The user-installed desktop icon is an owned relative link into `lib/runner`, so an atomic application-directory update also changes its image without losing reinstall/uninstall ownership. A manual install migrates a legacy copied icon only when its bytes match the currently managed package; foreign regular icons and foreign symlink targets are preserved.
 
 `--prefix /absolute/user/prefix` supports isolated/custom installs; add its `bin` to PATH. The installer refuses foreign commands, desktop entries, icons and units before changing files. Upgrades replace executable inodes, preserving already running processes until normal daemon replacement. The installer never runs or enables a service. Uninstall stops no sessions and retains data; stop/disable the optional service first. Do not install a tarball into `/usr` or `/usr/local`.
 
@@ -121,3 +123,53 @@ The app additionally needs WSLg, current Windows GPU drivers and a working Vulka
 ## Validation gaps
 
 Consult the feature record for exact candidate/commands and outcomes. ARM64 native app/package/service results, x86_64 execution, older-distro compatibility, WSLg, real agent hooks and Chinese IME must each be established independently. Synthetic shell/PTY/IPC tests do not establish a real Claude/Codex chat or crew round trip. No release or nightly has been dispatched by this implementation task.
+
+## In-app updates
+
+Linux owns its updater state, scheduling, transport and verification in
+`updater/linux.rs`, installation in `updater/linux/install.rs`, and its update
+settings/dialog in `updates_linux.rs` and `update_dialog_linux.rs`. Windows keeps
+its existing updater and views; macOS retains Sparkle. The application-facing
+updater entry points select the implementation at compile time.
+Stable updates compare semantic versions; nightlies compare UTC build stamps. The retired remote-nightly channel is not produced or selected. Each architecture/format needs its own signature; unsigned older releases cannot be installed by the updater.
+
+A user tar installation is recognized by its managed `lib/runner` directory.
+The verified archive is copied to private staging, safely unpacked with bounded
+sizes and no links/special paths, checked against signed release identity and
+ELF architecture, then the entire app/CLI/daemon directory is swapped with
+`renameat2(RENAME_EXCHANGE)` on the same filesystem. No unsafe fallback to
+per-file replacement is attempted if atomic exchange is unavailable. Failure
+before the exchange preserves the old installation. User data stays outside it;
+this does not promise database rollback after future schema migrations.
+
+System package ownership is queried for `/usr/lib/runner/Runner`. The GUI starts
+that root-owned, non-writable executable through `pkexec` in its narrow
+`--runner-install-update` mode. It starts no GUI, daemon, agents or user database
+as root. The authorized process copies package/signature inputs into root-owned
+staging and rechecks the compiled-in trust key, version, channel, architecture
+and runner package metadata before invoking APT/DNF. Neither shell command text
+nor arbitrary executable paths come from a feed. DNF checks repository dependency
+signatures; only the already Runner-verified local RPM uses the detached trust
+chain instead of RPM signing. APT refuses a transaction requiring removals.
+
+Polkit/pkexec and an interactive desktop authentication agent are required for
+system packages; RPM automatic install currently requires DNF. A failed or
+cancelled authorization/transaction keeps the current GUI running, with log and
+retry access. Successful install marks the existing update-quit lifecycle and
+relaunches the installed application as the original user after the old GUI
+exits; new-build daemon replacement/resume follows existing policy. An attempt
+marker survives interrupted installation so the next check can report it.
+PR CI never signs or builds release packages; publishing signatures requires the
+maintainer's existing signing secret, and no release is dispatched by local tests.
+
+## Remote control on current main
+
+The Linux integration follows Runner 0.18.0's remote host and client contracts. A headless `runnerd` serves encrypted Runner clients through the hosted relay; the browser handles enrollment and account management, not terminals. The Linux app can open another computer through the picker, and `runner remote` uses the same daemon connection. Real Linux hosted-service acceptance has not been verified by the compatibility work; see `docs/impls/982-linux-remote-compat.md` for exact automated coverage.
+
+Release and development remote identity, PIN, enrollment credentials and outgoing pairing keys use plaintext files with mode 0600 under `${XDG_DATA_HOME:-~/.local/share}/com.wycstudios.runner` and `com.wycstudios.runner-dev` respectively. When the secret store creates a missing data root, it uses mode 0700; a root already created by the daemon or user can retain its existing safe permissions. An existing data root must be a real directory owned by the current user and not writable by group or other users; remote secret operations reject unsafe roots without changing existing permissions. Keep its parent directories under the user's control as well. This backend needs no desktop keyring or session-bus unlock; a future Secret Service backend would require a migration policy. Do not copy these files between computers or publish them with logs.
+
+The app, CLI and systemd user manager must use the same `XDG_DATA_HOME` to share an identity. If using a custom value, set it consistently in the user service's environment and desktop/shell launches. The packaged user service runs release bytes and uses the release root. Development and `ci` builds use `-dev`; never point the production service at development data. Over SSH, explicitly start `runnerd` first, then run `runner remote login` and `runner remote pin` in your own interactive terminal. Login prints an approval link to open on another device and asks for account confirmation. It never opens a browser on the host. Closing the GUI leaves the daemon's remote connection running. Stopping or replacing the daemon interrupts it; a new daemon reconnects from the saved root. `Restart=no` and WSL lifetime limits still apply as described above.
+
+Linux uses Ctrl for PIN paste and app shortcuts. Ctrl+C copies a terminal selection; with no selection it reaches the terminal's interrupt path. Remote terminal paste accepts text, and input is dropped while disconnected or controlled elsewhere. Pairing attempts desktop notification delivery and also shows an actionable in-app toast, because Linux cannot query whether the desktop delivered the notification. Native clipboard/browser, X11/Wayland chrome, pairing notification and systemd/linger behavior still need checks on real Linux machines.
+
+Nightly publication uses one `nightly` release, one stamp and one SHA across macOS, Windows and both Linux architectures. The default `all` includes every platform; `linux` selects both Linux architectures, and legacy `both` remains macOS+Windows. Six Linux packages and six signatures are validated and publicly checked before pruning. Nightly does not wait for main CI; production release publication retains its CI gate and draft-release handoff.
