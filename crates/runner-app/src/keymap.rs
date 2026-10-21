@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 use crate::{Hide, HideOthers, Quit, QuitAndStopSessions};
 
 use crate::{
@@ -97,17 +97,17 @@ fn key_combo(
 }
 
 pub(crate) fn platform_default(macos: &str) -> String {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         windows_default(macos)
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     {
         macos.to_owned()
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(any(windows, target_os = "linux", test))]
 fn windows_default(macos: &str) -> String {
     match macos {
         "ctrl-cmd-f" => "f11".into(),
@@ -418,7 +418,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
     static RESERVED: std::sync::OnceLock<Vec<KeymapEntry>> = std::sync::OnceLock::new();
     RESERVED.get_or_init(|| {
         vec![
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             KeymapEntry {
                 id: "system-quit",
                 title_key: "keymap.system-quit.title",
@@ -427,7 +427,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 default: default_combo("cmd-q", None, false),
                 fixed: true,
             },
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             KeymapEntry {
                 id: "system-quit-stop",
                 title_key: "keymap.system-quit-stop.title",
@@ -436,7 +436,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 default: default_combo("alt-cmd-q", None, false),
                 fixed: true,
             },
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             KeymapEntry {
                 id: "system-hide",
                 title_key: "keymap.system-hide.title",
@@ -445,7 +445,7 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 default: default_combo("cmd-h", None, false),
                 fixed: true,
             },
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             KeymapEntry {
                 id: "system-hide-others",
                 title_key: "keymap.system-hide-others.title",
@@ -781,7 +781,7 @@ fn default_key_label(code: &str) -> String {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     format!(
         "{}{}{}{}{}",
@@ -800,7 +800,7 @@ pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     )
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     format!(
         "{}{}{}{}{}",
@@ -811,7 +811,15 @@ pub(crate) fn format_combo(combo: &KeyCombo) -> String {
             ""
         },
         if combo.alt { "Alt+" } else { "" },
-        if combo.meta { "Win+" } else { "" },
+        if combo.meta {
+            if cfg!(target_os = "linux") {
+                "Super+"
+            } else {
+                "Win+"
+            }
+        } else {
+            ""
+        },
         combo
             .label
             .clone()
@@ -949,7 +957,8 @@ fn binding_strings(combo: &KeyCombo) -> Vec<String> {
 fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str> {
     match entry.id {
         "new-chat" | "command-palette" | "page-previous" | "page-next"
-            if combo.meta || (cfg!(windows) && combo == &entry.default) =>
+            if combo.meta
+                || (cfg!(any(windows, target_os = "linux")) && combo == &entry.default) =>
         {
             Some("!TextInput && !Settings")
         }
@@ -969,9 +978,9 @@ pub(crate) fn install_bindings(
     cx.clear_key_bindings();
     cx.bind_keys([
         KeyBinding::new(&platform_default("cmd-c"), Copy, Some("Terminal")),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         KeyBinding::new(&platform_default("cmd-c"), Copy, Some("MissionFeed")),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         KeyBinding::new("ctrl-c", Copy, Some("MissionFeed")),
         KeyBinding::new(&platform_default("cmd-v"), Paste, Some("Terminal")),
     ]);
@@ -980,13 +989,13 @@ pub(crate) fn install_bindings(
         return;
     }
     cx.bind_keys([
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         KeyBinding::new(&platform_default("cmd-q"), Quit, None),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         KeyBinding::new("alt-cmd-q", QuitAndStopSessions, None),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         KeyBinding::new(&platform_default("cmd-h"), Hide, None),
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         KeyBinding::new(&platform_default("cmd-alt-h"), HideOthers, None),
         KeyBinding::new(&platform_default("cmd-m"), Minimize, None),
         KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
@@ -1092,7 +1101,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
         assert_eq!(entries().len(), 32);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
@@ -1448,7 +1457,7 @@ mod tests {
                     Keystroke::parse(&binding_strings(&entry(id).unwrap().default)[0]).unwrap();
                 assert_eq!(bindings[0].match_keystrokes(&[key]), Some(false));
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             assert!(keymap
                 .all_bindings_for_input(&[Keystroke::parse("ctrl-w").unwrap()])
                 .is_empty());
@@ -1495,7 +1504,9 @@ mod tests {
         };
         assert_eq!(
             format_combo(&combo_from_event(&plus).unwrap()),
-            if cfg!(windows) {
+            if cfg!(target_os = "linux") {
+                "Shift+Super++"
+            } else if cfg!(windows) {
                 "Shift+Win++"
             } else {
                 "⇧⌘+"
@@ -1506,7 +1517,7 @@ mod tests {
     #[test]
     fn shift_optional_matches_both_zoom_in_forms_only() {
         let combo = entry("zoom-in").unwrap().default.clone();
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         assert_eq!((combo.meta, combo.ctrl, combo.alt), (true, false, false));
         for shift in [false, true] {
             assert!(combo_matches_event(
@@ -1536,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
@@ -1959,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     fn windows_table_has_no_command_modifier_or_quit_binding() {
         for entry in entries().iter().chain(reserved_entries()) {
             assert!(!entry.default.meta, "{}", entry.id);

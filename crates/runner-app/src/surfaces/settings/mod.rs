@@ -12,6 +12,9 @@ pub(crate) mod updates;
 #[cfg(windows)]
 #[path = "updates_windows.rs"]
 pub(crate) mod updates;
+#[cfg(target_os = "linux")]
+#[path = "updates_linux.rs"]
+pub(crate) mod updates;
 
 /// Raised by a settings editor's Save, success or failure, so the app shell
 /// can show it as a toast.

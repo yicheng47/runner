@@ -450,7 +450,11 @@ fn undo_and_redo_reach_an_enabled_field_by_key_and_action() {
     let text = |visual: &gpui::VisualTestContext| {
         input.read_with(visual, |field, _| field.text().to_owned())
     };
-    let undo = if cfg!(windows) { "ctrl-z" } else { "cmd-z" };
+    let undo = if cfg!(any(windows, target_os = "linux")) {
+        "ctrl-z"
+    } else {
+        "cmd-z"
+    };
     click(&mut visual, origin + point(px(40.), px(5.)), 1);
     visual.simulate_input("one");
     visual.simulate_keystrokes("left");

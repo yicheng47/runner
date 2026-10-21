@@ -70,6 +70,7 @@ curl() {
   while (( $# )); do
     case "$1" in
       https:*/appcast.xml) source=nightly-artifacts/macos/appcast.xml ;;
+      https:*/Runner-*-linux-*.sig) source="nightly-artifacts/linux/${1##*/}" ;;
       https:*/*.sig) source="nightly-artifacts/windows/$SETUP_NAME.sig" ;;
       --output) cp "$source" "$2"; return ;;
     esac
@@ -92,12 +93,13 @@ git() {
 '''
 
 
-def condition(expression, platform, prepare='success', macos='success', windows='success', cancelled=False, failure=False):
+def condition(expression, platform, prepare='success', macos='success', windows='success', cancelled=False, failure=False, linux='skipped'):
     values = {
         'inputs.platform': repr(platform),
         'needs.prepare.result': repr(prepare),
         'needs.build-macos.result': repr(macos),
         'needs.build-windows.result': repr(windows),
+        'needs.build-linux.result': repr(linux),
         'cancelled()': repr(cancelled),
         'failure()': repr(failure),
     }
@@ -141,6 +143,12 @@ class NightlyTests(unittest.TestCase):
         (self.mac / self.env['DMG_NAME']).write_bytes(b'nightly dmg fixture')
         (self.win / self.env['SETUP_NAME']).write_bytes(b'nightly installer fixture')
         (self.win / (self.env['SETUP_NAME'] + '.sig')).write_bytes(b'installer signature fixture')
+        self.linux = self.root / 'nightly-artifacts/linux'
+        self.linux.mkdir(parents=True, exist_ok=True)
+        self.linux_names = [f'Runner-{version}-linux-{arch}.{ext}' for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+        self.linux_names += [name + ".sig" for name in self.linux_names]
+        for name in self.linux_names:
+            (self.linux / name).write_bytes(b'Linux package fixture')
         self.appcast = self.mac / 'appcast.xml'
         item = ET.SubElement(ET.SubElement(ET.Element('rss'), 'channel'), 'item')
         release_url = f'https://github.com/yicheng47/runner/releases/tag/{channel}'
@@ -195,7 +203,7 @@ class NightlyTests(unittest.TestCase):
         return path.read_text().splitlines() if path.exists() else []
 
     def test_publish_predicate_including_default_and_cancellation(self):
-        self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['platform']['default'], 'both')
+        self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['platform']['default'], 'all')
         self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['channel']['default'], 'nightly')
         self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['channel']['options'], list(CHANNELS))
         self.assertEqual(WORKFLOW['concurrency'], {'group': '${{ inputs.channel }}', 'cancel-in-progress': True})
@@ -208,6 +216,58 @@ class NightlyTests(unittest.TestCase):
             expected = not cancelled and prepare == 'success' and (macos, windows) == expected_builds
             with self.subTest(platform=platform, prepare=prepare, macos=macos, windows=windows, cancelled=cancelled):
                 self.assertEqual(condition(JOBS['publish']['if'], platform, prepare, macos, windows, cancelled), expected)
+
+    def test_all_and_linux_publish_gates_cover_each_selected_build(self):
+        results = ['success', 'failure', 'cancelled', 'skipped']
+        for platform, macos, windows, linux, cancelled in itertools.product(
+                ['all', 'linux'], results, results, results, [False, True]):
+            expected = not cancelled and linux == 'success' and (
+                (platform == 'all' and macos == windows == 'success') or
+                (platform == 'linux' and macos == windows == 'skipped'))
+            self.assertEqual(condition(JOBS['publish']['if'], platform, macos=macos, windows=windows, linux=linux, cancelled=cancelled), expected)
+
+    def test_linux_and_all_publication_require_both_architectures_and_never_touch_stable_feeds(self):
+        for platform in ['linux', 'all']:
+            self.env.update(PLATFORM=platform, FAIL_UPLOAD='', FAIL_DOWNLOAD='')
+            self.assets([])
+            Path(self.env['CALLS']).write_text('')
+            result = self.publish()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = set(self.linux_names)
+            if platform == 'all':
+                expected.update([self.env['DMG_NAME'], 'appcast.xml', self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
+            self.assertEqual(self.published_assets(), expected)
+            self.assertFalse(any('latest' in line for line in self.calls() if line.startswith('gh release upload')))
+            for name in self.linux_names:
+                for variable in ['FAIL_UPLOAD', 'FAIL_DOWNLOAD']:
+                    self.env.update(FAIL_UPLOAD='', FAIL_DOWNLOAD='')
+                    self.env[variable] = name
+                    self.assets([])
+                    Path(self.env['CALLS']).write_text('')
+                    self.assertNotEqual(self.publish().returncode, 0)
+                    self.assertFalse(any('delete-asset' in line for line in self.calls()))
+            self.env.update(FAIL_UPLOAD='', FAIL_DOWNLOAD='')
+            removed = self.linux / self.linux_names[0]
+            removed.rename(removed.with_suffix('.saved'))
+            try:
+                self.assets([])
+                Path(self.env['CALLS']).write_text('')
+                self.assertNotEqual(self.publish().returncode, 0)
+                self.assertEqual(self.calls(), [])
+            finally:
+                removed.with_suffix('.saved').rename(removed)
+
+    def test_linux_retention_keeps_two_stamps_and_does_not_prune_other_platforms(self):
+        self.env['PLATFORM'] = 'linux'
+        old = [f'Runner-nightly.abc1234.202608{day:02}.0100-linux-{arch}.{ext}'
+               for day in [1, 2, 3] for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+        old += [name + ".sig" for name in old]
+        foreign = ['unrelated.txt', 'appcast.xml', 'Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner-Setup-nightly.abc1234.20260801.0100-x64.exe']
+        self.assets(old + foreign)
+        result = self.publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        keep = {name for name in old if '.20260803.0100-' in name}
+        self.assertEqual(self.published_assets(), keep | set(self.linux_names) | set(foreign))
 
     def test_preparation_identifies_the_commit_without_reading_an_official_version(self):
         stub = self.root / 'script/bundle-mac'
@@ -246,7 +306,7 @@ class NightlyTests(unittest.TestCase):
     def test_bash_syntax_and_shared_source_artifacts(self):
         self.assertIsNone(re.search(r'nightly-win\b', (ROOT / '.github/workflows/nightly.yml').read_text()))
         for name, job in JOBS.items():
-            checkout = job['steps'][0]
+            checkout = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/checkout@'))
             self.assertEqual(checkout['with']['ref'], '${{ github.sha }}' if name == 'prepare' else '${{ needs.prepare.outputs.sha }}')
             for step in job['steps']:
                 if 'run' in step and step.get('shell', 'bash') == 'bash':
@@ -259,6 +319,11 @@ class NightlyTests(unittest.TestCase):
                 self.assertEqual(build['env']['RUNNER_BUILD_SHA'], '${{ needs.prepare.outputs.short_sha }}')
                 self.assertFalse(any('gh release ' in step.get('run', '') for step in job['steps']))
                 upload = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
+                if name == 'build-linux':
+                    download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('pattern') == 'nightly-linux-*')
+                    self.assertTrue(download['with']['merge-multiple'])
+                    self.assertEqual(job['container'], 'ubuntu:22.04')
+                    continue
                 download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('name') == upload['with']['name'])
                 self.assertEqual(set(download['with']), {'name', 'path'})
                 identity = 'version' if name == 'build-windows' else 'dmg_name'
@@ -330,6 +395,35 @@ class NightlyTests(unittest.TestCase):
         self.assertTrue((self.root / 'nightly-notes.md').read_text().endswith((ROOT / 'script/remote-nightly-release-notes.md').read_text()))
         self.assertEqual({line.split()[4] for line in calls if 'delete-asset' in line}, set(mac_old[:2]))
         self.assertIn('to release remote-nightly.', Path(self.env['GITHUB_STEP_SUMMARY']).read_text())
+
+    def test_remote_linux_and_all_assets_and_retention_stay_in_the_selected_channel(self):
+        self.use_channel('remote-nightly')
+        self.env['GITHUB_REF'] = 'refs/heads/nightly-remote'
+        for platform in ['linux', 'all']:
+            with self.subTest(platform=platform):
+                self.env.update(PLATFORM=platform, FAIL_UPLOAD='', FAIL_DOWNLOAD='')
+                old = [f'Runner-remote-nightly.abc1234.202608{day:02}.0100-linux-{arch}.{ext}'
+                       for day in [1, 2, 3] for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+                old += [name + ".sig" for name in old]
+                unrelated = ['Runner-nightly.abc1234.20260801.0100-linux-aarch64.deb']
+                self.assets(old + unrelated)
+                Path(self.env['CALLS']).write_text('')
+                result = self.publish()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = set(self.linux_names) | {name for name in old if '.20260803.0100-' in name} | set(unrelated)
+                if platform == 'all':
+                    expected.update([self.env['DMG_NAME'], 'appcast.xml', self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
+                self.assertEqual(self.published_assets(), expected)
+                calls = self.calls()
+                self.assertTrue(all(line.split()[3] == 'remote-nightly' for line in calls if line.startswith('gh release ')))
+                self.assertFalse(any('/download/nightly/' in line for line in calls))
+                for variable in ['FAIL_UPLOAD', 'FAIL_DOWNLOAD']:
+                    self.env[variable] = self.linux_names[0]
+                    self.assets(old)
+                    Path(self.env['CALLS']).write_text('')
+                    self.assertNotEqual(self.publish().returncode, 0)
+                    self.assertFalse(any('delete-asset' in line for line in self.calls()))
+                    self.env[variable] = ''
 
     def test_release_notes_carry_the_changelog_and_the_tag_moves_only_after_the_ci_gate(self):
         fixed = (ROOT / 'script/nightly-release-notes.md').read_text()

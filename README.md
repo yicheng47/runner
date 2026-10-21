@@ -49,6 +49,8 @@
 
 > Alpha · Native macOS (Apple Silicon) and Windows (x64).
 
+Linux ARM64 and x86_64 support is in development, with local tarball, Debian and RPM packaging. Linux downloads have not been published; see [Linux build and install instructions](docs/arch/linux.md) and [validation status](docs/tests/823-linux-support.md).
+
 Runner brings CLI coding agents together in reusable crews, with real terminals and a shared mission feed. Your sessions and history stay on your machine.
 
 ## Features

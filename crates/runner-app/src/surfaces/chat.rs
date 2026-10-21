@@ -1473,7 +1473,7 @@ impl NativeRoot {
             .get(session_id)
             .and_then(|chat| chat.terminal.selection_text())
         else {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             cx.propagate();
             return;
         };

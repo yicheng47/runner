@@ -841,9 +841,9 @@ mod tests {
                 cx.set_global(GlobalAppStore(store.clone()));
                 cx.set_global(QuitState::default());
                 cx.set_global(crate::WindowLayoutCheckpoint::default());
-                #[cfg(not(windows))]
+                #[cfg(target_os = "macos")]
                 let updater = cx.new(|cx| crate::Updater::new(false, cx));
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 let updater =
                     cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
                 cx.set_global(crate::GlobalUpdater(updater));

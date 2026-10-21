@@ -13,6 +13,7 @@ pub enum PathStyle {
 pub enum RunnerCommandState {
     NotInstalled,
     Installed,
+    Managed,
     Foreign,
     Shadowed,
     Unsupported,
@@ -89,6 +90,52 @@ pub fn path_entries(value: &str, style: PathStyle) -> Vec<PathBuf> {
         .filter(|entry| !entry.is_empty())
         .map(PathBuf::from)
         .collect()
+}
+
+/// Recognize only the installed Linux layout, never arbitrary matching executables.
+#[cfg(target_os = "linux")]
+pub fn inspect_packaged_unix_command(
+    login_path: &str,
+    local_bin: &Path,
+    system_bin: &Path,
+    debug: bool,
+) -> Option<RunnerCommandStatus> {
+    if debug {
+        return None;
+    }
+    for bin in [local_bin, system_bin] {
+        let package = bin.parent()?.join("lib/runner");
+        let source = package.join("runner-agent-cli");
+        let link = bin.join("runner");
+        if std::fs::read_to_string(package.join("install-layout-v1"))
+            .ok()
+            .as_deref()
+            != Some("runner-linux-package-v1\n")
+        {
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&link) else {
+            continue;
+        };
+        let target = if target.is_absolute() {
+            target
+        } else {
+            bin.join(target)
+        };
+        if target
+            .canonicalize()
+            .ok()
+            .zip(source.canonicalize().ok())
+            .is_some_and(|(target, source)| target == source)
+        {
+            return Some(RunnerCommandStatus {
+                state: RunnerCommandState::Managed,
+                shadowed_by: shadowing_executable(login_path, bin, "runner", PathStyle::Unix),
+                path: Some(link),
+            });
+        }
+    }
+    None
 }
 
 pub fn inspect_unix_command(

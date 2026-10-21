@@ -201,16 +201,7 @@ fn history_path(runtime: &str, home: &Path, key: &str, alias: bool) -> PathBuf {
     match runtime {
         "claude-code" => {
             let cwd = probe_cwd(home, alias);
-            #[cfg(windows)]
-            let project: String = cwd
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            #[cfg(not(windows))]
-            let project: String = cwd
-                .chars()
-                .map(|c| if c == '/' || c == '.' { '-' } else { c })
-                .collect();
+            let project = crate::runtimes::claude_code::claude_code_project_dir(&cwd);
             home.join(".claude/projects")
                 .join(project)
                 .join(format!("{key}.jsonl"))

@@ -522,9 +522,9 @@ fn crew_page_harness(label: &str) -> CrewPageHarness {
     cx.update(|cx| {
         cx.set_global(crate::GlobalAppStore(store.clone()));
         cx.set_global(crate::WindowLayoutCheckpoint::default());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| crate::Updater::new(false, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(crate::GlobalUpdater(updater));
     });
@@ -1289,7 +1289,7 @@ fn a_lowercased_handle_undoes_to_before_the_keystroke_and_redoes() {
     page.visual.run_until_parked();
     assert_eq!(text(&mut page), format!("{suggested}a"));
 
-    let (undo, redo) = if cfg!(windows) {
+    let (undo, redo) = if cfg!(any(windows, target_os = "linux")) {
         ("ctrl-z", "ctrl-y")
     } else {
         ("cmd-z", "cmd-shift-z")

@@ -4,7 +4,7 @@ use gpui::{div, px, rems, AnyElement, FontWeight, Pixels, SharedString};
 use crate::theme;
 
 pub const WORKSPACE_HEADER_HEIGHT: f32 = 44.;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub const CAPTION_BUTTON_WIDTH: f32 = 46.;
 
 pub struct WorkspaceHeader {

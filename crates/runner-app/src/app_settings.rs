@@ -319,7 +319,7 @@ pub struct AppSettings {
     pub quit_behavior: runner_app::lifecycle::QuitBehavior,
     pub last_quit_choice: runner_app::lifecycle::QuitChoice,
     pub automatically_check_for_updates: bool,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub automatically_download_updates: bool,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
@@ -367,7 +367,7 @@ impl Default for AppSettings {
             quit_behavior: Default::default(),
             last_quit_choice: Default::default(),
             automatically_check_for_updates: true,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             automatically_download_updates: true,
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
@@ -950,7 +950,12 @@ mod tests {
                 font.fallbacks.unwrap().fallback_list(),
                 ["Microsoft YaHei", "Segoe UI"]
             );
-            #[cfg(not(windows))]
+            #[cfg(target_os = "linux")]
+            assert_eq!(
+                font.fallbacks.clone().unwrap().fallback_list(),
+                runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
+            );
+            #[cfg(target_os = "macos")]
             assert_eq!(
                 font.fallbacks.unwrap().fallback_list(),
                 ["Microsoft YaHei", "sans-serif"]
@@ -1019,7 +1024,12 @@ mod tests {
             inter.fallbacks.unwrap().fallback_list(),
             ["Segoe UI", "Microsoft YaHei"]
         );
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            inter.fallbacks.clone().unwrap().fallback_list(),
+            runner_app::platform_fonts::APP_FONT_FALLBACKS
+        );
+        #[cfg(target_os = "macos")]
         assert_eq!(
             inter.fallbacks.unwrap().fallback_list(),
             [
@@ -1068,7 +1078,7 @@ mod tests {
         assert!(settings.runner_skill_enabled);
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn automatic_downloads_default_on_and_persist_independently_of_checks() {
         let mut settings: AppSettings =

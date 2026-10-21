@@ -141,7 +141,7 @@ These are intentionally out of scope — they belong to a different product or a
 - Thread/fact primitives for mission coordination.
 - Secrets management beyond plain env vars.
 - LLM-based signal routing (the router is a flat dispatcher by design — the lead owns coordination judgment).
-- Additional platforms before their own validation. macOS and Windows ship today; Linux and WSL support is planned separately in [#823](https://github.com/yicheng47/runner/issues/823).
+- Additional platforms before their own validation. macOS and Windows ship today; Linux ARM64/x86_64 source/package support is in development, with native and WSL validation tracked separately in [#823](https://github.com/yicheng47/runner/issues/823).
 
 ## 7. Open product questions
 

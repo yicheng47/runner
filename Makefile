@@ -18,7 +18,7 @@ fmt-check:
 
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
-	cargo clippy -p runner-app --features updater --all-targets -- -D warnings
+	@if [ "$$(uname -s)" != Linux ]; then cargo clippy -p runner-app --features updater --all-targets -- -D warnings; fi
 
 test:
 	cargo test --workspace

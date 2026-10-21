@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Runner
+Comment=Coordinate CLI coding agents
+Exec=runner-app
+Icon=runner
+Terminal=false
+Categories=Development;
+StartupWMClass=runner
+X-Runner-Managed=true

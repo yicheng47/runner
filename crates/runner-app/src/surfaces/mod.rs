@@ -23,6 +23,9 @@ pub(crate) mod start_chat;
 pub(crate) mod start_mission;
 #[cfg(windows)]
 pub(crate) mod update_dialog;
+#[cfg(target_os = "linux")]
+#[path = "update_dialog_linux.rs"]
+pub(crate) mod update_dialog;
 pub(crate) mod windowing;
 
 pub(crate) use app_shell::AppRoute;

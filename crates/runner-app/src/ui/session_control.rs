@@ -256,7 +256,7 @@ impl RenderOnce for SessionControl {
             .children(icon_element)
             .when(!header, |control| control.child(label));
         if !disabled {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             {
                 control = control.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
                     cx.stop_propagation();
@@ -363,9 +363,9 @@ mod tests {
         window.run_until_parked();
 
         assert!(control_clicked.get());
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert!(!parent_mouse_down.get());
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         assert!(parent_mouse_down.get());
     }
     struct SlotControlHost {

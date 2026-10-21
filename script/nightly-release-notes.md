@@ -1,4 +1,4 @@
-Rolling nightly builds for macOS Apple Silicon and Windows x64, identified by commit and UTC build stamp. Both platforms share this public prerelease; a single-platform cut leaves the other platform's files in place. Nightly installs follow this channel, while production installs use separate stable feeds. Install a stable build by hand to switch back to production.
+Rolling nightly build definitions cover macOS Apple Silicon, Windows x64 and Linux ARM64/x86_64, identified by commit and UTC build stamp. All platforms share this public prerelease; a single-platform cut leaves the other platform's files in place. Nightly installs follow this channel, while production installs use separate stable feeds. Install a stable build by hand to switch back to production.
 
 ## macOS
 
@@ -17,3 +17,7 @@ The installer, app, and CLI sidecars are **Authenticode-signed**; Windows names 
 Older Windows nightlies read the retired `nightly-win` release. Install this build by hand once to switch to `nightly`; subsequent builds update in-app from this release.
 
 Install the agent CLIs you want to use: Claude Code and/or Codex. Claude Code also needs Git for Windows for Git Bash. npm-based CLI installations need Node.js; native CLI installations do not. PowerShell 7 is optional.
+
+## Linux
+
+When Linux assets are present, choose `Runner-nightly.<sha>.<stamp>-linux-<aarch64|x86_64>.tar.gz`, `.deb` or `.rpm` for your architecture. Linux downloads are unsigned and update by reinstalling a newer package; there is no in-app updater. The tarball's `install.sh` installs under `~/.local`, supplies a headless CLI and writes an opt-in systemd user unit without enabling it. `install.sh --uninstall` preserves user data. See the repository's [Linux requirements and installation guide](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md); local Ubuntu 26 ARM64 evidence does not establish older distro or WSL compatibility.

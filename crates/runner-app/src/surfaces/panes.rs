@@ -546,7 +546,7 @@ impl NativeRoot {
             )
             .id("chat-panel-resize")
             .map(|handle| {
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 let handle = handle.occlude();
                 handle
             })
@@ -4630,7 +4630,11 @@ mod tests {
             ("new-terminal", "⌘T", "Ctrl+Shift+T"),
             ("new-mission", "⇧⌘M", "Ctrl+Shift+M"),
         ] {
-            let expected = if cfg!(windows) { windows } else { mac };
+            let expected = if cfg!(any(windows, target_os = "linux")) {
+                windows
+            } else {
+                mac
+            };
             assert_eq!(
                 super::start_action_shortcut(binding, &overrides).as_deref(),
                 Some(expected)
@@ -4642,7 +4646,11 @@ mod tests {
             rebound.code = "KeyJ".into();
             rebound.label = None;
             overrides.insert(binding.into(), Some(rebound));
-            let expected = if cfg!(windows) { "Ctrl+J" } else { "⌃J" };
+            let expected = if cfg!(any(windows, target_os = "linux")) {
+                "Ctrl+J"
+            } else {
+                "⌃J"
+            };
             assert_eq!(
                 super::start_action_shortcut(binding, &overrides).as_deref(),
                 Some(expected)
@@ -4814,22 +4822,22 @@ mod tests {
     #[test]
     fn terminal_drawer_tooltip_tracks_rebound_and_unbound_shortcuts() {
         let mut overrides = keymap::KeymapOverrides::new();
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌥F12"
         );
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · Alt+F12"
         );
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         assert_eq!(
             terminal_drawer_tooltip(true, &overrides),
             "Hide terminal drawer · ⌥F12"
         );
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert_eq!(
             terminal_drawer_tooltip(true, &overrides),
             "Hide terminal drawer · Alt+F12"
@@ -4843,12 +4851,12 @@ mod tests {
         rebound.ctrl = true;
         rebound.code = "Backquote".into();
         overrides.insert("toggle-terminal-drawer".into(), Some(rebound));
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · ⌃`"
         );
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         assert_eq!(
             terminal_drawer_tooltip(false, &overrides),
             "Show terminal drawer · Ctrl+`"
@@ -4969,7 +4977,7 @@ mod tests {
         );
         assert!(items.iter().all(|item| !item.disabled));
         assert!(items.iter().all(|item| item.tooltip.is_none()));
-        #[cfg(unix)]
+        #[cfg(target_os = "macos")]
         assert_eq!(
             items
                 .iter()

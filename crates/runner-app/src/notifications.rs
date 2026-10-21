@@ -16,7 +16,9 @@ use crate::app_store::{AppStore, StoreRevisions};
 use crate::{global_app_store, AppRoute, NativeRoot};
 
 mod permission;
-pub(crate) use permission::{settings_url, Permission};
+#[cfg(not(target_os = "linux"))]
+pub(crate) use permission::settings_url;
+pub(crate) use permission::Permission;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reason {

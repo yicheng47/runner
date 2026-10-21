@@ -1,15 +1,16 @@
 use gpui::prelude::*;
 use gpui::{div, rems, AnyElement, Context};
-use runner_app::ui::{
-    Button, ButtonSize, ButtonVariant, PaneHeader, SettingsCard, SettingsRow, Toggle,
-};
+use runner_app::ui::{PaneHeader, SettingsCard, SettingsRow, Toggle};
+
+#[cfg(not(target_os = "linux"))]
+use runner_app::ui::{Button, ButtonSize, ButtonVariant};
 
 use crate::app_settings::NotificationSettings;
 use crate::notifications::Permission;
 use crate::surfaces::settings_page::settings_section_heading;
 use crate::{theme, NativeRoot};
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 const SETTINGS_BUTTON: &str = "ui.open_system_settings";
 #[cfg(windows)]
 const SETTINGS_BUTTON: &str = "ui.open_settings";
@@ -27,7 +28,7 @@ fn system_row(permission: Permission) -> SystemRow {
         subtitle,
         warn: false,
     };
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     match permission {
         Permission::Unknown => row(
             crate::i18n::text("ui.allow_notifications_banner_style_and_sound"),
@@ -46,6 +47,14 @@ fn system_row(permission: Permission) -> SystemRow {
                 crate::i18n::text("ui.allow_notifications_in_system_settings_notifications_runner"),
             )
         },
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = permission;
+        row(
+            crate::i18n::text("ui.desktop_notifications"),
+            crate::i18n::text("ui.desktop_notification_delivery_settings"),
+        )
     }
     #[cfg(windows)]
     match permission {
@@ -72,7 +81,9 @@ fn system_row(permission: Permission) -> SystemRow {
 impl NativeRoot {
     pub(crate) fn render_notifications_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let row = system_row(crate::notifications::permission(cx));
+        #[cfg(not(target_os = "linux"))]
         let url = crate::notifications::settings_url();
+        #[cfg(not(target_os = "linux"))]
         let control = Button::new(
             "notification-system-settings",
             crate::i18n::text(SETTINGS_BUTTON),
@@ -81,6 +92,8 @@ impl NativeRoot {
         .size(ButtonSize::Sm)
         .variant(ButtonVariant::Secondary)
         .on_press(move |_, cx| cx.open_url(&url));
+        #[cfg(target_os = "linux")]
+        let control = div();
         let mut system = SettingsRow::new(row.title, control).subtitle(row.subtitle);
         if row.warn {
             system = system.label_icon("triangle-alert.svg", theme::warning());
@@ -204,11 +217,12 @@ impl NativeRoot {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "linux")))]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(target_os = "linux"))]
     fn system_row_follows_the_system_permission() {
         let unknown = system_row(Permission::Unknown);
         assert!(!unknown.warn);

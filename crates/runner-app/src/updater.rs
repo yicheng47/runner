@@ -6,6 +6,13 @@ use gpui::{App, Context, Entity, Global};
 #[path = "updater/windows.rs"]
 mod native;
 
+#[cfg(target_os = "linux")]
+#[path = "updater/linux.rs"]
+pub mod linux;
+#[cfg(target_os = "linux")]
+use linux as native;
+#[cfg(target_os = "linux")]
+pub use linux::{download_url, UpdateState, UpdateStep};
 #[cfg(windows)]
 pub use native::{windows_download_url, UpdateState, UpdateStep};
 
@@ -116,14 +123,14 @@ pub fn global_updater(cx: &App) -> Entity<Updater> {
 
 pub struct Updater {
     native: native::NativeUpdater,
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     available: Option<UpdateInfo>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     state: UpdateState,
 }
 
 impl Updater {
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     pub fn new(automatically_checks: bool, cx: &mut Context<Self>) -> Self {
         Self {
             native: native::NativeUpdater::new(
@@ -131,7 +138,11 @@ impl Updater {
                 cx.weak_entity(),
                 cx.to_async(),
             ),
-            available: dev_available(),
+            available: if cfg!(target_os = "linux") {
+                None
+            } else {
+                dev_available()
+            },
         }
     }
 
@@ -147,7 +158,7 @@ impl Updater {
         self.native.check_for_updates();
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
     pub fn available(&self) -> Option<&UpdateInfo> {
         self.available.as_ref()
     }
@@ -165,12 +176,12 @@ impl Updater {
         self.native.last_check_at()
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn is_checking(&self) -> bool {
         self.native.is_checking()
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     pub fn check_error(&self) -> Option<String> {
         match &self.state {
             UpdateState::Failed { message, .. } => Some(message.clone()),
@@ -475,7 +486,11 @@ mod native {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "macos", feature = "updater"))))]
+#[cfg(not(any(
+    windows,
+    target_os = "linux",
+    all(target_os = "macos", feature = "updater")
+)))]
 mod native {
     use std::time::SystemTime;
 
@@ -517,7 +532,11 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(any(windows, all(target_os = "macos", feature = "updater"))))]
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        all(target_os = "macos", feature = "updater")
+    )))]
     use gpui::AppContext as _;
 
     #[test]
@@ -624,7 +643,11 @@ mod tests {
         assert_eq!(available, None);
     }
 
-    #[cfg(not(any(windows, all(target_os = "macos", feature = "updater"))))]
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        all(target_os = "macos", feature = "updater")
+    )))]
     #[test]
     fn development_build_has_no_updater_capability() {
         let cx = gpui::TestAppContext::single();

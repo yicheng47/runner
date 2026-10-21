@@ -1618,7 +1618,9 @@ impl NativeRoot {
             .debug_selector(|| "START_CHAT_FORM".into())
             .flex()
             .flex_col()
-            .when(cfg!(windows), |content| content.w(rems(form_width / 16.)))
+            .when(cfg!(any(windows, target_os = "linux")), |content| {
+                content.w(rems(form_width / 16.))
+            })
             .gap_5()
             .on_key_down(cx.listener(Self::on_start_chat_key_down))
             .children(
@@ -2948,9 +2950,9 @@ pub(super) mod tests {
         );
         let mut cx = TestAppContext::single();
         cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(false, cx));
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(GlobalUpdater(updater));
         let store = cx.new(|cx| {

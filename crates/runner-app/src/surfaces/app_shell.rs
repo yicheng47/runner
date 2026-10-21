@@ -932,7 +932,7 @@ impl NativeRoot {
             )
             .map(|root| {
                 // Stays inside the content root so the scrim ends at the Windows title bar.
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "linux"))]
                 let root = root
                     .children(self.update_dialog.clone().map(deferred))
                     .on_action(cx.listener(Self::open_update_dialog));
@@ -1120,9 +1120,9 @@ impl NativeRoot {
         let updater = global_updater(cx);
         let update_hint = update_version.map(|version| {
             let click_updater = updater.clone();
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             let tooltip = crate::platform_ui::update_hint_tooltip(&version);
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let tooltip =
                 crate::platform_ui::update_hint_tooltip(&version, updater.read(cx).state());
             Tooltip::new(
@@ -1150,9 +1150,9 @@ impl NativeRoot {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(move |_, _window, cx| {
                         cx.stop_propagation();
-                        #[cfg(not(windows))]
+                        #[cfg(target_os = "macos")]
                         crate::platform_ui::activate_update_hint(&click_updater, cx);
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "linux"))]
                         crate::platform_ui::activate_update_hint(&click_updater, _window, cx);
                     })
                     .child(
@@ -1491,7 +1491,7 @@ impl NativeRoot {
         )
         .id("sidebar-resize")
         .map(|handle| {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let handle = handle.occlude();
             handle
         })
@@ -1587,7 +1587,7 @@ impl NativeRoot {
                     this.titlebar_drag_armed = true;
                 }),
             );
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let area = area
             .on_mouse_move(cx.listener(|this, _, window, _| {
                 if this.titlebar_drag_armed {
@@ -1791,7 +1791,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
-        (self.sidebar_collapsed && !cfg!(windows)).then(|| {
+        (self.sidebar_collapsed && cfg!(target_os = "macos")).then(|| {
             div()
                 .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
                 .flex_none()
@@ -1814,7 +1814,7 @@ impl NativeRoot {
 
     pub(crate) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         let zoom = self.settings(cx).app_zoom;
-        if self.sidebar_collapsed && !cfg!(windows) {
+        if self.sidebar_collapsed && cfg!(target_os = "macos") {
             // The card's scaled inset and unscaled edge already consume part of the window anchor.
             platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
         } else {
@@ -2156,6 +2156,56 @@ impl NativeRoot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn theme_guard_isolates_unscoped_root_theme_and_material_updates() {
+        use crate::theme_snapshot::ThemeGuard;
+        use gpui::{TestAppContext, VisualTestContext};
+        use std::sync::{mpsc, Arc, Barrier};
+        use std::time::Duration;
+
+        let ready = Arc::new(Barrier::new(2));
+        let (updated, updates) = mpsc::channel();
+        let guarded = std::thread::spawn({
+            let ready = ready.clone();
+            move || {
+                let _theme = ThemeGuard::new();
+                theme::set_active_variant(theme::ThemeVariant::Carbon);
+                theme::set_glass(true);
+                ready.wait();
+                updates.recv_timeout(Duration::from_secs(10)).unwrap();
+                assert_eq!(
+                    (theme::active_variant(), theme::is_glass()),
+                    (theme::ThemeVariant::Carbon, true)
+                );
+            }
+        });
+        ready.wait();
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            store.settings.app_theme = theme::ThemeIntent::Light;
+            store.settings.light_app_theme = theme::LightTheme::RunnerLight;
+            store.settings.window_material = runner_app::appearance::WindowMaterial::Solid;
+        });
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "unscoped-theme-writer".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        let visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+        updated.send(()).unwrap();
+        guarded.join().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
@@ -2220,7 +2270,8 @@ mod tests {
                 assert_fill(&mut visual, "MISSION_HEADER_ROW", None);
                 assert_fill(&mut visual, "MISSION_RAIL_HEADER", None);
             }
-            assert_eq!(card.top(), chrome.top() + px(8.), "{path}");
+            let top_inset = if cfg!(target_os = "linux") { 0. } else { 8. };
+            assert_eq!(card.top(), chrome.top() + px(top_inset), "{path}");
             assert_eq!(card.right(), chrome.right() - px(8.), "{path}");
             assert_eq!(card.bottom(), chrome.bottom() - px(8.), "{path}");
             assert_eq!(
@@ -2327,7 +2378,11 @@ mod tests {
                     "WINDOW_NEXT_PAGE",
                 ];
                 let original = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
-                let controls_center = if cfg!(windows) { 16. } else { 30. } * zoom;
+                let controls_center = if cfg!(any(windows, target_os = "linux")) {
+                    16.
+                } else {
+                    30.
+                } * zoom;
                 for bounds in original {
                     assert_eq!(
                         bounds.center().y,
@@ -2340,7 +2395,7 @@ mod tests {
                         "{path} at {zoom}"
                     );
                 }
-                if cfg!(windows) {
+                if cfg!(any(windows, target_os = "linux")) {
                     let caption = visual.debug_bounds("WINDOW_CAPTION_BAR").unwrap();
                     let buttons = visual.debug_bounds("WINDOW_CAPTION_CONTROLS").unwrap();
                     assert_eq!(caption.size.height, px(32. * zoom));
@@ -2370,7 +2425,11 @@ mod tests {
                     assert!(
                         (header.center().y
                             - original[0].center().y
-                            - px(if cfg!(windows) { 38. * zoom } else { 0. }))
+                            - px(if cfg!(any(windows, target_os = "linux")) {
+                                38. * zoom
+                            } else {
+                                0.
+                            }))
                         .abs()
                             <= px(1.),
                         "{path} at {zoom}: {header:?} vs {:?}",
@@ -2404,7 +2463,7 @@ mod tests {
                             "{path} at {zoom}: settled collapse moved {selector}"
                         );
                     }
-                    if cfg!(windows) {
+                    if cfg!(any(windows, target_os = "linux")) {
                         assert!(visual.debug_bounds("WINDOW_NAVIGATION_SPACE").is_none());
                     } else if header_selector.is_some() {
                         let reserved = visual.debug_bounds("WINDOW_NAVIGATION_SPACE").unwrap();
@@ -3519,9 +3578,9 @@ mod tests {
         cx.update(|cx| {
             cx.set_global(crate::GlobalAppStore(store.clone()));
             cx.set_global(crate::WindowLayoutCheckpoint::default());
-            #[cfg(not(windows))]
+            #[cfg(target_os = "macos")]
             let updater = cx.new(|cx| crate::Updater::new(false, cx));
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             let updater = cx.new(|cx| crate::Updater::new(false, temp.path().join("updates"), cx));
             cx.set_global(crate::GlobalUpdater(updater));
         });

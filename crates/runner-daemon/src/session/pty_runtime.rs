@@ -358,15 +358,12 @@ impl SessionRuntime for PtyRuntime {
         let mut killer = handle.killer.lock().expect("killer poisoned");
         let child = handle.child.lock().expect("child slot poisoned").take();
         // Snapshot before SIGHUP: once the agent is gone its children are
-        // reparented to launchd and nothing else can tell they were its.
-        let descendants: Vec<i32> = handle
+        // reparented outside its tree and ancestry no longer identifies them.
+        let descendants = handle
             .process_tree
             .as_ref()
             .map(ProcessTree::snapshot_descendants)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|pid| pid as i32)
-            .collect();
+            .unwrap_or_default();
 
         let result = match child {
             Some(mut child) => {
@@ -3088,7 +3085,7 @@ mod tests {
         let (sess, stream) = rt
             .spawn(spec(
                 "test-descendant-sweep",
-                "/bin/zsh",
+                if cfg!(target_os = "linux") { "/bin/bash" } else { "/bin/zsh" },
                 &[
                     "-c",
                     "set -m; nohup sleep 300 >/dev/null 2>&1 & printf 'orphan=%d;' $!; exec sleep 299",

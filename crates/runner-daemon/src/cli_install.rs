@@ -243,6 +243,17 @@ pub fn command_status(
     inputs: &CommandInstallInputs,
     registry: &dyn UserPathRegistry,
 ) -> Result<RunnerCommandStatus> {
+    #[cfg(target_os = "linux")]
+    if inputs.platform == CommandPlatform::Unix {
+        if let Some(status) = command_install::inspect_packaged_unix_command(
+            &inputs.login_path,
+            &inputs.local_bin,
+            &inputs.system_bin,
+            inputs.debug,
+        ) {
+            return Ok(status);
+        }
+    }
     match inputs.platform {
         CommandPlatform::Unix => Ok(command_install::inspect_unix_command(
             &inputs.sidecar,
@@ -402,7 +413,9 @@ pub fn uninstall_command(
                     status.path.expect("foreign command has a path"),
                 )),
                 RunnerCommandState::NotInstalled => Ok(CommandActionOutcome::NotInstalled),
-                RunnerCommandState::Unsupported => Ok(CommandActionOutcome::Unsupported),
+                RunnerCommandState::Unsupported | RunnerCommandState::Managed => {
+                    Ok(CommandActionOutcome::Unsupported)
+                }
             }
         }
     }
@@ -432,11 +445,11 @@ fn escalated_remove_script(link: &Path) -> String {
 
 fn existing_install_outcome(status: &RunnerCommandStatus) -> Option<CommandActionOutcome> {
     match status.state {
-        RunnerCommandState::Installed | RunnerCommandState::Shadowed => {
-            Some(CommandActionOutcome::AlreadyInstalled(
-                status.path.clone().expect("installed command has a path"),
-            ))
-        }
+        RunnerCommandState::Installed
+        | RunnerCommandState::Shadowed
+        | RunnerCommandState::Managed => Some(CommandActionOutcome::AlreadyInstalled(
+            status.path.clone().expect("installed command has a path"),
+        )),
         RunnerCommandState::Foreign => Some(CommandActionOutcome::Foreign(
             status.path.clone().expect("foreign command has a path"),
         )),
@@ -809,6 +822,57 @@ mod tests {
             debug,
             platform: CommandPlatform::Windows,
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn packaged_command_is_managed_and_settings_uninstall_preserves_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let inputs = unix_inputs(
+            dir.path(),
+            dir.path()
+                .join("home/.local/bin")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let package = inputs.local_bin.parent().unwrap().join("lib/runner");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&inputs.local_bin).unwrap();
+        let source = package.join("runner-agent-cli");
+        fs::write(&source, b"package CLI").unwrap();
+        let marker = package.join("install-layout-v1");
+        fs::write(&marker, "runner-linux-package-v1\n").unwrap();
+        let link = inputs.local_bin.join("runner");
+        std::os::unix::fs::symlink("../lib/runner/runner-agent-cli", &link).unwrap();
+        let mut registry = FakeRegistry::default();
+        let mut escalation = FakeEscalation::default();
+        assert_eq!(
+            command_status(&inputs, &registry).unwrap().state,
+            RunnerCommandState::Managed
+        );
+        assert_eq!(
+            install_command_default(&inputs, &mut registry, &mut escalation).unwrap(),
+            CommandActionOutcome::AlreadyInstalled(link.clone())
+        );
+        assert_eq!(
+            uninstall_command(&inputs, &mut registry, &mut escalation).unwrap(),
+            CommandActionOutcome::Unsupported
+        );
+        assert!(link.is_symlink());
+        assert!(escalation.scripts.is_empty());
+        fs::write(&marker, "foreign layout").unwrap();
+        assert_eq!(
+            command_status(&inputs, &registry).unwrap().state,
+            RunnerCommandState::Foreign
+        );
+        fs::write(&marker, "runner-linux-package-v1\n").unwrap();
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("../lib/runner/foreign", &link).unwrap();
+        fs::write(package.join("foreign"), b"package CLI").unwrap();
+        assert_eq!(
+            command_status(&inputs, &registry).unwrap().state,
+            RunnerCommandState::Foreign
+        );
     }
 
     // A Unix PATH is split on ':', which a Windows temp path's drive letter would break.

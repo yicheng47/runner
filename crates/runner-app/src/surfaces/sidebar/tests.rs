@@ -727,8 +727,8 @@ fn workspace_starts_with_a_non_selectable_new_chat_action() {
 #[test]
 fn shortcut_pills_use_the_platform_primary_modifier_alone() {
     let mut modifiers = gpui::Modifiers {
-        control: cfg!(windows),
-        platform: !cfg!(windows),
+        control: cfg!(any(windows, target_os = "linux")),
+        platform: cfg!(target_os = "macos"),
         ..Default::default()
     };
     assert!(command_held_alone(modifiers));
@@ -737,8 +737,8 @@ fn shortcut_pills_use_the_platform_primary_modifier_alone() {
     assert!(!command_held_alone(modifiers));
     assert!(other_modifiers_held(modifiers));
     assert!(!command_held_alone(gpui::Modifiers {
-        control: !cfg!(windows),
-        platform: cfg!(windows),
+        control: cfg!(target_os = "macos"),
+        platform: cfg!(any(windows, target_os = "linux")),
         ..Default::default()
     }));
 }
@@ -2025,7 +2025,7 @@ fn active_shortcut_and_row_click_focus_the_split_pane_needing_attention() {
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(1200.), px(900.)));
     visual.run_until_parked();
-    visual.simulate_keystrokes(if cfg!(windows) { "ctrl-1" } else { "cmd-1" });
+    visual.simulate_keystrokes(&keymap::platform_default("cmd-1"));
     visual.run_until_parked();
     host.read_with(&visual, |root, _| {
         assert_eq!(root.route, AppRoute::Chat);

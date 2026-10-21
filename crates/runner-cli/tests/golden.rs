@@ -929,7 +929,8 @@ fn golden_manifest_rejects_missing_and_reordered_cases() {
 
 fn select_platform(text: &str, platform: &str) -> String {
     let mut include = true;
-    text.split_inclusive('\n')
+    let selected: String = text
+        .split_inclusive('\n')
         .filter(|line| {
             if let Some(selected) = line.strip_prefix("# platform ") {
                 include = selected.trim() == "all" || selected.trim() == platform;
@@ -938,7 +939,14 @@ fn select_platform(text: &str, platform: &str) -> String {
                 include
             }
         })
-        .collect()
+        .collect();
+    // Linux has an actionable systemd remedy; the common command/output corpus stays shared.
+    #[cfg(target_os = "linux")]
+    let selected = selected.replace(
+        "Runner is not running. Open Runner and retry.",
+        runner_cli::client::NOT_RUNNING_MESSAGE,
+    );
+    selected
 }
 
 #[test]
