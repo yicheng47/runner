@@ -586,11 +586,13 @@ struct SessionState {
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     output_seq: u64,
+    controller: terminal::Controller,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
     next_subscriber_id: u64,
+    companion_terminals: Vec<Weak<terminal::CompanionTerminal>>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
@@ -599,6 +601,7 @@ struct SessionState {
     pending_resize: Option<PendingResize>,
     resuming: bool,
     killed: bool,
+    last_exit_was_killed: bool,
 }
 
 impl SessionState {
@@ -1300,10 +1303,13 @@ impl SessionManager {
                 .as_ref()
                 .is_some_and(|current| !Arc::ptr_eq(current, &terminal))
             {
+                state.finish_companion_terminals();
                 for (_, queue) in state.subscribers.drain(..) {
                     queue.close();
                 }
             }
+            state.last_exit_was_killed = false;
+            state.controller = terminal::Controller::Desktop;
             state.terminal = Some(terminal);
             state.terminal_input = Some(input);
             state.terminal_input_worker = Some(worker);
@@ -1660,7 +1666,9 @@ impl SessionManager {
 
     fn record_exit_status(&self, session_id: &str, exit_code: Option<i32>, crashed: bool) {
         if let Some(session) = self.session_state(session_id) {
-            session.lock().unwrap().model.apply(
+            let mut session = session.lock().unwrap();
+            session.finish_companion_terminals();
+            session.model.apply(
                 SessionEvent::Exited {
                     code: exit_code,
                     crashed,
@@ -1951,6 +1959,7 @@ impl SessionManager {
         let was_killed = {
             let mut state = state.lock().unwrap();
             let was_killed = state.killed;
+            state.last_exit_was_killed = was_killed;
             state.killed = false;
             was_killed
         };

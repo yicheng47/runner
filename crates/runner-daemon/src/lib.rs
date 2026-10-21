@@ -11,6 +11,7 @@ pub use runner_core::app_paths;
 pub mod agent_skill;
 pub mod claude_accounts;
 pub mod cli_install;
+pub mod companion;
 pub mod daemon;
 pub mod db;
 pub mod error;

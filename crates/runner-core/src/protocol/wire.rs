@@ -180,6 +180,9 @@ pub fn snapshot_header(id: u64, subscriber: u64, snapshot: &TerminalSnapshot) ->
             .to_le_bytes(),
     );
     frame
+        .payload
+        .extend(serde_json::to_vec(&snapshot.controller).unwrap());
+    frame
 }
 
 #[cfg(test)]

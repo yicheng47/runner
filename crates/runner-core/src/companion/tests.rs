@@ -45,6 +45,8 @@ const HOST_FIXTURES: &[&str] = &[
     "feed_appended",
     "snapshot",
     "snapshot_final",
+    "snapshot_rep",
+    "snapshot_rep_unfinished",
     "output",
     "resized",
     "resized_desktop",
@@ -679,4 +681,50 @@ fn status_unread_is_independent_of_the_flattened_status() {
     assert!(!SessionStatus::from(&value).unread);
     value.unread_since = Some(1);
     assert!(SessionStatus::from(&value).unread);
+}
+
+#[test]
+fn browser_sizes_clamp_both_axes_to_the_approved_bounds() {
+    for (cols, rows, expected) in [
+        (0, 0, (20, 8)),
+        (80, 24, (80, 24)),
+        (u16::MAX, u16::MAX, (512, 256)),
+        (10, u16::MAX, (20, 256)),
+        (u16::MAX, 1, (512, 8)),
+    ] {
+        let attach = AttachRequest {
+            id: 1,
+            session: "test".into(),
+            cols,
+            rows,
+            control: ControlMode::Take,
+            history: None,
+        };
+        let viewport = ViewportRequest {
+            id: 2,
+            session: "test".into(),
+            cols,
+            rows,
+        };
+        assert_eq!(attach.clamped_size(), expected);
+        assert_eq!(viewport.clamped_size(), expected);
+    }
+}
+
+#[test]
+fn snapshot_continuation_defaults_and_validation() {
+    let mut value = fixture("snapshot_rep_unfinished");
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.preceding_char, Some('c'));
+    assert_eq!(snapshot.unfinished_len, 3);
+    value.as_object_mut().unwrap().remove("precedingChar");
+    value.as_object_mut().unwrap().remove("unfinishedLen");
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.preceding_char, None);
+    assert_eq!(snapshot.unfinished_len, 0);
+    value["precedingChar"] = json!("two");
+    assert!(serde_json::from_value::<Snapshot>(value.clone()).is_err());
+    value["precedingChar"] = json!(null);
+    value["unfinishedLen"] = json!(-1);
+    assert!(serde_json::from_value::<Snapshot>(value).is_err());
 }
