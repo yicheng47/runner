@@ -24,29 +24,29 @@ Because the relay is only a route, two consequences follow:
 
 ## 2. The layers: what wraps what
 
-A terminal's output on its way to the browser is wrapped five times. Read the picture from the inside out on the way down, and from the outside in at the other end:
+There are three layers: the message, the secure channel that carries it, and the route the relay copies. Read the picture from the top down on the way out, and from the bottom up at the other end:
 
 ```mermaid
 flowchart TB
-    M["Companion message<br/>JSON, at most 1 MiB<br/>{type: output, session, seq, data}"]
-    R["Records<br/>[kind 1 B][body ≤ 65,518 B]<br/>part · end · credit"]
-    N["Noise transport message<br/>ciphertext + 16-byte tag, ≤ 65,535 B"]
-    C["Channel frame<br/>[kind 1 B][body]<br/>data = 0x06"]
-    W["Relay frame, host side only<br/>[channel number 4 B, big-endian][channel frame]"]
-    M -->|split into| R -->|each sealed by| N -->|carried in| C -->|prefixed on /relay/host| W
+    M["Message<br/>companion JSON, at most 1 MiB<br/>{type: output, session, seq, data}"]
+    C["Secure channel<br/>[kind 1 B][Noise seal of [record kind 1 B][body ≤ 65,518 B]]<br/>at most 65,536 B per frame"]
+    R["Route, host side only<br/>[channel number 4 B, big-endian][channel frame]"]
+    M -->|split, sealed and framed| C -->|prefixed on /relay/host| R
 ```
 
-| Layer | Bytes | Who reads it | Code |
+**The message** is what the two ends actually say to each other: a companion protocol message, JSON with terminal bytes in base64, at most 1 MiB. Only the browser and `runnerd`'s adapter read it. Code: `runner-core/src/companion/messages.rs`.
+
+**The secure channel** turns a message into frames only the two ends can read. It is Noise with one header byte inside the encryption and one outside:
+
+| Part | Bytes | Why it is there | Code |
 | --- | --- | --- | --- |
-| Companion message | JSON, with terminal bytes in base64, at most 1 MiB | Browser, `runnerd`'s adapter | `runner-core/src/companion/messages.rs` |
-| Record | 1 kind byte and a body of at most 65,518 bytes | Both ends, after decrypting | `runner-core/src/companion/channel/records.rs` |
-| Noise transport message | The record, sealed with ChaCha20-Poly1305 | Both ends | `snow`'s `TransportState` |
-| Channel frame | 1 kind byte and the Noise message, at most 65,536 bytes | Both ends | `channel/mod.rs`: `frame`, `body` |
-| Relay frame | A 4-byte channel number and the channel frame | The relay, which reads only the number | `channel/mod.rs`: `wrap`, `unwrap` |
+| Record | 1 kind byte (part, end or credit) and a body of at most 65,518 bytes | Noise seals at most 65,535 bytes at a time, but a message can be 1 MiB, so a message is split into records; credit (§6) rides in the same byte, encrypted, so the relay cannot tell credit from data | `channel/records.rs` |
+| Noise seal | The record, sealed with ChaCha20-Poly1305, plus a 16-byte tag | End-to-end encryption | `snow`'s `TransportState` |
+| Channel frame | 1 kind byte in the clear, then the Noise message | Tells the handshake frames (§§4–5) and `reject`, which travel before any transport keys exist, from `data` | `channel/mod.rs`: `frame`, `body` |
 
 The limits fit together exactly. Noise caps one message at 65,535 bytes; less its 16-byte tag and the record's kind byte, that leaves 65,518 for a record's body. Add the frame's kind byte and a channel frame is at most 65,536, and the relay's number brings a host-side WebSocket frame to at most 65,540.
 
-On the browser's side there is no channel number: the browser's WebSocket is that one channel. On the host's side every channel shares one WebSocket, which is why the relay prefixes the number: `channelOpen`, `channelClosed` and `closeChannel` are JSON text frames, and everything else is binary.
+**The route** is the only part the relay reads. On the browser's side there is nothing to add: the browser's WebSocket is that one channel. On the host's side every channel shares one WebSocket, so the relay prefixes each binary frame with a 4-byte channel number (`channel/mod.rs`: `wrap`, `unwrap`). `channelOpen`, `channelClosed` and `closeChannel` are JSON text frames on the same socket, and everything else is binary.
 
 ## 3. Who holds what
 
