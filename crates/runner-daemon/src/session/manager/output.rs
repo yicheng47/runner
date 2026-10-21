@@ -745,22 +745,11 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
-        self.resize_with_origin(session_id, cols, rows, pool, None)
-    }
-    pub(super) fn resize_with_origin(
-        &self,
-        session_id: &str,
-        cols: u16,
-        rows: u16,
-        pool: &Arc<DbPool>,
-        origin: Option<u64>,
-    ) -> Result<()> {
         self.resize_controlled(
             session_id,
             cols,
             rows,
             pool,
-            origin,
             terminal::ResizeControl::Desktop,
         )
     }
@@ -770,7 +759,6 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         pool: &Arc<DbPool>,
-        origin: Option<u64>,
         control: terminal::ResizeControl,
     ) -> Result<()> {
         let state = self.session_state_or_insert(session_id);
@@ -796,7 +784,6 @@ impl SessionManager {
                     rows,
                     controller,
                 },
-                origin,
             );
             session.last_requested_size = Some((cols, rows));
             session.last_requested_size_dirty = true;
@@ -993,7 +980,6 @@ impl SessionManager {
                     seq,
                     bytes: bytes.to_vec(),
                 },
-                None,
             );
             let model = state.terminal.clone();
             let observation = model

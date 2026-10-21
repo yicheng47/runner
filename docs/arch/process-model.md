@@ -59,7 +59,7 @@ Authoritative parsing continues without panes or clients. Only the daemon answer
 
 The app encodes keys, IME, paste and mouse against the mirror’s current modes. Input is a one-way client frame queued by the daemon per session, for both direct chats and missions. User input still passes the delivery gate; router input uses its reserved path. Terminal replies bypass that gate and ultimately share PtyRuntime’s writer mutex.
 
-A pane resizes its mirror immediately and sends a one-way resize. The daemon resizes its PTY/model, emits `Resized` for other viewers and persists settled geometry. Snapshot restoration and live resize preserve parser modes and wide-character state. Runner retains its own PTY readers; it uses Alacritty’s model and VTE parser rather than its PTY EventLoop.
+A pane sends a one-way resize immediately. The daemon applies a controller's size to its PTY/model, emits an ordered `Resized` frame to every viewer including the sender, and persists settled geometry. Every mirror adopts its size from the attach snapshot and those frames; a request from a non-controller leaves its size unchanged. Snapshot restoration and live resize preserve parser modes and wide-character state. Runner retains its own PTY readers; it uses Alacritty’s model and VTE parser rather than its PTY EventLoop.
 
 ## Lifecycle
 
