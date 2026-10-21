@@ -32,8 +32,9 @@ Workspace tests require Node.js for the embedded pi extension protocol fixture; 
 
 Linux PR CI runs formatting, workspace Clippy/tests, generated CLI reference checks,
 installer fixtures and desktop-entry validation on both architectures. It downloads
-pinned prebuilt nextest binaries, saves successful build caches for subsequent runs
-of the same PR, and lets Cargo choose concurrency from the available CPUs. Tests
+pinned prebuilt nextest binaries, restores available build caches for PRs and saves
+successful caches only on `main`, matching macOS/Windows. Cargo chooses concurrency
+from the available CPUs. Tests
 run as an ordinary user with `C.UTF-8` inside an init-enabled container. PR CI does
 not build release binaries or installation packages; the release and nightly
 workflows build and verify tar.gz, deb and rpm packages before uploading them.

@@ -215,6 +215,7 @@ jobs:
         with:
           key: linux-22.04-${{ matrix.arch }}
           cache-on-failure: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Clippy
