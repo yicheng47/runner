@@ -114,6 +114,10 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
 
 https://github.com/user-attachments/assets/c2209015-1497-403a-98bd-cdc5502bee47
 
+## 支持 Runner
+
+如果 Runner 对你有帮助，欢迎[通过爱发电请我喝杯咖啡](https://afdian.com/a/runnersh)。你的支持将用于项目的持续开发与维护。
+
 ## 前置条件
 
 Runner 运行的是你已经在用的 agent 命令行工具，它不负责安装。开始之前，至少安装 Claude Code、Codex、Antigravity CLI、GitHub Copilot CLI 或 pi 中的一个并完成登录，Runner 会在 `PATH` 上找到它。在 Windows 上，Claude Code 和 pi 的 bash 工具需要 Git for Windows，通过 npm 安装的 CLI 需要 Node.js。
