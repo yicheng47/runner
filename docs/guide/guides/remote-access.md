@@ -2,14 +2,22 @@
 
 Connect this computer to your account so Runner on your other computers can reach its chats and missions. Remote access is a private beta, invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code. Sessions are encrypted end to end; the service relays them.
 
-## Connect from Runner
+## Sign in from Runner
 
-1. Open **Settings → Remote access** and choose **Connect this computer**.
+1. Open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
 2. Runner shows a short code, a fingerprint and the time left, and opens the approval page in your browser. You can also copy the link or open the short link on another device and enter the code.
 3. Sign in, check that the page shows the same fingerprint as Runner, name this computer and approve it.
-4. Runner shows **Connected as @username**. The computer appears online in the web panel.
+4. Account shows your account, service, this computer and its fingerprint. If you started from Remote access, that pane shows the relay page once approval completes.
 
-If Runner cannot reach the service, it tries for up to 30 seconds, then returns to Not connected with an error. Check the service address and your network, then choose **Connect this computer** again.
+The round avatar in the sidebar footer shows your account’s initial when signed in and a person icon otherwise. Its menu opens Account, Settings and **Sign out…**. Signed out, it offers Settings and **Sign in…**, which opens Account, where you can start approval. Account also shows what the account is used for: remote access through the relay, with syncing roles and crews planned for later.
+
+If Runner cannot reach the service, it tries for up to 30 seconds, then returns to Not signed in with an error. Check the service address and your network, then choose **Sign in** again.
+
+## Choose a route
+
+Remote access shows two choices while signed out: **Through Runner’s relay**, using your Runner account in the private beta, and **Over Tailscale**, marked **Later** with its button disabled until Phase 4. Tailscale will connect computers directly on the same tailnet without an account or Runner’s service.
+
+Signing in chooses the relay. The relay page shows the connection, **Allow remote access**, the PIN and paired computers. Its Route section identifies the relay and links to Account. A computer uses one route at a time; to use the other route later, choose **Reset remote access**. Reset makes a new identity, unpairs every computer, clears the PIN, signs out and returns to choosing a route. Nothing carries over.
 
 ## Connect from a terminal
 
@@ -26,13 +34,13 @@ runner remote logout
 
 Enrollment needs both input and output attached to a terminal, and is refused inside Runner agent sessions. Agents can read status, list or revoke paired devices, or disconnect the computer. They cannot enroll it, set or change its PIN, unlock PIN entry or reset its identity through `runner call`. Closing the CLI during account confirmation refuses the claim.
 
-## Pause, retry or disconnect
+## Pause, retry or sign out
 
 Turn off **Allow remote access** to close the connection while keeping this computer on the account. The web panel shows it offline. Turn the switch on to reconnect with the same key and fingerprint.
 
-**Disconnect**, or `runner remote logout`, deletes this computer's enrollment credential first and asks the service to remove it once. If the service cannot be reached, Runner reports that the computer is still listed offline; remove that entry in the web panel. Restarting Runner does not reconnect a disconnected computer. Connecting again needs a new code and keeps the same identity key and fingerprint, PIN and paired devices.
+**Sign out on this computer** in Account, **Sign out…** in the avatar menu, or `runner remote logout`, deletes this computer's enrollment credential first and asks the service to remove it once. If the service cannot be reached, Runner reports that the computer is still listed offline; remove that entry in the web panel. Runner asks for confirmation before signing out in the app. Restarting Runner does not reconnect a signed-out computer. Signing in again needs a new code and keeps the same identity key and fingerprint, PIN and paired devices.
 
-If the computer was removed in the web panel or the account was deactivated, Runner stops the connection. **Try again** uses the existing credential, which can work after an administrator reactivates the account. **Connect again** clears the old enrollment and starts fresh. Other stop reasons explain whether to retry, approve a new code or update Runner.
+If the computer was removed in the web panel or the account was deactivated, Runner stops the connection. Account shows the reason even when an old enrollment remains; Remote access returns to the route choice with a link to Account. **Try again** uses the existing credential, which can work after an administrator reactivates the account. **Sign in again** clears the old enrollment and starts fresh. Other stop reasons explain whether to retry, approve a new code or update Runner.
 
 Remote access never stops your agents or sessions. Closing the desktop app leaves the connection with the background daemon; stopping the daemon closes it. Keys and credentials stay in the operating system's secret store on macOS and Windows, with a private local file as the current Linux fallback. Development builds use separate storage from the installed app.
 
@@ -42,13 +50,13 @@ The service routes connections to computers on your account. Terminal access req
 
 Set a PIN in **Settings → Remote access → Set PIN**, or run `runner remote pin` in your own interactive terminal outside a Runner agent session. Choose a 6-digit PIN, then enter it again. Leading zeroes are kept. The CLI hides both entries; Runner never shows the PIN again. **Change PIN** replaces it without unpairing existing devices.
 
-Runner’s service never sees the PIN and cannot pair a device on its own. Another Runner enters the PIN once to pair and uses its own key on later connections. **Devices** lists the name, fingerprint, pairing date and last-seen time of each paired computer. A green dot and **Connected now** replace the last-seen time while that computer has an authenticated connection open. When its last connection closes, the last-seen time returns. **Revoke**, or `runner remote revoke <fingerprint>`, removes that device’s trust. Use `runner remote devices` or `runner remote devices --json` to read the list from a terminal. The CLI also reports `Connected`, true while that device has an authenticated channel open; JSON uses `connected`. Revoke closes all of that device's channels.
+Runner’s service never sees the PIN and cannot pair a device on its own. Another Runner enters the PIN once to pair and uses its own key on later connections. The computers section currently lists paired computers with their name, fingerprint, pairing date and last-seen time. A green dot and **Connected now** replace the last-seen time while that computer has an authenticated connection open. When its last connection closes, the last-seen time returns. **Revoke**, or `runner remote revoke <fingerprint>`, removes that device’s trust. Use `runner remote devices` or `runner remote devices --json` to read the list from a terminal. The CLI also reports `Connected`, true while that device has an authenticated channel open; JSON uses `connected`. Revoke closes all of that device's channels.
 
 Five failed pairing confirmations in a row lock PIN entry. A wrong PIN and a damaged encrypted confirmation both count; malformed frames do not. Runner shows a warning and **Unlock** in Settings; no new device can pair until you unlock it. Already-paired devices keep working. Changing the PIN does not unlock entry. The lock survives a restart.
 
 Runner shows **{computer} paired** as a system notification when another computer pairs. Clicking it opens **Settings → Remote access**. If system notifications are unavailable or off, an in-app toast says that the computer can now reach this one and offers **Open Remote access**. A reconnection does not raise another pairing notification.
 
-If you suspect this computer’s identity key has leaked, choose **Reset identity**, or run `runner remote reset-identity` in your own interactive terminal. Confirming disconnects the computer from the account, creates a new key and fingerprint, clears the PIN and all paired devices, and unlocks PIN entry. Connecting again needs a new code. Your agents and sessions keep running.
+If you suspect this computer’s identity key has leaked, choose **Reset remote access**, or run `runner remote reset-identity` in your own interactive terminal. Confirming disconnects the computer from the account, creates a new key and fingerprint, clears the PIN and all paired devices, and unlocks PIN entry. The pane returns to the route choice, and signing in again needs a new code. Your agents and sessions keep running.
 
 
 ## Take a terminal back
