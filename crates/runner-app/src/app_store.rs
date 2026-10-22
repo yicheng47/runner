@@ -273,7 +273,14 @@ pub(crate) struct AppStore {
     pub(crate) remote_trust: Option<runner_core::remote::RemoteTrust>,
     pub(crate) remote_warning: Option<RemoteWarning>,
     pub(crate) terminal_updates: Entity<TerminalUpdates>,
-    terminal_labels: BTreeMap<String, (String, Option<PathBuf>)>,
+    terminal_labels: BTreeMap<
+        String,
+        (
+            String,
+            Option<PathBuf>,
+            runner_terminal::terminal::TerminalControl,
+        ),
+    >,
     pub(crate) client: DaemonClient,
     pub(crate) app_data_dir: PathBuf,
     pub(crate) window_entries: Vec<runner_core::protocol::WindowEntry>,
@@ -392,7 +399,8 @@ impl AppStore {
                         let mut labels_changed = false;
                         for id in changed {
                             if let Some(terminal) = this.bridge.session(&id) {
-                                let label = (terminal.title(), terminal.live_cwd());
+                                let label =
+                                    (terminal.title(), terminal.live_cwd(), terminal.control());
                                 if this.terminal_labels.get(&id) != Some(&label) {
                                     this.terminal_labels.insert(id.clone(), label);
                                     labels_changed = true;

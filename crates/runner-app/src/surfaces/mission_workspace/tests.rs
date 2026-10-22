@@ -3118,3 +3118,110 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
 }
+
+#[test]
+fn remote_control_covers_the_mission_below_tabs_then_returns_to_pane_cards() {
+    use crate::terminal::control::tests::{attached, change, mirror_named, remote};
+    use runner_core::protocol::terminal::TerminalController;
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let core = store.read_with(&cx, |store, _| store.test_core.clone());
+    let (left_host, left, left_tx, left_ack) = mirror_named("mission-agent", remote());
+    let (right_host, right, right_tx, right_ack) = mirror_named("mission-shell", remote());
+    let window = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "mission-control-test".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.route = AppRoute::Mission("test-mission".into());
+        root.mission_workspace.update(cx, |workspace, cx| {
+            workspace.active = true;
+            workspace.mission_id = Some("test-mission".into());
+            workspace.mission =
+                Some(runner_daemon::ops::mission::mission_get(&core, "test-mission").unwrap());
+            workspace.roster =
+                runner_daemon::ops::mission::mission_roster(&core, "test-mission").unwrap();
+            workspace.sessions =
+                runner_daemon::ops::session::session_list(&core, "test-mission").unwrap();
+            workspace.open_tabs = vec!["mission-agent".into(), "mission-shell".into()];
+            workspace
+                .attached
+                .insert("mission-agent".into(), attached(left, cx, 101, 30));
+            workspace
+                .attached
+                .insert("mission-shell".into(), attached(right, cx, 72, 45));
+        });
+        root
+    });
+    let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+    let overlay = visual
+        .debug_bounds("REMOTE_CONTROL_OVERLAY_take-back-mission")
+        .unwrap();
+    let header = visual.debug_bounds("MISSION_HEADER").unwrap();
+    assert!(overlay.top() >= header.bottom() + px(WORKSPACE_TABS_HEIGHT));
+    assert!(left_host.sizes.lock().unwrap().is_empty());
+    assert!(right_host.sizes.lock().unwrap().is_empty());
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.mission_workspace.update(cx, |workspace, cx| {
+                workspace.composer.draft = "Keep this draft while covered".into();
+                workspace.composer_input.update(cx, |input, cx| {
+                    input.reset("Keep this draft while covered", cx)
+                });
+                workspace.on_mission_composer_key_down("enter", false, window, cx);
+                assert!(!workspace.composer_posting);
+                assert_eq!(workspace.composer.draft, "Keep this draft while covered");
+            })
+        })
+        .unwrap();
+    change(&left_tx, &left_ack, 1, TerminalController::None);
+    change(&right_tx, &right_ack, 1, TerminalController::None);
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.mission_workspace.update(cx, |_, cx| cx.notify())
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(visual
+        .debug_bounds("REMOTE_CONTROL_OVERLAY_take-back-mission")
+        .is_some());
+    change(&left_tx, &left_ack, 2, TerminalController::Desktop);
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.mission_workspace.update(cx, |workspace, cx| {
+                workspace.active_tab = MissionTab::Session("mission-shell".into());
+                cx.notify();
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(visual
+        .debug_bounds("REMOTE_CONTROL_OVERLAY_take-back-mission")
+        .is_none());
+    assert!(visual
+        .debug_bounds("REMOTE_CONTROL_OVERLAY_take-back-slot-mission-shell")
+        .is_some());
+    change(&right_tx, &right_ack, 2, TerminalController::Desktop);
+    store.update(&mut cx, |store, cx| {
+        store
+            .terminal_updates
+            .update(cx, |_, cx| cx.emit("mission-shell".to_string()))
+    });
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.mission_workspace.update(cx, |_, cx| cx.notify())
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert!(visual.debug_bounds("REMOTE_CONTROL_CARD").is_none());
+    assert!(!right_host.sizes.lock().unwrap().is_empty());
+}

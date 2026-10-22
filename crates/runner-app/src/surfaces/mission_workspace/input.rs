@@ -196,6 +196,27 @@ impl MissionWorkspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .attached
+            .get(session_id)
+            .is_some_and(|chat| !chat.terminal.control().desktop())
+        {
+            cx.stop_propagation();
+            if event.keystroke.key == "enter" && !event.is_held {
+                let ids = self.control_session_ids(cx);
+                let chats = if crate::terminal::control::mission_covered(
+                    ids.iter().map(|id| self.attached.get(id)),
+                ) {
+                    ids.iter()
+                        .filter_map(|id| self.attached.get(id))
+                        .collect::<Vec<_>>()
+                } else {
+                    self.attached.get(session_id).into_iter().collect()
+                };
+                crate::terminal::control::take_back(&chats, cx);
+            }
+            return;
+        }
         if !self.mission_terminal_interactive(session_id, cx) {
             return;
         }

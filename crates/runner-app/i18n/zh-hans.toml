@@ -1225,3 +1225,23 @@
 "remote.pin_hint_confirm" = "6 位数字。第 2 步，共 2 步。"
 "remote.pin_continue" = "继续"
 "remote.pin_back" = "返回"
+
+"remote.another_computer" = "另一台电脑"
+
+"remote.control_title" = "正由 {name} 控制"
+
+"remote.control_detail" = "{name} 正在使用此终端，并按它的窗口调整了尺寸。收回后即可在这里使用。"
+
+"remote.control_group_detail" = "{name} 打开了此标签页，正在以它的尺寸使用其中的 {count} 个终端。收回后即可在这里使用。"
+
+"remote.control_left" = "{name} 已离开"
+
+"remote.control_left_detail" = "终端仍保持 {name} 的尺寸。继续在这里使用，将其调整到此窗格。"
+
+"remote.control_group_left_detail" = "这 {count} 个终端仍保持 {name} 的尺寸。继续在这里使用，将各终端调整到对应窗格。"
+
+"remote.take_back" = "收回"
+
+"remote.continue_here" = "继续在这里使用"
+
+"remote.control_mission_detail" = "{name} 打开了此任务，正在以它的尺寸使用其中的 {count} 个终端。收回后即可在这里使用。"
