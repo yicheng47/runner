@@ -177,6 +177,9 @@ fn pi_real_binary_direct_mission_and_relaunch_resume() {
     let role = role::create(
         &db.get().unwrap(),
         role::CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "pi-smoke".into(),
             display_name: "pi smoke".into(),
             runtime: Runtime::Pi,

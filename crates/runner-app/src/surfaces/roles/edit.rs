@@ -200,12 +200,23 @@ impl NativeRoot {
         let Some(form) = self.role_surfaces.edit.as_mut() else {
             return;
         };
-        if form.submitting || form.display_name.read(cx).text().trim().is_empty() {
+        if form.submitting
+            || form.avatar.generating
+            || form.avatar.color_error
+            || form.avatar_prompt.is_some()
+            || form.display_name.read(cx).text().trim().is_empty()
+        {
             return;
         }
         form.submitting = true;
         form.error = None;
         let update = UpdateRoleInput {
+            avatar_color: (form.avatar.color != form.role.avatar_color)
+                .then(|| form.avatar.color.clone()),
+            avatar_style: (form.avatar.style != form.role.avatar_style)
+                .then_some(form.avatar.style),
+            avatar_path: (form.avatar.path != form.role.avatar_path)
+                .then(|| form.avatar.path.clone()),
             display_name: Some(form.display_name.read(cx).text().trim().to_owned()),
             runtime: Runtime::parse(&form.runtime),
             command: Some(form.command.read(cx).text().trim().to_owned()),
@@ -231,6 +242,9 @@ impl NativeRoot {
             let _ = weak.update_in(cx, |this, _window, cx| {
                 match result {
                     Ok(()) => {
+                        if let Some(form) = this.role_surfaces.edit.as_mut() {
+                            form.avatar.saved_successfully();
+                        }
                         this.role_surfaces.edit = None;
                         if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store

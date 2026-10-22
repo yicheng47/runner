@@ -222,6 +222,9 @@ struct ShellSettingsSnapshot(u64);
 impl From<&AppSettings> for ShellSettingsSnapshot {
     fn from(settings: &AppSettings) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::mem::discriminant(&settings.personal_avatar.style).hash(&mut hasher);
+        settings.personal_avatar.image_path.hash(&mut hasher);
+        settings.personal_avatar.color.hash(&mut hasher);
         settings.language.hash(&mut hasher);
         std::mem::discriminant(&settings.app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.window_material).hash(&mut hasher);
@@ -290,6 +293,7 @@ pub(crate) struct AppStore {
     command_install_requires_escalation: bool,
     command_action_target: Option<PathBuf>,
     runner_skill_status: RunnerSkillStatus,
+    pub(crate) personal_avatar_edit_epoch: u64,
     pub(crate) revisions: StoreRevisions,
     pub(crate) error: Option<runner_app::i18n::Text>,
     collecting_startup_errors: bool,
@@ -517,6 +521,7 @@ impl AppStore {
             command_install_requires_escalation: false,
             command_action_target: None,
             runner_skill_status: RunnerSkillStatus::default(),
+            personal_avatar_edit_epoch: 0,
             revisions: StoreRevisions::default(),
             error: None,
             collecting_startup_errors: true,
@@ -690,12 +695,51 @@ impl AppStore {
         cx.notify();
     }
 
+    pub(crate) fn begin_personal_avatar_edit(&mut self) -> u64 {
+        self.personal_avatar_edit_epoch = self.personal_avatar_edit_epoch.wrapping_add(1);
+        self.personal_avatar_edit_epoch
+    }
+
+    pub(crate) fn try_update_settings(
+        &mut self,
+        update: impl FnOnce(&mut AppSettings) -> bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<bool> {
+        let mut settings = self.settings.clone();
+        if !update(&mut settings) {
+            return Ok(false);
+        }
+        settings.normalize();
+        settings.save(&self.settings_path)?;
+        let old_image = self.settings.personal_avatar.image_path.clone();
+        let changed = self.update_settings(
+            |current| {
+                *current = settings;
+                true
+            },
+            false,
+            cx,
+        );
+        if old_image != self.settings.personal_avatar.image_path {
+            if let Some(path) = old_image {
+                if let Err(error) = crate::app_settings::discard_personal_avatar(
+                    std::path::Path::new(&path),
+                    &self.app_data_dir,
+                ) {
+                    tracing::warn!(%error, "could not remove unused personal avatar copy");
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn update_settings(
         &mut self,
         update: impl FnOnce(&mut AppSettings) -> bool,
         persist: bool,
         cx: &mut Context<Self>,
     ) -> bool {
+        let personal_avatar = self.settings.personal_avatar.clone();
         let language = self.settings.language;
         let terminal_settings = TerminalSettingsSnapshot::from(&self.settings);
         let mission_settings = MissionSettingsSnapshot::from(&self.settings);
@@ -706,6 +750,9 @@ impl AppStore {
         );
         if !update(&mut self.settings) {
             return false;
+        }
+        if self.settings.personal_avatar != personal_avatar {
+            self.begin_personal_avatar_edit();
         }
         if agent_settings
             != (
@@ -1127,6 +1174,154 @@ mod tests {
         ] {
             assert_eq!(left.merge(right), expected, "{left:?} + {right:?}");
         }
+    }
+
+    #[test]
+    fn personal_avatar_fields_each_invalidate_shell_without_changing_terminal_settings() {
+        let base = AppSettings::default();
+        for field in 0..3 {
+            let mut changed = base.clone();
+            match field {
+                0 => {
+                    changed.personal_avatar.style = runner_core::protocol::model::AvatarStyle::Pixel
+                }
+                1 => changed.personal_avatar.color = Some("#06b6d4".into()),
+                _ => changed.personal_avatar.image_path = Some("/owned/avatar.png".into()),
+            }
+            assert_ne!(
+                ShellSettingsSnapshot::from(&base),
+                ShellSettingsSnapshot::from(&changed)
+            );
+            assert_eq!(
+                TerminalSettingsSnapshot::from(&base),
+                TerminalSettingsSnapshot::from(&changed)
+            );
+            assert_eq!(
+                MissionSettingsSnapshot::from(&base),
+                MissionSettingsSnapshot::from(&changed)
+            );
+        }
+    }
+
+    #[test]
+    fn personal_avatar_replacements_and_clears_reclaim_only_saved_managed_images() {
+        let root = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_lifecycle_store(&mut cx, root.path());
+        let source = root.path().join("external-source.png");
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[0, 128, 255, 255])
+                .unwrap();
+        }
+        std::fs::write(&source, bytes).unwrap();
+        store.update(&mut cx, |store, cx| {
+            let first =
+                crate::app_settings::import_personal_avatar(&source, &store.app_data_dir).unwrap();
+            let second =
+                crate::app_settings::import_personal_avatar(&source, &store.app_data_dir).unwrap();
+            let set_image =
+                |store: &mut AppStore, path: &std::path::Path, cx: &mut gpui::Context<AppStore>| {
+                    store
+                        .try_update_settings(
+                            |settings| {
+                                settings.personal_avatar.image_path =
+                                    Some(path.to_string_lossy().into_owned());
+                                true
+                            },
+                            cx,
+                        )
+                        .unwrap();
+                };
+            set_image(store, &first, cx);
+            assert!(first.is_file());
+            let saved_path = store.settings_path.clone();
+            store.settings_path = root.path().join("missing/settings.json");
+            assert!(store
+                .try_update_settings(
+                    |settings| {
+                        settings.personal_avatar.image_path =
+                            Some(second.to_string_lossy().into_owned());
+                        true
+                    },
+                    cx
+                )
+                .is_err());
+            assert!(first.is_file());
+            store.settings_path = saved_path;
+            set_image(store, &second, cx);
+            assert!(!first.exists());
+            assert!(second.is_file());
+            store
+                .try_update_settings(
+                    |settings| settings.personal_avatar.image_path.take().is_some(),
+                    cx,
+                )
+                .unwrap();
+            assert!(!second.exists());
+            set_image(store, &source, cx);
+            store
+                .try_update_settings(
+                    |settings| settings.personal_avatar.image_path.take().is_some(),
+                    cx,
+                )
+                .unwrap();
+            assert!(source.is_file());
+        });
+    }
+
+    #[test]
+    fn personal_avatar_save_failure_preserves_settings_and_success_notifies_windows() {
+        use gpui::TestAppContext;
+        use runner_core::protocol::model::AvatarStyle;
+        let root = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = test_lifecycle_store(&mut cx, root.path());
+        store.update(&mut cx, |store, cx| {
+            let previous = store.settings.clone();
+            let revisions = store.revisions;
+            let path = store.settings_path.clone();
+            store.settings_path = root.path().join("missing").join("settings.json");
+            assert!(store
+                .try_update_settings(
+                    |settings| {
+                        settings.personal_avatar.style = AvatarStyle::Pixel;
+                        true
+                    },
+                    cx
+                )
+                .is_err());
+            assert_eq!(store.settings, previous);
+            assert_eq!(store.revisions, revisions);
+            store.settings_path = path;
+            assert!(store
+                .try_update_settings(
+                    |settings| {
+                        settings.personal_avatar.style = AvatarStyle::Pixel;
+                        settings.personal_avatar.color = Some("#10b981".into());
+                        settings.personal_avatar.image_path = Some("/owned/personal.png".into());
+                        true
+                    },
+                    cx
+                )
+                .unwrap());
+            let reactions = store.revisions.reactions_since(revisions);
+            assert!(reactions.notify_shell());
+            assert!(reactions.notify);
+            assert_eq!(
+                AppSettings::load(&store.settings_path).unwrap(),
+                store.settings
+            );
+            let stable = store.revisions;
+            assert!(!store.try_update_settings(|_| false, cx).unwrap());
+            assert_eq!(store.revisions, stable);
+        });
     }
 
     #[test]

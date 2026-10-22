@@ -222,7 +222,12 @@ impl NativeRoot {
                             .group_hover(group.clone(), |grip| grip.text_color(theme::faint())),
                     )
             }))
-            .child(RoleAvatar::new(slot.slot.slot_handle.clone(), SLOT_AVATAR))
+            .child(
+                RoleAvatar::new(slot.slot.slot_handle.clone(), SLOT_AVATAR)
+                    .style(slot.role.avatar_style)
+                    .color(slot.role.avatar_color.clone())
+                    .image_path(slot.role.avatar_path.clone()),
+            )
             .child(slot_text(&slot, &setup, text_width));
         if draggable {
             let drag = SlotDrag {

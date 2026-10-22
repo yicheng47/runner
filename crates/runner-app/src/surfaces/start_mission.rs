@@ -7,7 +7,7 @@ use runner_app::ui::{
     RoleAvatar, SelectLeading, SelectOption, StyledSelect, TextField, WorkingDirField,
 };
 use runner_core::protocol::crew::CrewListItem;
-use runner_core::protocol::model::SlotWithRole;
+use runner_core::protocol::model::{AvatarStyle, Role, SlotWithRole};
 use runner_core::protocol::project::ProjectRow;
 use runner_core::protocol::project::ProjectScope;
 
@@ -154,6 +154,7 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
+                let roles = this.app_store.read(cx).roles.clone();
                 let Some(modal) = this.start_mission_modal.as_mut() else {
                     return;
                 };
@@ -171,7 +172,10 @@ impl NativeRoot {
                         modal.crews = crews;
                         modal.crew_id = preferred.clone();
                         modal.crew_select.update(cx, |select, select_cx| {
-                            select.set_options(start_mission_crew_options(&modal.crews), select_cx);
+                            select.set_options(
+                                start_mission_crew_options(&modal.crews, &roles),
+                                select_cx,
+                            );
                             select.set_value(preferred.clone(), select_cx);
                         });
                         if !preferred.is_empty() {
@@ -212,6 +216,7 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
+                let roles = this.app_store.read(cx).roles.clone();
                 let Some(modal) = this
                     .start_mission_modal
                     .as_mut()
@@ -223,7 +228,7 @@ impl NativeRoot {
                 match result {
                     Ok(roster) => {
                         modal.roster = roster;
-                        let options = start_mission_crew_options(&modal.crews);
+                        let options = start_mission_crew_options(&modal.crews, &roles);
                         modal.crew_select.update(cx, |select, select_cx| {
                             select.set_options(options, select_cx)
                         });
@@ -572,6 +577,7 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                 .flex_col()
                 .gap_2()
                 .children(modal.roster.iter().map(|member| {
+                    let avatar_color = member.role.avatar_color.clone();
                     div()
                         .debug_selector({
                             let handle = member.slot.slot_handle.clone();
@@ -582,7 +588,12 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(RoleAvatar::new(member.slot.slot_handle.clone(), 24.))
+                        .child(
+                            RoleAvatar::new(member.slot.slot_handle.clone(), 24.)
+                                .style(member.role.avatar_style)
+                                .color(avatar_color.clone())
+                                .image_path(member.role.avatar_path.clone()),
+                        )
                         .child(
                             div()
                                 .min_w(px(0.))
@@ -598,8 +609,9 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                                         .font_family(theme::UI_MONOSPACE_FONT)
                                         .text_size(theme::text_ui())
                                         .text_color(
-                                            runner_app::ui::avatar::hue_for_seed(
+                                            runner_app::ui::avatar::hue_for_avatar(
                                                 &member.slot.slot_handle,
+                                                avatar_color.as_deref(),
                                             )
                                             .color(),
                                         )
@@ -634,7 +646,7 @@ fn crew_summary_message(count: usize, lead: Option<&str>) -> i18n::Text {
     }
 }
 
-fn start_mission_crew_options(crews: &[CrewListItem]) -> Vec<SelectOption> {
+fn start_mission_crew_options(crews: &[CrewListItem], roles: &[Role]) -> Vec<SelectOption> {
     let empty = SelectOption::new("", crate::i18n::message("ui.no_crew"))
         .description(crate::i18n::message(
             "ui.start_empty_add_roles_from_the_mission",
@@ -659,12 +671,25 @@ fn start_mission_crew_options(crews: &[CrewListItem]) -> Vec<SelectOption> {
         }));
     std::iter::once(empty)
         .chain(crews.iter().enumerate().map(|(index, crew)| {
-            let handles: Vec<SharedString> = crew
+            let avatars: Vec<(SharedString, Option<String>, AvatarStyle, Option<String>)> = crew
                 .members
                 .iter()
-                .map(|member| member.slot_handle.clone().into())
+                .map(|member| {
+                    let (image_path, style, color) = roles
+                        .iter()
+                        .find(|role| role.handle == member.role_handle)
+                        .map(|role| {
+                            (
+                                role.avatar_path.clone(),
+                                role.avatar_style,
+                                role.avatar_color.clone(),
+                            )
+                        })
+                        .unwrap_or_default();
+                    (member.slot_handle.clone().into(), image_path, style, color)
+                })
                 .collect();
-            let key = format!("crew:{}:{handles:?}", crew.crew.id);
+            let key = format!("crew:{}:{avatars:?}", crew.crew.id);
             SelectOption::new(crew.crew.id.clone(), crew.crew.name.clone())
                 .separator_before(index == 0)
                 .description(crew_summary_message(
@@ -675,7 +700,7 @@ fn start_mission_crew_options(crews: &[CrewListItem]) -> Vec<SelectOption> {
                         .map(|member| member.slot_handle.as_str()),
                 ))
                 .leading(SelectLeading::new(key, move |size| {
-                    crew_picture(&handles, size)
+                    crew_picture(&avatars, size)
                 }))
         }))
         .collect()
@@ -713,6 +738,7 @@ mod keyboard_tests {
             root.new_mission_action(&NewMission, window, cx);
         });
         harness.act(|root, _, cx| {
+            let roles = root.app_store.read(cx).roles.clone();
             let crew = root
                 .core(cx)
                 .crew_create(runner_core::protocol::crew::CreateCrewInput {
@@ -743,7 +769,7 @@ mod keyboard_tests {
             ];
             form.crew_id = crew.id.clone();
             form.crew_select.update(cx, |select, cx| {
-                select.set_options(start_mission_crew_options(&form.crews), cx);
+                select.set_options(start_mission_crew_options(&form.crews, &roles), cx);
                 select.set_value(crew.id, cx);
             });
             form.title
@@ -762,15 +788,34 @@ mod keyboard_tests {
             let modal = root.start_mission_modal.as_mut().unwrap();
             modal.roster = (0..5).map(|index| serde_json::from_value::<SlotWithRole>(serde_json::json!({
                 "id": format!("slot-{index}"), "crew_id": modal.crew_id, "role_id": "r", "slot_handle": format!("worker-{index}"), "position": index, "lead": index == 0, "runtime_override": "codex", "model_override": "gpt-5.5", "effort_override": "high", "added_at": "2026-10-15T00:00:00Z",
-                "role": {"id": "r", "handle": "role", "display_name": "Implementation", "runtime": "claude-code", "command": "claude", "args": [], "env": {}, "created_at": "2026-10-15T00:00:00Z", "updated_at": "2026-10-15T00:00:00Z"}
+                "role": {"id": "r", "handle": "role", "display_name": "Implementation", "runtime": "claude-code", "command": "claude", "args": [], "env": {}, "avatar_path": "/managed/role.png", "avatar_color": "#aa5511", "created_at": "2026-10-15T00:00:00Z", "updated_at": "2026-10-15T00:00:00Z"}
             })).unwrap()).collect();
             modal.crews[0].role_count = 5;
             modal.crews[0].members = modal.roster.iter().map(|member| runner_core::protocol::crew::CrewMemberPreview {
                 slot_handle: member.slot.slot_handle.clone(), role_handle: member.role.handle.clone(), runtime: "codex".into(), lead: member.slot.lead,
             }).collect();
-            let options = start_mission_crew_options(&modal.crews);
+            let roles = modal.roster.iter().map(|member| member.role.clone()).collect::<Vec<_>>();
+            let options = start_mission_crew_options(&modal.crews, &roles);
+            let updated_style_roles = roles.iter().cloned().map(|mut role| {
+                role.avatar_style = runner_core::protocol::model::AvatarStyle::Pixel;
+                role
+            }).collect::<Vec<_>>();
+            let updated_style_options = start_mission_crew_options(&modal.crews, &updated_style_roles);
+            let cleared_path_roles = roles.iter().cloned().map(|mut role| {
+                role.avatar_path = None;
+                role
+            }).collect::<Vec<_>>();
+            let cleared_path_options = start_mission_crew_options(&modal.crews, &cleared_path_roles);
+            let cleared_color_roles = roles.iter().cloned().map(|mut role| {
+                role.avatar_color = None;
+                role
+            }).collect::<Vec<_>>();
+            let cleared_color_options = start_mission_crew_options(&modal.crews, &cleared_color_roles);
             assert_eq!(options[1].description.as_deref(), Some("5 slots · lead @worker-0"));
             assert!(options[1].leading.is_some());
+            assert_ne!(options[1].leading, updated_style_options[1].leading);
+            assert_ne!(options[1].leading, cleared_path_options[1].leading);
+            assert_ne!(options[1].leading, cleared_color_options[1].leading);
             modal.crew_select.update(cx, |select, cx| select.set_options(options, cx));
             cx.notify();
         });
@@ -798,10 +843,11 @@ mod keyboard_tests {
             root.new_mission_action(&NewMission, window, cx);
         });
         harness.act(|root, _, cx| {
+            let roles = root.app_store.read(cx).roles.clone();
             let form = root.start_mission_modal.as_ref().unwrap();
             assert!(form.crews.is_empty());
             assert!(form.crew_id.is_empty());
-            let options = start_mission_crew_options(&form.crews);
+            let options = start_mission_crew_options(&form.crews, &roles);
             assert_eq!(options[0].label, "No crew");
             assert_eq!(
                 options[0].description.as_deref(),

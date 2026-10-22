@@ -299,6 +299,9 @@ pub(super) fn validate_role_handle(handle: &str) -> Option<&'static str> {
 
 pub(super) fn create_role_can_submit(form: &CreateRoleForm) -> bool {
     !form.submitting
+        && !form.avatar.generating
+        && !form.avatar.color_error
+        && form.avatar_prompt.is_none()
         && !form.handle_empty
         && form.handle_error.is_none()
         && form.display_name_valid
@@ -309,7 +312,11 @@ pub(super) fn create_role_can_submit(form: &CreateRoleForm) -> bool {
 pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) -> bool {
     let role = &form.role;
     let stored = |value: &Option<String>| value.as_deref().and_then(trimmed_option);
-    form.display_name.read(cx).text().trim() != role.display_name.trim()
+    form.avatar.color != role.avatar_color
+        || form.avatar.color_error
+        || form.avatar.style != role.avatar_style
+        || form.avatar.path != role.avatar_path
+        || form.display_name.read(cx).text().trim() != role.display_name.trim()
         || form.runtime != role.runtime
         || role_edit_args(form, cx) != role_visible_args(role)
         || trimmed_option(form.model.read(cx).text()) != stored(&role.model)

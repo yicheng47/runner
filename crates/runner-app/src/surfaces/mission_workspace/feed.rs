@@ -759,7 +759,7 @@ impl MissionWorkspace {
                 )
                 .into_any_element(),
             FeedBlock::MessageGroup { .. } => unreachable!(),
-            FeedBlock::Signal(event) => self.render_mission_signal_row(event),
+            FeedBlock::Signal(event) => self.render_mission_signal_row(event, cx),
             FeedBlock::AskCard(event) => self.render_mission_ask_card(event, cx),
         }
     }
@@ -777,6 +777,13 @@ impl MissionWorkspace {
         let markdown = self.feed_markdown.borrow()[&event.id].clone();
         let human = author == "human";
         let system = author == "runner";
+        let (avatar_style, avatar_path, avatar_color) = mission_avatar_appearance(
+            &self.sessions,
+            &self.roster,
+            &self.app_store.read(cx).roles,
+            &author,
+            &self.settings(cx).personal_avatar,
+        );
         let author = if system { "system".to_owned() } else { author };
         let goal = first.kind == EventKind::Signal
             && first.signal_type.as_ref().map(|kind| kind.as_str()) == Some("mission_goal");
@@ -805,7 +812,11 @@ impl MissionWorkspace {
             .items_start()
             .gap_3()
             .child(if header {
-                RoleAvatar::new(author.clone(), 35.).into_any_element()
+                RoleAvatar::new(author.clone(), 35.)
+                    .style(avatar_style)
+                    .color(avatar_color.clone())
+                    .image_path(avatar_path)
+                    .into_any_element()
             } else {
                 div().w(rems(35. / 16.)).flex_none().into_any_element()
             })
@@ -831,7 +842,17 @@ impl MissionWorkspace {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(runner_app::ui::hue_for_seed(&author).color())
+                                    .text_color(
+                                        runner_app::ui::hue_for_avatar(
+                                            &author,
+                                            if human || system {
+                                                None
+                                            } else {
+                                                avatar_color.as_deref()
+                                            },
+                                        )
+                                        .color(),
+                                    )
                                     .child(if human {
                                         crate::i18n::text("word.you").into()
                                     } else if system {
@@ -908,7 +929,7 @@ impl MissionWorkspace {
             .into_any_element()
     }
 
-    fn render_mission_signal_row(&self, event: Event) -> AnyElement {
+    fn render_mission_signal_row(&self, event: Event, cx: &mut Context<Self>) -> AnyElement {
         let event_id = event.id.clone();
         let signal = event
             .signal_type
@@ -936,13 +957,25 @@ impl MissionWorkspace {
                 .unwrap_or_else(|_| event.payload.to_string())
         };
         let (author_seed, author_name) = mission_signal_author(&event);
+        let (avatar_style, avatar_path, avatar_color) = mission_avatar_appearance(
+            &self.sessions,
+            &self.roster,
+            &self.app_store.read(cx).roles,
+            author_seed,
+            &self.settings(cx).personal_avatar,
+        );
         div()
             .id(SharedString::from(format!("mission-signal-{event_id}")))
             .px_4()
             .flex()
             .items_start()
             .gap_3()
-            .child(RoleAvatar::new(author_seed.to_owned(), 35.))
+            .child(
+                RoleAvatar::new(author_seed.to_owned(), 35.)
+                    .style(avatar_style)
+                    .color(avatar_color.clone())
+                    .image_path(avatar_path),
+            )
             .child(
                 div()
                     .min_w(px(0.))
@@ -962,7 +995,13 @@ impl MissionWorkspace {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(runner_app::ui::hue_for_seed(author_seed).color())
+                                    .text_color(
+                                        runner_app::ui::hue_for_avatar(
+                                            author_seed,
+                                            avatar_color.as_deref(),
+                                        )
+                                        .color(),
+                                    )
                                     .child(author_name),
                             )
                             .child(
@@ -1042,6 +1081,13 @@ impl MissionWorkspace {
             .get(&question_id)
             .cloned()
             .unwrap_or_else(|| "?".into());
+        let (avatar_style, avatar_path, avatar_color) = mission_avatar_appearance(
+            &self.sessions,
+            &self.roster,
+            &self.app_store.read(cx).roles,
+            &asker,
+            &self.settings(cx).personal_avatar,
+        );
         let prompt = event
             .payload
             .get("prompt")
@@ -1150,7 +1196,12 @@ impl MissionWorkspace {
             .flex()
             .items_start()
             .gap_3()
-            .child(RoleAvatar::new(asker.clone(), 35.))
+            .child(
+                RoleAvatar::new(asker.clone(), 35.)
+                    .style(avatar_style)
+                    .color(avatar_color.clone())
+                    .image_path(avatar_path),
+            )
             .child(
                 div()
                     .min_w(px(0.))
@@ -1166,7 +1217,13 @@ impl MissionWorkspace {
                                     .font_family(theme::UI_MONOSPACE_FONT)
                                     .text_size(theme::text_body())
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(runner_app::ui::hue_for_seed(&asker).color())
+                                    .text_color(
+                                        runner_app::ui::hue_for_avatar(
+                                            &asker,
+                                            avatar_color.as_deref(),
+                                        )
+                                        .color(),
+                                    )
                                     .child(format!("@{asker}")),
                             )
                             .child(

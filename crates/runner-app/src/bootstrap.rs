@@ -156,6 +156,9 @@ mod tests {
             runner_daemon::repo::role::insert(
                 &conn,
                 &runner_daemon::repo::role::RoleRow {
+                    avatar_path: None,
+                    avatar_style: Default::default(),
+                    avatar_color: None,
                     id: "r1".into(),
                     handle: "alpha".into(),
                     display_name: "Alpha".into(),

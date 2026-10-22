@@ -1,3 +1,6 @@
+mod avatar;
+pub(crate) mod avatar_color;
+mod avatar_prompt;
 mod create;
 mod delete;
 mod detail;
@@ -19,6 +22,8 @@ use runner_core::protocol::permissions::PermissionMode;
 use runner_core::protocol::role::{RoleActivity, RoleWithActivity};
 use runner_core::protocol::runtime::RuntimeCatalogEntry;
 use runner_core::protocol::slot::CrewMembership;
+
+use avatar::RoleAvatarDraft;
 
 use crate::list_controls::ListControls;
 use crate::*;
@@ -58,12 +63,7 @@ struct CreateRoleForm {
 
 impl CreateRoleForm {
     fn avatar_seed(&self, cx: &gpui::App) -> String {
-        let handle = self.handle.read(cx).text();
-        if handle.is_empty() {
-            format!("new-role-{}", self.handle.entity_id())
-        } else {
-            handle.to_owned()
-        }
+        self.handle.read(cx).text().to_owned()
     }
 }
 
@@ -89,6 +89,13 @@ struct RoleFormFields {
     working_dir: Entity<TextField>,
     system_prompt: Entity<TextField>,
     prompt_mode_focus: [FocusHandle; 2],
+    avatar: RoleAvatarDraft,
+    avatar_generate_focus: FocusHandle,
+    avatar_restore_focus: FocusHandle,
+    avatar_pixel_focus: FocusHandle,
+    avatar_color: Entity<TextField>,
+    avatar_color_focus: Vec<FocusHandle>,
+    avatar_prompt: Option<avatar_prompt::AvatarPromptDialog>,
     browse_focus: FocusHandle,
     cancel_focus: FocusHandle,
     submit_focus: FocusHandle,

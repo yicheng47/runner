@@ -459,6 +459,9 @@ fn role(command: &str, args: &[&str]) -> Role {
         model: None,
         effort: None,
         codex_speed: None,
+        avatar_path: None,
+        avatar_style: crate::model::AvatarStyle::Initials,
+        avatar_color: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }

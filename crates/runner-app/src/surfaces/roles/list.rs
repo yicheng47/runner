@@ -514,7 +514,12 @@ impl NativeRoot {
                     .items_center()
                     .gap(rems(10. / 16.))
                     .pr_3()
-                    .child(RoleAvatar::new(item.role.handle.clone(), 26.))
+                    .child(
+                        RoleAvatar::new(item.role.handle.clone(), 26.)
+                            .style(item.role.avatar_style)
+                            .color(item.role.avatar_color.clone())
+                            .image_path(item.role.avatar_path.clone()),
+                    )
                     .child(
                         div()
                             .min_w(px(0.))

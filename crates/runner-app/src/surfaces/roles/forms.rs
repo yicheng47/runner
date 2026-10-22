@@ -305,7 +305,11 @@ impl NativeRoot {
         let browse_focus = cx.focus_handle();
         let cancel_focus = cx.focus_handle();
         let submit_focus = cx.focus_handle();
+        let avatar_color = super::avatar_color::color_field(None, cx);
         let mut subscriptions = Vec::new();
+        subscriptions.push(cx.observe(&avatar_color, |this, input, cx| {
+            this.on_role_avatar_color_input(super::logic::RoleFormKind::Create, input, cx);
+        }));
         subscriptions.push(cx.observe(&handle, |this, input, cx| {
             let text = input.read(cx).text().to_owned();
             let lowercase = text.to_lowercase();
@@ -358,6 +362,13 @@ impl NativeRoot {
                 working_dir,
                 system_prompt,
                 prompt_mode_focus: [cx.focus_handle(), cx.focus_handle()],
+                avatar: RoleAvatarDraft::default(),
+                avatar_generate_focus: cx.focus_handle(),
+                avatar_restore_focus: cx.focus_handle(),
+                avatar_pixel_focus: cx.focus_handle(),
+                avatar_color,
+                avatar_color_focus: (0..10).map(|_| cx.focus_handle()).collect(),
+                avatar_prompt: None,
                 runtime_select,
                 browse_focus,
                 cancel_focus,
@@ -525,6 +536,7 @@ impl NativeRoot {
             .min_menu_width(px(ROLE_COLUMN_WIDTH))
         });
         let permission_mode = role_permission_mode(&role).unwrap_or(PermissionMode::Default);
+        let avatar_color = super::avatar_color::color_field(role.avatar_color.as_deref(), cx);
         let mut subscriptions = vec![cx.observe(&display_name, |this, input, cx| {
             let valid = !input.read(cx).text().trim().is_empty();
             let Some(form) = this.role_surfaces.edit.as_mut() else {
@@ -535,6 +547,9 @@ impl NativeRoot {
                 cx.notify();
             }
         })];
+        subscriptions.push(cx.observe(&avatar_color, |this, input, cx| {
+            this.on_role_avatar_color_input(super::logic::RoleFormKind::Edit, input, cx);
+        }));
         subscriptions.push(cx.observe(&model, |this, _, cx| {
             this.sync_role_edit_efforts(cx);
         }));
@@ -543,6 +558,11 @@ impl NativeRoot {
         for input in [&display_name, &args, &model, &working_dir, &system_prompt] {
             subscriptions.push(cx.observe(input, |_, _, cx| cx.notify()));
         }
+        let avatar = RoleAvatarDraft::saved(
+            role.avatar_path.clone(),
+            role.avatar_style,
+            role.avatar_color.clone(),
+        );
         self.role_surfaces.edit = Some(RoleEditForm {
             role,
             permission_mode,
@@ -562,6 +582,13 @@ impl NativeRoot {
                 working_dir,
                 system_prompt,
                 prompt_mode_focus: [cx.focus_handle(), cx.focus_handle()],
+                avatar,
+                avatar_generate_focus: cx.focus_handle(),
+                avatar_restore_focus: cx.focus_handle(),
+                avatar_pixel_focus: cx.focus_handle(),
+                avatar_color,
+                avatar_color_focus: (0..10).map(|_| cx.focus_handle()).collect(),
+                avatar_prompt: None,
                 browse_focus: cx.focus_handle(),
                 cancel_focus: cx.focus_handle(),
                 submit_focus: cx.focus_handle(),

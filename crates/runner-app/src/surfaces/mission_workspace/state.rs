@@ -806,6 +806,7 @@ impl MissionWorkspace {
         }
         if revisions.locale != previous.locale
             || revisions.settings != previous.settings
+            || revisions.roles != previous.roles
             || (reactions.terminal_wake && self.is_active(cx))
         {
             cx.notify();

@@ -45,6 +45,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 # user-authored comments + formatting on round-trip writes.
 toml_edit = "0.25"
 portable-pty = "0.9"
+png = "0.18.1"
 vte = "0.15"
 reqwest = { package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "socks"] }
 

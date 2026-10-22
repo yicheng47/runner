@@ -505,6 +505,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap()

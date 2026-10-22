@@ -3629,7 +3629,11 @@ fn chat_panel_setup(
                     })
                 })
                 .child(if let Some(role) = role {
-                    RoleAvatar::new(role.handle.clone(), 40.).into_any_element()
+                    RoleAvatar::new(role.handle.clone(), 40.)
+                        .style(role.avatar_style)
+                        .color(role.avatar_color.clone())
+                        .image_path(role.avatar_path.clone())
+                        .into_any_element()
                 } else {
                     runtime_mark(&detail.agent_runtime, 40.)
                 }),
@@ -3997,6 +4001,9 @@ mod tests {
             model: Some("fable".into()),
             effort: Some("xhigh".into()),
             codex_speed: None,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

@@ -137,6 +137,13 @@ enum CommandInstallActivity {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum AppearanceSubtab {
+    #[default]
+    Interface,
+    MyAvatar,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
     #[default]
     General,
@@ -293,6 +300,8 @@ enum SettingsSelection {
 
 pub(crate) struct SettingsState {
     pane: SettingsPane,
+    appearance_subtab: AppearanceSubtab,
+    pub(crate) personal_avatar: settings::personal_avatar::PersonalAvatarEditor,
     focus: FocusHandle,
     search_query: String,
     search: Entity<TextField>,
@@ -336,6 +345,10 @@ impl SettingsState {
         settings: &AppSettings,
         cx: &mut Context<NativeRoot>,
     ) -> Self {
+        let personal_avatar = crate::surfaces::settings::personal_avatar::PersonalAvatarEditor::new(
+            &settings.personal_avatar,
+            cx,
+        );
         let search = cx.new(|input_cx| {
             let mut input = TextField::new(
                 input_cx.focus_handle(),
@@ -518,6 +531,8 @@ impl SettingsState {
         });
         Self {
             pane: SettingsPane::General,
+            appearance_subtab: AppearanceSubtab::default(),
+            personal_avatar,
             focus: cx.focus_handle(),
             search_query: String::new(),
             search,
@@ -2340,14 +2355,120 @@ impl NativeRoot {
     }
 
     fn render_appearance_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let subtab = self.settings_page.appearance_subtab;
+        let (title, subtitle) = match subtab {
+            AppearanceSubtab::Interface => (
+                crate::i18n::text("ui.appearance"),
+                crate::i18n::text("ui.theme_and_the_app_and_terminal_palettes_for_each_mode"),
+            ),
+            AppearanceSubtab::MyAvatar => (
+                crate::i18n::text("ui.appearance_my_avatar"),
+                crate::i18n::text("ui.personal_avatar_description"),
+            ),
+        };
+        let content = match subtab {
+            AppearanceSubtab::Interface => self.render_appearance_interface_settings(cx),
+            AppearanceSubtab::MyAvatar => {
+                let personal_avatar = self.app_store.read(cx).settings.personal_avatar.clone();
+                self.settings_page
+                    .personal_avatar
+                    .render(&personal_avatar, cx.entity(), cx)
+            }
+        };
         div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(PaneHeader::new(
-                crate::i18n::text("ui.appearance"),
-                crate::i18n::text("ui.theme_and_the_app_and_terminal_palettes_for_each_mode"),
-            ))
+            .child(PaneHeader::new(title, subtitle))
+            .child(self.render_appearance_subtabs(cx))
+            .child(content)
+            .into_any_element()
+    }
+
+    fn render_appearance_subtabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .when(cfg!(test), |tabs| {
+                tabs.debug_selector(|| "SETTINGS_APPEARANCE_SUBTABS".into())
+            })
+            .flex()
+            .items_center()
+            .gap_1()
+            .rounded(rems(6. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::bg())
+            .p(rems(2. / 16.))
+            .children(
+                [
+                    (
+                        AppearanceSubtab::Interface,
+                        "ui.appearance_interface",
+                        "interface",
+                    ),
+                    (
+                        AppearanceSubtab::MyAvatar,
+                        "ui.appearance_my_avatar",
+                        "my-avatar",
+                    ),
+                ]
+                .into_iter()
+                .map(|(subtab, label, key)| {
+                    let selected = self.settings_page.appearance_subtab == subtab;
+                    let foreground = if selected {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    };
+                    let root = cx.entity();
+                    let key_root = root.clone();
+                    div()
+                        .when(cfg!(test), |tab| {
+                            tab.debug_selector(move || {
+                                format!(
+                                    "SETTINGS_APPEARANCE_TAB_{}",
+                                    key.replace('-', "_").to_ascii_uppercase()
+                                )
+                            })
+                        })
+                        .id(SharedString::from(format!("settings-appearance-tab-{key}")))
+                        .tab_index(0)
+                        .px(rems(12. / 16.))
+                        .py(rems(6. / 16.))
+                        .rounded(rems(4. / 16.))
+                        .text_size(theme::text_ui())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(foreground)
+                        .when(selected, |tab| tab.bg(theme::raised()))
+                        .cursor(CursorStyle::PointingHand)
+                        .child(crate::i18n::text(label))
+                        .on_click(move |_, _, cx| {
+                            root.update(cx, |this, cx| {
+                                this.settings_page.appearance_subtab = subtab;
+                                cx.notify();
+                            });
+                        })
+                        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.stop_propagation();
+                                key_root.update(cx, |this, cx| {
+                                    this.settings_page.appearance_subtab = subtab;
+                                    cx.notify();
+                                });
+                            }
+                        })
+                }),
+            )
+            .into_any_element()
+    }
+
+    fn render_appearance_interface_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .when(cfg!(test), |content| {
+                content.debug_selector(|| "SETTINGS_APPEARANCE_INTERFACE_CONTENT".into())
+            })
+            .flex()
+            .flex_col()
+            .gap_5()
             .child(SettingsCard::new({
                 let rows = vec![SettingsRow::new(crate::i18n::text("ui.theme"), self.render_theme_segmented(cx))
                     .subtitle(crate::i18n::text("ui.match_the_os_or_pin_to_light_or_dark"))
@@ -3316,6 +3437,19 @@ mod tests {
             runtime_shell_env,
             runtime_discovery,
         );
+        let source_avatar = temp.path().join("source-avatar.png");
+        let mut source_png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut source_png, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[255, 0, 0, 255])
+                .unwrap();
+        }
+        std::fs::write(&source_avatar, &source_png).unwrap();
         let mut cx = TestAppContext::single();
         let store = cx.new(|cx| {
             AppStore::new(
@@ -3324,6 +3458,11 @@ mod tests {
                 None,
                 temp.path().join("settings.json"),
                 AppSettings {
+                    personal_avatar: crate::app_settings::PersonalAvatarSettings {
+                        style: runner_core::protocol::model::AvatarStyle::Pixel,
+                        image_path: Some(source_avatar.to_string_lossy().into_owned()),
+                        color: Some("#10b981".into()),
+                    },
                     app_theme: ThemeIntent::Dark,
                     dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
                     ..AppSettings::default()
@@ -3411,6 +3550,84 @@ mod tests {
             window.debug_bounds("SETTINGS_WINDOW_MATERIAL").is_some(),
             cfg!(target_os = "macos")
         );
+        assert!(window
+            .debug_bounds("SETTINGS_APPEARANCE_INTERFACE_CONTENT")
+            .is_some());
+        let avatar_tab = window
+            .debug_bounds("SETTINGS_APPEARANCE_TAB_MY_AVATAR")
+            .unwrap()
+            .center();
+        window.simulate_click(avatar_tab, gpui::Modifiers::default());
+        window.run_until_parked();
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_CONTENT")
+            .is_some());
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_PREVIEW")
+            .is_some());
+        assert!(window.debug_bounds("SETTINGS_APPEARANCE_LIGHT").is_none());
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_STYLE_PIXEL_UNSELECTED")
+            .is_some());
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_STYLE_INITIALS_UNSELECTED")
+            .is_some());
+        let pixel_style = window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_STYLE_PIXEL_UNSELECTED")
+            .unwrap()
+            .center();
+        window.simulate_click(pixel_style, gpui::Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(
+            store.read_with(&cx, |store, _| {
+                (
+                    store.settings.personal_avatar.style,
+                    store.settings.personal_avatar.image_path.clone(),
+                    store.settings.personal_avatar.color.clone(),
+                )
+            }),
+            (
+                runner_core::protocol::model::AvatarStyle::Pixel,
+                None,
+                Some("#10b981".into()),
+            )
+        );
+        assert_eq!(std::fs::read(&source_avatar).unwrap(), source_png);
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_STYLE_PIXEL_SELECTED")
+            .is_some());
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_STYLE_INITIALS_UNSELECTED")
+            .is_some());
+        let orange = window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_COLOR_FB923C")
+            .unwrap()
+            .center();
+        window.simulate_click(orange, gpui::Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(
+            store.read_with(&cx, |store, _| {
+                store
+                    .settings
+                    .personal_avatar
+                    .color
+                    .as_deref()
+                    .map(str::to_owned)
+            }),
+            Some("#fb923c".into())
+        );
+        let interface_tab = window
+            .debug_bounds("SETTINGS_APPEARANCE_TAB_INTERFACE")
+            .unwrap()
+            .center();
+        window.simulate_click(interface_tab, gpui::Modifiers::default());
+        window.run_until_parked();
+        assert!(window
+            .debug_bounds("SETTINGS_APPEARANCE_INTERFACE_CONTENT")
+            .is_some());
+        assert!(window
+            .debug_bounds("SETTINGS_PERSONAL_AVATAR_CONTENT")
+            .is_none());
 
         host.update(&mut window, |host, _, cx| {
             host.0.update(cx, |root, _| {
@@ -3422,7 +3639,12 @@ mod tests {
         window.run_until_parked();
         assert!(window.debug_bounds("SETTINGS_TERMINAL_THEME").is_none());
         // GPUI clears `debug_bounds` each frame; Appearance selectors must be gone.
-        for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
+        for selector in [
+            "SETTINGS_APPEARANCE_LIGHT",
+            "SETTINGS_APPEARANCE_DARK",
+            "SETTINGS_APPEARANCE_TAB_INTERFACE",
+            "SETTINGS_APPEARANCE_TAB_MY_AVATAR",
+        ] {
             assert!(window.debug_bounds(selector).is_none(), "{selector}");
         }
         let pane = window.debug_bounds("SETTINGS_TERMINAL_PANE").unwrap();

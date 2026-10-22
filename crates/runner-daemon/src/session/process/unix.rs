@@ -139,7 +139,43 @@ fn live_descendants(pid: i32) -> Vec<i32> {
     found
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(any(target_os = "linux", test))]
+fn linux_proc_descendants(pid: i32, proc_root: &std::path::Path) -> Vec<i32> {
+    if pid <= 1 {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::from([pid]);
+    let mut frontier = vec![pid];
+    while let Some(parent) = frontier.pop() {
+        let Ok(threads) = std::fs::read_dir(proc_root.join(parent.to_string()).join("task")) else {
+            continue;
+        };
+        // A Linux child belongs to the thread that created it, not necessarily the main thread.
+        for task in threads.flatten() {
+            let Ok(children) = std::fs::read_to_string(task.path().join("children")) else {
+                continue;
+            };
+            for child in children
+                .split_whitespace()
+                .filter_map(|pid| pid.parse::<i32>().ok())
+            {
+                if child > 1 && seen.insert(child) {
+                    found.push(child);
+                    frontier.push(child);
+                }
+            }
+        }
+    }
+    found
+}
+
+#[cfg(target_os = "linux")]
+fn live_descendants(pid: i32) -> Vec<i32> {
+    linux_proc_descendants(pid, std::path::Path::new("/proc"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn live_descendants(_pid: i32) -> Vec<i32> {
     Vec::new()
 }
@@ -313,4 +349,29 @@ pub(crate) fn kill_headless_fork(child: &mut std::process::Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(test)]
+mod linux_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn linux_snapshot_walks_every_thread_and_nested_child_without_cycles() {
+        let root = tempfile::tempdir().unwrap();
+        for (pid, thread, children) in [
+            (100, 100, "200 201 invalid 1"),
+            (100, 101, "202 200"),
+            (200, 200, "300"),
+            (300, 300, "100"),
+        ] {
+            let task = root.path().join(format!("{pid}/task/{thread}"));
+            std::fs::create_dir_all(&task).unwrap();
+            std::fs::write(task.join("children"), children).unwrap();
+        }
+        let mut found = linux_proc_descendants(100, root.path());
+        found.sort_unstable();
+        assert_eq!(found, [200, 201, 202, 300]);
+        assert!(linux_proc_descendants(999, root.path()).is_empty());
+        assert!(linux_proc_descendants(1, root.path()).is_empty());
+    }
 }

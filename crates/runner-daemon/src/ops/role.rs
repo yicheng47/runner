@@ -15,7 +15,8 @@ use crate::model::Runtime;
 use std::collections::HashMap;
 
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
+use std::path::Path;
 use ulid::Ulid as UlidGen;
 
 use crate::{
@@ -180,6 +181,15 @@ pub fn get_by_handle(conn: &Connection, handle: &str) -> Result<Role> {
         .ok_or_else(|| Error::msg(format!("role not found: @{handle}")))
 }
 
+fn normalize_avatar_color_input(value: Option<&str>) -> Result<Option<String>> {
+    value
+        .map(|color| {
+            crate::model::normalize_avatar_color(color)
+                .ok_or_else(|| Error::msg("avatar_color must be a #RRGGBB hex color"))
+        })
+        .transpose()
+}
+
 pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
     validate_handle(&input.handle)?;
     if input.display_name.trim().is_empty() {
@@ -188,6 +198,7 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
     validate_agent_runtime(input.runtime.key())?;
     validate_env_keys(&input.env)?;
     validate_system_prompt(input.system_prompt.as_deref())?;
+    let avatar_color = normalize_avatar_color_input(input.avatar_color.as_deref())?;
 
     let id = new_id();
     let ts = now();
@@ -212,6 +223,9 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
             args_json: Some(args),
             working_dir: input.working_dir,
             system_prompt: input.system_prompt,
+            avatar_path: input.avatar_path,
+            avatar_style: input.avatar_style,
+            avatar_color,
             env_json: Some(input.env),
             model: input
                 .model
@@ -234,7 +248,50 @@ pub fn create(conn: &Connection, input: CreateRoleInput) -> Result<Role> {
 }
 
 pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Role> {
+    let tx = conn.unchecked_transaction()?;
+    let (role, _) = update_in_transaction(&tx, id, input, None)?;
+    tx.commit()?;
+    Ok(role)
+}
+
+fn update_with_avatar_root(
+    conn: &mut Connection,
+    id: &str,
+    input: UpdateRoleInput,
+    app_data_dir: &Path,
+) -> Result<(Role, Option<String>)> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let (role, previous_avatar) = update_in_transaction(&tx, id, input, Some(app_data_dir))?;
+    tx.commit()?;
+    Ok((role, previous_avatar))
+}
+
+fn update_in_transaction(
+    conn: &Connection,
+    id: &str,
+    input: UpdateRoleInput,
+    avatar_root: Option<&Path>,
+) -> Result<(Role, Option<String>)> {
     let existing = get(conn, id)?;
+    let previous_avatar = existing.avatar_path.clone();
+    let avatar_style = input.avatar_style.unwrap_or(existing.avatar_style);
+    let avatar_color = match input.avatar_color {
+        None => existing.avatar_color.clone(),
+        Some(None) => None,
+        Some(Some(color)) => normalize_avatar_color_input(Some(&color))?,
+    };
+    let avatar_path = match input.avatar_path {
+        None => existing.avatar_path.clone(),
+        Some(None) => None,
+        Some(Some(path)) => {
+            if let Some(root) = avatar_root {
+                let canonical = crate::ops::role_avatar::validate_managed_avatar_path(root, &path)?;
+                Some(canonical.to_string_lossy().into_owned())
+            } else {
+                Some(path)
+            }
+        }
+    };
     if let Some(ref n) = input.display_name {
         if n.trim().is_empty() {
             return Err(Error::msg("display_name must not be empty"));
@@ -329,9 +386,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
         None
     };
 
-    let tx = conn.unchecked_transaction()?;
     repo::role::update(
-        &tx,
+        conn,
         &repo::role::RoleRow {
             id: id.to_string(),
             handle: existing.handle,
@@ -341,6 +397,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
             args_json: Some(args),
             working_dir,
             system_prompt,
+            avatar_path,
+            avatar_style,
+            avatar_color,
             env_json: Some(env),
             model,
             effort,
@@ -350,10 +409,9 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
         },
     )?;
     if runtime_changed {
-        repo::role::clear_inheriting_slot_agent_overrides(&tx, id)?;
+        repo::role::clear_inheriting_slot_agent_overrides(conn, id)?;
     }
-    tx.commit()?;
-    get(conn, id)
+    Ok((get(conn, id)?, previous_avatar))
 }
 
 pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
@@ -386,14 +444,19 @@ pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
 // never reshapes a crew. The row takes its remaining sessions with it:
 // archived chats and archived missions.
 pub fn delete(conn: &mut Connection, id: &str) -> Result<()> {
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    delete_with_avatar(conn, id).map(|_| ())
+}
+
+fn delete_with_avatar(conn: &mut Connection, id: &str) -> Result<Option<String>> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     ensure_delete_allowed(&tx, id)?;
+    let avatar_path = get(&tx, id)?.avatar_path;
     super::session::delete_rows(&tx, &repo::session::ids_for_role(&tx, id)?)?;
     if repo::role::delete(&tx, id)? != 1 {
         return Err(Error::msg(format!("role not found: {id}")));
     }
     tx.commit()?;
-    Ok(())
+    Ok(avatar_path)
 }
 
 /// Activity stats for a role — how many sessions and missions it's
@@ -456,13 +519,29 @@ pub fn role_get_by_handle(state: &AppCore, handle: &str) -> Result<Role> {
 }
 
 pub fn role_create(state: &AppCore, input: CreateRoleInput) -> Result<Role> {
-    let conn = state.db.get()?;
-    create(&conn, input)
+    let mut conn = state.db.get()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Some(path) = input.avatar_path.as_deref() {
+        crate::ops::role_avatar::validate_managed_avatar_path(&state.app_data_dir, path)?;
+    }
+    let role = create(&tx, input)?;
+    tx.commit()?;
+    Ok(role)
 }
 
 pub fn role_update(state: &AppCore, id: &str, input: UpdateRoleInput) -> Result<Role> {
-    let conn = state.db.get()?;
-    update(&conn, id, input)
+    let mut conn = state.db.get()?;
+    let (role, previous_avatar) =
+        update_with_avatar_root(&mut conn, id, input, &state.app_data_dir)?;
+    drop(conn);
+    if previous_avatar != role.avatar_path {
+        if let Some(path) = previous_avatar {
+            if let Err(error) = crate::ops::role_avatar::discard_unreferenced_path(state, &path) {
+                log::warn!("could not clean up replaced role avatar {path}: {error}");
+            }
+        }
+    }
+    Ok(role)
 }
 
 pub fn role_delete(state: &AppCore, id: &str) -> Result<()> {
@@ -476,7 +555,14 @@ pub fn role_delete(state: &AppCore, id: &str) -> Result<()> {
     // threads until they are killed.
     state.sessions.kill_all_for_role(id)?;
     let mut conn = state.db.get()?;
-    delete(&mut conn, id)
+    let avatar_path = delete_with_avatar(&mut conn, id)?;
+    drop(conn);
+    if let Some(path) = avatar_path {
+        if let Err(error) = crate::ops::role_avatar::discard_unreferenced_path(state, &path) {
+            log::warn!("could not clean up deleted role avatar {path}: {error}");
+        }
+    }
+    Ok(())
 }
 
 pub fn role_activity(state: &AppCore, id: &str) -> Result<RoleActivity> {
@@ -512,6 +598,10 @@ mod tests {
                 // existing tests that expect `args == []` keep passing.
                 codex_speed: None,
                 permission_mode: PermissionMode::Auto,
+
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap()
@@ -679,6 +769,9 @@ mod tests {
                 effort: Some("effort-needle".into()),
                 codex_speed: None,
                 permission_mode: PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -795,6 +888,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap_err();
@@ -842,6 +938,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap_err();
@@ -895,6 +994,9 @@ mod tests {
                 codex_speed: None,
                 created_at: ts,
                 updated_at: ts,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1235,6 +1337,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1269,6 +1374,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1300,6 +1408,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1348,6 +1459,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::AcceptEdits,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1393,6 +1507,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::AcceptEdits,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1437,6 +1554,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Default,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1469,6 +1589,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1501,6 +1624,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1529,6 +1655,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1612,6 +1741,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1676,6 +1808,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1719,6 +1854,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: PermissionMode::Bypass,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -1794,6 +1932,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::AcceptEdits,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .expect_err("oversize system_prompt must be rejected");
@@ -1824,6 +1965,9 @@ mod tests {
                 effort: None,
                 codex_speed: None,
                 permission_mode: None,
+                avatar_path: None,
+                avatar_style: None,
+                avatar_color: None,
             },
         )
         .expect_err("oversize system_prompt must be rejected on update");

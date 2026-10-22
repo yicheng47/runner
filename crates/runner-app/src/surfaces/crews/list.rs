@@ -308,10 +308,29 @@ impl NativeRoot {
         let menu_item = item.clone();
         let store = self.app_store.read(cx);
         let missions = crew_missions(&store.missions, &id);
-        let handles = item
+        let avatars = item
             .members
             .iter()
-            .map(|member| SharedString::from(member.slot_handle.clone()))
+            .map(|member| {
+                let (image_path, style, color) = store
+                    .roles
+                    .iter()
+                    .find(|role| role.handle == member.role_handle)
+                    .map(|role| {
+                        (
+                            role.avatar_path.clone(),
+                            role.avatar_style,
+                            role.avatar_color.clone(),
+                        )
+                    })
+                    .unwrap_or_default();
+                (
+                    SharedString::from(member.slot_handle.clone()),
+                    image_path,
+                    style,
+                    color,
+                )
+            })
             .collect::<Vec<_>>();
         let lead = item
             .members
@@ -430,7 +449,7 @@ impl NativeRoot {
                         div()
                             .w(rems(LIST_PICTURE_SIZE / 16.))
                             .flex_none()
-                            .child(crew_picture(&handles, LIST_PICTURE_SIZE)),
+                            .child(crew_picture(&avatars, LIST_PICTURE_SIZE)),
                     )
                     .child(
                         div()

@@ -10,6 +10,266 @@ use super::*;
 use crate::surfaces::*;
 use crate::*;
 
+fn avatar_path_roster_member(
+    role_id: &str,
+    slot_handle: &str,
+    avatar_path: Option<&str>,
+    avatar_style: runner_core::protocol::model::AvatarStyle,
+    avatar_color: Option<&str>,
+) -> runner_core::protocol::model::SlotWithRole {
+    let now = Utc::now();
+    runner_core::protocol::model::SlotWithRole {
+        slot: runner_core::protocol::model::Slot {
+            id: "slot".into(),
+            crew_id: "crew".into(),
+            role_id: role_id.into(),
+            slot_handle: slot_handle.into(),
+            position: 0,
+            lead: false,
+            runtime_override: None,
+            model_override: None,
+            effort_override: None,
+            codex_speed_override: None,
+            added_at: now,
+        },
+        role: avatar_path_role(role_id, avatar_path, avatar_style, avatar_color),
+    }
+}
+
+fn avatar_path_role(
+    role_id: &str,
+    avatar_path: Option<&str>,
+    avatar_style: runner_core::protocol::model::AvatarStyle,
+    avatar_color: Option<&str>,
+) -> runner_core::protocol::model::Role {
+    let now = Utc::now();
+    runner_core::protocol::model::Role {
+        id: role_id.into(),
+        handle: "template-handle".into(),
+        display_name: "Template role".into(),
+        runtime: "codex".into(),
+        command: "codex".into(),
+        args: Vec::new(),
+        working_dir: None,
+        system_prompt: None,
+        env: Default::default(),
+        model: None,
+        effort: None,
+        codex_speed: None,
+        avatar_path: avatar_path.map(str::to_owned),
+        avatar_style,
+        avatar_color: avatar_color.map(str::to_owned),
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn avatar_path_session(role_id: &str, handle: &str) -> SessionRow {
+    SessionRow {
+        session: runner_core::protocol::model::Session {
+            id: "session".into(),
+            mission_id: Some("mission".into()),
+            role_id: role_id.into(),
+            slot_id: Some("slot".into()),
+            cwd: None,
+            status: SessionStatus::Running,
+            pid: None,
+            started_at: None,
+            stopped_at: None,
+        },
+        live_title: None,
+        handle: handle.into(),
+        runtime: "codex".into(),
+        lead: false,
+        agent_session_key: None,
+    }
+}
+
+#[test]
+fn mission_avatar_uses_session_role_id_when_slot_alias_changes() {
+    let sessions = vec![avatar_path_session("role-1", "old-alias")];
+    let roster = vec![avatar_path_roster_member(
+        "role-1",
+        "current-alias",
+        Some("/managed/stale-roster.png"),
+        runner_core::protocol::model::AvatarStyle::Pixel,
+        Some("#aa0000"),
+    )];
+    let roles = vec![avatar_path_role(
+        "role-1",
+        Some("/managed/current-role.png"),
+        runner_core::protocol::model::AvatarStyle::Initials,
+        Some("#12ab34"),
+    )];
+
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &roles,
+            "old-alias",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (
+            runner_core::protocol::model::AvatarStyle::Initials,
+            Some("/managed/current-role.png".into()),
+            Some("#12ab34".into()),
+        )
+    );
+    assert_eq!(
+        mission_avatar_appearance(
+            &[],
+            &roster,
+            &roles,
+            "current-alias",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (
+            runner_core::protocol::model::AvatarStyle::Initials,
+            Some("/managed/current-role.png".into()),
+            Some("#12ab34".into()),
+        )
+    );
+}
+
+#[test]
+fn mission_avatar_does_not_reassign_missing_roles_or_human_identity() {
+    let sessions = vec![avatar_path_session("deleted-role", "worker")];
+    let roster = vec![avatar_path_roster_member(
+        "replacement-role",
+        "worker",
+        Some("/managed/replacement.png"),
+        runner_core::protocol::model::AvatarStyle::Pixel,
+        Some("#334455"),
+    )];
+    let roles = vec![avatar_path_role(
+        "replacement-role",
+        Some("/managed/replacement.png"),
+        runner_core::protocol::model::AvatarStyle::Pixel,
+        Some("#334455"),
+    )];
+
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &roles,
+            "worker",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (Default::default(), None, None)
+    );
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &roles,
+            "human",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (Default::default(), None, None)
+    );
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &roles,
+            "runner",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (Default::default(), None, None)
+    );
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &roles,
+            "system",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (Default::default(), None, None)
+    );
+}
+
+#[test]
+fn mission_avatar_uses_current_role_replacement_or_clear_not_roster_snapshot() {
+    let sessions = vec![avatar_path_session("role-1", "worker")];
+    let roster = vec![avatar_path_roster_member(
+        "role-1",
+        "worker",
+        Some("/managed/stale-roster.png"),
+        runner_core::protocol::model::AvatarStyle::Initials,
+        Some("#cc1100"),
+    )];
+    let replacement = vec![avatar_path_role(
+        "role-1",
+        Some("/managed/replacement.png"),
+        runner_core::protocol::model::AvatarStyle::Pixel,
+        Some("#00aa55"),
+    )];
+    let cleared = vec![avatar_path_role(
+        "role-1",
+        None,
+        runner_core::protocol::model::AvatarStyle::Initials,
+        None,
+    )];
+
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &replacement,
+            "worker",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (
+            runner_core::protocol::model::AvatarStyle::Pixel,
+            Some("/managed/replacement.png".into()),
+            Some("#00aa55".into()),
+        )
+    );
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &roster,
+            &cleared,
+            "worker",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (
+            runner_core::protocol::model::AvatarStyle::Initials,
+            None,
+            None
+        )
+    );
+}
+
+#[test]
+fn mission_avatar_survives_removed_slot_when_role_still_exists() {
+    let sessions = vec![avatar_path_session("role-1", "removed-worker")];
+    let roles = vec![avatar_path_role(
+        "role-1",
+        Some("/managed/current-role.png"),
+        runner_core::protocol::model::AvatarStyle::Pixel,
+        Some("#348abc"),
+    )];
+
+    assert_eq!(
+        mission_avatar_appearance(
+            &sessions,
+            &[],
+            &roles,
+            "removed-worker",
+            &crate::app_settings::PersonalAvatarSettings::default()
+        ),
+        (
+            runner_core::protocol::model::AvatarStyle::Pixel,
+            Some("/managed/current-role.png".into()),
+            Some("#348abc".into()),
+        )
+    );
+}
+
 struct MissionComposerInputTest {
     workspace: Entity<MissionWorkspace>,
     show_feed: bool,
@@ -106,6 +366,9 @@ fn mission_workspace_test() -> (
                     model: None,
                     effort: None,
                     codex_speed: None,
+                    avatar_path: None,
+                    avatar_style: Default::default(),
+                    avatar_color: None,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 },
@@ -956,6 +1219,9 @@ fn cached_mission_header_tabs_and_feed_span_the_content_column() {
                     model: None,
                     effort: None,
                     codex_speed: None,
+                    avatar_path: None,
+                    avatar_style: Default::default(),
+                    avatar_color: None,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 },
@@ -3117,4 +3383,42 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
     });
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
+}
+
+#[test]
+fn mission_personal_avatar_only_applies_to_the_human_author() {
+    let personal = crate::app_settings::PersonalAvatarSettings {
+        style: AvatarStyle::Pixel,
+        image_path: Some("/personal/avatar.png".into()),
+        color: Some("#06b6d4".into()),
+    };
+    assert_eq!(
+        mission_avatar_appearance(&[], &[], &[], "human", &personal),
+        (
+            AvatarStyle::Pixel,
+            Some("/personal/avatar.png".into()),
+            Some("#06b6d4".into())
+        )
+    );
+    let sessions = [avatar_path_session("worker-role", "worker")];
+    let roles = [avatar_path_role(
+        "worker-role",
+        Some("/role/worker.png"),
+        AvatarStyle::Initials,
+        Some("#10b981"),
+    )];
+    assert_eq!(
+        mission_avatar_appearance(&sessions, &[], &roles, "worker", &personal),
+        (
+            AvatarStyle::Initials,
+            Some("/role/worker.png".into()),
+            Some("#10b981".into())
+        )
+    );
+    for author in ["runner", "system", "?", "unknown"] {
+        assert_eq!(
+            mission_avatar_appearance(&[], &[], &[], author, &personal),
+            (AvatarStyle::default(), None, None)
+        );
+    }
 }

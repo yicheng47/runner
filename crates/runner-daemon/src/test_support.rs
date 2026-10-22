@@ -102,6 +102,9 @@ pub(crate) fn insert_test_role(
             codex_speed: None,
             created_at: now,
             updated_at: now,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )
     .unwrap();

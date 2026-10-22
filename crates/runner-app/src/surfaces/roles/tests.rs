@@ -2,6 +2,7 @@ use super::logic::runtime_default_effort_label;
 use super::logic::runtime_model_placeholder;
 use super::logic::validate_role_handle;
 use super::*;
+use runner_core::protocol::model::AvatarStyle;
 use runner_daemon::model::Runtime;
 
 fn runtime_with_defaults(
@@ -372,6 +373,9 @@ fn create_test_role_with_args(
     runner_daemon::ops::role::role_create(
         core,
         runner_daemon::ops::role::CreateRoleInput {
+            avatar_color: None,
+            avatar_style: Default::default(),
+            avatar_path: None,
             handle: handle.into(),
             display_name: format!("Role {handle}"),
             runtime: Runtime::ClaudeCode,
@@ -873,6 +877,9 @@ fn a_legacy_shell_role_saves_only_after_an_agent_is_picked() {
     runner_daemon::repo::role::insert(
         &page.core.db.get().unwrap(),
         &runner_daemon::repo::role::RoleRow {
+            avatar_color: None,
+            avatar_style: Default::default(),
+            avatar_path: None,
             id: "legacy-shell".into(),
             handle: "legacy-shell".into(),
             display_name: "Legacy shell".into(),
@@ -1411,7 +1418,7 @@ fn new_role_entry_points_use_a_page_and_cancel_returns_to_the_list() {
 }
 
 #[test]
-fn new_role_avatar_preview_is_stable_until_the_handle_is_typed() {
+fn new_role_avatar_preview_uses_a_placeholder_until_the_handle_is_typed() {
     let mut page = role_page_harness("new-role-avatar-preview");
     let initial = page
         .host
@@ -1421,7 +1428,7 @@ fn new_role_avatar_preview_is_stable_until_the_handle_is_typed() {
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(!initial.is_empty());
+    assert!(initial.is_empty());
     assert!(page.visual.debug_bounds("ROLE_CREATE_AVATAR").is_some());
     assert!(page.visual.debug_bounds("EMPTY_PROFILE_TILE").is_none());
     page.host
@@ -1460,7 +1467,7 @@ fn new_role_avatar_preview_is_stable_until_the_handle_is_typed() {
             );
             root.close_create_role(window, cx);
             root.open_create_role(window, cx);
-            assert_ne!(
+            assert_eq!(
                 root.role_surfaces.create.as_ref().unwrap().avatar_seed(cx),
                 initial
             );
@@ -1925,6 +1932,58 @@ fn new_role_keyboard_reaches_the_breadcrumb() {
         })
         .unwrap();
     page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("shift-tab");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            assert!(root
+                .role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .avatar_color
+                .read(cx)
+                .focus_handle()
+                .is_focused(window));
+        })
+        .unwrap();
+    for index in (0..10).rev() {
+        page.visual.simulate_keystrokes("shift-tab");
+        page.host
+            .update(&mut page.visual, |root, window, _| {
+                assert!(root
+                    .role_surfaces
+                    .create
+                    .as_ref()
+                    .unwrap()
+                    .avatar_color_focus[index]
+                    .is_focused(window));
+            })
+            .unwrap();
+    }
+    page.visual.simulate_keystrokes("shift-tab");
+    page.host
+        .update(&mut page.visual, |root, window, _| {
+            assert!(root
+                .role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .avatar_pixel_focus
+                .is_focused(window));
+        })
+        .unwrap();
+    page.visual.simulate_keystrokes("shift-tab");
+    page.host
+        .update(&mut page.visual, |root, window, _| {
+            assert!(root
+                .role_surfaces
+                .create
+                .as_ref()
+                .unwrap()
+                .avatar_restore_focus
+                .is_focused(window));
+        })
+        .unwrap();
     page.visual.simulate_keystrokes("shift-tab enter");
     page.visual.run_until_parked();
     assert_eq!(page.read(|root| root.route.clone()), AppRoute::Roles);
@@ -2258,4 +2317,918 @@ fn refreshed_role_runtime_placeholders_follow_peer_language_changes() {
             }
         }
     });
+}
+
+#[test]
+fn role_avatar_generation_blocks_saving_and_keeps_cancel_available() {
+    let mut page = role_page_harness("avatar-generation-save-guard");
+    let role = create_test_role(&page.core, "avatar-save-guard", None);
+    page.open_role("avatar-save-guard");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx);
+            let form = root.role_surfaces.edit.as_mut().unwrap();
+            form.avatar.generating = true;
+            root.submit_role_edit(window, cx);
+            assert!(!root.role_surfaces.edit.as_ref().unwrap().submitting);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_AVATAR_GENERATE").is_some());
+    page.click("ROLE_EDIT_CANCEL");
+    assert!(!page.in_place_edit());
+    let stored =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-save-guard").unwrap();
+    assert_eq!(stored.avatar_path, None);
+}
+
+#[test]
+fn role_avatar_restore_is_dirty_but_cancellation_preserves_the_original() {
+    let mut page = role_page_harness("avatar-restore-dirty");
+    let mut role = create_test_role(&page.core, "avatar-restore", None);
+    role.avatar_path = Some("/tmp/missing-role-avatar.png".into());
+    page.open_role("avatar-restore");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx);
+            assert!(!super::logic::role_edit_is_dirty(
+                root.role_surfaces.edit.as_ref().unwrap(),
+                cx
+            ));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("ROLE_AVATAR_RESTORE").is_some());
+    page.click("ROLE_AVATAR_RESTORE");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.edit.as_ref().unwrap();
+            assert_eq!(form.avatar.path, None);
+            assert_eq!(form.role.avatar_path, role.avatar_path);
+            assert!(super::logic::role_edit_is_dirty(form, cx));
+        })
+        .unwrap();
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_some());
+    page.click("ROLE_EDIT_CANCEL");
+    assert!(!page.in_place_edit());
+}
+
+#[test]
+fn pressing_enter_on_restore_keeps_the_avatar_as_an_unsaved_draft() {
+    let mut page = role_page_harness("avatar-restore-enter");
+    let mut role = create_test_role(&page.core, "avatar-enter", None);
+    role.avatar_path = Some("/tmp/missing-role-avatar.png".into());
+    page.open_role("avatar-enter");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx);
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_restore_focus
+                .focus(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(page.in_place_edit());
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root.role_surfaces.edit.as_ref().unwrap();
+            assert_eq!(form.avatar.path, None);
+            assert!(!form.submitting);
+            assert!(super::logic::role_edit_is_dirty(form, cx));
+        })
+        .unwrap();
+}
+
+fn avatar_png_fixture(core: &crate::AppCore) -> String {
+    let directory = std::fs::canonicalize(&core.app_data_dir)
+        .unwrap()
+        .join("role-avatars");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("11111111-1111-4111-8111-111111111111.png");
+    std::fs::write(
+        &path,
+        [
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 112, 233,
+            56, 243, 31, 0, 5, 68, 2, 152, 31, 174, 24, 135, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ],
+    )
+    .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn stub_avatar_generation(
+    page: &mut RolePageHarness,
+    path: String,
+) -> std::sync::Arc<std::sync::Mutex<Vec<runner_core::protocol::role::GenerateRoleAvatarInput>>> {
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
+    };
+    struct AvatarTransport {
+        core: crate::AppCore,
+        path: String,
+        requests: std::sync::Arc<
+            std::sync::Mutex<Vec<runner_core::protocol::role::GenerateRoleAvatarInput>>,
+        >,
+    }
+    impl Transport for AvatarTransport {
+        fn call(&self, request: Request) -> Result<Response, ClientError> {
+            match request {
+                Request::role_avatar_generate { input } => {
+                    self.requests.lock().unwrap().push(input);
+                    Ok(Response::role_avatar_generate(Ok(
+                        runner_core::protocol::role::GeneratedRoleAvatar {
+                            path: self.path.clone(),
+                        },
+                    )))
+                }
+                request => {
+                    runner_daemon::daemon::InProcessTransport(self.core.clone()).call(request)
+                }
+            }
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            runner_daemon::daemon::InProcessTransport(self.core.clone()).subscribe()
+        }
+    }
+    let core = page.core.clone();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let client = DaemonClient::new(std::sync::Arc::new(AvatarTransport {
+        core,
+        path,
+        requests: requests.clone(),
+    }));
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.app_store.update(cx, |store, _| store.client = client);
+        })
+        .unwrap();
+    requests
+}
+
+#[test]
+fn generated_avatar_is_only_persisted_on_save_and_can_be_restored() {
+    let mut page = role_page_harness("avatar-preview-save");
+    let role = create_test_role(&page.core, "avatar-preview-save", None);
+    let image = avatar_png_fixture(&page.core);
+    stub_avatar_generation(&mut page, image.clone());
+    page.open_role("avatar-preview-save");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .avatar
+            .path
+            .clone()),
+        Some(image.clone())
+    );
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-preview-save")
+            .unwrap()
+            .avatar_path,
+        None
+    );
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_some());
+    page.click("ROLE_EDIT_SAVE");
+    assert!(!page.in_place_edit());
+    let saved =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-preview-save").unwrap();
+    assert_eq!(saved.avatar_path.as_deref(), Some(image.as_str()));
+    assert!(std::path::Path::new(&image).exists());
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(saved, window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_RESTORE");
+    page.click("ROLE_EDIT_SAVE");
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-preview-save")
+            .unwrap()
+            .avatar_path,
+        None
+    );
+}
+
+#[test]
+fn cancelling_a_generated_avatar_does_not_persist_the_preview() {
+    let mut page = role_page_harness("avatar-preview-cancel");
+    let role = create_test_role(&page.core, "avatar-preview-cancel", None);
+    let image = avatar_png_fixture(&page.core);
+    stub_avatar_generation(&mut page, image.clone());
+    page.open_role("avatar-preview-cancel");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .avatar
+            .path
+            .clone()),
+        Some(image)
+    );
+    page.click("ROLE_EDIT_CANCEL");
+    assert!(!page.in_place_edit());
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-preview-cancel")
+            .unwrap()
+            .avatar_path,
+        None
+    );
+}
+
+#[test]
+fn new_role_saves_the_generated_avatar_through_the_existing_create_flow() {
+    let mut page = role_page_harness("new-role-generated-avatar");
+    let image = avatar_png_fixture(&page.core);
+    stub_avatar_generation(&mut page, image.clone());
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces.create.as_mut().unwrap().runtimes =
+                runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
+            root.select_create_role_runtime("codex".into(), cx);
+            let form = root.role_surfaces.create.as_ref().unwrap();
+            form.handle
+                .update(cx, |input, cx| input.set_text("new-avatar-role", cx));
+            form.display_name
+                .update(cx, |input, cx| input.set_text("Avatar role", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .create
+            .as_ref()
+            .unwrap()
+            .avatar
+            .path
+            .clone()),
+        Some(image.clone())
+    );
+    assert!(runner_daemon::ops::role::role_get_by_handle(&page.core, "new-avatar-role").is_err());
+    page.click("ROLE_EDIT_SAVE");
+    let saved =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "new-avatar-role").unwrap();
+    assert_eq!(saved.avatar_path.as_deref(), Some(image.as_str()));
+    assert!(std::path::Path::new(&image).exists());
+}
+
+#[test]
+fn pixel_style_previews_saves_reopens_and_can_switch_back_to_initials() {
+    let mut page = role_page_harness("avatar-style-save");
+    let role = create_test_role(&page.core, "avatar-style-save", None);
+    page.open_role("avatar-style-save");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role.clone(), window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Initials
+    );
+    page.click("ROLE_AVATAR_STYLE_PIXEL");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    assert!(page.visual.debug_bounds("ROLE_EDIT_DIRTY").is_some());
+    page.click("ROLE_EDIT_SAVE");
+    let saved =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-style-save").unwrap();
+    assert_eq!(saved.avatar_style, AvatarStyle::Pixel);
+    assert_eq!(saved.avatar_path, None);
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(saved, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    page.click("ROLE_AVATAR_STYLE_INITIALS");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Initials
+    );
+    page.click("ROLE_EDIT_SAVE");
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-style-save")
+            .unwrap()
+            .avatar_style,
+        AvatarStyle::Initials
+    );
+}
+
+#[test]
+fn cancelling_a_style_change_keeps_the_saved_role_choice() {
+    let mut page = role_page_harness("avatar-style-cancel");
+    let role = create_test_role(&page.core, "avatar-style-cancel", None);
+    page.open_role("avatar-style-cancel");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_STYLE_PIXEL");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    page.click("ROLE_EDIT_CANCEL");
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-style-cancel")
+            .unwrap()
+            .avatar_style,
+        AvatarStyle::Initials
+    );
+}
+
+#[test]
+fn new_role_can_choose_pixel_art_before_filling_its_fields() {
+    let mut page = role_page_harness("new-role-pixel-avatar");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_STYLE_PIXEL");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.create.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces.create.as_mut().unwrap().runtimes =
+                runner_daemon::ops::runtime::runtime_catalog(&page.core).unwrap();
+            root.select_create_role_runtime("codex".into(), cx);
+            let form = root.role_surfaces.create.as_ref().unwrap();
+            form.handle
+                .update(cx, |input, cx| input.set_text("new-pixel-role", cx));
+            form.display_name
+                .update(cx, |input, cx| input.set_text("Pixel role", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_EDIT_SAVE");
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "new-pixel-role")
+            .unwrap()
+            .avatar_style,
+        AvatarStyle::Pixel
+    );
+}
+
+#[test]
+fn selecting_pixel_after_an_ai_preview_clears_only_the_draft_image() {
+    let mut page = role_page_harness("avatar-ai-to-pixel");
+    let role = create_test_role(&page.core, "avatar-ai-to-pixel", None);
+    let image = avatar_png_fixture(&page.core);
+    stub_avatar_generation(&mut page, image);
+    page.open_role("avatar-ai-to-pixel");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar
+        .path
+        .is_some()));
+    page.click("ROLE_AVATAR_STYLE_PIXEL");
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar
+        .path
+        .is_none()));
+    page.click("ROLE_EDIT_SAVE");
+    let stored =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-ai-to-pixel").unwrap();
+    assert_eq!(stored.avatar_style, AvatarStyle::Pixel);
+    assert_eq!(stored.avatar_path, None);
+}
+
+#[test]
+fn pressing_enter_on_pixel_selector_keeps_the_choice_as_an_unsaved_draft() {
+    let mut page = role_page_harness("avatar-pixel-enter");
+    let role = create_test_role(&page.core, "avatar-pixel-enter", None);
+    page.open_role("avatar-pixel-enter");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx);
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_pixel_focus
+                .focus(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(page.in_place_edit());
+    assert_eq!(
+        page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.style),
+        AvatarStyle::Pixel
+    );
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-pixel-enter")
+            .unwrap()
+            .avatar_style,
+        AvatarStyle::Initials
+    );
+}
+
+#[test]
+fn avatar_generate_opens_an_editable_prompt_before_starting_codex() {
+    let mut page = role_page_harness("avatar-prompt-dialog");
+    let role = create_test_role(
+        &page.core,
+        "prompt-avatar",
+        Some("Review changes carefully".into()),
+    );
+    let image = avatar_png_fixture(&page.core);
+    stub_avatar_generation(&mut page, image);
+    page.open_role("prompt-avatar");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_PROMPT_DIALOG")
+        .is_some());
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_PROMPT_INPUT")
+        .is_some());
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar
+        .path
+        .is_none()));
+    assert!(!page.read(|root| root.role_surfaces.edit.as_ref().unwrap().avatar.generating));
+}
+
+#[test]
+fn avatar_palette_exposes_presets_and_custom_hex_without_generating_an_image() {
+    let mut page = role_page_harness("avatar-theme-palette");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_create_role(window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_COLOR_PALETTE")
+        .is_some());
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_COLOR_10b981")
+        .is_some());
+    assert!(page.visual.debug_bounds("ROLE_AVATAR_COLOR_HEX").is_some());
+    assert!(page.read(|root| root
+        .role_surfaces
+        .create
+        .as_ref()
+        .unwrap()
+        .avatar
+        .path
+        .is_none()));
+}
+
+#[test]
+fn avatar_theme_presets_custom_validation_save_cancel_and_automatic_round_trip() {
+    let mut page = role_page_harness("avatar-color-save");
+    let role = create_test_role(&page.core, "avatar-color-save", None);
+    page.open_role("avatar-color-save");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_COLOR_10b981");
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .avatar
+            .color
+            .clone())
+            .as_deref(),
+        Some("#10b981")
+    );
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-color-save")
+            .unwrap()
+            .avatar_color,
+        None
+    );
+    page.click("ROLE_EDIT_SAVE");
+    let saved =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-color-save").unwrap();
+    assert_eq!(saved.avatar_color.as_deref(), Some("#10b981"));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(saved, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_color
+                .update(cx, |field, cx| field.set_text("#xyz123", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_COLOR_ERROR")
+        .is_some());
+    page.click("ROLE_EDIT_SAVE");
+    assert!(page.in_place_edit());
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-color-save")
+            .unwrap()
+            .avatar_color
+            .as_deref(),
+        Some("#10b981")
+    );
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_color
+                .update(cx, |field, cx| field.set_text(" #A1b2C3 ", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page
+        .visual
+        .debug_bounds("ROLE_AVATAR_COLOR_ERROR")
+        .is_none());
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .avatar
+            .color
+            .clone())
+            .as_deref(),
+        Some("#a1b2c3")
+    );
+    page.click("ROLE_EDIT_CANCEL");
+    let saved =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-color-save").unwrap();
+    assert_eq!(saved.avatar_color.as_deref(), Some("#10b981"));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(saved, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_COLOR_AUTO");
+    page.click("ROLE_EDIT_SAVE");
+    assert_eq!(
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-color-save")
+            .unwrap()
+            .avatar_color,
+        None
+    );
+}
+
+#[test]
+fn avatar_prompt_default_edit_reset_cancel_and_confirm_keep_system_prompt_separate() {
+    let mut page = role_page_harness("avatar-prompt-edits");
+    let role = create_test_role(
+        &page.core,
+        "avatar-prompt-edits",
+        Some("Review the implementation".into()),
+    );
+    let image = avatar_png_fixture(&page.core);
+    let requests = stub_avatar_generation(&mut page, image.clone());
+    page.open_role("avatar-prompt-edits");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_COLOR_3b82f6");
+    page.click("ROLE_AVATAR_GENERATE");
+    assert!(requests.lock().unwrap().is_empty());
+    let default = page
+        .host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input
+                .read(cx)
+                .text()
+                .to_owned()
+        })
+        .unwrap();
+    assert!(default.contains("avatar-prompt-edits"));
+    assert!(default.contains("Review the implementation"));
+    assert!(default.contains("#3b82f6"));
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |field, cx| field.set_text("A blue friendly robot", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_PROMPT_RESET");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            assert_eq!(
+                root.role_surfaces
+                    .edit
+                    .as_ref()
+                    .unwrap()
+                    .avatar_prompt
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .read(cx)
+                    .text(),
+                default
+            );
+        })
+        .unwrap();
+    page.click("ROLE_AVATAR_PROMPT_CANCEL");
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(page.in_place_edit());
+    page.click("ROLE_AVATAR_GENERATE");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |field, cx| {
+                    field.set_text("  A blue friendly robot with a silver visor  ", cx)
+                });
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    let sent = requests.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].prompt.as_deref(),
+        Some("A blue friendly robot with a silver visor")
+    );
+    assert_eq!(sent[0].avatar_color.as_deref(), Some("#3b82f6"));
+    assert_eq!(
+        sent[0].system_prompt.as_deref(),
+        Some("Review the implementation")
+    );
+    drop(sent);
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar_prompt
+        .is_none()));
+    assert_eq!(
+        page.read(|root| root
+            .role_surfaces
+            .edit
+            .as_ref()
+            .unwrap()
+            .avatar
+            .path
+            .clone()),
+        Some(image)
+    );
+    let stored =
+        runner_daemon::ops::role::role_get_by_handle(&page.core, "avatar-prompt-edits").unwrap();
+    assert_eq!(
+        stored.system_prompt.as_deref(),
+        Some("Review the implementation")
+    );
+    assert_eq!(stored.avatar_path, None);
+    page.click("ROLE_AVATAR_COLOR_10b981");
+    page.click("ROLE_AVATAR_GENERATE");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let input = &root
+                .role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input;
+            assert_eq!(
+                input.read(cx).text(),
+                "A blue friendly robot with a silver visor"
+            );
+        })
+        .unwrap();
+    page.click("ROLE_AVATAR_PROMPT_RESET");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let input = &root
+                .role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input;
+            assert!(input.read(cx).text().contains("#10b981"));
+        })
+        .unwrap();
+    page.click("ROLE_AVATAR_PROMPT_CANCEL");
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn blank_prompt_and_escape_do_not_start_generation_or_cancel_the_role_form() {
+    let mut page = role_page_harness("avatar-prompt-keyboard");
+    let role = create_test_role(&page.core, "avatar-prompt-keyboard", None);
+    let image = avatar_png_fixture(&page.core);
+    let requests = stub_avatar_generation(&mut page, image);
+    page.open_role("avatar-prompt-keyboard");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_GENERATE");
+    page.visual.simulate_keystrokes("enter");
+    page.visual.run_until_parked();
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar_prompt
+        .is_some()));
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            root.role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input
+                .update(cx, |field, cx| field.set_text("   ", cx));
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert!(requests.lock().unwrap().is_empty());
+    page.visual.simulate_keystrokes("escape");
+    page.visual.run_until_parked();
+    assert!(page.in_place_edit());
+    assert!(page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar_prompt
+        .is_none()));
+    assert!(requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn unedited_image_prompt_defaults_refresh_after_changing_role_color() {
+    let mut page = role_page_harness("avatar-prompt-default-refresh");
+    let role = create_test_role(&page.core, "avatar-prompt-default-refresh", None);
+    let image = avatar_png_fixture(&page.core);
+    let requests = stub_avatar_generation(&mut page, image);
+    page.open_role("avatar-prompt-default-refresh");
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.open_role_edit(role, window, cx)
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    page.click("ROLE_AVATAR_COLOR_3b82f6");
+    page.click("ROLE_AVATAR_GENERATE");
+    page.click("ROLE_AVATAR_PROMPT_CONFIRM");
+    assert!(!page.read(|root| root
+        .role_surfaces
+        .edit
+        .as_ref()
+        .unwrap()
+        .avatar
+        .prompt_is_custom));
+    page.click("ROLE_AVATAR_COLOR_10b981");
+    page.click("ROLE_AVATAR_GENERATE");
+    page.host
+        .update(&mut page.visual, |root, _, cx| {
+            let input = &root
+                .role_surfaces
+                .edit
+                .as_ref()
+                .unwrap()
+                .avatar_prompt
+                .as_ref()
+                .unwrap()
+                .input;
+            assert!(input.read(cx).text().contains("#10b981"));
+            assert!(!input.read(cx).text().contains("#3b82f6"));
+        })
+        .unwrap();
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }

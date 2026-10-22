@@ -28,6 +28,7 @@ pub mod mission;
 pub mod node;
 pub mod project;
 pub mod role;
+pub mod role_avatar;
 pub mod runtime;
 pub mod session;
 pub mod skills;

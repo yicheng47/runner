@@ -211,6 +211,13 @@ impl MissionWorkspace {
                 window,
                 cx,
             );
+            let (avatar_style, avatar_path, avatar_color) = mission_avatar_appearance(
+                &self.sessions,
+                &self.roster,
+                &self.app_store.read(cx).roles,
+                &session.handle,
+                &self.settings(cx).personal_avatar,
+            );
             let disabled = self.stopping
                 || self.resuming
                 || self.archiving
@@ -425,7 +432,12 @@ impl MissionWorkspace {
                                                 format!("MISSION_CARD_AVATAR {session_id}")
                                             })
                                             .flex_none()
-                                            .child(RoleAvatar::new(session.handle.clone(), 25.)),
+                                            .child({
+                                                RoleAvatar::new(session.handle.clone(), 25.)
+                                                    .style(avatar_style)
+                                                    .color(avatar_color.clone())
+                                                    .image_path(avatar_path)
+                                            }),
                                     )
                                     .child(
                                         Tooltip::new(
@@ -444,8 +456,11 @@ impl MissionWorkspace {
                                                 .text_size(theme::text_body())
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(
-                                                    runner_app::ui::hue_for_seed(&session.handle)
-                                                        .color(),
+                                                    runner_app::ui::hue_for_avatar(
+                                                        &session.handle,
+                                                        avatar_color.as_deref(),
+                                                    )
+                                                    .color(),
                                                 )
                                                 .child(handle_title),
                                         )

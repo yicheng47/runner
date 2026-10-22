@@ -1,10 +1,11 @@
 use gpui::prelude::*;
 use gpui::{
-    div, rems, rgb, AnyElement, App, FontWeight, Hsla, IntoElement, RenderOnce, SharedString,
-    Window,
+    div, img, rems, rgb, AnyElement, App, FontWeight, Hsla, IntoElement, ObjectFit, RenderOnce,
+    SharedString, StyledImage, Window,
 };
 
 use crate::theme;
+use runner_core::protocol::model::{parse_avatar_color, AvatarStyle};
 
 const HUMAN_SOURCE_CELLS: [bool; 15] = [
     true, false, true, false, true, true, true, true, false, false, true, true, true, false, true,
@@ -53,6 +54,40 @@ pub fn hue_for_seed(seed: &str) -> AvatarHue {
     HUES[((fnv1a(seed) >> 16) as usize) % HUES.len()]
 }
 
+pub fn hue_for_avatar(seed: &str, color: Option<&str>) -> AvatarHue {
+    color
+        .and_then(parse_avatar_color)
+        .map(AvatarHue::Fixed)
+        .unwrap_or_else(|| hue_for_seed(seed))
+}
+
+pub fn initial_for_seed(seed: &str) -> String {
+    seed.trim()
+        .chars()
+        .next()
+        .and_then(|initial| initial.to_uppercase().next())
+        .unwrap_or('?')
+        .to_string()
+}
+
+fn initials_tile(seed: &str, size: f32, color: Option<&str>) -> AnyElement {
+    let hue = hue_for_avatar(seed, color).color();
+    div()
+        .when(cfg!(test), |tile| {
+            tile.debug_selector(|| "ROLE_AVATAR_INITIAL".into())
+        })
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme::with_alpha(hue, 0.2))
+        .text_color(theme::text())
+        .text_size(rems(size * 0.48 / 16.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(initial_for_seed(seed))
+        .into_any_element()
+}
+
 pub fn cells_for_seed(seed: &str) -> [bool; 25] {
     let hash = fnv1a(seed);
     let mut source = if seed == "human" {
@@ -71,6 +106,41 @@ pub fn cells_for_seed(seed: &str) -> [bool; 25] {
     })
 }
 
+fn pixel_tile(seed: &str, size: f32, color: Option<&str>) -> AnyElement {
+    let cells = cells_for_seed(seed);
+    let hue = hue_for_avatar(seed, color).color();
+    let cell = size / 5.;
+    div()
+        .when(cfg!(test), |tile| {
+            tile.debug_selector(|| "ROLE_AVATAR_PIXEL".into())
+        })
+        .relative()
+        .size_full()
+        .children((0..5).map(|row| {
+            div()
+                .absolute()
+                .top(rems(row as f32 * cell / 16.))
+                .left_0()
+                .flex()
+                .h(rems(cell / 16.))
+                .children((0..5).map(move |column| {
+                    div().size(rems(cell / 16.)).bg(if cells[row * 5 + column] {
+                        hue
+                    } else {
+                        theme::raised()
+                    })
+                }))
+        }))
+        .into_any_element()
+}
+
+fn fallback_tile(seed: &str, size: f32, style: AvatarStyle, color: Option<&str>) -> AnyElement {
+    match style {
+        AvatarStyle::Initials => initials_tile(seed, size, color),
+        AvatarStyle::Pixel => pixel_tile(seed, size, color),
+    }
+}
+
 fn fnv1a(seed: &str) -> u32 {
     seed.as_bytes().iter().fold(0x811c9dc5, |hash, byte| {
         (hash ^ u32::from(*byte)).wrapping_mul(0x01000193)
@@ -82,6 +152,9 @@ pub struct RoleAvatar {
     seed: SharedString,
     size: f32,
     presence: Option<RolePresence>,
+    image_path: Option<String>,
+    style: AvatarStyle,
+    color: Option<String>,
 }
 
 impl RoleAvatar {
@@ -90,7 +163,25 @@ impl RoleAvatar {
             seed: seed.into(),
             size,
             presence: None,
+            image_path: None,
+            style: AvatarStyle::default(),
+            color: None,
         }
+    }
+
+    pub fn color(mut self, color: Option<String>) -> Self {
+        self.color = color;
+        self
+    }
+
+    pub fn style(mut self, style: AvatarStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn image_path(mut self, path: Option<String>) -> Self {
+        self.image_path = path;
+        self
     }
 
     pub fn presence(mut self, presence: RolePresence) -> Self {
@@ -101,11 +192,29 @@ impl RoleAvatar {
 
 impl RenderOnce for RoleAvatar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        let cells = cells_for_seed(&self.seed);
-        let hue = hue_for_seed(&self.seed).color();
-        let cell = self.size / 5.;
+        let style = self.style;
+        let picture = if let Some(path) = self.image_path {
+            let seed = self.seed.clone();
+            let loading_seed = seed.clone();
+            let size = self.size;
+            let color = self.color.clone();
+            let loading_color = color.clone();
+            img(std::path::PathBuf::from(path))
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .with_fallback(move || fallback_tile(&seed, size, style, color.as_deref()))
+                .with_loading(move || {
+                    fallback_tile(&loading_seed, size, style, loading_color.as_deref())
+                })
+                .into_any_element()
+        } else {
+            fallback_tile(&self.seed, self.size, style, self.color.as_deref())
+        };
         let presence = self.presence;
         div()
+            .when(cfg!(test), |avatar| {
+                avatar.debug_selector(|| "ROLE_AVATAR_TILE".into())
+            })
             .relative()
             .flex_none()
             .size(rems(self.size / 16.))
@@ -115,24 +224,13 @@ impl RenderOnce for RoleAvatar {
                     .size_full()
                     .rounded(rems(4_f32.max((self.size * 0.23).round()) / 16.))
                     .overflow_hidden()
-                    .children((0..5).map(|row| {
-                        div()
-                            .absolute()
-                            .top(rems(row as f32 * cell / 16.))
-                            .left_0()
-                            .flex()
-                            .h(rems(cell / 16.))
-                            .children((0..5).map(move |column| {
-                                div().size(rems(cell / 16.)).bg(if cells[row * 5 + column] {
-                                    hue
-                                } else {
-                                    theme::raised()
-                                })
-                            }))
-                    })),
+                    .child(picture),
             )
             .children(presence.map(|presence| {
                 div()
+                    .when(cfg!(test), |dot| {
+                        dot.debug_selector(|| "ROLE_AVATAR_PRESENCE".into())
+                    })
                     .absolute()
                     .right(rems(-1. / 16.))
                     .bottom(rems(-1. / 16.))
@@ -175,11 +273,94 @@ mod tests {
     }
 
     #[test]
-    fn pixel_avatar_is_mirrored() {
+    fn initials_use_the_first_uppercase_character() {
+        assert_eq!(initial_for_seed("coder"), "C");
+        assert_eq!(initial_for_seed("reviewer"), "R");
+        assert_eq!(initial_for_seed("  architect "), "A");
+        assert_eq!(initial_for_seed("张三"), "张");
+        assert_eq!(initial_for_seed("7-coder"), "7");
+    }
+
+    #[test]
+    fn blank_handles_use_a_question_mark() {
+        assert_eq!(initial_for_seed(""), "?");
+        assert_eq!(initial_for_seed("  "), "?");
+    }
+
+    #[test]
+    fn unreadable_images_render_the_selected_style_without_changing_avatar_geometry() {
+        use gpui::{px, Context, Render, TestAppContext, VisualTestContext};
+        struct AvatarHost {
+            path: Option<String>,
+            size: f32,
+            style: AvatarStyle,
+        }
+        impl Render for AvatarHost {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    RoleAvatar::new("coder", self.size)
+                        .style(self.style)
+                        .image_path(self.path.clone())
+                        .presence(RolePresence::Busy),
+                )
+            }
+        }
+        for size in [20., 96.] {
+            for style in [AvatarStyle::Initials, AvatarStyle::Pixel] {
+                for path in [
+                    None,
+                    Some("/missing/runner-avatar-does-not-exist.png".to_owned()),
+                ] {
+                    let mut cx = TestAppContext::single();
+                    let window = cx.add_window(move |_, _| AvatarHost { path, size, style });
+                    cx.run_until_parked();
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    visual
+                        .executor()
+                        .advance_clock(std::time::Duration::from_millis(250));
+                    visual.run_until_parked();
+                    let tile = visual.debug_bounds("ROLE_AVATAR_TILE").unwrap();
+                    let fallback = visual
+                        .debug_bounds(match style {
+                            AvatarStyle::Initials => "ROLE_AVATAR_INITIAL",
+                            AvatarStyle::Pixel => "ROLE_AVATAR_PIXEL",
+                        })
+                        .unwrap();
+                    let presence = visual.debug_bounds("ROLE_AVATAR_PRESENCE").unwrap();
+                    assert_eq!(tile.size, gpui::size(px(size), px(size)));
+                    assert_eq!(fallback.size, tile.size);
+                    assert_eq!(presence.size, gpui::size(px(9.), px(9.)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_avatars_keep_the_original_mirrored_pattern() {
         let cells = cells_for_seed("coder");
+        assert!(cells.iter().any(|cell| *cell));
         for row in 0..5 {
             assert_eq!(cells[row * 5], cells[row * 5 + 4]);
             assert_eq!(cells[row * 5 + 1], cells[row * 5 + 3]);
         }
+        assert_ne!(cells, cells_for_seed("reviewer"));
+        assert_eq!(cells, cells_for_seed("coder"));
+    }
+
+    #[test]
+    fn explicit_avatar_colors_override_only_the_automatic_hue() {
+        assert_eq!(
+            hue_for_avatar("coder", Some("#10B981")),
+            AvatarHue::Fixed(0x10b981)
+        );
+        assert_eq!(
+            hue_for_avatar("reviewer", Some("#10b981")),
+            AvatarHue::Fixed(0x10b981)
+        );
+        assert_eq!(hue_for_avatar("coder", None), hue_for_seed("coder"));
+        assert_eq!(
+            hue_for_avatar("coder", Some("not-a-color")),
+            hue_for_seed("coder")
+        );
     }
 }

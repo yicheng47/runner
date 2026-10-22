@@ -58,6 +58,9 @@ fn insert_role(conn: &Connection, id: &str, handle: &str) -> rusqlite::Result<us
             codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )
     .map(|()| 1)
@@ -521,6 +524,9 @@ fn json_blob_columns_roundtrip() {
             codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )
     .unwrap();
@@ -1821,6 +1827,90 @@ fn foreign_keys_off_migration_preserves_children_and_restores_enforcement() {
 }
 
 #[test]
+fn migration_0029_to_0031_preserves_avatar_fields_and_defaults_new_fields() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    super::init_connection(&mut conn).unwrap();
+    run_migrations_up_to(&mut conn, 28).unwrap();
+    conn.execute(
+        "INSERT INTO roles (id, handle, display_name, runtime, command, args_json, env_json, created_at, updated_at)
+         VALUES ('before-avatar', 'before-avatar', 'Before avatar', 'codex', 'codex', '[]', '{}', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    run_migrations_up_to(&mut conn, 29).unwrap();
+    let (avatar_not_null, legacy_avatar_path): (i64, Option<String>) = conn
+        .query_row(
+            "SELECT (SELECT [notnull] FROM pragma_table_info('roles') WHERE name = 'avatar_path'), avatar_path
+             FROM roles WHERE id = 'before-avatar'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(avatar_not_null, 0);
+    assert_eq!(legacy_avatar_path, None);
+
+    let stored = "/managed/role-avatars/00000000-0000-4000-8000-000000000001.png";
+    conn.execute(
+        "UPDATE roles SET avatar_path = ?1 WHERE id = 'before-avatar'",
+        [stored],
+    )
+    .unwrap();
+    run_migrations_up_to(&mut conn, 30).unwrap();
+    let (style_not_null, style_default, legacy_style): (i64, Option<String>, String) = conn
+        .query_row(
+            "SELECT (SELECT [notnull] FROM pragma_table_info('roles') WHERE name = 'avatar_style'),
+                    (SELECT dflt_value FROM pragma_table_info('roles') WHERE name = 'avatar_style'),
+                    avatar_style
+             FROM roles WHERE id = 'before-avatar'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(style_not_null, 1);
+    assert_eq!(style_default.as_deref(), Some("'initials'"));
+    assert_eq!(legacy_style, "initials");
+
+    run_migrations_up_to(&mut conn, 31).unwrap();
+    let (color_not_null, legacy_color, preserved_path): (i64, Option<String>, Option<String>) =
+        conn.query_row(
+            "SELECT (SELECT [notnull] FROM pragma_table_info('roles') WHERE name = 'avatar_color'),
+                    avatar_color, avatar_path
+             FROM roles WHERE id = 'before-avatar'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(color_not_null, 0);
+    assert_eq!(legacy_color, None);
+    assert_eq!(preserved_path.as_deref(), Some(stored));
+
+    let role = crate::repo::role::get(&conn, "before-avatar")
+        .unwrap()
+        .unwrap();
+    assert_eq!(role.avatar_path.as_deref(), Some(stored));
+    assert_eq!(role.avatar_style, crate::model::AvatarStyle::Initials);
+    assert_eq!(role.avatar_color, None);
+
+    let mut updated = crate::repo::role::RoleRow::from(&role);
+    updated.avatar_style = crate::model::AvatarStyle::Pixel;
+    updated.avatar_color = Some("#a1b2c3".into());
+    crate::repo::role::update(&conn, &updated).unwrap();
+    let pixel = crate::repo::role::get(&conn, "before-avatar")
+        .unwrap()
+        .unwrap();
+    assert_eq!(pixel.avatar_path.as_deref(), Some(stored));
+    assert_eq!(pixel.avatar_style, crate::model::AvatarStyle::Pixel);
+    assert_eq!(pixel.avatar_color.as_deref(), Some("#a1b2c3"));
+    assert!(conn
+        .execute(
+            "UPDATE roles SET avatar_color = '#A1B2C3' WHERE id = 'before-avatar'",
+            [],
+        )
+        .is_err());
+}
+
+#[test]
 fn migration_0028_preserves_every_row_column_and_mission_link() {
     fn snapshot(conn: &Connection) -> BTreeMap<String, Vec<Vec<rusqlite::types::Value>>> {
         [
@@ -1851,7 +1941,12 @@ fn migration_0028_preserves_every_row_column_and_mission_link() {
     super::init_connection(&mut conn).unwrap();
     run_migrations_up_to(&mut conn, 27).unwrap();
     insert_crew(&conn, "c");
-    insert_role(&conn, "r", "worker").unwrap();
+    conn.execute(
+        "INSERT INTO roles (id, handle, display_name, runtime, command, args_json, env_json, created_at, updated_at)
+         VALUES ('r', 'worker', 'worker display', 'shell', 'sh', '[]', '{}', '2026-04-22T00:00:00Z', '2026-04-22T00:00:00Z')",
+        [],
+    )
+    .unwrap();
     conn.execute_batch(
         "INSERT INTO projects VALUES ('p', 'Project', '/tmp/project', 3, '2026-10-15T00:00:00Z');
          INSERT INTO missions VALUES ('m', 'c', 'Mission', 'running', 'Goal', '/tmp/mission',
@@ -1866,7 +1961,7 @@ fn migration_0028_preserves_every_row_column_and_mission_link() {
          INSERT INTO session_attention VALUES ('direct', NULL, NULL);",
     ).unwrap();
     let before = snapshot(&conn);
-    run_migrations(&mut conn).unwrap();
+    run_migrations_up_to(&mut conn, 28).unwrap();
     assert_eq!(snapshot(&conn), before);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {

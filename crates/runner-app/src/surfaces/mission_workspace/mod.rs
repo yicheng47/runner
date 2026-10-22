@@ -24,7 +24,7 @@ use runner_app::ui::{
     CopyValueButton, PopoverMenu, Scrollbar, ScrollbarMetrics, SessionControlKind, TextField,
 };
 use runner_core::protocol::model::{
-    Event, EventKind, Mission, MissionStatus, SessionStatus, SlotWithRole,
+    AvatarStyle, Event, EventKind, Mission, MissionStatus, Role, SessionStatus, SlotWithRole,
 };
 use runner_core::protocol::session::SessionRow;
 
@@ -434,6 +434,47 @@ impl Render for MissionRailResizeDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().w(px(1.)).h(px(1.))
     }
+}
+
+fn mission_avatar_appearance(
+    sessions: &[SessionRow],
+    roster: &[SlotWithRole],
+    roles: &[Role],
+    handle: &str,
+    personal: &crate::app_settings::PersonalAvatarSettings,
+) -> (AvatarStyle, Option<String>, Option<String>) {
+    if handle == "human" {
+        return (
+            personal.style,
+            personal.image_path.clone(),
+            personal.color.clone(),
+        );
+    }
+    if matches!(handle, "runner" | "system" | "?") {
+        return (AvatarStyle::default(), None, None);
+    }
+
+    let role_id = match sessions.iter().find(|session| session.handle == handle) {
+        Some(session) => Some(session.session.role_id.clone()),
+        None => roster
+            .iter()
+            .find(|member| member.slot.slot_handle == handle)
+            .map(|member| member.slot.role_id.clone()),
+    };
+    let Some(role_id) = role_id else {
+        return (AvatarStyle::default(), None, None);
+    };
+    roles
+        .iter()
+        .find(|role| role.id == role_id)
+        .map(|role| {
+            (
+                role.avatar_style,
+                role.avatar_path.clone(),
+                role.avatar_color.clone(),
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn action_failure(

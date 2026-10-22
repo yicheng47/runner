@@ -23,6 +23,12 @@ pub struct CreateRoleInput {
     #[serde(default)]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub codex_speed: Option<CodexSpeed>,
+    #[serde(default)]
+    pub avatar_path: Option<String>,
+    #[serde(default, skip_serializing_if = "AvatarStyle::is_initials")]
+    pub avatar_style: AvatarStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
     /// Permission mode the role-edit form's dropdown chose. Mapped
     /// to concrete flags on the row's `args` column at create time
     /// via `router::runtime::apply_permission_mode`. Defaults to
@@ -96,6 +102,20 @@ pub struct UpdateRoleInput {
     /// updates) shouldn't have to reason about it. See
     /// `router::runtime::apply_permission_mode`.
     pub permission_mode: Option<super::permissions::PermissionMode>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::double_option"
+    )]
+    pub avatar_path: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_style: Option<AvatarStyle>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::double_option"
+    )]
+    pub avatar_color: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,4 +143,25 @@ pub struct RoleWithActivity {
     pub role: Role,
     #[serde(flatten)]
     pub activity: RoleActivity,
+}
+
+/// Request to generate a role avatar with the user's configured Codex CLI.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct GenerateRoleAvatarInput {
+    pub handle: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub avatar_color: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+/// Immutable Runner-managed image produced for a role avatar preview.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct GeneratedRoleAvatar {
+    pub path: String,
 }
