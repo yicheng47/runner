@@ -1225,3 +1225,23 @@
 "remote.pin_hint_confirm" = "6 digits. Step 2 of 2."
 "remote.pin_continue" = "Continue"
 "remote.pin_back" = "Back"
+
+"remote.another_computer" = "Another computer"
+
+"remote.control_title" = "Controlled from {name}"
+
+"remote.control_detail" = "{name} is using this terminal and sized it for its window. Take it back to use it here."
+
+"remote.control_group_detail" = "{name} opened this tab and is using its {count} terminals at its own size. Take them back to use them here."
+
+"remote.control_left" = "{name} has left"
+
+"remote.control_left_detail" = "The terminal is still at {name}'s size. Continue here to fit it to this pane."
+
+"remote.control_group_left_detail" = "The {count} terminals are still at {name}'s size. Continue here to fit each to its pane."
+
+"remote.take_back" = "Take back"
+
+"remote.continue_here" = "Continue here"
+
+"remote.control_mission_detail" = "{name} opened this mission and is using its {count} terminals at its own size. Take them back to use them here."

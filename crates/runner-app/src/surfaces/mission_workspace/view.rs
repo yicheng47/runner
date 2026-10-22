@@ -647,7 +647,12 @@ impl MissionWorkspace {
                         )
                         .child(terminal_scrollbar),
                 );
-            if interactive {
+            if interactive
+                || self
+                    .attached
+                    .get(&session_id)
+                    .is_some_and(|chat| !chat.terminal.control().desktop())
+            {
                 let key_root = root.clone();
                 let paste_root = root.clone();
                 let drop_root = root.clone();
@@ -742,6 +747,46 @@ impl MissionWorkspace {
             chat_lifecycle::PaneOverlayState::Archiving
             | chat_lifecycle::PaneOverlayState::None => None,
         };
+        let terminal_surface = if self.layout.drawer.shells().iter().any(|id| {
+            self.attached
+                .get(id)
+                .is_some_and(|chat| !chat.terminal.control().desktop())
+        }) {
+            crate::terminal::control::measure_panes(
+                div().absolute().inset_0().child(terminal_surface),
+                &self
+                    .layout
+                    .drawer
+                    .shells()
+                    .iter()
+                    .filter_map(|id| self.attached.get(id))
+                    .collect::<Vec<_>>(),
+                self.terminal_style(cx),
+            )
+            .into_any_element()
+        } else {
+            terminal_surface
+        };
+        let remote = self.attached.get(&session_id).filter(|chat| {
+            entry.status == SessionStatus::Running && !chat.terminal.control().desktop()
+        });
+        let group = crate::terminal::control::mission_covered(
+            self.control_session_ids(cx)
+                .iter()
+                .map(|id| self.attached.get(id)),
+        );
+        let remote_overlay = (!group)
+            .then(|| {
+                remote.map(|chat| {
+                    crate::terminal::control::cover(
+                        div().absolute().inset_0(),
+                        format!("take-back-mission-drawer-{session_id}"),
+                        &[chat],
+                        crate::terminal::control::GroupKind::Tab,
+                    )
+                })
+            })
+            .flatten();
         let focus_id = session_id.clone();
         Some(
             div()
@@ -752,6 +797,7 @@ impl MissionWorkspace {
                 .bg(terminal_background)
                 .child(terminal_surface)
                 .children(overlay_element)
+                .children(remote_overlay)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -763,6 +809,33 @@ impl MissionWorkspace {
     }
 
     fn render_loaded_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.sessions.iter().any(|session| {
+            self.app_store
+                .read(cx)
+                .bridge
+                .session(&session.session.id)
+                .is_some_and(|terminal| !terminal.control().desktop())
+        }) {
+            if let Err(error) = self.ensure_mission_terminals_attached(window, cx) {
+                self.error = Some(error.to_string().into());
+            }
+        }
+        if !self.layout.drawer.open() {
+            for id in self.layout.drawer.shells() {
+                if let Some(chat) = self
+                    .attached
+                    .get(id)
+                    .filter(|chat| !chat.terminal.control().desktop())
+                {
+                    chat.terminal_interaction
+                        .update(cx, |interaction, _| interaction.pane_size = None);
+                }
+            }
+        }
+        let control_ids = self.control_session_ids(cx);
+        let group_control = crate::terminal::control::mission_covered(
+            control_ids.iter().map(|id| self.attached.get(id)),
+        );
         let feed_active = self.secondary || self.active_tab == MissionTab::Feed;
         let tabs = self.cached_region(
             "mission-tabs",
@@ -812,15 +885,24 @@ impl MissionWorkspace {
                 SessionOverlayKind::Archiving,
             ));
         }
-        if self.secondary && !self.duplicate_dismissed {
+        if group_control {
+            let slots = self
+                .sessions
+                .iter()
+                .filter_map(|session| self.attached.get(&session.session.id))
+                .collect::<Vec<_>>();
+            panes = crate::terminal::control::measure_panes(panes, &slots, self.terminal_style(cx));
+        }
+        if self.secondary && !self.duplicate_dismissed && !group_control {
             panes = panes.child(self.render_duplicate_mission_overlay(cx));
         }
-        let drawer = (mission_drawer_available(self.archived(), self.secondary)
+        let drawer = (mission_drawer_available(self.archived(), self.secondary && !group_control)
             && self.layout.drawer.open())
         .then(|| self.render_mission_terminal_drawer(cx));
         let drawer_height = self.layout.drawer.height();
         let drawer_resizing = self.drawer_resizing;
-        div()
+        let surface = div()
+            .relative()
             .min_h(px(0.))
             .flex_1()
             .flex()
@@ -874,8 +956,21 @@ impl MissionWorkspace {
             ))
             .on_drop(cx.listener(|this, _: &DrawerResizeDrag, _, cx| {
                 this.finish_terminal_drawer_resize(cx);
-            }))
-            .into_any_element()
+            }));
+        let surface = if group_control {
+            crate::terminal::control::cover(
+                surface,
+                "take-back-mission",
+                &control_ids
+                    .iter()
+                    .filter_map(|id| self.attached.get(id))
+                    .collect::<Vec<_>>(),
+                crate::terminal::control::GroupKind::Mission(WORKSPACE_TABS_HEIGHT),
+            )
+        } else {
+            surface
+        };
+        surface.into_any_element()
     }
 
     fn render_mission_feed_surface(

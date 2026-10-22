@@ -367,7 +367,7 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.archived() || self.secondary_state(cx).secondary {
+        if self.archived() {
             return Ok(());
         }
         let mut errors = Vec::new();
@@ -376,7 +376,14 @@ impl MissionWorkspace {
             errors.push(error.to_string());
         }
         for session in self.sessions.clone() {
-            if !self.open_tabs.contains(&session.session.id) {
+            if !self.open_tabs.contains(&session.session.id)
+                && self
+                    .app_store
+                    .read(cx)
+                    .bridge
+                    .session(&session.session.id)
+                    .is_none_or(|terminal| terminal.control().desktop())
+            {
                 continue;
             }
             if let Err(error) = self.ensure_mission_terminal_attached(
@@ -443,7 +450,14 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.secondary_state(cx).secondary {
+        if self.secondary_state(cx).secondary
+            && self
+                .app_store
+                .read(cx)
+                .bridge
+                .session(session_id)
+                .is_none_or(|terminal| terminal.control().desktop())
+        {
             return Ok(());
         }
         if status != SessionStatus::Running {

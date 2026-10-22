@@ -201,6 +201,41 @@ m4 merged as [#975](https://github.com/yicheng47/runner/pull/975): a paired brow
 
 A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m5-adapter` on `feat/836-m5-adapter`, with its brief as [`../briefs/836-m5-adapter.md`](../briefs/836-m5-adapter.md), run by coder and reviewer after Jason removed the qa slot on 2026-10-21; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration. Merged into `nightly-remote` on 2026-10-21 as [#976](https://github.com/yicheng47/runner/pull/976), after a follow-up mission fixed the two problems Jason's review found.
 
+### m6 — the host desktop
+
+m5 and [#986](https://github.com/yicheng47/runner/pull/986) left `runnerd` keeping each terminal's controller, the client protocol carrying it as `TerminalController` in the snapshot, the metadata and `Resized`, with `terminal_take_back`, and the app's mirrors adopting a size only from the snapshot and ordered `Resized` frames; m4 left `remote/paired` and `RemoteTrust`'s `connected`. The app still ignores the controller. m6 is the desktop's side of another Runner using this computer, drawn on 2026-10-22 in `836-web-remote-control.pen`: steps 2.8 to 2.10 and 3.6 to 3.10 of its journey, and Connected now in today's device list. The client protocol's `Browser` variant now means a remote Runner client; its `name` is the computer's name from pairing.
+
+#### Commits
+
+1. **The control card**, in the app.
+   - A pane whose terminal the desktop does not control stops pushing its size, from every path that pushes it today, and draws the card over the terminal: the two-window overlay's scrim and centered card from `ui/duplicate_subject_overlay.rs`, reading Controlled from {name} with Take back while a remote client controls it, and {name} has left with Continue here when nobody does. For has left the app uses the last name it saw for that terminal, and Another computer has left when it saw none.
+   - Take back, Continue here, or Enter on the card sends `terminal_take_back` with the pane's size; once the desktop controls again the pane pushes its size as before. While the card shows, keys, pastes, IME composition, file drops and every other input path of that pane reach the card or nothing, never the terminal.
+   - A tab or mission whose terminals one remote client controls draws one card below its tab bar, naming how many terminals it uses; Take back sends `terminal_take_back` for each terminal at its own pane's size. A terminal controlled on its own gets its own pane's card. Several windows showing the same tab each draw the card, and Take back works from any of them.
+   - Its strings in `en.toml` and `zh-hans.toml`, from the frames; the light theme follows step 3.9.
+2. **The pairing notification and Connected now**, in the app.
+   - The app follows `remote/paired` as it follows `remote/status` and `remote/trust`, and shows a system notification through `notifications.rs`, {name} paired with {name} can now reach this computer., whose click opens Settings → Remote access. When system notifications are off, it shows an in-app toast with the same sentence and Open Remote access, as other notifications fall back today.
+   - Remote access's device list reads Connected now, with a green dot, in place of a device's last-seen time while `connected` is true. The copy loses the browser and the later update: the intro, the empty list and the hint say other computers pair from their own sidebar with this computer's PIN.
+3. **The guide.** `docs/guide/guides/remote-access.md` gains the desktop's side: the notification, Connected now, the card, Take back and Continue here. m7 adds pairing and using another computer.
+
+#### Checks
+
+- **The app's tests**: the card's state through each controller change (the desktop, a remote client, none, the desktop again) for a pane and for a tab or mission; no size pushed while the desktop does not control, from any path; Take back, Continue here and Enter sending `terminal_take_back` for each terminal at its pane's size; no input reaching a covered terminal; `remote/paired` showing the system notification, or the toast when notifications are off; Connected now following `connected`.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+- **Live, pending for Jason**: TERM-RESIZE-01, TERM-RESIZE-02 and #838's two-window steps, since the pane's size push changed, on a `remote-nightly` build on macOS and Windows. The card, Take back, Continue here, the notification and Connected now need another Runner to connect, which arrives with m7; they run then. Jason chose a duo for m6 on 2026-10-22 for this reason.
+
+#### Easy to get wrong
+
+- Without another Runner nothing changes: the desktop always controls, and the pane pushes its size exactly as today.
+- A covered pane pushes no size on any path: the window, a split or drawer drag, zoom, a second window, switching tabs.
+- After Take back the pane pushes again at once; the suppression does not outlive the card.
+- The mirrors' rule from #986 stays: a size is adopted only from the snapshot and `Resized`.
+- No input leaks into a covered terminal, including paste, drag and drop and the composer paths that send to the terminal.
+- One notification per pairing; a device that pairs again after `unknownDevice` is a new pairing.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m6-host-desktop` on `feat/836-m6-host-desktop`, with its brief as [`../briefs/836-m6-host-desktop.md`](../briefs/836-m6-host-desktop.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
+
 ## Phase 4 — Tailscale
 
 Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged. Since 2026-10-21 its client is m7's: one Runner reaches another directly over the tailnet, with no service involved, so Phase 4 adds the host's listener and the client's direct route.

@@ -375,6 +375,34 @@ impl NativeRoot {
                 .child(render_start_surface(&self.settings(cx).keymap_overrides))
                 .into_any_element();
         };
+        if layout.all_session_ids().iter().any(|id| {
+            self.app_store
+                .read(cx)
+                .bridge
+                .session(id)
+                .is_some_and(|terminal| !terminal.control().desktop())
+        }) {
+            if let Err(error) = self.ensure_owned_active_tab_attached(window, cx) {
+                self.chat_error = Some(error.to_string().into());
+            }
+        }
+        if !layout.drawer_open() {
+            for id in layout.drawer_shells() {
+                if let Some(chat) = self
+                    .attached
+                    .get(id)
+                    .filter(|chat| !chat.terminal.control().desktop())
+                {
+                    chat.terminal_interaction
+                        .update(cx, |interaction, _| interaction.pane_size = None);
+                }
+            }
+        }
+        let group_control = crate::terminal::control::group_covered(
+            self.control_tab_session_ids(&layout, cx)
+                .iter()
+                .map(|id| self.attached.get(id)),
+        );
         let show_start = start_surface_visible(Some(&layout));
         let grouped = pane_identity_visible(layout.root.leaves().len());
         let focused_shell = layout
@@ -475,6 +503,20 @@ impl NativeRoot {
                     SessionOverlayKind::Archiving,
                 ))
             });
+        let tab_body = if group_control {
+            crate::terminal::control::cover(
+                tab_body,
+                "take-back-tab",
+                &self
+                    .control_tab_session_ids(&layout, cx)
+                    .iter()
+                    .filter_map(|id| self.attached.get(id))
+                    .collect::<Vec<_>>(),
+                crate::terminal::control::GroupKind::Tab,
+            )
+        } else {
+            tab_body
+        };
         let chat_column = div()
             .relative()
             .flex_1()
@@ -1939,21 +1981,28 @@ impl NativeRoot {
                         )
                         .child(terminal_scrollbar),
                 )
-                .when(interactive, |surface| {
-                    surface
-                        .on_key_down(cx.listener(move |this, event, window, cx| {
-                            this.on_key_down(&key_session_id, event, window, cx);
-                        }))
-                        .on_action(cx.listener(move |this, action, window, cx| {
-                            this.on_paste(&paste_session_id, action, window, cx);
-                        }))
-                        .child(runner_app::ui::file_drop_target(
-                            &session_id,
-                            cx.listener(move |this, paths, window, cx| {
-                                this.on_file_drop(None, &drop_session_id, paths, window, cx);
-                            }),
-                        ))
-                })
+                .when(
+                    interactive
+                        || self
+                            .attached
+                            .get(&session_id)
+                            .is_some_and(|chat| !chat.terminal.control().desktop()),
+                    |surface| {
+                        surface
+                            .on_key_down(cx.listener(move |this, event, window, cx| {
+                                this.on_key_down(&key_session_id, event, window, cx);
+                            }))
+                            .on_action(cx.listener(move |this, action, window, cx| {
+                                this.on_paste(&paste_session_id, action, window, cx);
+                            }))
+                            .child(runner_app::ui::file_drop_target(
+                                &session_id,
+                                cx.listener(move |this, paths, window, cx| {
+                                    this.on_file_drop(None, &drop_session_id, paths, window, cx);
+                                }),
+                            ))
+                    },
+                )
                 .into_any_element()
         } else {
             div()
@@ -2020,6 +2069,48 @@ impl NativeRoot {
             }
             PaneOverlayState::Archiving | PaneOverlayState::None => None,
         };
+        let terminal_surface = if let Some(layout) = self.tabs.active().filter(|layout| {
+            layout.drawer_shells().iter().any(|id| {
+                self.attached
+                    .get(id)
+                    .is_some_and(|chat| !chat.terminal.control().desktop())
+            })
+        }) {
+            crate::terminal::control::measure_panes(
+                div().absolute().inset_0().child(terminal_surface),
+                &layout
+                    .drawer_shells()
+                    .iter()
+                    .filter_map(|id| self.attached.get(id))
+                    .collect::<Vec<_>>(),
+                self.terminal_style(cx),
+            )
+            .into_any_element()
+        } else {
+            terminal_surface
+        };
+        let remote = self.attached.get(&session_id).filter(|chat| {
+            entry.status == SessionStatus::Running && !chat.terminal.control().desktop()
+        });
+        let group = self.tabs.active().is_some_and(|layout| {
+            crate::terminal::control::group_covered(
+                self.control_tab_session_ids(layout, cx)
+                    .iter()
+                    .map(|id| self.attached.get(id)),
+            )
+        });
+        let remote_overlay = (!group)
+            .then(|| {
+                remote.map(|chat| {
+                    crate::terminal::control::cover(
+                        div().absolute().inset_0(),
+                        format!("take-back-drawer-{session_id}"),
+                        &[chat],
+                        crate::terminal::control::GroupKind::Tab,
+                    )
+                })
+            })
+            .flatten();
         let focus_id = session_id.clone();
         Some(
             div()
@@ -2030,6 +2121,7 @@ impl NativeRoot {
                 .bg(terminal_background)
                 .child(terminal_surface)
                 .children(overlay_element)
+                .children(remote_overlay)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -2379,7 +2471,12 @@ impl NativeRoot {
             let terminal_style = self.terminal_style(cx);
             let terminal_background =
                 crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
-            let terminal_surface = if secondary_state.secondary {
+            let terminal_surface = if secondary_state.secondary
+                && self
+                    .attached
+                    .get(&session_id)
+                    .is_none_or(|chat| chat.terminal.control().desktop())
+            {
                 div()
                     .absolute()
                     .inset_0()
@@ -2391,7 +2488,9 @@ impl NativeRoot {
                 let terminal_scrollbar = chat.terminal_scrollbar.clone();
                 let terminal_input = chat.terminal_input.clone();
                 let terminal_focus = chat.terminal_focus.clone();
-                let resize_owner = scrollable && layout.is_resize_owner(&pane_id, &session_id);
+                let resize_owner = scrollable
+                    && !secondary_state.secondary
+                    && layout.is_resize_owner(&pane_id, &session_id);
                 let key_session_id = session_id.clone();
                 let copy_session_id = session_id.clone();
                 let paste_session_id = session_id.clone();
@@ -2438,27 +2537,34 @@ impl NativeRoot {
                             )
                             .child(terminal_scrollbar),
                     )
-                    .when(interactive, |surface| {
-                        surface
-                            .on_key_down(cx.listener(move |this, event, window, cx| {
-                                this.on_key_down(&key_session_id, event, window, cx);
-                            }))
-                            .on_action(cx.listener(move |this, action, window, cx| {
-                                this.on_paste(&paste_session_id, action, window, cx);
-                            }))
-                            .child(runner_app::ui::file_drop_target(
-                                &session_id,
-                                cx.listener(move |this, paths, window, cx| {
-                                    this.on_file_drop(
-                                        Some(&drop_pane_id),
-                                        &drop_session_id,
-                                        paths,
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            ))
-                    })
+                    .when(
+                        interactive
+                            || self
+                                .attached
+                                .get(&session_id)
+                                .is_some_and(|chat| !chat.terminal.control().desktop()),
+                        |surface| {
+                            surface
+                                .on_key_down(cx.listener(move |this, event, window, cx| {
+                                    this.on_key_down(&key_session_id, event, window, cx);
+                                }))
+                                .on_action(cx.listener(move |this, action, window, cx| {
+                                    this.on_paste(&paste_session_id, action, window, cx);
+                                }))
+                                .child(runner_app::ui::file_drop_target(
+                                    &session_id,
+                                    cx.listener(move |this, paths, window, cx| {
+                                        this.on_file_drop(
+                                            Some(&drop_pane_id),
+                                            &drop_session_id,
+                                            paths,
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                ))
+                        },
+                    )
                     .into_any_element()
             } else {
                 div()
@@ -2476,7 +2582,27 @@ impl NativeRoot {
                     })
                     .into_any_element()
             };
-            let overlay_element = if secondary_state.secondary
+            let group_control = crate::terminal::control::group_covered(
+                self.control_tab_session_ids(layout, cx)
+                    .iter()
+                    .map(|id| self.attached.get(id)),
+            );
+            let remote_card = self.attached.get(&session_id).filter(|chat| {
+                entry.status == SessionStatus::Running && !chat.terminal.control().desktop()
+            });
+            let overlay_element = if let Some(remote_card) = remote_card.filter(|_| !group_control)
+            {
+                Some(
+                    crate::terminal::control::cover(
+                        div().absolute().inset_0(),
+                        format!("take-back-{session_id}"),
+                        &[remote_card],
+                        crate::terminal::control::GroupKind::Tab,
+                    )
+                    .into_any_element(),
+                )
+            } else if secondary_state.secondary
+                && remote_card.is_none()
                 && !self.dismissed_duplicate_chats.contains(&session_id)
             {
                 let focus_label = secondary_state.primary_label.clone();
