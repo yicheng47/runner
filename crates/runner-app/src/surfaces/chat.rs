@@ -1014,7 +1014,15 @@ impl NativeRoot {
             });
         let owned_ids = active_ids
             .iter()
-            .filter(|session_id| !self.chat_secondaries.contains_key(*session_id))
+            .filter(|session_id| {
+                !self.chat_secondaries.contains_key(*session_id)
+                    || self
+                        .app_store
+                        .read(cx)
+                        .bridge
+                        .session(session_id)
+                        .is_some_and(|terminal| !terminal.control().desktop())
+            })
             .cloned()
             .chain(ended_ids)
             .collect::<HashSet<_>>();
@@ -1064,7 +1072,14 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        if self.chat_secondary_state(session_id, cx).secondary {
+        if self.chat_secondary_state(session_id, cx).secondary
+            && self
+                .app_store
+                .read(cx)
+                .bridge
+                .session(session_id)
+                .is_none_or(|terminal| terminal.control().desktop())
+        {
             return Ok(());
         }
         let status = self
@@ -1217,6 +1232,17 @@ impl NativeRoot {
         })
     }
 
+    pub(crate) fn control_tab_session_ids(&self, layout: &PaneLayout, cx: &App) -> Vec<String> {
+        layout
+            .all_session_ids()
+            .into_iter()
+            .filter(|id| {
+                self.session_entry(id, cx)
+                    .is_some_and(|entry| entry.status == SessionStatus::Running)
+            })
+            .collect()
+    }
+
     pub(crate) fn active_focused_session_id(&self) -> Option<String> {
         self.tabs
             .active()
@@ -1233,6 +1259,10 @@ impl NativeRoot {
 
     pub(crate) fn session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.route == AppRoute::Chat
+            && self
+                .attached
+                .get(session_id)
+                .is_none_or(|chat| chat.terminal.control().desktop())
             && !self.chat_secondary_state(session_id, cx).secondary
             && self
                 .session_entry(session_id, cx)
@@ -1242,6 +1272,10 @@ impl NativeRoot {
 
     pub(crate) fn cached_session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.route == AppRoute::Chat
+            && self
+                .attached
+                .get(session_id)
+                .is_none_or(|chat| chat.terminal.control().desktop())
             && !self.cached_chat_secondary_state(session_id).secondary
             && self
                 .session_entry(session_id, cx)
@@ -1411,6 +1445,32 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .attached
+            .get(session_id)
+            .is_some_and(|chat| !chat.terminal.control().desktop())
+        {
+            cx.stop_propagation();
+            if event.keystroke.key == "enter" && !event.is_held {
+                let group = self
+                    .tabs
+                    .active()
+                    .map(|layout| self.control_tab_session_ids(layout, cx))
+                    .unwrap_or_default();
+                let chats = if crate::terminal::control::group_covered(
+                    group.iter().map(|id| self.attached.get(id)),
+                ) {
+                    group
+                        .iter()
+                        .filter_map(|id| self.attached.get(id))
+                        .collect::<Vec<_>>()
+                } else {
+                    self.attached.get(session_id).into_iter().collect()
+                };
+                crate::terminal::control::take_back(&chats, cx);
+            }
+            return;
+        }
         if !self.session_is_interactive(session_id, cx) {
             return;
         }
