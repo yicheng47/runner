@@ -179,6 +179,10 @@ impl TerminalInput {
         new_text: &str,
         new_selected_range_utf16: Option<Range<usize>>,
     ) {
+        if !self.session.control().desktop() {
+            self.cancel_composition();
+            return;
+        }
         self.composition
             .replace_and_mark(range_utf16, new_text, new_selected_range_utf16);
         self.session.set_composing(self.is_composing());
@@ -192,6 +196,9 @@ impl TerminalInput {
     pub fn commit_text(&mut self, text: &str) -> runner_core::protocol::ClientResult<()> {
         self.composition.clear();
         self.session.set_composing(false);
+        if !self.session.control().desktop() {
+            return Ok(());
+        }
         if text.is_empty() {
             return Ok(());
         }

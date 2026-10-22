@@ -105,13 +105,18 @@ Planning m2 surfaced details the spec did not state. Jason approved them with th
 
 ## Phase 3 — the end-to-end channel and live terminals
 
-Proposed on 2026-10-20 with the spec's Phase 3 section. Jason approved starting it the same day with the spec's proposals as drafted, without reviewing every detail, so a crew raises any detail it finds wrong through Runner rather than working around it. Three missions, each one pull request into `nightly-remote`, in order:
+Proposed on 2026-10-20 with the spec's Phase 3 section. Jason approved starting it the same day with the spec's proposals as drafted, without reviewing every detail, so a crew raises any detail it finds wrong through Runner rather than working around it. Four missions, each one pull request into `nightly-remote`:
 
 | Mission | What | Waits on |
 | --- | --- | --- |
 | m4 — channel | The route's frames on `/relay/host` and `hello`'s `features`; the channel in `runner-core/src/companion/channel/`, CPace, both Noise handshakes, records and credit, with its vectors; pairing and connecting in `runnerd` against `remote-trust.json`, Revoke and Reset identity closing channels; the `remote/paired` event and `connected` in `RemoteTrust` and `runner remote devices`; the adapter's `hello` and `welcome` alone. No change to the app | — |
 | m5 — adapter | The overview, status and terminal requests (`attach`, `input`, `takeControl`, `viewport`, `detach`) with their pushes; the snapshot's history limit; the controller in `runnerd` and its client-protocol changes, without the card. `feed`, `follow`, `unfollow`, `answer` and `post` are left out of `welcome`'s `features` for a later mission, which needs no protocol version (Jason, 2026-10-20) | m4 |
-| m6 — desktop | The control card over panes, tabs and missions, Take back and Continue here, and the pane's size push; the pairing notification and the Connected now row; #838's two-window rerun; the guide | m5; the frames for the notification and the row |
+| m6 — host desktop | The control card over panes, tabs and missions, Take back and Continue here, and the pane's size push; the pairing notification and the Connected now row; #838's two-window rerun; the guide | m5; the frames for the notification and the row |
+| m7 — Runner as a client | The channel's client side in the client computer's `runnerd`, its keys per paired host, and the companion protocol's client; enrolling the client on the account and listing its hosts; the app's computer picker, PIN dialog and remote terminals in the desktop's terminal view; Settings → Account and the sidebar's avatar menu, with signing in moved out of Remote access; the CLI's view of remote hosts. Split into two missions if the app's part is large | m5; `runner_server`'s client enrollment |
+
+**Revised on 2026-10-21 (Jason).** The client is a Runner desktop, not a browser, and the service only relays; the spec's [Clients are Runner apps](../../features/836-web-remote-control.md#clients-are-runner-apps) has why. m4 and m5 stand as built. m6 keeps its scope with the client's device name in its card and notification. m7 is new. A fix from the first live pass, [`fix/836-mirror-size`](https://github.com/yicheng47/runner/tree/fix/836-mirror-size), makes the desktop's terminal mirror follow the size `runnerd` applied, since the desktop ignored a browser's control while drawing; it lands before m6. The order is m6 and m7 in parallel, since m7 waits on the service and its own frames, then Phase 4.
+
+**Revised on 2026-10-22 (Jason).** m7's frames are signed off: a computer picker rather than a sidebar section, one route per computer, chosen once, and the account in its own Settings pane, with an avatar menu of Account, Settings and Sign out, as the spec's [Runner as a client](../../features/836-web-remote-control.md#runner-as-a-client) describes. m7 builds Remote access's route choice with Tailscale marked Later, and the relay's pages; Tailscale's pages and finding computers on the tailnet come with Phase 4.
 
 ### m4 — the channel
 
@@ -194,8 +199,43 @@ m4 merged as [#975](https://github.com/yicheng47/runner/pull/975): a paired brow
 
 #### Landing
 
-A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m5-adapter` on `feat/836-m5-adapter`, with its brief as [`../briefs/836-m5-adapter.md`](../briefs/836-m5-adapter.md), run by coder and reviewer after Jason removed the qa slot on 2026-10-21; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration.
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m5-adapter` on `feat/836-m5-adapter`, with its brief as [`../briefs/836-m5-adapter.md`](../briefs/836-m5-adapter.md), run by coder and reviewer after Jason removed the qa slot on 2026-10-21; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration. Merged into `nightly-remote` on 2026-10-21 as [#976](https://github.com/yicheng47/runner/pull/976), after a follow-up mission fixed the two problems Jason's review found.
+
+### m6 — the host desktop
+
+m5 and [#986](https://github.com/yicheng47/runner/pull/986) left `runnerd` keeping each terminal's controller, the client protocol carrying it as `TerminalController` in the snapshot, the metadata and `Resized`, with `terminal_take_back`, and the app's mirrors adopting a size only from the snapshot and ordered `Resized` frames; m4 left `remote/paired` and `RemoteTrust`'s `connected`. The app still ignores the controller. m6 is the desktop's side of another Runner using this computer, drawn on 2026-10-22 in `836-web-remote-control.pen`: steps 2.8 to 2.10 and 3.6 to 3.10 of its journey, and Connected now in today's device list. The client protocol's `Browser` variant now means a remote Runner client; its `name` is the computer's name from pairing.
+
+#### Commits
+
+1. **The control card**, in the app.
+   - A pane whose terminal the desktop does not control stops pushing its size, from every path that pushes it today, and draws the card over the terminal: the two-window overlay's scrim and centered card from `ui/duplicate_subject_overlay.rs`, reading Controlled from {name} with Take back while a remote client controls it, and {name} has left with Continue here when nobody does. For has left the app uses the last name it saw for that terminal, and Another computer has left when it saw none.
+   - Take back, Continue here, or Enter on the card sends `terminal_take_back` with the pane's size; once the desktop controls again the pane pushes its size as before. While the card shows, keys, pastes, IME composition, file drops and every other input path of that pane reach the card or nothing, never the terminal.
+   - A tab or mission whose terminals one remote client controls draws one card below its tab bar, naming how many terminals it uses; Take back sends `terminal_take_back` for each terminal at its own pane's size. A terminal controlled on its own gets its own pane's card. Several windows showing the same tab each draw the card, and Take back works from any of them.
+   - Its strings in `en.toml` and `zh-hans.toml`, from the frames; the light theme follows step 3.9.
+2. **The pairing notification and Connected now**, in the app.
+   - The app follows `remote/paired` as it follows `remote/status` and `remote/trust`, and shows a system notification through `notifications.rs`, {name} paired with {name} can now reach this computer., whose click opens Settings → Remote access. When system notifications are off, it shows an in-app toast with the same sentence and Open Remote access, as other notifications fall back today.
+   - Remote access's device list reads Connected now, with a green dot, in place of a device's last-seen time while `connected` is true. The copy loses the browser and the later update: the intro, the empty list and the hint say other computers pair from their own sidebar with this computer's PIN.
+3. **The guide.** `docs/guide/guides/remote-access.md` gains the desktop's side: the notification, Connected now, the card, Take back and Continue here. m7 adds pairing and using another computer.
+
+#### Checks
+
+- **The app's tests**: the card's state through each controller change (the desktop, a remote client, none, the desktop again) for a pane and for a tab or mission; no size pushed while the desktop does not control, from any path; Take back, Continue here and Enter sending `terminal_take_back` for each terminal at its pane's size; no input reaching a covered terminal; `remote/paired` showing the system notification, or the toast when notifications are off; Connected now following `connected`.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+- **Live, pending for Jason**: TERM-RESIZE-01, TERM-RESIZE-02 and #838's two-window steps, since the pane's size push changed, on a `remote-nightly` build on macOS and Windows. The card, Take back, Continue here, the notification and Connected now need another Runner to connect, which arrives with m7; they run then. Jason chose a duo for m6 on 2026-10-22 for this reason.
+
+#### Easy to get wrong
+
+- Without another Runner nothing changes: the desktop always controls, and the pane pushes its size exactly as today.
+- A covered pane pushes no size on any path: the window, a split or drawer drag, zoom, a second window, switching tabs.
+- After Take back the pane pushes again at once; the suppression does not outlive the card.
+- The mirrors' rule from #986 stays: a size is adopted only from the snapshot and `Resized`.
+- No input leaks into a covered terminal, including paste, drag and drop and the composer paths that send to the terminal.
+- One notification per pairing; a device that pairs again after `unknownDevice` is a new pairing.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m6-host-desktop` on `feat/836-m6-host-desktop`, with its brief as [`../briefs/836-m6-host-desktop.md`](../briefs/836-m6-host-desktop.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
 
 ## Phase 4 — Tailscale
 
-Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged.
+Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged. Since 2026-10-21 its client is m7's: one Runner reaches another directly over the tailnet, with no service involved, so Phase 4 adds the host's listener and the client's direct route.
