@@ -16,6 +16,7 @@ Learn to run a single coding agent, bring a crew together on a task, and manage 
   - [Build a crew](guides/build-a-crew.md)
   - [Drive Runner from agents](guides/drive-runner-from-agents.md)
   - [Chats, tabs and windows](guides/chats-and-windows.md)
+  - [Files and read-only previews](guides/files-and-previews.md)
   - [Claude Code accounts](guides/claude-accounts.md)
   - [MCP servers and skills](guides/mcp-and-skills.md)
   - [Appearance](guides/appearance.md)

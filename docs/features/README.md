@@ -7,7 +7,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 ## Active
 
 - [748 — Mission updates reach the starting chat](./748-mission-watch-delivery.md) — the return path for delegation; on hold after #826 since 2026-10-17, because Jason rejected Runner typing updates into a normal chat, and the spec keeps the refreshed proposal for the redesign ([#748](https://github.com/yicheng47/runner/issues/748)).
-- [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
+- [634 — File preview and code review](./634-file-preview-and-review.md) — first delivery: shared right-panel tabs, a lazy read-only tree and Markdown/text/raster previews; Git diffs, bases and review delivery remain planned.
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 - [836 — Web remote control](./836-web-remote-control.md) — retained host-enrollment design and the parent remote contract. Enrollment, trust, protocol, browser channels and terminals have merged into `nightly-remote`; the Tailscale route and the production gate remain open ([#836](https://github.com/yicheng47/runner/issues/836)). These changes are not on `main` or in 0.17.0; current phase PRs are listed in the [roadmap](../roadmap.md).
 

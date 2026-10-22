@@ -411,6 +411,7 @@ pub(crate) struct MissionWorkspace {
     duplicate_dismissed: bool,
     primary_label: Option<String>,
     rail_view: MissionRailView,
+    workspace_panels: RefCell<HashMap<String, crate::workspace_panel::HostedPanel>>,
     action_menu: Entity<PopoverMenu>,
     menu_actions: Vec<MissionMenuAction>,
     pub(crate) rename_modal: Option<MissionRenameModal>,

@@ -909,7 +909,7 @@ fn render_inline_line(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_plain_line(
+pub(crate) fn render_plain_line(
     id: String,
     event_id: &str,
     selection_block: usize,

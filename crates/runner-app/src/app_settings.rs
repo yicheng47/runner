@@ -22,10 +22,10 @@ pub const TERMINAL_FONT_SIZE_MAX: u16 = 20;
 pub const TERMINAL_FONT_SIZE_DEFAULT: u16 = 13;
 pub const TERMINAL_SCROLLBACK_LINES: usize = 10_000;
 pub const CHAT_PANEL_MIN: f32 = 200.;
-pub const CHAT_PANEL_MAX: f32 = 480.;
+pub const CHAT_PANEL_MAX: f32 = 960.;
 pub const CHAT_PANEL_DEFAULT: f32 = 320.;
 pub const MISSION_RAIL_MIN: f32 = 200.;
-pub const MISSION_RAIL_MAX: f32 = 480.;
+pub const MISSION_RAIL_MAX: f32 = 960.;
 pub const MISSION_RAIL_DEFAULT: f32 = 288.;
 
 /// The terminal palette used while the app resolves to a light variant.
@@ -624,7 +624,7 @@ mod tests {
     fn terminal_and_chat_panel_settings_follow_the_shipped_domains() {
         assert_eq!(normalize_chat_panel_width(376.), 376.);
         assert_eq!(normalize_chat_panel_width(f32::NAN), 320.);
-        assert_eq!(clamp_chat_panel_width(999.), 480.);
+        assert_eq!(clamp_chat_panel_width(999.), 960.);
 
         let serialized = serde_json::to_value(AppSettings {
             terminal_cursor_style: TerminalCursorStyle::Bar,

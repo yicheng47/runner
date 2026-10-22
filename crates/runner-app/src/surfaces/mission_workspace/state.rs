@@ -257,6 +257,7 @@ impl MissionWorkspace {
             duplicate_dismissed: false,
             primary_label: None,
             rail_view: MissionRailView::default(),
+            workspace_panels: RefCell::new(HashMap::new()),
             action_menu,
             menu_actions: Vec::new(),
             rename_modal: None,

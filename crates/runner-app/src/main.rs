@@ -15,8 +15,10 @@ mod assets;
 mod catalog_golden;
 mod chat_icon;
 mod file_links;
+mod file_preview;
 mod keymap;
 mod list_controls;
+mod workspace_panel;
 // The controller's callers are the app entry point and its unix-only tests,
 // and a Windows test build compiles neither.
 #[cfg_attr(all(test, windows), allow(dead_code))]
@@ -588,6 +590,7 @@ struct NativeRoot {
     chat_panel_visibility: SidebarVisibilityTransition,
     chat_panel_prompt_session: Option<String>,
     chat_panel_prompt_expanded: bool,
+    workspace_panels: std::cell::RefCell<HashMap<String, workspace_panel::HostedPanel>>,
     command_palette: Entity<CommandPaletteState>,
     sidebar_preview_open: bool,
     sidebar_preview_peeking: bool,
@@ -983,6 +986,7 @@ impl NativeRoot {
             chat_panel_visibility,
             chat_panel_prompt_session: None,
             chat_panel_prompt_expanded: false,
+            workspace_panels: std::cell::RefCell::new(HashMap::new()),
             command_palette,
             sidebar_preview_open: false,
             sidebar_preview_peeking: false,

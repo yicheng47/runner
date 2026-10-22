@@ -32,3 +32,5 @@ pub mod version;
 
 #[cfg(target_os = "macos")]
 mod wake;
+
+pub mod workspace_files;
