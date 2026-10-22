@@ -1,6 +1,6 @@
 # 836 — web remote control: program record
 
-Program record for [feature 836](../../features/836-web-remote-control.md) ([#836](https://github.com/yicheng47/runner/issues/836)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind every mission. [plan.md](plan.md) has each phase in detail, and [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../briefs/) as `836-m{n}-{slug}.md`; Phase 1's predates this directory as `836-connect-host.md`. The design is `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, which also holds Terminal size's frames, m7's and the Account band since 2026-10-22.
+Program record for [feature 836](../../features/836-web-remote-control.md) ([#836](https://github.com/yicheng47/runner/issues/836)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind every mission. [plan.md](plan.md) has each phase in detail, and [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../briefs/) as `836-m{n}-{slug}.md`; Phase 1's predates this directory as `836-connect-host.md`. The design is `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, laid out since 2026-10-22 as the person's journey in numbered steps, each section naming the mission that builds it.
 
 ## Status (2026-10-22)
 
@@ -31,6 +31,6 @@ Remote control was planned as the focus of 0.17; 0.17.0 shipped on 2026-10-21 wi
 - Phase 1's remaining live checks, pending with Jason.
 - m2's live checks, on a `remote-nightly` build.
 - m5's live checks, on macOS and Windows: TERM-RESIZE-01, TERM-RESIZE-02, TERM-INPUT-01 and the mission message held during an unsent draft, pending with Jason.
-- m6, the host desktop, as [plan.md](plan.md#phase-3--the-end-to-end-channel-and-live-terminals) lays out, planned in detail before it starts; it waits on the frames for the pairing notification and the Connected now row.
+- m6, the host desktop, as [plan.md](plan.md#phase-3--the-end-to-end-channel-and-live-terminals) lays out, planned in detail before it starts; the frames for the pairing notification and the Connected now row were drawn on 2026-10-22 and wait on Jason's sign-off.
 - m7, Runner as a client: its frames were signed off on 2026-10-22; where the client side lives is settled before it starts, and it waits on the service's client enrollment.
 - The service: `runner_server`'s [#20](https://github.com/YeelinksCo/runner_server/pull/20), the relay channel without the browser client, merged and deployed on 2026-10-22; client enrollment next, with one sign-in enrolling a computer as both host and client.

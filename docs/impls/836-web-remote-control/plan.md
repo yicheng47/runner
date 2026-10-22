@@ -116,7 +116,7 @@ Proposed on 2026-10-20 with the spec's Phase 3 section. Jason approved starting 
 
 **Revised on 2026-10-21 (Jason).** The client is a Runner desktop, not a browser, and the service only relays; the spec's [Clients are Runner apps](../../features/836-web-remote-control.md#clients-are-runner-apps) has why. m4 and m5 stand as built. m6 keeps its scope with the client's device name in its card and notification. m7 is new. A fix from the first live pass, [`fix/836-mirror-size`](https://github.com/yicheng47/runner/tree/fix/836-mirror-size), makes the desktop's terminal mirror follow the size `runnerd` applied, since the desktop ignored a browser's control while drawing; it lands before m6. The order is m6 and m7 in parallel, since m7 waits on the service and its own frames, then Phase 4.
 
-**Revised on 2026-10-22 (Jason).** m7's frames are signed off: a computer picker rather than a sidebar section, one route at a time, and the account in its own Settings pane, as the spec's [Runner as a client](../../features/836-web-remote-control.md#runner-as-a-client) describes. Remote access's route choice and finding computers on the tailnet come with Phase 4, so m7 builds the relay's pages only.
+**Revised on 2026-10-22 (Jason).** m7's frames are signed off: a computer picker rather than a sidebar section, one route per computer, chosen once, and the account in its own Settings pane, with an avatar menu of Account, Settings and Sign out, as the spec's [Runner as a client](../../features/836-web-remote-control.md#runner-as-a-client) describes. m7 builds Remote access's route choice with Tailscale marked Later, and the relay's pages; Tailscale's pages and finding computers on the tailnet come with Phase 4.
 
 ### m4 — the channel
 
