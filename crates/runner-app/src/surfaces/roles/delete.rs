@@ -30,6 +30,9 @@ impl NativeRoot {
             }));
         }
         overlays.extend(self.render_crew_overlays(window, cx));
+        if let Some(dialog) = self.render_role_avatar_prompt(cx) {
+            overlays.push(dialog);
+        }
         overlays
     }
 

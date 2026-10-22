@@ -30,6 +30,7 @@ const STDOUT_DRAIN_GRACE: Duration = Duration::from_millis(500);
 #[cfg(any(unix, test))]
 const CAPTURED_VARS: &[&str] = &[
     "PATH",
+    "CODEX_HOME",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",

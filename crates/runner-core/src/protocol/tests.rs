@@ -112,8 +112,20 @@ record!(CreateRoleInput {
     model,
     effort,
     codex_speed,
+    avatar_path,
+    avatar_style,
+    avatar_color,
     permission_mode
 });
+record!(GenerateRoleAvatarInput {
+    handle,
+    display_name,
+    system_prompt,
+    avatar_color,
+    prompt
+});
+record!(GeneratedRoleAvatar { path });
+variant!(AvatarStyle => Self::Initials);
 record!(CreateSlotInput {
     crew_id,
     role_id,
@@ -391,6 +403,9 @@ record!(Role {
     model,
     effort,
     codex_speed,
+    avatar_path,
+    avatar_style,
+    avatar_color,
     created_at,
     updated_at
 });
@@ -551,7 +566,10 @@ record!(UpdateRoleInput {
     model,
     effort,
     codex_speed,
-    permission_mode
+    permission_mode,
+    avatar_path,
+    avatar_style,
+    avatar_color
 });
 record!(UpdateSlotInput {
     slot_handle,
@@ -658,6 +676,135 @@ macro_rules! round_trip_api {
     };
 }
 crate::daemon_api!(round_trip_api);
+
+#[test]
+fn role_avatar_fields_default_and_preserve_patch_semantics() {
+    let mut role = Role::sample();
+    role.avatar_path = Some("/managed/role-avatars/asset.png".into());
+    role.avatar_style = AvatarStyle::Pixel;
+    role.avatar_color = Some("#a1b2c3".into());
+    let mut role_json = serde_json::to_value(&role).unwrap();
+    let decoded: Role = serde_json::from_value(role_json.clone()).unwrap();
+    assert_eq!(decoded.avatar_path, role.avatar_path);
+    assert_eq!(decoded.avatar_style, AvatarStyle::Pixel);
+    assert_eq!(decoded.avatar_color.as_deref(), Some("#a1b2c3"));
+    role_json.as_object_mut().unwrap().remove("avatar_path");
+    role_json.as_object_mut().unwrap().remove("avatar_style");
+    role_json.as_object_mut().unwrap().remove("avatar_color");
+    let old_role: Role = serde_json::from_value(role_json).unwrap();
+    assert_eq!(old_role.avatar_path, None);
+    assert_eq!(old_role.avatar_style, AvatarStyle::Initials);
+    assert_eq!(old_role.avatar_color, None);
+    let old_role_json = serde_json::to_value(&old_role).unwrap();
+    assert!(old_role_json.get("avatar_path").is_none());
+    assert!(old_role_json.get("avatar_style").is_none());
+    assert!(old_role_json.get("avatar_color").is_none());
+
+    let mut create = CreateRoleInput::sample();
+    create.avatar_path = Some("/managed/role-avatars/create.png".into());
+    create.avatar_style = AvatarStyle::Pixel;
+    create.avatar_color = Some("#abcdef".into());
+    let create_json = serde_json::to_value(&create).unwrap();
+    let decoded: CreateRoleInput = serde_json::from_value(create_json.clone()).unwrap();
+    assert_eq!(decoded.avatar_path, create.avatar_path);
+    assert_eq!(decoded.avatar_style, AvatarStyle::Pixel);
+    assert_eq!(decoded.avatar_color.as_deref(), Some("#abcdef"));
+    let mut old_create = create_json;
+    old_create.as_object_mut().unwrap().remove("avatar_path");
+    old_create.as_object_mut().unwrap().remove("avatar_style");
+    old_create.as_object_mut().unwrap().remove("avatar_color");
+    let old_create: CreateRoleInput = serde_json::from_value(old_create).unwrap();
+    assert_eq!(old_create.avatar_path, None);
+    assert_eq!(old_create.avatar_style, AvatarStyle::Initials);
+    assert_eq!(old_create.avatar_color, None);
+    assert!(serde_json::to_value(&old_create)
+        .unwrap()
+        .get("avatar_style")
+        .is_none());
+    assert!(serde_json::to_value(&old_create)
+        .unwrap()
+        .get("avatar_color")
+        .is_none());
+
+    for value in [
+        None,
+        Some(None),
+        Some(Some("/managed/role-avatars/replacement.png".to_owned())),
+    ] {
+        let mut update = UpdateRoleInput::sample();
+        update.avatar_path = value.clone();
+        let decoded: UpdateRoleInput =
+            serde_json::from_value(serde_json::to_value(&update).unwrap()).unwrap();
+        assert_eq!(decoded.avatar_path, value);
+    }
+    for value in [None, Some(AvatarStyle::Initials), Some(AvatarStyle::Pixel)] {
+        let mut update = UpdateRoleInput::sample();
+        update.avatar_style = value;
+        let decoded: UpdateRoleInput =
+            serde_json::from_value(serde_json::to_value(&update).unwrap()).unwrap();
+        assert_eq!(decoded.avatar_style, value);
+    }
+    for value in [None, Some(None), Some(Some("#a1b2c3".to_owned()))] {
+        let mut update = UpdateRoleInput::sample();
+        update.avatar_color = value.clone();
+        let decoded: UpdateRoleInput =
+            serde_json::from_value(serde_json::to_value(&update).unwrap()).unwrap();
+        assert_eq!(decoded.avatar_color, value);
+    }
+    for value in [None, Some(None), Some(Some("#a1b2c3".to_owned()))] {
+        let mut update = UpdateRoleInput::sample();
+        update.avatar_color = value.clone();
+        let decoded: UpdateRoleInput =
+            serde_json::from_value(serde_json::to_value(&update).unwrap()).unwrap();
+        assert_eq!(decoded.avatar_color, value);
+    }
+    let omitted: UpdateRoleInput = serde_json::from_value(serde_json::json!({})).unwrap();
+    let cleared: UpdateRoleInput =
+        serde_json::from_value(serde_json::json!({"avatar_path": null})).unwrap();
+    assert_eq!(omitted.avatar_path, None);
+    assert_eq!(cleared.avatar_path, Some(None));
+    assert_eq!(omitted.avatar_style, None);
+    assert_eq!(omitted.avatar_color, None);
+    assert!(serde_json::to_value(&omitted)
+        .unwrap()
+        .get("avatar_style")
+        .is_none());
+    assert!(serde_json::to_value(&omitted)
+        .unwrap()
+        .get("avatar_color")
+        .is_none());
+    assert_eq!(
+        serde_json::from_value::<UpdateRoleInput>(serde_json::json!({"avatar_style": "pixel"}))
+            .unwrap()
+            .avatar_style,
+        Some(AvatarStyle::Pixel)
+    );
+}
+
+#[test]
+fn avatar_color_helpers_accept_only_six_hex_digits_and_normalize() {
+    assert_eq!(parse_avatar_color(" #A1b2C3 "), Some(0xA1B2C3));
+    assert_eq!(
+        normalize_avatar_color(" #A1b2C3 ").as_deref(),
+        Some("#a1b2c3")
+    );
+    for invalid in [
+        "",
+        "  ",
+        "a1b2c3",
+        "#abc",
+        "#12345678",
+        "#gg0000",
+        "#12 456",
+    ] {
+        assert_eq!(parse_avatar_color(invalid), None, "accepted {invalid:?}");
+        assert_eq!(
+            normalize_avatar_color(invalid),
+            None,
+            "normalized {invalid:?}"
+        );
+    }
+}
 
 #[test]
 fn updates_preserve_omitted_clear_and_set_fields() {

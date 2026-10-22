@@ -151,6 +151,9 @@ fn insert_seed_role(
             codex_speed: None,
             created_at: timestamp,
             updated_at: timestamp,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )?;
     Ok(())

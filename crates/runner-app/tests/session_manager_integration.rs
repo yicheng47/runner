@@ -40,6 +40,9 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "phase3-seam".into(),
             display_name: "Phase 3 seam".into(),
             runtime: runner_daemon::model::Runtime::Trae,
@@ -96,6 +99,9 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "terminal-ime".into(),
             display_name: "Terminal IME".into(),
             runtime: runner_daemon::model::Runtime::Trae,
@@ -154,6 +160,9 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "phase4-tabs".into(),
             display_name: "Phase 4 tabs".into(),
             runtime: runner_daemon::model::Runtime::Trae,
@@ -223,6 +232,9 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     let role = runner_daemon::ops::role::role_create(
         &core,
         CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "terminal-release".into(),
             display_name: "Terminal release".into(),
             runtime: runner_daemon::model::Runtime::Trae,

@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named, to_params_named_with_fields};
 
-use crate::model::{CodexSpeed, Role, Timestamp};
+use crate::model::{AvatarStyle, CodexSpeed, Role, Timestamp};
 
 use super::{de_err, insert_sql, select_list, ser_err};
 
@@ -32,6 +32,9 @@ pub struct RoleRow {
     pub args_json: Option<Vec<String>>,
     pub working_dir: Option<String>,
     pub system_prompt: Option<String>,
+    pub avatar_path: Option<String>,
+    pub avatar_style: AvatarStyle,
+    pub avatar_color: Option<String>,
     #[serde(with = "crate::repo::serde::json_text_opt")]
     pub env_json: Option<HashMap<String, String>>,
     pub model: Option<String>,
@@ -56,6 +59,9 @@ pub const COLUMNS: &[&str] = &[
     "args_json",
     "working_dir",
     "system_prompt",
+    "avatar_path",
+    "avatar_style",
+    "avatar_color",
     "env_json",
     "model",
     "effort",
@@ -74,6 +80,9 @@ const UPDATE_FIELDS: &[&str] = &[
     "args_json",
     "working_dir",
     "system_prompt",
+    "avatar_path",
+    "avatar_style",
+    "avatar_color",
     "env_json",
     "model",
     "effort",
@@ -93,6 +102,9 @@ impl From<RoleRow> for Role {
             args: r.args_json.unwrap_or_default(),
             working_dir: r.working_dir,
             system_prompt: r.system_prompt,
+            avatar_path: r.avatar_path,
+            avatar_style: r.avatar_style,
+            avatar_color: r.avatar_color,
             env: r.env_json.unwrap_or_default(),
             model: r.model,
             effort: r.effort,
@@ -114,6 +126,9 @@ impl From<&Role> for RoleRow {
             args_json: Some(r.args.clone()),
             working_dir: r.working_dir.clone(),
             system_prompt: r.system_prompt.clone(),
+            avatar_path: r.avatar_path.clone(),
+            avatar_style: r.avatar_style,
+            avatar_color: r.avatar_color.clone(),
             env_json: Some(r.env.clone()),
             model: r.model.clone(),
             effort: r.effort.clone(),
@@ -144,6 +159,9 @@ pub fn update(conn: &Connection, row: &RoleRow) -> rusqlite::Result<usize> {
                 args_json = :args_json,
                 working_dir = :working_dir,
                 system_prompt = :system_prompt,
+                avatar_path = :avatar_path,
+                avatar_style = :avatar_style,
+                avatar_color = :avatar_color,
                 env_json = :env_json,
                 model = :model,
                 effort = :effort,
@@ -417,6 +435,11 @@ mod tests {
             ]),
             working_dir: Some("/tmp/work".into()),
             system_prompt: Some("persona".into()),
+            avatar_path: Some(
+                "/managed/role-avatars/00000000-0000-4000-8000-000000000001.png".into(),
+            ),
+            avatar_style: AvatarStyle::Pixel,
+            avatar_color: Some("#a1b2c3".into()),
             env_json: Some(HashMap::from([("FOO".to_string(), "bar".to_string())])),
             model: Some("gpt-5".into()),
             effort: Some("high".into()),
@@ -437,6 +460,9 @@ mod tests {
             args_json: Some(Vec::new()),
             working_dir: None,
             system_prompt: None,
+            avatar_path: None,
+            avatar_style: AvatarStyle::Initials,
+            avatar_color: None,
             env_json: Some(HashMap::new()),
             model: None,
             effort: None,
@@ -591,6 +617,8 @@ mod tests {
         updated.display_name = "Renamed".into();
         updated.args_json = Some(vec!["--debug".into()]);
         updated.model = None;
+        updated.avatar_style = AvatarStyle::Initials;
+        updated.avatar_color = None;
         updated.updated_at = Utc::now();
         // Struct-level drift on immutable fields must not reach the DB.
         updated.handle = "hijacked".into();
@@ -600,6 +628,9 @@ mod tests {
         assert_eq!(read.display_name, "Renamed");
         assert_eq!(read.args, vec!["--debug".to_string()]);
         assert_eq!(read.model, None);
+        assert_eq!(read.avatar_path, original.avatar_path);
+        assert_eq!(read.avatar_style, AvatarStyle::Initials);
+        assert_eq!(read.avatar_color, None);
         assert_eq!(read.handle, "full", "handle is not in the update list");
         assert_eq!(read.created_at, original.created_at);
         assert_eq!(read.updated_at, updated.updated_at);

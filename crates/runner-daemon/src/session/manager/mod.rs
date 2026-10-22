@@ -2070,6 +2070,9 @@ pub(crate) fn runtime_direct_role(
             .filter(|value| !value.is_empty())
             .map(ToOwned::to_owned),
         codex_speed: None,
+        avatar_path: None,
+        avatar_style: crate::model::AvatarStyle::Initials,
+        avatar_color: None,
         created_at: now,
         updated_at: now,
     })

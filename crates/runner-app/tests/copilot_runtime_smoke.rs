@@ -119,6 +119,9 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
     let role = role::create(
         &db.get().unwrap(),
         role::CreateRoleInput {
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             handle: "copilot-smoke".into(),
             display_name: "Copilot smoke".into(),
             runtime: Runtime::Copilot,

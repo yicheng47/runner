@@ -2087,16 +2087,26 @@ fn role_options(roles: &[Role]) -> Vec<SelectOption> {
         .map(|role| {
             SelectOption::new(role.id.clone(), role.display_name.clone())
                 .description(format!("@{}", role.handle))
-                .leading(role_leading(&role.handle))
+                .leading(role_leading(role))
         })
         .collect()
 }
 
-fn role_leading(handle: &str) -> SelectLeading {
-    let seed = handle.to_owned();
-    SelectLeading::new(format!("role:{handle}"), move |size| {
-        RoleAvatar::new(seed.clone(), size).into_any_element()
-    })
+fn role_leading(role: &Role) -> SelectLeading {
+    let seed = role.handle.clone();
+    let image_path = role.avatar_path.clone();
+    let style = role.avatar_style;
+    let color = role.avatar_color.clone();
+    SelectLeading::new(
+        format!("role:{}:{style:?}:{image_path:?}:{color:?}", role.handle),
+        move |size| {
+            RoleAvatar::new(seed.clone(), size)
+                .style(style)
+                .color(color.clone())
+                .image_path(image_path.clone())
+                .into_any_element()
+        },
+    )
 }
 
 fn runtime_leading(runtime: &str) -> SelectLeading {
@@ -3153,6 +3163,9 @@ pub(super) mod tests {
             model: None,
             effort: None,
             codex_speed: None,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }

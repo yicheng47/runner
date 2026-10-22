@@ -6,7 +6,7 @@ use gpui::{div, rems, AnyElement, Context, FocusHandle, KeyDownEvent, SharedStri
 use runner_app::ui::{RoleAvatar, SelectOption};
 use runner_core::protocol::crew::CrewMemberPreview;
 use runner_core::protocol::mission::MissionSummary;
-use runner_core::protocol::model::{Mission, MissionStatus, SlotWithRole, Timestamp};
+use runner_core::protocol::model::{AvatarStyle, Mission, MissionStatus, SlotWithRole, Timestamp};
 use runner_core::protocol::role::RoleWithActivity;
 use runner_core::protocol::runtime::{RuntimeCatalogEntry, RuntimeCatalogOption};
 
@@ -347,22 +347,30 @@ pub(super) fn picture_cells(slots: usize, tile: f32) -> Vec<PictureCell> {
     }
 }
 
-/// The crew's picture: its slots' pixel avatars, in slot order.
-pub(crate) fn crew_picture(handles: &[SharedString], tile: f32) -> AnyElement {
+/// The crew's picture: its slots' role avatars, in slot order.
+pub(crate) fn crew_picture(
+    avatars: &[(SharedString, Option<String>, AvatarStyle, Option<String>)],
+    tile: f32,
+) -> AnyElement {
     div()
         .relative()
         .flex_none()
         .size(rems(tile / 16.))
         .children(
-            picture_cells(handles.len(), tile)
+            picture_cells(avatars.len(), tile)
                 .into_iter()
-                .zip(handles)
-                .map(|(cell, handle)| {
+                .zip(avatars)
+                .map(|(cell, (handle, image_path, style, color))| {
                     div()
                         .absolute()
                         .left(rems(cell.left / 16.))
                         .top(rems(cell.top / 16.))
-                        .child(RoleAvatar::new(handle.clone(), cell.size))
+                        .child(
+                            RoleAvatar::new(handle.clone(), cell.size)
+                                .style(*style)
+                                .color(color.clone())
+                                .image_path(image_path.clone()),
+                        )
                 }),
         )
         .into_any_element()

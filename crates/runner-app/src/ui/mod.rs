@@ -31,7 +31,10 @@ fn zoom_from_rem_size(rem_size: Pixels) -> f32 {
     f32::from(rem_size) / 16.
 }
 
-pub use avatar::{cells_for_seed, hue_for_seed, lead_badge, AvatarHue, RoleAvatar, RolePresence};
+pub use avatar::{
+    cells_for_seed, hue_for_avatar, hue_for_seed, initial_for_seed, lead_badge, AvatarHue,
+    RoleAvatar, RolePresence,
+};
 pub use button::{
     focus_ring, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler,
 };

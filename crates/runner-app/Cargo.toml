@@ -20,6 +20,7 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { workspace = true }
 futures = "0.3"
+png = "0.18.1"
 runner-core = { path = "../runner-core" }
 runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true

@@ -1,6 +1,12 @@
+mod personal_avatar;
+pub use personal_avatar::{
+    discard_personal_avatar, import_personal_avatar, PersonalAvatarSettings,
+};
+
 use runner_core::protocol::model::Runtime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -287,6 +293,7 @@ pub struct MissionNotifications {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
+    pub personal_avatar: PersonalAvatarSettings,
     pub language: runner_app::i18n::Language,
     pub notifications: NotificationSettings,
     pub app_theme: ThemeIntent,
@@ -336,6 +343,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            personal_avatar: PersonalAvatarSettings::default(),
             language: runner_app::i18n::Language::System,
             notifications: NotificationSettings::default(),
             app_theme: ThemeIntent::Auto,
@@ -399,10 +407,25 @@ impl AppSettings {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let contents = serde_json::to_string_pretty(self).context("serialize app settings")?;
-        fs::write(path, contents).with_context(|| format!("write {}", path.display()))
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut pending = tempfile::Builder::new()
+            .prefix(".runner-settings-")
+            .tempfile_in(parent)
+            .with_context(|| format!("prepare {}", path.display()))?;
+        pending
+            .write_all(contents.as_bytes())
+            .with_context(|| format!("write {}", path.display()))?;
+        pending
+            .persist(path)
+            .map_err(|error| anyhow::anyhow!("save {}: {}", path.display(), error.error))?;
+        Ok(())
     }
 
     pub fn normalize(&mut self) {
+        self.personal_avatar.normalize();
         self.app_zoom = normalize_zoom(self.app_zoom);
         self.terminal_font_size = normalize_terminal_font_size(self.terminal_font_size);
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
@@ -528,6 +551,50 @@ pub fn clamp_mission_rail_width(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_avatar_defaults_roundtrip_and_normalize() {
+        use runner_core::protocol::model::AvatarStyle;
+        let old: AppSettings = serde_json::from_str(r#"{"appZoom":1.2}"#).unwrap();
+        assert_eq!(old.personal_avatar, PersonalAvatarSettings::default());
+        let mut settings = old;
+        settings.personal_avatar = PersonalAvatarSettings {
+            style: AvatarStyle::Pixel,
+            image_path: Some(" /private/avatar.png ".into()),
+            color: Some(" #10B981 ".into()),
+        };
+        settings.normalize();
+        assert_eq!(
+            settings.personal_avatar.image_path.as_deref(),
+            Some("/private/avatar.png")
+        );
+        assert_eq!(settings.personal_avatar.color.as_deref(), Some("#10b981"));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        settings.save(&path).unwrap();
+        assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        settings.personal_avatar.image_path = Some("  ".into());
+        settings.personal_avatar.color = Some("red".into());
+        settings.normalize();
+        assert_eq!(settings.personal_avatar.image_path, None);
+        assert_eq!(settings.personal_avatar.color, None);
+    }
+
+    #[test]
+    fn personal_avatar_settings_save_replaces_existing_file_and_cleans_failed_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        let mut settings = AppSettings::default();
+        settings.save(&path).unwrap();
+        settings.personal_avatar.color = Some("#06b6d4".into());
+        settings.save(&path).unwrap();
+        assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        let directory = root.path().join("occupied");
+        fs::create_dir(&directory).unwrap();
+        assert!(settings.save(&directory).is_err());
+        assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
 
     #[test]
     fn language_defaults_migrates_and_persists_intent() {

@@ -74,6 +74,8 @@ macro_rules! daemon_api {
         project_rename(id: String => String = { id }, name: String => String = { name }) -> ProjectRow [false] => |core: &crate::AppCore, id: String, name: String| { crate::ops::project::project_rename(core, id, name) };
         role_activity(id: &str => String = { id.to_owned() }) -> RoleActivity [false] => |core: &crate::AppCore, id: String| { crate::ops::role::role_activity(core, &id) };
         role_create(input: CreateRoleInput => CreateRoleInput = { input }) -> Role [false] => |core: &crate::AppCore, input: CreateRoleInput| { crate::ops::role::role_create(core, input).map(|output| { core.events.emit("role/changed", &()); output }) };
+        role_avatar_generate(input: GenerateRoleAvatarInput => GenerateRoleAvatarInput = { input }) -> GeneratedRoleAvatar [false] => |core: &crate::AppCore, input: GenerateRoleAvatarInput| { crate::ops::role_avatar::role_avatar_generate(core, input) };
+        role_avatar_discard(path: String => String = { path }) -> () [false] => |core: &crate::AppCore, path: String| { crate::ops::role_avatar::role_avatar_discard(core, &path) };
         role_delete(id: &str => String = { id.to_owned() }) -> () [false] => |core: &crate::AppCore, id: String| { crate::ops::role::role_delete(core, &id).map(|output| { core.events.emit("role/changed", &()); output }) };
         role_get(id: &str => String = { id.to_owned() }) -> Role [true] => |core: &crate::AppCore, id: String| { crate::ops::role::role_get(core, &id) };
         role_get_by_handle(handle: &str => String = { handle.to_owned() }) -> Role [true] => |core: &crate::AppCore, handle: String| { crate::ops::role::role_get_by_handle(core, &handle) };

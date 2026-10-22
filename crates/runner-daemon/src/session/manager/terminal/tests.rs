@@ -708,6 +708,9 @@ fn hidden_terminal_answers_each_query_once() {
                 effort: None,
                 codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();
@@ -777,6 +780,9 @@ fn keys_follow_the_apps_kitty_keyboard_mode() {
             effort: None,
             codex_speed: None,
             permission_mode: crate::router::runtime::PermissionMode::Auto,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )
     .unwrap();
@@ -922,6 +928,9 @@ fn a_subscribed_tui_learns_of_a_scheme_flip() {
             effort: None,
             codex_speed: None,
             permission_mode: crate::router::runtime::PermissionMode::Auto,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
         },
     )
     .unwrap();
@@ -1572,6 +1581,9 @@ fn da1_has_one_reply_with_zero_one_and_two_mirrors() {
                 effort: None,
                 codex_speed: None,
                 permission_mode: crate::router::runtime::PermissionMode::Auto,
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
             },
         )
         .unwrap();

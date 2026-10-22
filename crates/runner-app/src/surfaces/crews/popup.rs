@@ -205,7 +205,12 @@ impl NativeRoot {
             .pb_3()
             .border_b_1()
             .border_color(theme::border())
-            .child(RoleAvatar::new(slot.slot.slot_handle.clone(), 40.))
+            .child(
+                RoleAvatar::new(slot.slot.slot_handle.clone(), 40.)
+                    .style(slot.role.avatar_style)
+                    .color(slot.role.avatar_color.clone())
+                    .image_path(slot.role.avatar_path.clone()),
+            )
             .child(
                 div()
                     .min_w(px(0.))

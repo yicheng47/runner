@@ -32,6 +32,36 @@ impl CodexSpeed {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AvatarStyle {
+    #[default]
+    Initials,
+    Pixel,
+}
+
+impl AvatarStyle {
+    pub fn is_initials(&self) -> bool {
+        matches!(self, Self::Initials)
+    }
+}
+
+/// Parse a strict `#RRGGBB` avatar color into its 24-bit RGB value.
+pub fn parse_avatar_color(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(hex, 16).ok()
+}
+
+/// Normalize a strict `#RRGGBB` color to lowercase, preserving the leading `#`.
+pub fn normalize_avatar_color(value: &str) -> Option<String> {
+    parse_avatar_color(value).map(|rgb| format!("#{rgb:06x}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Crew {
     pub id: String,
@@ -77,6 +107,12 @@ pub struct Role {
     pub effort: Option<String>,
     #[serde(default)]
     pub codex_speed: Option<CodexSpeed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_path: Option<String>,
+    #[serde(default, skip_serializing_if = "AvatarStyle::is_initials")]
+    pub avatar_style: AvatarStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_color: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

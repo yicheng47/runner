@@ -388,6 +388,9 @@ mod tests {
             model: None,
             effort: None,
             codex_speed: None,
+            avatar_path: None,
+            avatar_style: Default::default(),
+            avatar_color: None,
             created_at: now,
             updated_at: now,
         };

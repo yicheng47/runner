@@ -17,7 +17,7 @@ use gpui::{
 };
 use runner_app::ui::{focus_ring, Button, ButtonVariant, RoleAvatar, WorkingDirField};
 use runner_core::protocol::model::CodexSpeed;
-use runner_core::protocol::model::Role;
+use runner_core::protocol::model::{AvatarStyle, Role};
 use runner_core::protocol::role::RoleActivity;
 use runner_core::protocol::slot::CrewMembership;
 
@@ -251,7 +251,12 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .gap_4()
-            .child(RoleAvatar::new(role.handle.clone(), 96.))
+            .child(
+                RoleAvatar::new(role.handle.clone(), 96.)
+                    .style(role.avatar_style)
+                    .color(role.avatar_color.clone())
+                    .image_path(role.avatar_path.clone()),
+            )
             .child(
                 div()
                     .flex()
@@ -444,9 +449,13 @@ impl NativeRoot {
         let cancel_root = root.clone();
         let browse_root = root.clone();
         let submitting = form.submitting;
-        let can_submit = create
-            .map(super::logic::create_role_can_submit)
-            .unwrap_or(!submitting && form.display_name_valid);
+        let can_submit = create.map(super::logic::create_role_can_submit).unwrap_or(
+            !submitting
+                && !form.avatar.generating
+                && !form.avatar.color_error
+                && form.avatar_prompt.is_none()
+                && form.display_name_valid,
+        );
         let dirty = !creating
             && self
                 .role_surfaces
@@ -464,8 +473,14 @@ impl NativeRoot {
             .children(form.error.clone().filter(|_| creating && !self.app_store.read(cx).daemon_disconnected).map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)))
             .child({
                 let seed = create.map(|form| form.avatar_seed(cx)).unwrap_or_else(|| role.as_ref().unwrap().handle.clone());
-                div().when(cfg!(test), |avatar| avatar.debug_selector(|| "ROLE_CREATE_AVATAR".into())).child(RoleAvatar::new(seed, 96.)).into_any_element()
+                div().when(cfg!(test), |avatar| avatar.debug_selector(|| "ROLE_CREATE_AVATAR".into())).child(RoleAvatar::new(seed, 96.).style(form.avatar.style).color(form.avatar.color.clone()).image_path(form.avatar.path.clone())).into_any_element()
             })
+            .child(self.render_role_avatar_controls(
+                form,
+                if creating { super::logic::RoleFormKind::Create } else { super::logic::RoleFormKind::Edit },
+                create.is_none_or(|form| !form.handle_empty && form.handle_error.is_none()),
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -673,25 +688,45 @@ impl NativeRoot {
             "format.crews_using_this_role",
             &[("crew_count", (distinct_crew_count(&crews)).to_string())],
         );
-        let rows =
-            if crews.is_empty() {
-                div()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text(
-                        "ui.not_in_any_crew_yet_add_it_to_one_from_a_crew_s_page",
-                    ))
-                    .into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .children(crews.into_iter().map(|membership| {
-                        crew_row(membership, interactive, text_width, root.clone())
-                    }))
-                    .into_any_element()
-            };
+        let rows = if crews.is_empty() {
+            div()
+                .text_size(theme::text_ui())
+                .text_color(theme::faint())
+                .child(crate::i18n::text(
+                    "ui.not_in_any_crew_yet_add_it_to_one_from_a_crew_s_page",
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(crews.into_iter().map(|membership| {
+                    crew_row(
+                        membership,
+                        interactive,
+                        text_width,
+                        root.clone(),
+                        self.role_surfaces
+                            .detail
+                            .role
+                            .as_ref()
+                            .and_then(|role| role.avatar_path.clone()),
+                        self.role_surfaces
+                            .detail
+                            .role
+                            .as_ref()
+                            .map(|role| role.avatar_style)
+                            .unwrap_or_default(),
+                        self.role_surfaces
+                            .detail
+                            .role
+                            .as_ref()
+                            .and_then(|role| role.avatar_color.clone()),
+                    )
+                }))
+                .into_any_element()
+        };
         section()
             .gap_2()
             .when(!interactive, |section| section.opacity(0.4))
@@ -833,6 +868,9 @@ fn crew_row(
     interactive: bool,
     text_width: f32,
     root: Entity<NativeRoot>,
+    avatar_path: Option<String>,
+    avatar_style: AvatarStyle,
+    avatar_color: Option<String>,
 ) -> AnyElement {
     let crew_id = membership.crew_id.clone();
     let key_crew_id = crew_id.clone();
@@ -849,7 +887,12 @@ fn crew_row(
         .gap(rems(10. / 16.))
         .rounded(rems(4. / 16.))
         .py(rems(6. / 16.))
-        .child(RoleAvatar::new(membership.slot_handle.clone(), 20.))
+        .child(
+            RoleAvatar::new(membership.slot_handle.clone(), 20.)
+                .style(avatar_style)
+                .color(avatar_color)
+                .image_path(avatar_path),
+        )
         .child(
             div()
                 .w(rems(text_width / 16.))

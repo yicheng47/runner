@@ -6,6 +6,8 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [996 — Role and personal avatar customization](./996-role-personal-avatars.md) — local styles, identity colors, Codex image previews and the personal avatar Appearance tab; draft pending native evidence ([#996](https://github.com/yicheng47/runner/issues/996)).
+
 - [748 — Mission updates reach the starting chat](./748-mission-watch-delivery.md) — the return path for delegation; on hold after #826 since 2026-10-17, because Jason rejected Runner typing updates into a normal chat, and the spec keeps the refreshed proposal for the redesign ([#748](https://github.com/yicheng47/runner/issues/748)).
 - [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).

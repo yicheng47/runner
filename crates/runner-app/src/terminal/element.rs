@@ -1737,6 +1737,9 @@ mod tests {
         let role = runner_daemon::ops::role::create(
             &core.db.get().unwrap(),
             runner_daemon::ops::role::CreateRoleInput {
+                avatar_path: None,
+                avatar_style: Default::default(),
+                avatar_color: None,
                 handle: "wheel-probe".into(),
                 display_name: "Wheel probe".into(),
                 runtime: runner_daemon::model::Runtime::Trae,

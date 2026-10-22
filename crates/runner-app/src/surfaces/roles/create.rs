@@ -123,6 +123,9 @@ impl NativeRoot {
         form.error = None;
         let input = CreateRoleInput {
             handle: form.handle.read(cx).text().to_owned(),
+            avatar_path: form.avatar.path.clone(),
+            avatar_style: form.avatar.style,
+            avatar_color: form.avatar.color.clone(),
             display_name: form.display_name.read(cx).text().trim().to_owned(),
             runtime,
             command: form.command.read(cx).text().trim().to_owned(),
@@ -145,6 +148,9 @@ impl NativeRoot {
                 match result {
                     Ok(role) => {
                         let handle = role.handle.clone();
+                        if let Some(form) = this.role_surfaces.create.as_mut() {
+                            form.avatar.saved_successfully();
+                        }
                         this.role_surfaces.create = None;
                         if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store

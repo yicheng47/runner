@@ -304,9 +304,16 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let actions = rems(column.min(PROFILE_COLUMN_WIDTH) / 16.);
-        let handles = slots
+        let avatars = slots
             .iter()
-            .map(|slot| SharedString::from(slot.slot.slot_handle.clone()))
+            .map(|slot| {
+                (
+                    SharedString::from(slot.slot.slot_handle.clone()),
+                    slot.role.avatar_path.clone(),
+                    slot.role.avatar_style,
+                    slot.role.avatar_color.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         let lead = slots
             .iter()
@@ -324,7 +331,7 @@ impl NativeRoot {
                 .child(if crew.is_none() {
                     empty_profile_tile(PICTURE_SIZE, Some("users.svg"))
                 } else {
-                    crew_picture(&handles, PICTURE_SIZE)
+                    crew_picture(&avatars, PICTURE_SIZE)
                 }),
         );
         let creating = crew.is_none();

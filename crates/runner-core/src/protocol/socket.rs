@@ -13,10 +13,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const FORK_MATERIALIZE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const FORK_REQUEST_TIMEOUT: Duration =
     Duration::from_secs(FORK_MATERIALIZE_TIMEOUT.as_secs() + 30);
+pub const ROLE_AVATAR_GENERATE_TIMEOUT: Duration = Duration::from_secs(210);
 
 fn request_timeout(request: &Request, timeout: Duration) -> Duration {
     match request {
         Request::session_fork { .. } => timeout.max(FORK_REQUEST_TIMEOUT),
+        Request::role_avatar_generate { .. } => timeout.max(ROLE_AVATAR_GENERATE_TIMEOUT),
         _ => timeout,
     }
 }
@@ -937,6 +939,15 @@ mod deadline_tests {
             cols: None,
             rows: None,
         };
+        let avatar = Request::role_avatar_generate {
+            input: GenerateRoleAvatarInput {
+                handle: "designer".into(),
+                display_name: "Designer".into(),
+                system_prompt: None,
+                avatar_color: None,
+                prompt: None,
+            },
+        };
         assert_eq!(
             request_timeout(&fast, REQUEST_TIMEOUT),
             Duration::from_secs(10)
@@ -946,11 +957,22 @@ mod deadline_tests {
             Duration::from_millis(200)
         );
         assert!(request_timeout(&fork, REQUEST_TIMEOUT) > FORK_MATERIALIZE_TIMEOUT);
+        assert_eq!(
+            request_timeout(&avatar, REQUEST_TIMEOUT),
+            ROLE_AVATAR_GENERATE_TIMEOUT
+        );
+        assert_eq!(
+            request_timeout(&avatar, Duration::from_secs(300)),
+            Duration::from_secs(300)
+        );
         for ordinary in [
             Request::session_list {
                 mission_id: "mission".into(),
             },
             Request::role_list {},
+            Request::role_avatar_discard {
+                path: "/tmp/unused.png".into(),
+            },
             Request::node_rename {
                 id: "node".into(),
                 name: "renamed".into(),

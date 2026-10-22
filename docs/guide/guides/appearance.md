@@ -1,6 +1,6 @@
 # Appearance
 
-Choose how Runner follows light and dark mode, then set the app and terminal palettes independently. Text size and window material have their own controls.
+Choose your personal avatar and how Runner follows light and dark mode, then set the app and terminal palettes independently. Text size and window material have their own controls.
 
 ## Display language
 
@@ -9,6 +9,14 @@ Open **Settings → General** and use the **Language** dropdown to choose **Syst
 **System** is the default for new and existing settings. It follows the first preferred operating-system UI language: Chinese resolves to Simplified Chinese; other or unavailable languages resolve to English. Runner checks this at startup, when you select System, and when a window becomes active. System appears as **跟随系统** in Chinese; the two explicit choices retain their own language names.
 
 The setting covers Runner's interface and date displays. Agent output, user-authored names and prompts, backend error details, CLI output and documentation keep their original text. Native operating-system dialogs follow the operating system's language.
+
+## My avatar
+
+Open **Settings → Appearance → My avatar** to edit the picture used for your human-authored mission messages, labelled **You**. This is your personal appearance, not an AI role: changing it does not change a role, crew slot, event author or agent configuration.
+
+Choose **Initials** or **Pixel art** and a theme color. Automatic uses the existing human color; the named color presets and a custom `#RRGGBB` value let you choose your own. The selected local style and color also provide the fallback while an image loads or cannot be read.
+
+You can import a PNG image up to 8 MiB and 2048 × 2048 pixels. Runner copies it into its personal-avatar storage, leaving your original file untouched; moving the original later does not remove the imported avatar. Choosing a local style clears the image selection. Runner removes superseded imported copies after the new choice saves successfully. Your choice is saved with the app settings and shared by open Runner windows.
 
 ## Theme and palettes
 

@@ -70,6 +70,9 @@ use crate::error::Result;
 // 0026: records launch definitions, with a Rust conversion in the same transaction.
 // 0027: drops six process-host columns and three session override columns.
 // 0028: optional mission crew provenance and explicit dependent-row cleanup.
+// 0029: optional managed avatar image path on role templates.
+// 0030: role avatar rendering style, defaulting existing roles to initials.
+// 0031: optional canonical role avatar theme color.
 pub(super) const MIGRATIONS: &[(i64, &str, bool)] = &[
     (1, include_str!("../../migrations/0001_init.sql"), false),
     (
@@ -198,6 +201,21 @@ pub(super) const MIGRATIONS: &[(i64, &str, bool)] = &[
         28,
         include_str!("../../migrations/0028_optional_mission_crew_restrict_deletes.sql"),
         true,
+    ),
+    (
+        29,
+        include_str!("../../migrations/0029_role_avatar_path.sql"),
+        false,
+    ),
+    (
+        30,
+        include_str!("../../migrations/0030_role_avatar_style.sql"),
+        false,
+    ),
+    (
+        31,
+        include_str!("../../migrations/0031_role_avatar_color.sql"),
+        false,
     ),
 ];
 
