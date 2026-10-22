@@ -1,6 +1,6 @@
 # Remote access
 
-Connect this computer to your account so the web panel can show it online. Remote access is a private beta, invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code. Browser access to chats, missions and terminals will arrive in a later update, with end-to-end encryption.
+Connect this computer to your account so Runner on your other computers can reach its chats and missions. Remote access is a private beta, invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code. Sessions are encrypted end to end; the service relays them.
 
 ## Connect from Runner
 
@@ -38,14 +38,25 @@ Remote access never stops your agents or sessions. Closing the desktop app leave
 
 ## Who can reach this computer
 
-The service routes connections to computers on your account. Access to terminals will also require a paired device: signing in to the account alone is not enough. This update prepares the host’s PIN and trust settings; device pairing and terminal access arrive in a later update.
+The service routes connections to computers on your account. Terminal access requires a paired computer: signing in to the account alone is not enough.
 
 Set a PIN in **Settings → Remote access → Set PIN**, or run `runner remote pin` in your own interactive terminal outside a Runner agent session. Choose a 6-digit PIN, then enter it again. Leading zeroes are kept. The CLI hides both entries; Runner never shows the PIN again. **Change PIN** replaces it without unpairing existing devices.
 
-Runner’s service never sees the PIN and cannot pair a device on its own. When pairing becomes available, a device will enter the PIN once and use its own key on later connections. **Devices** lists the name, fingerprint, pairing date and last-seen time of each paired device. **Revoke**, or `runner remote revoke <fingerprint>`, removes that device’s trust. Use `runner remote devices` or `runner remote devices --json` to read the list from a terminal. The CLI also reports `Connected`, true while that device has an authenticated channel open; JSON uses `connected`. Revoke closes all of that device's channels.
+Runner’s service never sees the PIN and cannot pair a device on its own. Another Runner enters the PIN once to pair and uses its own key on later connections. **Devices** lists the name, fingerprint, pairing date and last-seen time of each paired computer. A green dot and **Connected now** replace the last-seen time while that computer has an authenticated connection open. When its last connection closes, the last-seen time returns. **Revoke**, or `runner remote revoke <fingerprint>`, removes that device’s trust. Use `runner remote devices` or `runner remote devices --json` to read the list from a terminal. The CLI also reports `Connected`, true while that device has an authenticated channel open; JSON uses `connected`. Revoke closes all of that device's channels.
 
 Five failed pairing confirmations in a row lock PIN entry. A wrong PIN and a damaged encrypted confirmation both count; malformed frames do not. Runner shows a warning and **Unlock** in Settings; no new device can pair until you unlock it. Already-paired devices keep working. Changing the PIN does not unlock entry. The lock survives a restart.
 
-A browser runs code supplied by the service. A malicious version of that code could capture a PIN as you type it, or use a paired browser’s key while the page is open, though it could not copy the key out. Pairing prevents the service from silently accessing hosts on its own; it cannot protect a browser from the site serving its code. A native client whose code does not come from the service does not have this browser limit.
+Runner shows **{computer} paired** as a system notification when another computer pairs. Clicking it opens **Settings → Remote access**. If system notifications are unavailable or off, an in-app toast says that the computer can now reach this one and offers **Open Remote access**. A reconnection does not raise another pairing notification.
 
 If you suspect this computer’s identity key has leaked, choose **Reset identity**, or run `runner remote reset-identity` in your own interactive terminal. Confirming disconnects the computer from the account, creates a new key and fingerprint, clears the PIN and all paired devices, and unlocks PIN entry. Connecting again needs a new code. Your agents and sessions keep running.
+
+
+## Take a terminal back
+
+While another Runner controls a terminal, its pane is covered by **Controlled from {computer}** and **Take back**. The remote computer sets the terminal’s size. The covered pane sends neither its own size nor terminal input, including typing, paste, file drops and IME composition. A mission composer submission addressed to a covered terminal keeps its draft until you take the terminal back.
+
+Choose **Take back**, or press Enter on the card, to return control to this desktop and fit the terminal to its pane. If one computer controls all the terminals in a split tab or mission, one card covers the group; taking it back fits each terminal to its own pane.
+
+When the remote computer leaves, the terminal keeps its last size. The card changes to **{computer} has left** with **Continue here**. Choose it, or press Enter on the card, to fit the terminal here and continue. If Runner did not see the computer’s name, it says **Another computer has left**.
+
+Several desktop windows can show the card, and you can take control back from any of them. With no remote computer using the terminal, desktop input and resizing work as usual. Instructions for pairing and opening another computer from Runner are added with the client.
