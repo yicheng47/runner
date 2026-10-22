@@ -352,6 +352,10 @@ impl MissionWorkspace {
 
     pub(super) fn mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.is_active(cx)
+            && self
+                .attached
+                .get(session_id)
+                .is_none_or(|chat| chat.terminal.control().desktop())
             && !self.secondary_state(cx).secondary
             && !self.archiving
             && self.terminal_status(session_id, cx) == Some(SessionStatus::Running)
@@ -360,6 +364,10 @@ impl MissionWorkspace {
 
     pub(super) fn cached_mission_terminal_interactive(&self, session_id: &str, cx: &App) -> bool {
         self.is_active(cx)
+            && self
+                .attached
+                .get(session_id)
+                .is_none_or(|chat| chat.terminal.control().desktop())
             && !self.secondary
             && !self.archiving
             && self.terminal_status(session_id, cx) == Some(SessionStatus::Running)

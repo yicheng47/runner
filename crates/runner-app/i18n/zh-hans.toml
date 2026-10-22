@@ -1151,9 +1151,9 @@
 
 "ui.remote_access" = "远程访问"
 
-"remote.subtitle" = "将这台电脑连接到你的账户，以启用远程访问。"
+"remote.subtitle" = "在其他电脑的 Runner 中访问这台电脑的聊天和任务。"
 "remote.off" = "这台电脑尚未连接"
-"remote.intro" = "将电脑连接到你的账户，并在浏览器中批准。会话访问将在后续更新中提供。"
+"remote.intro" = "将这台电脑连接到你的账户。其他电脑可使用它的 PIN 配对，并从 Runner 侧边栏打开它。"
 "remote.private_beta" = "内测"
 "remote.beta_detail" = "远程访问目前仅限受邀用户，且仅在中国大陆提供。登录托管服务需要通过邀请码创建的账户。"
 "remote.step_connect" = "在此连接"
@@ -1196,10 +1196,10 @@
 "remote.allow_detail" = "关闭后这台电脑将离线，但仍保留在账户中。"
 "remote.disconnect" = "断开连接"
 "remote.disconnect_computer" = "断开这台电脑"
-"remote.disconnect_detail" = "将电脑从账户中移除并删除凭证。已配对的设备保留配对；再次连接需要新的验证码。"
-"remote.footer" = "无论远程访问是否开启，智能体都会继续运行。会话访问功能发布后将采用端到端加密。"
+"remote.disconnect_detail" = "将电脑从账户中移除并删除凭证。已配对的电脑保留配对；再次连接需要新的验证码。"
+"remote.footer" = "无论远程访问是否开启，智能体都会继续运行。会话采用端到端加密；服务仅负责中继。"
 "remote.disconnect_title" = "要断开这台电脑吗？"
-"remote.disconnect_confirm" = "这台电脑将从 @{account} 的账户中移除，注册凭证将被删除。身份、PIN 和已配对的设备会保留。再次连接需要新的验证码。"
+"remote.disconnect_confirm" = "这台电脑将从 @{account} 的账户中移除，注册凭证将被删除。身份、PIN 和已配对的电脑会保留。再次连接需要新的验证码。"
 "remote.disconnecting" = "正在断开连接…"
 "remote.code" = "验证码"
 "remote.removed_title" = "已从账户移除"
@@ -1211,27 +1211,27 @@
 "remote.pin" = "PIN"
 "remote.set_pin" = "设置 PIN"
 "remote.change_pin" = "更改 PIN"
-"remote.pin_set_detail" = "已设置。设备输入一次即可与这台电脑配对。Runner 服务永远不会看到此 PIN。"
-"remote.pin_unset_detail" = "尚未设置。设置 PIN，让你的设备可以与这台电脑配对；Runner 服务永远不会看到此 PIN。"
+"remote.pin_set_detail" = "已设置。另一台电脑输入一次即可与这台电脑配对。Runner 服务永远不会看到此 PIN。"
+"remote.pin_unset_detail" = "尚未设置。设置 PIN，让其他电脑可以与这台电脑配对；Runner 服务永远不会看到此 PIN。"
 "remote.pin_locked" = "PIN 输入已锁定"
-"remote.pin_locked_detail" = "连续输错五次 PIN。解锁前无法配对新设备；已配对的设备不受影响。"
+"remote.pin_locked_detail" = "连续输错五次 PIN。解锁前其他电脑无法配对；已配对的电脑不受影响。"
 "remote.unlock" = "解锁"
 "remote.pin_locked_toast" = "连续输错五次 PIN，输入已锁定。请前往设置 → 远程访问解锁。"
 "remote.reset_identity" = "重置身份"
-"remote.reset_identity_detail" = "生成新的密钥和指纹，解除所有设备的配对并清除 PIN。怀疑这台电脑的密钥泄露时可使用此操作。"
+"remote.reset_identity_detail" = "生成新的密钥和指纹，解除所有电脑的配对并清除 PIN。怀疑这台电脑的密钥泄露时可使用此操作。"
 "remote.reset_identity_title" = "要重置这台电脑的身份吗？"
-"remote.reset_identity_confirm" = "Runner 将生成新的密钥和指纹，解除所有设备的配对并清除 PIN。“{computer}”也会从 @{account} 的账户中移除，再次连接需要新的验证码。智能体会继续运行。"
-"remote.reset_identity_confirm_off" = "Runner 将生成新的密钥和指纹，解除所有设备的配对并清除 PIN。智能体会继续运行。"
+"remote.reset_identity_confirm" = "Runner 将生成新的密钥和指纹，解除所有电脑的配对并清除 PIN。“{computer}”也会从 @{account} 的账户中移除，再次连接需要新的验证码。智能体会继续运行。"
+"remote.reset_identity_confirm_off" = "Runner 将生成新的密钥和指纹，解除所有电脑的配对并清除 PIN。智能体会继续运行。"
 "remote.resetting" = "正在重置…"
-"remote.devices" = "设备"
-"remote.device" = "设备"
+"remote.devices" = "可以打开这台电脑"
+"remote.device" = "电脑"
 "remote.paired" = "配对时间"
 "remote.last_seen" = "上次出现"
 "remote.revoke" = "撤销"
-"remote.devices_empty" = "尚无已配对的设备。设备配对功能将在后续更新中提供。"
-"remote.devices_hint" = "设备配对功能将在后续更新中提供。"
+"remote.devices_empty" = "尚无已配对的电脑。要配对另一台电脑，请在那台电脑的侧边栏选择这台电脑并输入 PIN。"
+"remote.devices_hint" = "要配对另一台电脑，请在那台电脑的侧边栏选择这台电脑并输入 PIN。"
 "remote.set_pin_title" = "设置 6 位数字 PIN"
-"remote.pin_explanation" = "设备输入一次此 PIN 即可与这台电脑配对。Runner 服务永远不会看到此 PIN，因此无法自行配对设备。"
+"remote.pin_explanation" = "你的其他电脑输入一次此 PIN 即可与这台电脑配对。Runner 服务永远不会看到此 PIN，因此无法自行配对电脑。"
 "remote.confirm_pin" = "再输入一次"
 "remote.pin_hint" = "6 位数字。第 1 步，共 2 步。"
 "remote.pin_invalid" = "PIN 必须为 6 位数字。"
@@ -1240,3 +1240,31 @@
 "remote.pin_hint_confirm" = "6 位数字。第 2 步，共 2 步。"
 "remote.pin_continue" = "继续"
 "remote.pin_back" = "返回"
+
+"remote.connected_now" = "当前已连接"
+
+"remote.another_computer" = "另一台电脑"
+
+"remote.control_title" = "正由 {name} 控制"
+
+"remote.control_detail" = "{name} 正在使用此终端，并按它的窗口调整了尺寸。收回后即可在这里使用。"
+
+"remote.control_group_detail" = "{name} 打开了此标签页，正在以它的尺寸使用其中的 {count} 个终端。收回后即可在这里使用。"
+
+"remote.control_left" = "{name} 已离开"
+
+"remote.control_left_detail" = "终端仍保持 {name} 的尺寸。继续在这里使用，将其调整到此窗格。"
+
+"remote.control_group_left_detail" = "这 {count} 个终端仍保持 {name} 的尺寸。继续在这里使用，将各终端调整到对应窗格。"
+
+"remote.take_back" = "收回"
+
+"remote.continue_here" = "继续在这里使用"
+
+"remote.paired_title" = "{name} 已配对"
+
+"remote.paired_body" = "{name} 现在可以访问这台电脑。"
+
+"remote.open_remote" = "打开远程访问"
+
+"remote.control_mission_detail" = "{name} 打开了此任务，正在以它的尺寸使用其中的 {count} 个终端。收回后即可在这里使用。"
