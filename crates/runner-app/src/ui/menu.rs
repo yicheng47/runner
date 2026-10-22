@@ -253,7 +253,7 @@ pub fn popup_layer_right_aligned(
     )
 }
 
-fn popup_layer_positioned(
+pub fn popup_layer_positioned(
     anchor: Bounds<Pixels>,
     window: &Window,
     width: PopupWidth,
