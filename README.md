@@ -118,6 +118,8 @@ https://github.com/user-attachments/assets/c2209015-1497-403a-98bd-cdc5502bee47
 
 If Runner is useful to you, you can [buy me a coffee on Afdian](https://afdian.com/a/runnersh). Your support helps fund ongoing development and maintenance.
 
+<a href="https://afdian.com/a/runnersh"><img src="assets/afdian-support.jpg" alt="Support Runner on Afdian — scan the QR code or click to open the creator page" width="300" /></a>
+
 ## Prerequisites
 
 Runner runs the agent CLIs you already use; it does not install them. Install and sign in to at least one of Claude Code, Codex, Antigravity CLI, GitHub Copilot CLI or pi before you start, and Runner finds it on your `PATH`. On Windows, Claude Code and pi's bash tool need Git for Windows, and npm-installed CLIs need Node.js.
