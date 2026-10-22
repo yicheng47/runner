@@ -30,6 +30,6 @@ Remote control was planned as the focus of 0.17; 0.17.0 shipped on 2026-10-21 wi
 
 - m2's live checks, on a `remote-nightly` build.
 - m5's live checks, on macOS and Windows: TERM-RESIZE-01, TERM-RESIZE-02, TERM-INPUT-01 and the mission message held during an unsent draft, pending with Jason.
-- m6, the host desktop, started on 2026-10-22 as a codex duo on `feat/836-m6-host-desktop`, as [plan.md](plan.md#m6--the-host-desktop) lays out. Its card, notification and Connected now checks wait for m7's client.
-- m7, Runner as a client: its frames were signed off on 2026-10-22; where the client side lives is settled before it starts, and it waits on the service's client enrollment.
-- The service: `runner_server`'s [#20](https://github.com/YeelinksCo/runner_server/pull/20), the relay channel without the browser client, merged and deployed on 2026-10-22; client enrollment next, with one sign-in enrolling a computer as both host and client.
+- m6, the host desktop, merged on 2026-10-22 as [#989](https://github.com/yicheng47/runner/pull/989). TERM-RESIZE-01/02 and #838's two-window steps are pending with Jason; its card, notification and Connected now checks wait for m7c's client.
+- m7, Runner as a client, in three missions: m7a, Account, started on 2026-10-22 as a codex duo on `feat/836-m7a-account`, as [plan.md](plan.md#m7a--account) lays out; then m7b, the client core in `runnerd`, and m7c, the client app.
+- The service: `runner_server`'s relay channel ([#20](https://github.com/YeelinksCo/runner_server/pull/20)) and client enrollment (R2, #21), one enrollment per computer whose host credential also lists the account's computers and opens `/relay/client`, both merged and deployed on 2026-10-22.

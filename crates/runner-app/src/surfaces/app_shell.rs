@@ -14,6 +14,8 @@ use crate::toast::ToastTone;
 use crate::*;
 use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 
+pub(crate) mod account_menu;
+
 pub(crate) const TITLEBAR_DRAG_HEIGHT: f32 = 28.;
 #[cfg(target_os = "macos")]
 pub(crate) const SIDEBAR_TOGGLE_GLYPH_X: f32 = 102.3;
@@ -1393,50 +1395,7 @@ impl NativeRoot {
                     .items_center()
                     .children(usage)
                     .child(div().flex_1())
-                    .child(
-                        div().occlude().cursor_pointer().child(Tooltip::new(
-                            "sidebar-settings-tooltip",
-                            crate::i18n::text("ui.settings"),
-                            div()
-                                .id("open-settings")
-                                .group("sidebar-settings")
-                                .when(cfg!(test), |button| {
-                                    button.debug_selector(|| "SIDEBAR_SETTINGS".into())
-                                })
-                                .tab_index(0)
-                                .flex_none()
-                                .size(px(32. * zoom))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(4. * zoom))
-                                .cursor_pointer()
-                                .hover(|button| button.bg(theme::chrome_hover()))
-                                .focus_visible(|button| button.bg(theme::chrome_hover()))
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.enter_settings_route(None, window, cx);
-                                }))
-                                .on_key_down(cx.listener(
-                                    |this, event: &KeyDownEvent, window, cx| {
-                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
-                                        {
-                                            cx.stop_propagation();
-                                            this.enter_settings_route(None, window, cx);
-                                        }
-                                    },
-                                ))
-                                .child(
-                                    svg()
-                                        .path("settings.svg")
-                                        .size(px(16. * zoom))
-                                        .text_color(theme::faint())
-                                        .group_hover("sidebar-settings", |icon| {
-                                            icon.text_color(theme::text())
-                                        }),
-                                ),
-                        )),
-                    ),
+                    .child(self.render_account_avatar(cx)),
             );
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
@@ -1452,6 +1411,7 @@ impl NativeRoot {
             .child(brand)
             .child(self.sidebar.clone())
             .child(footer)
+            .children(self.render_account_menu(window, cx))
             .children(
                 (self.usage_open && show_usage)
                     .then(|| {
@@ -2978,7 +2938,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_footer_fits_three_weekly_values_and_settings_in_one_row() {
+    fn sidebar_footer_fits_three_weekly_values_and_avatar_in_one_row() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{size, TestAppContext, VisualTestContext};
 
@@ -3029,7 +2989,7 @@ mod tests {
 
                     let footer = visual.debug_bounds("SIDEBAR_FOOTER").unwrap();
                     let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
-                    let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+                    let gear = visual.debug_bounds("SIDEBAR_ACCOUNT").unwrap();
                     let row = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
                     assert!((usage.size.height - px(32. * zoom)).abs() <= px(1.));
                     assert!((gear.size.width - px(32. * zoom)).abs() <= px(1.));
@@ -3067,18 +3027,18 @@ mod tests {
                     visual.simulate_mouse_move(usage.center(), None, gpui::Modifiers::default());
                     visual.run_until_parked();
                     assert_eq!(visual.debug_bounds("SIDEBAR_USAGE"), Some(usage));
-                    assert_eq!(visual.debug_bounds("SIDEBAR_SETTINGS"), Some(gear));
+                    assert_eq!(visual.debug_bounds("SIDEBAR_ACCOUNT"), Some(gear));
                     visual.simulate_mouse_move(gear.center(), None, gpui::Modifiers::default());
                     visual.run_until_parked();
                     assert_eq!(visual.debug_bounds("SIDEBAR_USAGE"), Some(usage));
-                    assert_eq!(visual.debug_bounds("SIDEBAR_SETTINGS"), Some(gear));
+                    assert_eq!(visual.debug_bounds("SIDEBAR_ACCOUNT"), Some(gear));
                 }
             }
         }
     }
 
     #[test]
-    fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview() {
+    fn sidebar_footer_opens_usage_and_account_menu_and_hides_usage_in_collapsed_preview() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
 
@@ -3110,8 +3070,12 @@ mod tests {
         visual.simulate_click(usage.center(), Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_none());
-        let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+        let gear = visual.debug_bounds("SIDEBAR_ACCOUNT").unwrap();
         visual.simulate_click(gear.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("ACCOUNT_MENU").is_some());
+        let settings = visual.debug_bounds("ACCOUNT_MENU_ITEM_0").unwrap();
+        visual.simulate_click(settings.center(), Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             host.read_with(&visual, |root, _| root.route.clone())
@@ -3127,7 +3091,7 @@ mod tests {
         .unwrap();
         visual.run_until_parked();
         assert!(visual.debug_bounds("SIDEBAR_USAGE").is_none());
-        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+        assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
         host.update(&mut visual, |root, _, cx| {
             root.sidebar_collapsed = false;
             root.sidebar_preview_open = false;
@@ -3137,7 +3101,7 @@ mod tests {
         .unwrap();
         visual.run_until_parked();
         assert!(visual.debug_bounds("SIDEBAR_USAGE").is_none());
-        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+        assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
     }
 
     struct SidebarHeaderProbe {

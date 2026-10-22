@@ -54,6 +54,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn dismiss_sidebar_transients(&mut self, cx: &mut Context<Self>) {
+        self.account_menu.state.close();
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
             sidebar.dismiss_transients(sidebar_cx)
         });
