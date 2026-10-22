@@ -257,9 +257,18 @@ pub(crate) struct TerminalUpdates;
 
 impl EventEmitter<String> for TerminalUpdates {}
 
+#[derive(Clone, serde::Deserialize)]
+pub(crate) struct RemotePairing {
+    pub name: String,
+    pub fingerprint: String,
+}
+
+impl EventEmitter<RemotePairing> for AppStore {}
+
 enum RemoteUpdate {
     Status(runner_core::remote::RemoteStatus),
     Trust(runner_core::remote::RemoteTrust),
+    Paired(RemotePairing),
 }
 
 #[derive(Clone)]
@@ -324,6 +333,7 @@ pub(crate) struct AppStore {
 impl AppStore {
     fn apply_remote_update(&mut self, update: RemoteUpdate, live: bool) {
         let warning = match update {
+            RemoteUpdate::Paired(_) => return,
             RemoteUpdate::Status(status) => {
                 let warning = (live
                     && crate::surfaces::settings::remote::warn_transition(
@@ -557,6 +567,16 @@ impl AppStore {
                             }
                         }
                     }
+                    Ok(event) if event.name == "remote/paired" => {
+                        if let Ok(pairing) = serde_json::from_value(event.payload) {
+                            if remote_tx
+                                .unbounded_send((RemoteUpdate::Paired(pairing), true))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
                     Ok(event) if event.name == "remote/trust" => {
                         if let Ok(trust) = serde_json::from_value(event.payload) {
                             if remote_tx
@@ -593,7 +613,10 @@ impl AppStore {
             while let Some((update, live)) = remote_rx.next().await {
                 if weak
                     .update(cx, |store, cx| {
-                        store.apply_remote_update(update, live);
+                        match update {
+                            RemoteUpdate::Paired(pairing) => cx.emit(pairing),
+                            update => store.apply_remote_update(update, live),
+                        }
                         cx.notify();
                     })
                     .is_err()

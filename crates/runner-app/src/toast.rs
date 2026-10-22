@@ -32,6 +32,7 @@ pub struct Toast {
     pub single_line: bool,
     pub icon: Option<&'static str>,
     pub bottom: bool,
+    pub open_remote: bool,
 }
 
 #[derive(Debug, Default)]
@@ -67,6 +68,7 @@ impl ToastHost {
             single_line: false,
             icon: None,
             bottom: false,
+            open_remote: false,
         });
         id
     }
@@ -88,6 +90,15 @@ impl ToastHost {
             toast.icon = Some("lock.svg");
             toast.bottom = true;
             toast.single_line = true;
+        }
+    }
+
+    pub fn remote_pairing(&mut self) {
+        if let Some(toast) = &mut self.active {
+            toast.icon = Some("monitor.svg");
+            toast.bottom = true;
+            toast.single_line = true;
+            toast.open_remote = true;
         }
     }
 
