@@ -138,6 +138,7 @@ enum CommandInstallActivity {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum SettingsPane {
+    Account,
     #[default]
     General,
     Missions,
@@ -158,6 +159,7 @@ pub(crate) enum SettingsPane {
 impl SettingsPane {
     fn from_route(value: Option<&str>) -> Self {
         match value {
+            Some("account") => Self::Account,
             Some("missions") => Self::Missions,
             Some("appearance") => Self::Appearance,
             Some("remote") => Self::Remote,
@@ -177,6 +179,7 @@ impl SettingsPane {
 
     fn key(self) -> &'static str {
         match self {
+            Self::Account => "account",
             Self::General => "general",
             Self::Missions => "missions",
             Self::Appearance => "appearance",
@@ -196,6 +199,7 @@ impl SettingsPane {
 
     fn label(self) -> &'static str {
         match self {
+            Self::Account => crate::i18n::text("account.title"),
             Self::General => crate::i18n::text("ui.general"),
             Self::Missions => crate::i18n::text("ui.missions"),
             Self::Appearance => crate::i18n::text("ui.appearance"),
@@ -215,6 +219,7 @@ impl SettingsPane {
 
     fn icon(self) -> &'static str {
         match self {
+            Self::Account => "user-round.svg",
             Self::General => "settings.svg",
             Self::Missions => "rocket.svg",
             Self::Appearance => "sun.svg",
@@ -234,6 +239,7 @@ impl SettingsPane {
 }
 
 const APP_PANES: &[SettingsPane] = &[
+    SettingsPane::Account,
     SettingsPane::General,
     SettingsPane::Appearance,
     SettingsPane::Notifications,
@@ -630,13 +636,13 @@ fn settings_content_column(
         )
 }
 
-pub(crate) fn settings_section_heading(label: &'static str) -> AnyElement {
+pub(crate) fn settings_section_heading(label: impl Into<SharedString>) -> AnyElement {
     div()
         .px_1()
         .text_size(theme::text_meta())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
-        .child(label)
+        .child(label.into())
         .into_any_element()
 }
 
@@ -896,7 +902,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if pane != SettingsPane::Remote {
+        if self.settings_page.pane != pane {
             self.dismiss_remote_dialog();
         }
         if self.settings_page.pane == SettingsPane::Updates && pane != SettingsPane::Updates {
@@ -929,7 +935,7 @@ impl NativeRoot {
         }
         self.settings_page.pane = pane;
         match pane {
-            SettingsPane::Remote => self.enter_remote_settings(cx),
+            SettingsPane::Account | SettingsPane::Remote => self.enter_remote_settings(cx),
             SettingsPane::Missions => self.refresh_settings_crews(cx),
             SettingsPane::Agents => {
                 if self.settings_page.agents.is_none() {
@@ -1547,6 +1553,7 @@ impl NativeRoot {
             SettingsPane::General => Some(self.render_general_settings(cx)),
             SettingsPane::Missions => Some(self.render_missions_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
+            SettingsPane::Account => Some(self.render_account_settings(cx)),
             SettingsPane::Remote => Some(self.render_remote_settings(cx)),
             SettingsPane::Notifications => Some(self.render_notifications_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
@@ -3456,6 +3463,12 @@ mod tests {
     fn settings_routes_fall_back_to_general() {
         assert_eq!(SettingsPane::from_route(None), SettingsPane::General);
         assert_eq!(
+            SettingsPane::from_route(Some("account")),
+            SettingsPane::Account
+        );
+        assert_eq!(SettingsPane::Account.key(), "account");
+        assert_eq!(SettingsPane::Account.icon(), "user-round.svg");
+        assert_eq!(
             SettingsPane::from_route(Some("appearance")),
             SettingsPane::Appearance
         );
@@ -3482,12 +3495,13 @@ mod tests {
     fn nav_search_filters_labels_and_removes_empty_groups() {
         let all = filtered_nav_groups("");
         assert_eq!(all.len(), 3);
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 14);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
         assert_eq!(
             all[0],
             (
                 "App",
                 vec![
+                    SettingsPane::Account,
                     SettingsPane::General,
                     SettingsPane::Appearance,
                     SettingsPane::Notifications,

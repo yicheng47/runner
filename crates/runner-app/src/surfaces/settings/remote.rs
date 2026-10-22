@@ -11,6 +11,7 @@ use runner_core::{
 };
 use std::rc::Rc;
 
+pub(crate) mod account;
 mod pin;
 use pin::PinField;
 
@@ -22,7 +23,7 @@ pub(crate) struct RemotePaneState {
     pub(crate) confirm: bool,
     reset_identity: bool,
     pin: Option<PinDialog>,
-    focus: gpui::FocusHandle,
+    pub(crate) focus: gpui::FocusHandle,
     generation: u64,
 }
 struct PinDialog {
@@ -147,8 +148,12 @@ impl NativeRoot {
                 .await;
             let keep = weak
                 .update(cx, |root, cx| {
-                    if root.settings_page.remote.generation != generation
-                        || root.settings_page.pane != SettingsPane::Remote
+                    if root.route != crate::AppRoute::Settings
+                        || root.settings_page.remote.generation != generation
+                        || !matches!(
+                            root.settings_page.pane,
+                            SettingsPane::Account | SettingsPane::Remote
+                        )
                     {
                         return false;
                     }
@@ -590,7 +595,7 @@ impl NativeRoot {
                 if *reason == StopReason::InUseElsewhere {
                     actions = actions.child(self.remote_button(
                         "remote-stop-disconnect",
-                        "remote.disconnect",
+                        "account.sign_out",
                         |r, cx| {
                             r.settings_page.remote.confirm = true;
                             cx.notify();
@@ -799,7 +804,7 @@ impl NativeRoot {
                             crate::i18n::text("remote.disconnect_computer"),
                             self.remote_button(
                                 "remote-disconnect",
-                                "remote.disconnect",
+                                "account.sign_out",
                                 |r, cx| {
                                     r.settings_page.remote.confirm = true;
                                     cx.notify();
@@ -1409,7 +1414,7 @@ impl NativeRoot {
             crate::i18n::text(if reset {
                 "remote.reset_identity_title"
             } else {
-                "remote.disconnect_title"
+                "account.sign_out_title"
             }),
             tr(
                 if reset {
@@ -1419,7 +1424,7 @@ impl NativeRoot {
                         "remote.reset_identity_confirm_off"
                     }
                 } else {
-                    "remote.disconnect_confirm"
+                    "account.sign_out_confirm"
                 },
                 &[
                     ("computer", status.host_name.as_deref().unwrap_or("")),
@@ -1436,12 +1441,12 @@ impl NativeRoot {
             crate::i18n::text(if reset {
                 "remote.reset_identity"
             } else {
-                "remote.disconnect"
+                "account.sign_out"
             }),
             crate::i18n::text(if reset {
                 "remote.resetting"
             } else {
-                "remote.disconnecting"
+                "account.signing_out"
             }),
             self.settings_page.remote.busy,
             Rc::new(move |_, cx| {
