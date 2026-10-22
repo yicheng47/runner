@@ -103,6 +103,7 @@ struct LinkTooltip {
 
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalMirror>,
+    pub(crate) pane_size: Option<TerminalGridSize>,
     scroll_accumulator: f32,
     drag: Option<DragState>,
     next_generation: u64,
@@ -118,6 +119,7 @@ impl TerminalInteraction {
     pub(crate) fn new(session: Arc<TerminalMirror>) -> Self {
         Self {
             session,
+            pane_size: None,
             scroll_accumulator: 0.,
             drag: None,
             next_generation: 0,
@@ -896,12 +898,19 @@ impl Element for TerminalElement {
         let line_height = px((self.style.font_size * LINE_HEIGHT_FACTOR).round());
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
+        if !self.session.control().desktop() {
+            self.input.update(cx, |input, _| {
+                input.cancel_composition();
+            });
+        }
         let measured = terminal_grid_size(
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
             f32::from(cell_width),
             f32::from(line_height),
         );
+        self.interaction
+            .update(cx, |interaction, _| interaction.pane_size = measured);
         let (last_cols, last_rows) = self.session.size();
         match size_push_verdict(
             measured,

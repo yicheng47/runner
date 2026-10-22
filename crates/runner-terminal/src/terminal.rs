@@ -18,7 +18,8 @@ use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, KeyboardModes};
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use runner_core::protocol::terminal::{
-    TerminalAttachment, TerminalFrame, TerminalMetadata, TerminalPalette, TerminalSnapshot,
+    TerminalAttachment, TerminalController, TerminalFrame, TerminalMetadata, TerminalPalette,
+    TerminalSnapshot,
 };
 use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 
@@ -369,12 +370,33 @@ pub struct TerminalMirror {
     sequence: Mutex<SequenceState>,
     size: Mutex<(u16, u16)>,
     metadata: Mutex<TerminalMetadata>,
+    control: Mutex<TerminalControl>,
+    composition_clear_pending: Mutex<bool>,
     palette: Mutex<PaletteState>,
     waker: Arc<dyn Fn() + Send + Sync>,
     viewers: Arc<AtomicUsize>,
     frame_worker: Mutex<Option<FrameWorker>>,
     link_cwd: std::sync::OnceLock<Option<PathBuf>>,
     config: Mutex<Config>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalControl {
+    pub controller: TerminalController,
+    pub last_remote_name: Option<String>,
+}
+
+impl TerminalControl {
+    fn apply(&mut self, controller: TerminalController) {
+        if let TerminalController::Browser { name, .. } = &controller {
+            self.last_remote_name = Some(name.clone());
+        }
+        self.controller = controller;
+    }
+
+    pub fn desktop(&self) -> bool {
+        self.controller == TerminalController::Desktop
+    }
 }
 
 struct FrameWorker {
@@ -453,12 +475,19 @@ impl TerminalMirror {
                     match frame {
                         TerminalFrame::Output { seq, bytes } => mirror.feed_output(seq, &bytes),
                         TerminalFrame::Resized {
-                            seq, cols, rows, ..
+                            seq,
+                            cols,
+                            rows,
+                            controller,
                         } => {
                             let mut sequence = mirror.sequence.lock().unwrap();
                             if seq > sequence.last {
                                 sequence.last = seq;
                                 mirror.resize_local(cols, rows);
+                                let changed = mirror.apply_controller(controller);
+                                if changed {
+                                    (mirror.waker)();
+                                }
                             }
                         }
                         TerminalFrame::Resync => match mirror.client.attach(&mirror.session_id) {
@@ -539,6 +568,8 @@ impl TerminalMirror {
             sequence: Mutex::default(),
             size: Mutex::new((attachment.snapshot.cols, attachment.snapshot.rows)),
             metadata: Mutex::default(),
+            control: Mutex::default(),
+            composition_clear_pending: Mutex::new(false),
             palette: Mutex::new(PaletteState::new(palette::RUNNER)),
             waker,
             viewers,
@@ -614,6 +645,7 @@ impl TerminalMirror {
             attachment.snapshot.seq,
         );
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
+        self.apply_controller(attachment.snapshot.controller.clone());
         self.subscriber_id
             .store(attachment.subscriber_id, Ordering::Relaxed);
         if parser.processor.sync_timeout().sync_timeout().is_some() {
@@ -735,6 +767,9 @@ impl TerminalMirror {
         Ok(())
     }
     pub fn write_user_bytes(&self, bytes: &[u8]) -> std::result::Result<(), ClientError> {
+        if !self.control().desktop() {
+            return Ok(());
+        }
         self.clear_selection();
         self.client.input(&self.session_id, bytes)
     }
@@ -771,7 +806,19 @@ impl TerminalMirror {
         self.write_user_bytes(text.as_bytes())
     }
     pub fn set_composing(&self, composing: bool) {
-        self.observe_input(&InputEvent::Composing { composing });
+        let mut pending = self.composition_clear_pending.lock().unwrap();
+        if self.control().desktop() {
+            if self
+                .client
+                .terminal_observe_input(&self.session_id, InputEvent::Composing { composing })
+                .is_ok()
+            {
+                *pending = false;
+            }
+        } else if !composing {
+            // Clear the daemon's preedit after handover without sending input while covered.
+            *pending = true;
+        }
     }
     pub fn paste(&self, text: &str) -> std::result::Result<(), ClientError> {
         let bracketed = self
@@ -785,6 +832,9 @@ impl TerminalMirror {
         self.write_user_bytes(&crate::mappings::encode_paste(text, bracketed))
     }
     fn observe_input(&self, input: &InputEvent) {
+        if !self.control().desktop() {
+            return;
+        }
         let _ = self
             .client
             .terminal_observe_input(&self.session_id, input.clone());
@@ -795,11 +845,48 @@ impl TerminalMirror {
             .unwrap_or_default()
     }
     pub fn reset_input_state(&self, guard: u64) {
+        if !self.control().desktop() {
+            return;
+        }
         let _ = self
             .client
             .terminal_reset_input_state(&self.session_id, guard);
     }
+    fn apply_controller(&self, controller: TerminalController) -> bool {
+        let changed = {
+            let mut control = self.control.lock().unwrap();
+            let changed = control.controller != controller;
+            control.apply(controller);
+            changed
+        };
+        let mut pending = self.composition_clear_pending.lock().unwrap();
+        if *pending
+            && self.control().desktop()
+            && self
+                .client
+                .terminal_observe_input(
+                    &self.session_id,
+                    InputEvent::Composing { composing: false },
+                )
+                .is_ok()
+        {
+            *pending = false;
+        }
+        changed
+    }
+
+    pub fn control(&self) -> TerminalControl {
+        self.control.lock().unwrap().clone()
+    }
+
+    pub fn take_back(&self, cols: u16, rows: u16) -> std::result::Result<(), ClientError> {
+        self.client.terminal_take_back(&self.session_id, cols, rows)
+    }
+
     pub fn resize(&self, cols: u16, rows: u16) {
+        if !self.control().desktop() {
+            return;
+        }
         let (cols, rows) = (cols.max(2), rows.max(2));
         if self.size() == (cols, rows) {
             return;
