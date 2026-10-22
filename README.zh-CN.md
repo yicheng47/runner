@@ -11,6 +11,7 @@
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/yicheng47/runner?style=flat-square&cacheSeconds=86400" alt="许可证" /></a>
   <a href="#社区"><img src="https://img.shields.io/badge/WeChat-user%20group-07C160?style=flat-square&logo=wechat&logoColor=white" alt="微信用户群" /></a>
   <a href="https://runnersh.dev/downloads/"><img src="https://img.shields.io/badge/macOS%20%7C%20Windows-native-2ea44f?style=flat-square" alt="macOS 与 Windows" /></a>
+  <a href="https://afdian.com/a/runnersh"><img src="https://img.shields.io/badge/%E8%B5%9E%E5%8A%A9-%E7%88%B1%E5%8F%91%E7%94%B5-946BE7?style=flat-square" alt="通过爱发电赞助 Runner" /></a>
 </p>
 
 <p align="center">
@@ -118,7 +119,7 @@ https://github.com/user-attachments/assets/c2209015-1497-403a-98bd-cdc5502bee47
 
 如果 Runner 对你有帮助，欢迎[通过爱发电请我喝杯咖啡](https://afdian.com/a/runnersh)。你的支持将用于项目的持续开发与维护。
 
-<a href="https://afdian.com/a/runnersh"><img src="assets/afdian-support.jpg" alt="通过爱发电支持 Runner，扫码或点击进入创作者主页" width="300" /></a>
+[![通过爱发电赞助 Runner](https://img.shields.io/badge/%E8%B5%9E%E5%8A%A9%20Runner-%E7%88%B1%E5%8F%91%E7%94%B5-946BE7?style=for-the-badge)](https://afdian.com/a/runnersh)
 
 ## 前置条件
 
