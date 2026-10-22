@@ -114,7 +114,7 @@ impl MissionWorkspace {
                     )
                     .child(terminal_scrollbar),
             );
-        if interactive {
+        if interactive || !chat.terminal.control().desktop() {
             let key_root = root.clone();
             let paste_root = root.clone();
             let drop_root = root.clone();
@@ -186,7 +186,40 @@ impl MissionWorkspace {
             SlotOverlayState::Stopped => pane.child(self.render_stopped_slot_overlay(&session, cx)),
             SlotOverlayState::Archiving | SlotOverlayState::None => pane,
         };
+        if session.session.status == SessionStatus::Running
+            && !crate::terminal::control::mission_covered(
+                self.control_session_ids(cx)
+                    .iter()
+                    .map(|id| self.attached.get(id)),
+            )
+        {
+            pane = crate::terminal::control::cover(
+                pane,
+                format!("take-back-slot-{session_id}"),
+                &[chat],
+                crate::terminal::control::GroupKind::Tab,
+            );
+        }
         pane.into_any_element()
+    }
+
+    pub(super) fn control_session_ids(&self, cx: &App) -> Vec<String> {
+        self.sessions
+            .iter()
+            .filter(|session| session.session.status == SessionStatus::Running)
+            .map(|session| session.session.id.clone())
+            .chain(
+                self.layout
+                    .drawer
+                    .shells()
+                    .iter()
+                    .filter(|id| {
+                        self.drawer_session_entry(id, cx)
+                            .is_some_and(|entry| entry.status == SessionStatus::Running)
+                    })
+                    .cloned(),
+            )
+            .collect()
     }
 
     fn render_inbox_blocked_pill(

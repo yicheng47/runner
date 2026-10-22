@@ -1083,14 +1083,30 @@ impl NativeRoot {
                         div()
                             .w(rems(135. / 16.))
                             .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .child(
+                            .text_color(if device.connected {
+                                theme::accent()
+                            } else {
+                                theme::muted()
+                            })
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .children(device.connected.then(|| {
+                                div()
+                                    .debug_selector(|| "REMOTE_CONNECTED_NOW".into())
+                                    .size(rems(6. / 16.))
+                                    .rounded_full()
+                                    .bg(theme::accent())
+                            }))
+                            .child(if device.connected {
+                                crate::i18n::text("remote.connected_now").to_string()
+                            } else {
                                 device
                                     .last_seen_at
                                     .with_timezone(&chrono::Local)
                                     .format("%Y-%m-%d %H:%M")
-                                    .to_string(),
-                            ),
+                                    .to_string()
+                            }),
                     )
                     .child(
                         div().w(rems(70. / 16.)).child(
@@ -1823,16 +1839,12 @@ mod tests {
                                 devices: (0..devices)
                                     .map(|index| runner_core::remote::PairedDevice {
                                         fingerprint: format!("2b7f 91c0 a3e4 5d12 0f6{index}"),
-                                        name: [
-                                            "Chrome on MacBook Air",
-                                            "Safari on iPhone",
-                                            "Edge on Windows",
-                                        ][index]
+                                        name: ["MacBook Air", "Windows PC", "Linux server"][index]
                                             .into(),
                                         public_key: String::new(),
                                         paired_at: now,
                                         last_seen_at: now,
-                                        connected: false,
+                                        connected: index == 0,
                                     })
                                     .collect(),
                             });
@@ -1863,6 +1875,19 @@ mod tests {
                             visual.debug_bounds("REMOTE_DEVICE_ROW").is_some(),
                             devices > 0
                         );
+                        assert_eq!(
+                            visual.debug_bounds("REMOTE_CONNECTED_NOW").is_some(),
+                            devices > 0
+                        );
+                        if devices > 0 {
+                            store.update(&mut cx, |store, cx| {
+                                store.remote_trust.as_mut().unwrap().devices[0].connected = false;
+                                cx.notify();
+                            });
+                            window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+                            cx.run_until_parked();
+                            assert!(visual.debug_bounds("REMOTE_CONNECTED_NOW").is_none());
+                        }
                         if pin_locked {
                             let toast = visual.debug_bounds("GLOBAL_TOAST").unwrap();
                             assert!(toast.top() > px(1000.));

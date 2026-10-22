@@ -1481,3 +1481,131 @@ fn joined_mission_slot_uses_current_handle_and_counts_in_idle_projection() {
     refresh(&mut cx);
     assert_eq!(cx.shown_system_notifications().len(), 2);
 }
+
+#[test]
+fn pairing_notification_and_toast_open_remote_access_once_per_event() {
+    use crate::app_store::RemotePairing;
+    use gpui::{SystemNotificationResponse, VisualTestContext};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        install(cx);
+    });
+    let window = cx.add_window(|window, cx| {
+        NativeRoot::new(
+            "pairing-test".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let controller = cx.update(|cx| cx.global::<GlobalNotifications>().0.clone());
+    let pairing = RemotePairing {
+        name: "MacBook Air".into(),
+        fingerprint: "device-fingerprint".into(),
+    };
+    cx.run_until_parked();
+    controller.update(&mut cx, |controller, _| {
+        controller.permission = Permission::Allowed
+    });
+    store.update(&mut cx, |_, cx| cx.emit(pairing.clone()));
+    cx.run_until_parked();
+    let notices = cx.shown_system_notifications();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].title.as_ref(), "MacBook Air paired");
+    assert_eq!(
+        notices[0].body.as_ref(),
+        "MacBook Air can now reach this computer."
+    );
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: notices[0].tag.clone(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, _| {
+            assert_eq!(root.route, AppRoute::Settings);
+            assert_eq!(
+                root.settings_page.pane,
+                crate::surfaces::SettingsPane::Remote
+            );
+        })
+        .unwrap();
+    controller.update(&mut cx, |controller, _| {
+        controller.permission = Permission::Denied
+    });
+    window
+        .update(&mut cx, |root, _, _| root.route = AppRoute::Chat)
+        .unwrap();
+    store.update(&mut cx, |_, cx| cx.emit(pairing.clone()));
+    cx.run_until_parked();
+    assert_eq!(cx.shown_system_notifications().len(), 1);
+    window
+        .read_with(&cx, |root, _| {
+            let toast = root.toasts.active().unwrap();
+            assert_eq!(toast.message, "MacBook Air can now reach this computer.");
+            assert!(toast.open_remote && toast.bottom);
+        })
+        .unwrap();
+    let bounds = visual.debug_bounds("REMOTE_TOAST_ACTION").unwrap();
+    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    window
+        .read_with(&cx, |root, _| {
+            assert_eq!(root.route, AppRoute::Settings);
+            assert_eq!(
+                root.settings_page.pane,
+                crate::surfaces::SettingsPane::Remote
+            );
+            assert!(root.toasts.active().is_none());
+        })
+        .unwrap();
+    store.update(&mut cx, |_, cx| cx.emit(pairing));
+    cx.run_until_parked();
+    assert_eq!(cx.shown_system_notifications().len(), 1);
+    controller.update(&mut cx, |controller, _| {
+        controller.permission = Permission::Allowed
+    });
+    store.update(&mut cx, |_, cx| {
+        cx.emit(RemotePairing {
+            name: "MacBook Air".into(),
+            fingerprint: "device-fingerprint".into(),
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.shown_system_notifications().len(),
+        2,
+        "pairing again after unknownDevice is a new notification"
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn pairing_copy_is_localized_in_both_languages() {
+    use runner_app::i18n::{testing::with_locale, Locale};
+    let pairing = crate::app_store::RemotePairing {
+        name: "MacBook Air".into(),
+        fingerprint: "fingerprint".into(),
+    };
+    with_locale(Locale::English, || {
+        assert_eq!(
+            pairing_content(&pairing).title.as_ref(),
+            "MacBook Air paired"
+        )
+    });
+    with_locale(Locale::SimplifiedChinese, || {
+        let notification = pairing_content(&pairing);
+        assert_eq!(notification.title.as_ref(), "MacBook Air 已配对");
+        assert_eq!(
+            notification.body.as_ref(),
+            "MacBook Air 现在可以访问这台电脑。"
+        );
+    });
+}

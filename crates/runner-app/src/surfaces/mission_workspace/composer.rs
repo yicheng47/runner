@@ -395,6 +395,19 @@ impl MissionWorkspace {
                     return;
                 }
             };
+        if self.sessions.iter().any(|session| {
+            session.session.status == runner_core::protocol::model::SessionStatus::Running
+                && (resolved.recipients.is_empty()
+                    || resolved.recipients.as_slice().contains(&session.handle))
+                && self
+                    .attached
+                    .get(&session.session.id)
+                    .map(|chat| chat.terminal.clone())
+                    .or_else(|| self.app_store.read(cx).bridge.session(&session.session.id))
+                    .is_some_and(|terminal| !terminal.control().desktop())
+        }) {
+            return;
+        }
         self.composer_posting = true;
         self.composer_input
             .update(cx, |input, input_cx| input.set_disabled(true, input_cx));
