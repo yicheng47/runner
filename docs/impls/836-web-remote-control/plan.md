@@ -112,7 +112,9 @@ Proposed on 2026-10-20 with the spec's Phase 3 section. Jason approved starting 
 | m4 — channel | The route's frames on `/relay/host` and `hello`'s `features`; the channel in `runner-core/src/companion/channel/`, CPace, both Noise handshakes, records and credit, with its vectors; pairing and connecting in `runnerd` against `remote-trust.json`, Revoke and Reset identity closing channels; the `remote/paired` event and `connected` in `RemoteTrust` and `runner remote devices`; the adapter's `hello` and `welcome` alone. No change to the app | — |
 | m5 — adapter | The overview, status and terminal requests (`attach`, `input`, `takeControl`, `viewport`, `detach`) with their pushes; the snapshot's history limit; the controller in `runnerd` and its client-protocol changes, without the card. `feed`, `follow`, `unfollow`, `answer` and `post` are left out of `welcome`'s `features` for a later mission, which needs no protocol version (Jason, 2026-10-20) | m4 |
 | m6 — host desktop | The control card over panes, tabs and missions, Take back and Continue here, and the pane's size push; the pairing notification and the Connected now row; #838's two-window rerun; the guide | m5; the frames for the notification and the row |
-| m7 — Runner as a client | The channel's client side in the client computer's `runnerd`, its keys per paired host, and the companion protocol's client; enrolling the client on the account and listing its hosts; the app's computer picker, PIN dialog and remote terminals in the desktop's terminal view; Settings → Account and the sidebar's avatar menu, with signing in moved out of Remote access; the CLI's view of remote hosts. Split into two missions if the app's part is large | m5; `runner_server`'s client enrollment |
+| m7a — Account | Settings → Account and the sidebar's avatar menu, with signing in and out moved out of Remote access; Remote access's relay pages, the route choice with Tailscale Later and Reset remote access, on today's device list | m6 |
+| m7b — the client core | The channel's client side in the client computer's `runnerd`, its keys per paired computer, and the companion protocol's client; `ListAccountHosts` and `/relay/client` with the computer's credential; the CLI's view of other computers | m5; `runner_server`'s R2 |
+| m7c — the client app | The computer picker, the PIN dialog, another computer's window and terminals in the desktop's terminal view, and Remote access's computers list | m7a, m7b |
 
 **Revised on 2026-10-21 (Jason).** The client is a Runner desktop, not a browser, and the service only relays; the spec's [Clients are Runner apps](../../features/836-web-remote-control.md#clients-are-runner-apps) has why. m4 and m5 stand as built. m6 keeps its scope with the client's device name in its card and notification. m7 is new. A fix from the first live pass, [`fix/836-mirror-size`](https://github.com/yicheng47/runner/tree/fix/836-mirror-size), makes the desktop's terminal mirror follow the size `runnerd` applied, since the desktop ignored a browser's control while drawing; it lands before m6. The order is m6 and m7 in parallel, since m7 waits on the service and its own frames, then Phase 4.
 
@@ -235,6 +237,55 @@ m5 and [#986](https://github.com/yicheng47/runner/pull/986) left `runnerd` keepi
 #### Landing
 
 A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m6-host-desktop` on `feat/836-m6-host-desktop`, with its brief as [`../briefs/836-m6-host-desktop.md`](../briefs/836-m6-host-desktop.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
+
+### m7a — Account
+
+R2 merged in `runner_server` on 2026-10-22 as #21: one enrollment per computer, its host credential also listing the account's computers and opening `/relay/client`. So signing in needs no new service call. m7a is the desktop's side of the design's Account band and Remote access's relay pages, on the client protocol's existing `remote_*` requests: steps 1.1, 1.6, 1.7 and 5.1 to 5.4, and section 6, of `836-web-remote-control.pen`. Nothing in it reaches another computer; the computers list and "Sign in to Runner" starting the client are m7c's.
+
+#### Commits
+
+1. **Settings → Account.**
+   - A pane with the route key `account` and the lucide `user-round` icon, first in Settings' App group, for the hosted service's sign-in.
+   - Its states are Phase 1's enrollment states, moved from Remote access:
+     - signed out, with the private-beta note and Sign in;
+     - waiting for approval, with the code, fingerprint, link and time left;
+     - signed in, with the account, service, this computer and its fingerprint, and what the account is for (remote access through the relay, and Sync roles and crews marked Later);
+     - each stop reason's card, with Sign in again where Phase 1 had Connect again.
+   - Sign out on this computer replaces Disconnect, with its confirmation retitled. The CLI's `runner remote login` and `logout` are unchanged.
+2. **The avatar menu.**
+   - The sidebar footer's Settings gear becomes a round avatar: the account's initial, from its display name, when signed in, and a local-user icon otherwise.
+   - It opens a menu: the account and the service; Account; Settings (⌘,); and Sign out…, which asks first. Signed out, the header reads Not signed in with Private beta · mainland China, then Settings, then Sign in….
+   - The footer's height and its usage values keep their place.
+3. **Remote access.**
+   - Signed out, the pane shows the route choice: Runner's relay first, with Sign in to Runner, which starts the same enrollment and shows its waiting card in the pane; and Tailscale, marked Later with its button off.
+   - Signed in, it shows the relay page: the status card with the account, computer, fingerprint and service; Allow remote access; the PIN; Reset remote access; today's device list with m6's Connected now; and a Route section naming the relay, chosen once, with Signed in as @account and a link to Account.
+   - Reset remote access is Reset identity renamed. It already signs the computer out, so the pane returns to the route choice.
+   - Paused, reconnecting, PIN entry locked and its toast keep their behaviour in this layout.
+4. **The guide.** `docs/guide/guides/remote-access.md` gains signing in from Account, the avatar menu, and the route choice with Tailscale coming later.
+
+#### Checks
+
+- **The app's tests**:
+  - Account's states from `RemoteStatus`, including each stop reason;
+  - Sign in and Sign out calling the existing requests, with Sign out confirmed first;
+  - the avatar's initial and its signed-out icon, and the menu's items in both states;
+  - Remote access showing the route choice while signed out and the relay page while signed in;
+  - Tailscale's button disabled;
+  - Reset remote access returning to the route choice;
+  - the sidebar footer's layout.
+- **Gates**: the required workspace gates, each logged to a file with its exit code captured directly.
+- **Live, pending for Jason** on a `remote-nightly` build, macOS and Windows: sign in from Account against the hosted service, and from Remote access's route choice; the avatar and its menu; sign out; pause and resume; Reset remote access.
+
+#### Easy to get wrong
+
+- Sign in, Sign out and Reset reuse `remote_enroll_start`, `remote_enroll_cancel`, `remote_logout`, `remote_retry` and `remote_reset_identity` as they are; no `runnerd` or client-protocol change.
+- Signed out but enrolled-and-stopped is not signed in: a stop reason shows on Account, and Remote access shows the route choice with the reason linked to Account.
+- Every string in `en.toml` and `zh-hans.toml`. The account's name, never a credential or code, appears in the avatar menu.
+- The sidebar footer is shared by macOS and Windows; both keep their layout.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7a-account` on `feat/836-m7a-account`, with its brief as [`../briefs/836-m7a-account.md`](../briefs/836-m7a-account.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
 
 ## Phase 4 — Tailscale
 
