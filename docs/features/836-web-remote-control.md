@@ -1,14 +1,14 @@
 # 836 — Web remote control
 
 > Tracking issue: [#836](https://github.com/yicheng47/runner/issues/836). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows first; Linux wherever `runnerd` runs ([#823](https://github.com/yicheng47/runner/issues/823)).
-> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19), and the rest of the companion protocol (2026-10-20); the encrypted channel and the adapter that serves the protocol (Phase 3) were drafted on 2026-10-20 for review, and Phase 4, the Tailscale route, is released together with the hosted service.
+> Status: Phase 1, connecting a host to an account, is specified in full for the desktop and ready to build; the service's side of it went live on 2026-10-16. Phase 2's client trust model and the terminal-size rule are written (2026-10-19), and the rest of the companion protocol (2026-10-20); the encrypted channel and the adapter that serves the protocol (Phase 3) were drafted on 2026-10-20 for review, and Phase 4, the Tailscale route, is released together with the hosted service. On 2026-10-21 Jason made the client another Runner desktop rather than a browser: the service only relays, and serves no terminal page ([Clients are Runner apps](#clients-are-runner-apps)).
 > Scope: Runner's side only, what runs on the person's computer: `runnerd`, the `runner` CLI and the desktop app. The web panel and the service are developed separately; this spec describes them only as far as Runner talks to them.
-> Design: `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect. Terminal size's desktop states are in `runner/desktop/specs/836-terminal-size.pen`.
+> Design: `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, the Settings → Remote access pane: every state, the Disconnect confirmation, a light-theme Connected and the five stop reasons. Jason chose the status-card layout on 2026-10-18: one card whose dot, sentence and actions change with the state, then an Access section with the switch and Disconnect. The same file holds Terminal size's desktop states, merged in from `836-terminal-size.pen` on 2026-10-22, and the Runner-as-a-client options drawn that day.
 > Related: [#912](https://github.com/yicheng47/runner/issues/912) (iOS on the same foundation), [#808](https://github.com/yicheng47/runner/issues/808) (SSH hosts), [#838](https://github.com/yicheng47/runner/issues/838) (the desktop's own second-window resize, separate from Terminal size).
 
 ## Motivation
 
-Since 0.13, agents keep running in `runnerd` after the desktop app closes, but the person still needs that desktop to see progress or unblock them. Remote control connects the computer to the person's account so they can reach the same sessions from a browser, on another network or on a phone.
+Since 0.13, agents keep running in `runnerd` after the desktop app closes, but the person still needs that desktop to see progress or unblock them. Remote control connects the computer to the person's account so they can reach the same sessions from Runner on another computer, on another network, and later from the iPhone app.
 
 ## Phases
 
@@ -16,12 +16,21 @@ Since 0.13, agents keep running in `runnerd` after the desktop app closes, but t
 | --- | --- |
 | 1 | Connect a host: enrollment under an account, the stored secrets, the outbound connection, and its state in Settings and the CLI |
 | 2 | The companion protocol v1 in `runner-core`, with golden JSON for every message, and how a host decides which clients it trusts |
-| 3 | The end-to-end channel in `runnerd` (Noise through `snow`) and the adapter that serves the protocol from `runnerd`'s state: overview, live status, terminal attach, input and resize |
-| 4 | The Tailscale route: a listener on the host's Tailscale interface and its pairing, carrying Phase 3's channel and Phase 2's protocol unchanged |
+| 3 | The end-to-end channel in `runnerd` (Noise through `snow`) and the adapter that serves the protocol from `runnerd`'s state: overview, live status, terminal attach, input and resize; the host desktop's side of a remote client; and Runner as the client, connecting to another host through the relay |
+| 4 | The Tailscale route: a listener on the host's Tailscale interface, which a Runner client reaches directly over the tailnet with no service in between, carrying Phase 3's channel and Phase 2's protocol unchanged |
 
 Phase 1 is plumbing: the web panel shows the computer online or offline. Nothing a session contains leaves the computer before Phase 3.
 
 **Two routes, one release (Jason, 2026-10-18).** Remote control is released with two ways to reach a host, as two options of the same release: Tailscale for users worldwide, with no account or service, and the hosted service, invite-only, for users in mainland China. Neither audience comes first, so the order of the phases follows how easily each part is built and tested: the relay goes first because its service is live and Phase 1 already connects to it, and Tailscale follows Phase 3 on the same protocol and channel. Remote control is 0.17's focus, and each phase is a sub-issue of #836: [#951](https://github.com/yicheng47/runner/issues/951), [#952](https://github.com/yicheng47/runner/issues/952), [#953](https://github.com/yicheng47/runner/issues/953) and [#954](https://github.com/yicheng47/runner/issues/954).
+
+### Clients are Runner apps
+
+Jason, 2026-10-21, after the first live pass of a browser against a local service. The client that reaches a host is Runner itself: first the desktop app on another computer, later the iPhone app ([#912](https://github.com/yicheng47/runner/issues/912)). The service is a conduit: it keeps accounts and enrolled devices and relays channels it cannot read, and it serves no terminal page and no client code.
+
+- **Why.** A page the service sends is code the service can change, so a compromised service could capture the PIN or type into a paired terminal; a client installed from Runner's signed releases removes that. The channel, records and protocol then have one implementation, in Rust in `runner-core`, instead of a second one in TypeScript, and the client renders terminals with the desktop's own renderer.
+- **Routes.** A person with Tailscale connects one Runner to another directly over the tailnet (Phase 4), and the service is not involved. Without Tailscale, both ends reach each other through the relay.
+- **Unchanged.** The host side built in m1–m5, the PIN pairing and trust, the channel, records and companion protocol, and Terminal size's single controller. In this spec, *browser* in Phase 2 and Phase 3 now means a remote Runner client; the device names in examples, such as Chrome on Windows, read as Runner on another computer.
+- **Dropped.** The service's browser side of the channel and its terminal and host pages (`runner_server`'s R2–R4), and the browser test page `/dev/remote`.
 
 ## Phase 1 — Connect a host
 
@@ -660,7 +669,7 @@ A session's terminal has one size. The PTY gives the program in it, a shell, Cla
 
 **A tab or a mission opens as a unit (Jason, 2026-10-19).** A browser opens what the desktop's sidebar holds, a tab or a mission, and takes every terminal in it. The companion protocol's overview lists the desktop's tabs with their split layouts, which `runnerd` already keeps as its tab nodes, so a split tab opens in the browser as the desktop shows it. Opening a tab or a mission attaches each of its terminals with `take`, at the size of that terminal's pane in the browser. A chat has no sidebar row of its own, only its tab, so it is never taken apart from the rest of its split. The controller stays per terminal in `runnerd`, and the desktop draws one card over the whole tab or mission below its tab bar; Take back returns each terminal to its own pane.
 
-The frames are in `runner/desktop/specs/836-terminal-size.pen` in `yeelinks_design`: a browser has control, the browser has left, a browser opened a split tab, light theme with Chinese strings, and the existing two-window overlay for comparison.
+The frames are the `836 · Terminal size` frames in `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`: a browser has control, the browser has left, a browser opened a split tab, light theme with Chinese strings, and the existing two-window overlay for comparison.
 
 **A browser that is not the controller** draws the terminal's grid scaled to fit its window, says who holds the size, the desktop or another browser, and offers **Take control**. Its input still reaches the terminal; only its size does not.
 
@@ -696,16 +705,18 @@ The stable identity key changes what Phase 1 built on the umbrella. The changes 
 
 > Status: drafted on 2026-10-20. Jason approved building it the same day with the choices marked *proposed* as drafted, without reviewing every detail; a mission that finds one wrong raises it rather than working around it.
 
-Phase 3 lets a paired browser reach the host's tabs, missions and terminals through the service, which forwards bytes it cannot read. It adds three layers under Phase 2's companion protocol, and the parts of the desktop that a browser's presence changes:
+> Revised on 2026-10-21: the client is a Runner desktop, not a browser ([Clients are Runner apps](#clients-are-runner-apps)). The channel, records, route and adapter below stand as built; *browser* in them means the remote client. [Runner as a client](#runner-as-a-client) is new.
+
+Phase 3 lets a paired client reach the host's tabs, missions and terminals through the service, which forwards bytes it cannot read. It adds three layers under Phase 2's companion protocol, the parts of the host's desktop that a client's presence changes, and Runner as that client:
 
 | Layer | What it does | Spoken by |
 | --- | --- | --- |
-| Companion protocol (Phase 2) | Requests, pushes and terminal streams as JSON messages | `runnerd`'s adapter and the web panel |
+| Companion protocol (Phase 2) | Requests, pushes and terminal streams as JSON messages | The host's adapter and the client's `runnerd` |
 | Records | Splits messages into frames and paces each direction | Both ends of the channel |
 | Channel | Pairs a device with the PIN, authenticates both ends, and encrypts everything after | Both ends of the channel |
 | Route | Carries a channel's frames between the two ends | The relay, through the service's `/relay/client` and `/relay/host`; Phase 4 adds Tailscale |
 
-The service builds its side of the route, and the web panel builds the channel, the records and the protocol from this section. The channel's test vectors are golden files in Runner, as the protocol's are, and the web panel's tests replay them.
+The service builds its side of the route. Both ends of the channel, the records and the protocol are Runner's, in `runner-core`; the channel's test vectors are golden files there, as the protocol's are, and the client's tests replay the host's side as the host's replay the client's.
 
 ### The route: channels over `/relay/host`
 
@@ -825,14 +836,25 @@ This implements Phase 2's Terminal size rule.
 
 - **`runnerd`.** Each live terminal has a controller in memory: the desktop, a browser with its channel and device name, or none, and the desktop when `runnerd` starts. A size from the client protocol applies only while the desktop controls; `attach` with `take`, `takeControl` and `viewport` apply for the browser that sent them, and `attach` with `ifFree` only when nobody controls. A controlling browser's `detach`, or its channel closing, leaves no controller and the size unchanged.
 - **Client protocol.** The controller travels with the size: the terminal's snapshot, metadata and `Resized` frame carry it as the desktop, a browser with its name, or none. A new `terminal_take_back(session_id, cols, rows)` makes the desktop the controller and resizes the terminal to the pane. The client protocol is locked to the build, so these change it freely.
-- **The app.** A pane whose terminal the desktop does not control stops pushing its size and draws the card from `836-terminal-size.pen`: Controlled from Chrome on Windows with Take back, or the browser has left with Continue here. A tab or mission whose terminals a browser controls draws one card below its tab bar. Take back, Continue here or Enter on the card sends `terminal_take_back` for each terminal under it, at its own pane's size. Phase 3 reruns #838's two-window steps once the pane's size push changes, without blocking on them.
+- **The app.** A pane whose terminal the desktop does not control stops pushing its size and draws the card from the Terminal size frames: Controlled from Chrome on Windows with Take back, or the browser has left with Continue here. A tab or mission whose terminals a browser controls draws one card below its tab bar. Take back, Continue here or Enter on the card sends `terminal_take_back` for each terminal under it, at its own pane's size. Phase 3 reruns #838's two-window steps once the pane's size push changes, without blocking on them.
 
 ### The desktop and the CLI
 
 - **A new device.** A pairing pushes `remote/paired` with the device's name and fingerprint. The app shows a system notification through its notifications, Chrome on Windows can now reach this computer, which opens Settings → Remote access, and a toast instead when system notifications are off.
 - **The device list.** `RemoteTrust`'s devices gain `connected`, true while a channel opened with the device's key is open. Settings shows Connected now in place of a connected device's last-seen time and drops m2's footer that pairing comes in a later update. `runner remote devices` shows the same.
 - **Designs** before the app's commits: the connected row and the paired toast, in `836-web-remote-control.pen` beside m2's Devices table `eiIy3`.
-- **The guide.** `docs/guide/guides/remote-access.md` gains pairing a browser, opening tabs and terminals from it, and taking a terminal back.
+- **The guide.** `docs/guide/guides/remote-access.md` gains pairing another Runner, opening tabs and terminals from it, and taking a terminal back.
+
+### Runner as a client
+
+> Status: added on 2026-10-21 as direction; the details below marked *proposed* are settled before its mission starts, and its screens are designed in Pencil first. Options for where other computers appear and how the client signs in, the pair dialog and a remote terminal's states were drawn on 2026-10-22 in the `836 m7` band of `836-web-remote-control.pen`, for Jason to choose.
+
+Runner on one computer opens another computer's tabs, missions and terminals: the person picks a host on their account, pairs once with the host's PIN, and works in that host's terminals from their own app.
+
+- **Where the client lives** (*proposed*). In the client computer's `runnerd`, beside its host role: it keeps the client's key for each paired host, beside the host identity it already has, runs the channel's client side from `runner-core` and speaks the companion protocol. The app and the CLI reach remote hosts through the client protocol, as they reach local sessions, so no key or channel lives in the UI.
+- **Reaching the service.** The client needs its own sign-in to `/relay/client`, which today accepts a browser's cookie. The client enrolls as a device on the account with the same approval flow a host uses (`runner_server`'s client enrollment), and the service lists the account's hosts to it.
+- **The app** (*proposed*). Remote hosts appear in the sidebar as their own section; opening one shows its overview, and its terminals render with the desktop's terminal view, taking control under Terminal size as a browser would. Pairing asks for the PIN in a dialog.
+- **Order.** The relay route first, then Tailscale (Phase 4) on the same client. The mission feed, `answer` and `post` follow the terminals, as m5 left them.
 
 ### Changes to Phases 1 and 2
 
@@ -844,7 +866,7 @@ This implements Phase 2's Terminal size rule.
 - **Vectors,** in `runner-core/src/companion/channel/vectors/`: CPace's appendix B.3 vectors for ristretto255; a complete pairing and a complete connect with fixed keys, scalars and `sid`, frame by frame in hex; a wrong PIN; `unknownDevice`; and a record sequence with `credit`. The host's tests replay the browser's side, and the web panel's tests replay the host's.
 - **`runnerd`,** with a Rust test client over an in-process relay: pairing and connecting; each reject reason; PIN entry locking at the fifth failure, including five parallel attempts; Revoke and Reset identity closing channels; a message over 1 MiB ending the channel; a reader that grants no credit stalls only its own channel and gets a fresh snapshot once it grants again; each request against a test core; and the controller table from Terminal size.
 - **Secrets:** no PIN, ISK, key, message body or terminal byte in a log line or `Debug` output.
-- **Live,** with Jason on a `remote-nightly` build and the service's Phase 3 deployed: pair Chrome from another network and see the notification and the Connected now row; open a terminal, type and resize; see in the service's frame capture that it relays only ciphertext; five wrong PINs lock PIN entry and Unlock restores it; Revoke closes the browser's terminal at once; Pause closes it and resuming lets it connect again; a dropped network reconnects to a fresh snapshot without replaying input; and Terminal size's checks.
+- **Live,** with Jason on a `remote-nightly` build on two computers and the service's relay channel deployed: pair one Runner with the other from another network and see the notification and the Connected now row; open a terminal, type and resize; see in the service's frame capture that it relays only ciphertext; five wrong PINs lock PIN entry and Unlock restores it; Revoke closes the browser's terminal at once; Pause closes it and resuming lets it connect again; a dropped network reconnects to a fresh snapshot without replaying input; and Terminal size's checks.
 
 ### Open questions
 
@@ -853,4 +875,7 @@ This implements Phase 2's Terminal size rule.
 | The PIN exchange | CPace, CPACE-RISTR255-SHA512, draft 21 | Accepted on 2026-10-20 |
 | The Noise suites | `XXpsk3` to pair and `IK` to connect, with X25519, ChaCha20-Poly1305 and SHA-256 | Accepted on 2026-10-20 |
 | The starting credit | 512 KiB each way | Accepted on 2026-10-20; measured in live testing |
-| How Phase 3 is split into missions | Channel, then adapter, then desktop; see the [plan](../impls/836-web-remote-control/plan.md#phase-3--the-end-to-end-channel-and-live-terminals) | Accepted on 2026-10-20 |
+| How Phase 3 is split into missions | Channel, adapter, the host desktop, then Runner as a client; see the [plan](../impls/836-web-remote-control/plan.md#phase-3--the-end-to-end-channel-and-live-terminals) | Accepted on 2026-10-20; m7 added on 2026-10-21 |
+| Who the client is | A Runner desktop, then the iPhone app; the service relays only | Decided by Jason on 2026-10-21 |
+| Where the client side lives | In the client computer's `runnerd`, reached by the app and CLI through the client protocol | Before m7 starts |
+| How remote hosts appear in the app | A sidebar section per host, its terminals in the desktop's terminal view | Designed in Pencil before m7 |
