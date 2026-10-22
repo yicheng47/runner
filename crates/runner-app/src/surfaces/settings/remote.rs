@@ -100,29 +100,6 @@ pub(crate) fn stopped_text(status: &RemoteStatus) -> String {
         )],
     )
 }
-fn title(status: &RemoteStatus) -> String {
-    let key = match status.state {
-        RemoteState::Off => "remote.off",
-        RemoteState::Enrolling { .. } => "remote.waiting",
-        RemoteState::Confirming { .. } => "remote.confirming",
-        RemoteState::Connecting { .. } => "remote.connecting",
-        RemoteState::Connected { .. } => "remote.connected",
-        RemoteState::Reconnecting { .. } => "remote.reconnecting",
-        RemoteState::Paused => "remote.paused",
-        RemoteState::Stopped { .. } => "remote.stopped",
-    };
-    tr(
-        key,
-        &[(
-            "account",
-            status
-                .account
-                .as_ref()
-                .map(|a| a.username.as_str())
-                .unwrap_or("unknown"),
-        )],
-    )
-}
 fn detail(label: &'static str, value: impl Into<SharedString>, mono: bool) -> AnyElement {
     let mut content = div().flex().flex_col().gap_1().flex_1().child(
         div()
@@ -243,493 +220,336 @@ impl NativeRoot {
             })
     }
     pub(crate) fn render_remote_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let status = self
-            .app_store
-            .read(cx)
-            .remote_status
-            .clone()
-            .unwrap_or_default();
-        let trust = self
-            .app_store
-            .read(cx)
-            .remote_trust
-            .clone()
-            .unwrap_or_default();
-        let stopped = matches!(status.state, RemoteState::Stopped { .. });
-        let connected = matches!(status.state, RemoteState::Connected { .. });
-        let mut card = div()
-            .debug_selector(|| "REMOTE_STATUS_CARD".into())
-            .flex()
-            .flex_col()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .p_5()
-            .gap_4()
-            .text_size(theme::text_body());
-        card = card.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(if matches!(status.state, RemoteState::Off) {
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_none()
-                        .size(rems(36. / 16.))
-                        .rounded(rems(10. / 16.))
-                        .bg(theme::raised())
-                        .child(
-                            svg()
-                                .path("globe.svg")
-                                .size(rems(18. / 16.))
-                                .text_color(theme::muted()),
-                        )
-                } else {
-                    div().size(rems(8. / 16.)).rounded_full().bg(if connected {
-                        theme::accent()
-                    } else if stopped {
-                        theme::warning()
-                    } else {
-                        theme::muted()
-                    })
-                })
+        let store = self.app_store.read(cx);
+        let status = store.remote_status.clone().unwrap_or_default();
+        let trust = store.remote_trust.clone().unwrap_or_default();
+        let mut body = div().flex().flex_col().gap_5().child(PaneHeader::new(
+            crate::i18n::text("ui.remote_access"),
+            crate::i18n::text("remote.subtitle"),
+        ));
+        if account::signed_in(&status) {
+            body = body
+                .child(self.relay_card(&status, &trust, cx))
+                .child(self.remote_devices(&trust, &status, cx))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(theme::text_lead())
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title(&status)),
-                        )
-                        .when(matches!(status.state, RemoteState::Off), |header| {
-                            header.child(
-                                div()
-                                    .text_size(theme::text_body())
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text("remote.intro")),
-                            )
-                        }),
-                ),
-        );
-        match &status.state {
-            RemoteState::Off => {
-                card = card
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(rems(10. / 16.))
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::bg())
-                            .py(rems(10. / 16.))
-                            .px_3()
-                            .text_color(theme::muted())
-                            .child(svg().path("ticket.svg").flex_none().size(rems(15. / 16.)))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_none()
-                                    .gap(rems(0.4 / 16.))
-                                    .bg(theme::raised())
-                                    .rounded(rems(4. / 16.))
-                                    .py(rems(2. / 16.))
-                                    .px(rems(6. / 16.))
-                                    .text_size(theme::text_micro())
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .children(
-                                        crate::i18n::text("remote.private_beta")
-                                            .chars()
-                                            .map(|letter| div().child(letter.to_string())),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_size(theme::text_ui())
-                                    .child(crate::i18n::text("remote.beta_detail")),
-                            ),
-                    )
-                    .child(
-                        div().flex().items_start().gap_3().children(
-                            [
-                                ("1", "remote.step_connect", "remote.step_connect_detail"),
-                                ("2", "remote.step_approve", "remote.step_approve_detail"),
-                                ("3", "remote.step_anywhere", "remote.step_anywhere_detail"),
-                            ]
-                            .into_iter()
-                            .map(|(number, label, value)| {
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .items_start()
-                                    .gap_2()
-                                    .py(rems(10. / 16.))
-                                    .px_3()
-                                    .rounded_lg()
-                                    .border_1()
-                                    .border_color(theme::border())
-                                    .bg(theme::bg())
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_none()
-                                            .items_center()
-                                            .justify_center()
-                                            .size(rems(20. / 16.))
-                                            .rounded_full()
-                                            .bg(theme::raised())
-                                            .text_size(theme::text_meta())
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(theme::muted())
-                                            .child(number),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .child(
-                                                div()
-                                                    .text_size(theme::text_ui())
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .child(crate::i18n::text(label)),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_color(theme::faint())
-                                                    .text_size(theme::text_meta())
-                                                    .child(crate::i18n::text(value)),
-                                            ),
-                                    )
-                            }),
-                        ),
-                    )
-                    .child(
-                        div().flex().items_start().child(
-                            div()
-                                .debug_selector(|| "REMOTE_CONNECT_BUTTON".into())
-                                .child(
-                                    self.remote_button(
-                                        "remote-connect",
-                                        "remote.connect",
-                                        Self::remote_connect,
-                                        cx,
-                                    )
-                                    .size(ButtonSize::Compact)
-                                    .radius(6.)
-                                    .icon("plug-zap.svg")
-                                    .variant(ButtonVariant::Primary),
+                        .gap_2()
+                        .child(settings_section_heading(crate::i18n::text("remote.route")))
+                        .child(SettingsCard::new(vec![
+                            SettingsRow::new(crate::i18n::text("remote.relay"), div())
+                                .label_icon("cloud.svg", theme::muted())
+                                .subtitle(crate::i18n::text("remote.route_detail"))
+                                .into_any_element(),
+                            SettingsRow::new(
+                                tr(
+                                    "account.signed_in",
+                                    &[("account", account::username(&status))],
                                 ),
-                        ),
-                    );
-                if self.settings_page.remote.busy && self.settings_page.remote.opening {
-                    let root = cx.entity();
-                    card = card.child(
-                        div().flex().child(
-                            Button::new("remote-cancel-start", crate::i18n::text("ui.cancel"))
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Secondary)
-                                .on_press(move |_, cx| {
-                                    root.update(cx, |r, cx| {
-                                        r.settings_page.remote.busy = false;
-                                        r.remote_request(
-                                            false,
-                                            |c| {
-                                                c.remote_logout()?;
-                                                c.remote_status()
-                                            },
-                                            cx,
-                                        );
-                                    })
-                                }),
-                        ),
-                    );
-                }
-            }
-            RemoteState::Enrolling {
-                user_code,
-                verification_uri,
-                verification_uri_complete,
-                expires_at,
-            } => {
-                let secs = expires_at
-                    .signed_duration_since(chrono::Utc::now())
-                    .num_seconds()
-                    .max(0);
-                card = card
-                    .child(
-                        div()
-                            .text_color(theme::muted())
-                            .child(crate::i18n::text("remote.approve_detail")),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::bg())
-                            .p_5()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_color(theme::muted())
-                                            .text_size(theme::text_caption())
-                                            .child(crate::i18n::text("remote.code")),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                                            .text_size(theme::text_display())
-                                            .child(user_code.clone()),
-                                    ),
+                                self.settings_link(
+                                    SettingsPane::Account,
+                                    "remote-account",
+                                    "account.title",
+                                    cx,
+                                ),
                             )
-                            .child(detail(
-                                "remote.fingerprint",
-                                trust
-                                    .fingerprint
-                                    .clone()
-                                    .or_else(|| status.fingerprint.clone())
-                                    .unwrap_or_default(),
-                                true,
-                            )),
-                    )
+                            .label_icon("user-round.svg", theme::muted())
+                            .subtitle(crate::i18n::text("remote.route_account_detail"))
+                            .into_any_element(),
+                        ])),
+                );
+        } else if matches!(
+            status.state,
+            RemoteState::Enrolling { .. } | RemoteState::Confirming { .. }
+        ) {
+            body = body.child(self.account_status_card(&status, &trust, cx));
+            if matches!(status.state, RemoteState::Enrolling { .. }) {
+                body = body.child(account::approval_reminder());
+            }
+        } else {
+            body = body.child(self.remote_route_choice(&status, cx));
+        }
+        body.child(account::footer("remote.footer"))
+            .into_any_element()
+    }
+
+    fn remote_route_choice(&self, status: &RemoteStatus, cx: &mut Context<Self>) -> AnyElement {
+        let mut content = div()
+            .debug_selector(|| "REMOTE_ROUTE_CHOICE".into())
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     .child(
                         div()
-                            .text_color(theme::muted())
-                            .child(verification_uri.clone()),
+                            .text_size(theme::text_lead())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(crate::i18n::text("remote.choose_route")),
                     )
                     .child(
                         div()
                             .text_size(theme::text_ui())
                             .text_color(theme::muted())
-                            .child(tr(
-                                "remote.time_left",
-                                &[("time", &format!("{}:{:02}", secs / 60, secs % 60))],
-                            )),
-                    );
-                let open = verification_uri_complete.clone();
-                let copy = open.clone();
-                card = card.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            Button::new("remote-browser", crate::i18n::text("remote.open_browser"))
-                                .size(ButtonSize::Sm)
-                                .on_press(move |_, cx| cx.open_url(&open)),
-                        )
-                        .child(
-                            Button::new("remote-copy", crate::i18n::text("remote.copy_link"))
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Secondary)
-                                .on_press(move |_, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        copy.clone(),
-                                    ))
-                                }),
-                        )
-                        .child(self.remote_button(
-                            "remote-cancel",
-                            "ui.cancel",
-                            |root, cx| root.remote_request(false, |c| c.remote_enroll_cancel(), cx),
-                            cx,
-                        )),
-                );
-            }
-            RemoteState::Confirming { account, .. } => {
-                card = card.child(div().text_color(theme::muted()).child(tr(
-                    "remote.cli_confirmation",
-                    &[("account", &account.username)],
-                )));
-            }
-            RemoteState::Stopped { reason } => {
-                let mut actions = div().flex().gap_2();
-                if matches!(reason, StopReason::Removed | StopReason::InUseElsewhere)
-                    && status.host_id.is_some()
-                {
-                    actions = actions.child(self.remote_button(
-                        "remote-retry",
-                        "remote.try_again",
-                        |r, cx| r.remote_request(false, |c| c.remote_retry(), cx),
-                        cx,
-                    ));
-                }
-                if matches!(
-                    reason,
-                    StopReason::Removed | StopReason::Denied | StopReason::Expired
-                ) {
-                    actions = actions.child(
-                        self.remote_button(
-                            "remote-again",
-                            "remote.connect_again",
-                            Self::remote_connect,
-                            cx,
-                        )
-                        .variant(ButtonVariant::Primary),
-                    );
-                }
-                if *reason == StopReason::InUseElsewhere {
-                    actions = actions.child(self.remote_button(
-                        "remote-stop-disconnect",
-                        "account.sign_out",
-                        |r, cx| {
-                            r.settings_page.remote.confirm = true;
-                            cx.notify();
-                        },
-                        cx,
-                    ));
-                }
-                if *reason == StopReason::UpdateRequired {
-                    let root = cx.entity();
-                    actions = actions.child(
-                        Button::new("remote-updates", crate::i18n::text("remote.check_updates"))
-                            .size(ButtonSize::Sm)
-                            .on_press(move |window, cx| {
-                                root.update(cx, |r, cx| {
-                                    r.enter_settings_pane(SettingsPane::Updates, window, cx)
-                                })
-                            }),
-                    );
-                }
-                let warning = matches!(
-                    reason,
-                    StopReason::Removed | StopReason::InUseElsewhere | StopReason::UpdateRequired
-                );
-                let title_key = match reason {
-                    StopReason::Removed => "remote.removed_title",
-                    StopReason::InUseElsewhere => "remote.in_use_title",
-                    StopReason::UpdateRequired => "remote.update_title",
-                    StopReason::Denied => "remote.denied_title",
-                    StopReason::Expired => "remote.expired_title",
-                };
-                card = div()
-                    .debug_selector(|| "REMOTE_STATUS_CARD".into())
+                            .child(crate::i18n::text("remote.choose_route_detail")),
+                    ),
+            )
+            .child(
+                div()
                     .flex()
-                    .items_center()
-                    .gap_4()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::panel())
-                    .p_5()
-                    .text_size(theme::text_body())
-                    .child(div().size(rems(8. / 16.)).rounded_full().bg(if warning {
-                        theme::danger()
-                    } else {
-                        theme::muted()
-                    }))
+                    .items_start()
+                    .gap_3()
                     .child(
-                        div()
+                        account::card()
                             .flex_1()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
+                            .min_w_0()
+                            .p_5()
+                            .gap_3()
                             .child(
                                 div()
-                                    .text_size(theme::text_lead())
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(crate::i18n::text(title_key)),
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        svg()
+                                            .path("cloud.svg")
+                                            .size(rems(18. / 16.))
+                                            .text_color(theme::muted()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(crate::i18n::text("remote.through_relay")),
+                                    )
+                                    .child(account::badge("remote.private_beta", true)),
+                            )
+                            .child(div().text_color(theme::muted()).child(tr(
+                                "remote.relay_choice_detail",
+                                &[("service", &status.origin)],
+                            )))
+                            .child(
+                                div()
+                                    .debug_selector(|| "REMOTE_SIGN_IN".into())
+                                    .self_start()
+                                    .flex()
+                                    .child(
+                                        self.remote_button(
+                                            "remote-connect",
+                                            "remote.sign_in",
+                                            Self::remote_connect,
+                                            cx,
+                                        )
+                                        .variant(ButtonVariant::Primary),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        account::card()
+                            .flex_1()
+                            .min_w_0()
+                            .p_5()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .child(
+                                        svg()
+                                            .path("network.svg")
+                                            .size(rems(18. / 16.))
+                                            .text_color(theme::muted()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(crate::i18n::text("remote.over_tailscale")),
+                                    )
+                                    .child(account::badge("account.later", false)),
                             )
                             .child(
                                 div()
-                                    .text_size(theme::text_body())
                                     .text_color(theme::muted())
-                                    .child(stopped_text(&status)),
+                                    .child(crate::i18n::text("remote.tailscale_choice_detail")),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "REMOTE_TAILSCALE_DISABLED".into())
+                                    .flex()
+                                    .child(
+                                        Button::new(
+                                            "remote-tailscale",
+                                            crate::i18n::text("remote.use_tailscale"),
+                                        )
+                                        .size(ButtonSize::Sm)
+                                        .variant(ButtonVariant::Secondary)
+                                        .disabled(true),
+                                    ),
                             ),
-                    )
-                    .child(actions);
-            }
-            _ => {
-                if let RemoteState::Connected { since } = status.state {
-                    card = card.child(
-                        div().text_color(theme::muted()).child(tr(
-                            "remote.online_since",
-                            &[
-                                (
-                                    "time",
-                                    &since
-                                        .with_timezone(&chrono::Local)
-                                        .format("%H:%M")
-                                        .to_string(),
-                                ),
-                                (
-                                    "minutes",
-                                    &chrono::Utc::now()
-                                        .signed_duration_since(since)
-                                        .num_minutes()
-                                        .to_string(),
-                                ),
-                            ],
-                        )),
-                    );
-                }
-                if let RemoteState::Reconnecting { next_retry_at, .. } = status.state {
-                    let seconds = next_retry_at
-                        .signed_duration_since(chrono::Utc::now())
-                        .num_seconds()
-                        .max(0);
-                    card = card
-                        .child(
-                            div()
-                                .text_color(theme::muted())
-                                .child(tr("remote.retry_in", &[("seconds", &seconds.to_string())])),
-                        )
-                        .child(div().flex().child(self.remote_button(
-                            "remote-retry-now",
-                            "remote.retry_now",
-                            |r, cx| r.remote_request(false, |c| c.remote_retry(), cx),
-                            cx,
-                        )));
-                }
-                if matches!(status.state, RemoteState::Connecting { .. }) {
-                    card = card.child(runner_app::ui::button::spinner(
-                        "remote-connecting-spinner",
-                        16.,
-                        theme::muted(),
-                    ));
-                }
-                if matches!(status.state, RemoteState::Paused) {
-                    card = card.child(
+                    ),
+            );
+        if matches!(status.state, RemoteState::Stopped { .. }) {
+            content = content.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
                         div()
+                            .flex_1()
                             .text_color(theme::muted())
-                            .child(crate::i18n::text("remote.paused_detail")),
-                    );
-                }
-                let account = status
-                    .account
-                    .as_ref()
-                    .map(|a| format!("@{} · {}", a.username, a.display_name))
-                    .unwrap_or_default();
-                card = card
+                            .child(stopped_text(status)),
+                    )
+                    .child(self.settings_link(
+                        SettingsPane::Account,
+                        "remote-stop-account",
+                        "account.title",
+                        cx,
+                    )),
+            );
+        }
+        if let Some(error) = self
+            .settings_page
+            .remote
+            .error
+            .as_ref()
+            .or(status.last_error.as_ref())
+        {
+            content = content.child(div().text_color(theme::danger()).child(error.clone()));
+        }
+        if self.settings_page.remote.busy && self.settings_page.remote.opening {
+            content = content.child(self.cancel_enrollment_start(cx));
+        }
+        content.into_any_element()
+    }
+
+    fn relay_card(
+        &self,
+        status: &RemoteStatus,
+        trust: &RemoteTrust,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut header = div().p_5().flex().items_center().gap_4();
+        let (title, subtitle, color) = match status.state {
+            RemoteState::Connected { since } => (
+                "remote.relay_on",
+                tr(
+                    "remote.online_since",
+                    &[
+                        (
+                            "time",
+                            &since
+                                .with_timezone(&chrono::Local)
+                                .format("%H:%M")
+                                .to_string(),
+                        ),
+                        (
+                            "minutes",
+                            &chrono::Utc::now()
+                                .signed_duration_since(since)
+                                .num_minutes()
+                                .to_string(),
+                        ),
+                    ],
+                ),
+                theme::accent(),
+            ),
+            RemoteState::Reconnecting { next_retry_at, .. } => (
+                "remote.reconnecting",
+                tr(
+                    "remote.retry_in",
+                    &[(
+                        "seconds",
+                        &next_retry_at
+                            .signed_duration_since(chrono::Utc::now())
+                            .num_seconds()
+                            .max(0)
+                            .to_string(),
+                    )],
+                ),
+                theme::warning(),
+            ),
+            RemoteState::Paused => (
+                "remote.paused",
+                crate::i18n::text("remote.paused_detail").into(),
+                theme::muted(),
+            ),
+            _ => ("remote.connecting", String::new(), theme::muted()),
+        };
+        header = header
+            .child(if matches!(status.state, RemoteState::Connecting { .. }) {
+                runner_app::ui::button::spinner("remote-connecting-spinner", 16., theme::muted())
+                    .into_any_element()
+            } else {
+                div()
+                    .size(rems(8. / 16.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(color)
+                    .into_any_element()
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(theme::text_lead())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(crate::i18n::text(title)),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::muted())
+                            .child(subtitle),
+                    ),
+            );
+        if matches!(status.state, RemoteState::Reconnecting { .. }) {
+            header = header.child(
+                self.remote_button(
+                    "remote-retry-now",
+                    "remote.retry_now",
+                    |r, cx| r.remote_request(false, |c| c.remote_retry(), cx),
+                    cx,
+                )
+                .icon("refresh-cw.svg"),
+            );
+        }
+        let root = cx.entity();
+        let toggle = Toggle::new("remote-allow", !matches!(status.state, RemoteState::Paused))
+            .on_change(move |enabled, _, cx| {
+                root.update(cx, |r, cx| {
+                    r.remote_request(false, move |c| c.remote_set_paused(!enabled), cx)
+                })
+            });
+        let mut card = account::card()
+            .debug_selector(|| "REMOTE_STATUS_CARD".into())
+            .child(header)
+            .child(
+                account::divider()
+                    .p_5()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
                     .child(
                         div()
                             .flex()
                             .gap_5()
-                            .child(detail("remote.account", account, false))
+                            .child(detail(
+                                "remote.account",
+                                account::account_name(status),
+                                false,
+                            ))
                             .child(detail(
                                 "remote.computer",
                                 status.host_name.clone().unwrap_or_default(),
@@ -742,22 +562,19 @@ impl NativeRoot {
                             .gap_5()
                             .child(detail(
                                 "remote.fingerprint",
-                                trust
-                                    .fingerprint
-                                    .clone()
-                                    .or_else(|| status.fingerprint.clone())
-                                    .unwrap_or_default(),
+                                account::fingerprint(status, trust),
                                 true,
                             ))
                             .child(detail("remote.service", status.origin.clone(), false)),
-                    );
-            }
-        }
-        if matches!(status.state, RemoteState::Off) {
-            if let Some(fingerprint) = &trust.fingerprint {
-                card = card.child(detail("remote.fingerprint", fingerprint.clone(), true));
-            }
-        }
+                    ),
+            )
+            .child(
+                account::divider().child(
+                    SettingsRow::new(crate::i18n::text("remote.allow"), toggle)
+                        .subtitle(crate::i18n::text("remote.allow_detail")),
+                ),
+            )
+            .child(account::divider().child(self.remote_pairing(trust, cx)));
         if let Some(error) = self
             .settings_page
             .remote
@@ -765,78 +582,15 @@ impl NativeRoot {
             .as_ref()
             .or(status.last_error.as_ref())
         {
-            card = card.child(div().text_color(theme::danger()).child(error.clone()));
-        }
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .child(PaneHeader::new(
-                crate::i18n::text("ui.remote_access"),
-                crate::i18n::text("remote.subtitle"),
-            ))
-            .child(card);
-        if matches!(
-            status.state,
-            RemoteState::Connecting { .. }
-                | RemoteState::Connected { .. }
-                | RemoteState::Reconnecting { .. }
-                | RemoteState::Paused
-        ) {
-            let root = cx.entity();
-            let toggle = Toggle::new("remote-allow", !matches!(status.state, RemoteState::Paused))
-                .on_change(move |enabled, _, cx| {
-                    root.update(cx, |r, cx| {
-                        r.remote_request(false, move |c| c.remote_set_paused(!enabled), cx)
-                    })
-                });
-            body = body.child(
+            card = card.child(
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(settings_section_heading(crate::i18n::text("remote.access")))
-                    .child(SettingsCard::new(vec![
-                        SettingsRow::new(crate::i18n::text("remote.allow"), toggle)
-                            .subtitle(crate::i18n::text("remote.allow_detail"))
-                            .into_any_element(),
-                        SettingsRow::new(
-                            crate::i18n::text("remote.disconnect_computer"),
-                            self.remote_button(
-                                "remote-disconnect",
-                                "account.sign_out",
-                                |r, cx| {
-                                    r.settings_page.remote.confirm = true;
-                                    cx.notify();
-                                },
-                                cx,
-                            )
-                            .variant(ButtonVariant::Danger),
-                        )
-                        .subtitle(crate::i18n::text("remote.disconnect_detail"))
-                        .into_any_element(),
-                    ])),
+                    .px_5()
+                    .pb_4()
+                    .text_color(theme::danger())
+                    .child(error.clone()),
             );
         }
-        body = body.child(self.remote_pairing(&trust, cx));
-        body = body.child(self.remote_devices(&trust, cx));
-        body.child(
-            div()
-                .flex()
-                .items_start()
-                .gap(rems(6. / 16.))
-                .text_size(theme::text_meta())
-                .text_color(theme::faint())
-                .child(
-                    svg()
-                        .path("lock.svg")
-                        .flex_none()
-                        .size(rems(12. / 16.))
-                        .mt(rems(2. / 16.)),
-                )
-                .child(crate::i18n::text("remote.footer")),
-        )
-        .into_any_element()
+        card.into_any_element()
     }
     pub(crate) fn dismiss_remote_dialog(&mut self) {
         self.settings_page.remote.pin = None;
@@ -912,27 +666,31 @@ impl NativeRoot {
         let mut rows = Vec::new();
         if trust.pin_locked {
             rows.push(
-                SettingsRow::new(
-                    crate::i18n::text("remote.pin_locked"),
-                    self.remote_button(
-                        "remote-unlock",
-                        "remote.unlock",
-                        |r, cx| {
-                            r.remote_request(
-                                false,
-                                |c| {
-                                    c.remote_unlock_pin()?;
-                                    c.remote_status()
+                div()
+                    .bg(theme::with_alpha(theme::warning(), 0.06))
+                    .child(
+                        SettingsRow::new(
+                            crate::i18n::text("remote.pin_locked"),
+                            self.remote_button(
+                                "remote-unlock",
+                                "remote.unlock",
+                                |r, cx| {
+                                    r.remote_request(
+                                        false,
+                                        |c| {
+                                            c.remote_unlock_pin()?;
+                                            c.remote_status()
+                                        },
+                                        cx,
+                                    )
                                 },
                                 cx,
-                            )
-                        },
-                        cx,
-                    ),
-                )
-                .subtitle(crate::i18n::text("remote.pin_locked_detail"))
-                .label_icon("lock.svg", theme::warning())
-                .into_any_element(),
+                            ),
+                        )
+                        .subtitle(crate::i18n::text("remote.pin_locked_detail"))
+                        .label_icon("lock.svg", theme::warning()),
+                    )
+                    .into_any_element(),
             );
         }
         rows.push(
@@ -966,7 +724,7 @@ impl NativeRoot {
                 crate::i18n::text("remote.reset_identity"),
                 self.remote_button(
                     "remote-reset-identity",
-                    "remote.reset_identity",
+                    "remote.reset",
                     |r, cx| {
                         r.settings_page.remote.reset_identity = true;
                         r.settings_page.remote.confirm = true;
@@ -983,14 +741,19 @@ impl NativeRoot {
             .debug_selector(|| "REMOTE_PAIRING".into())
             .flex()
             .flex_col()
-            .gap_2()
-            .child(settings_section_heading(crate::i18n::text(
-                "remote.pairing",
-            )))
-            .child(SettingsCard::new(rows))
+            .children(rows.into_iter().enumerate().map(|(index, row)| {
+                account::divider()
+                    .when(index == 0, |row| row.border_t_0())
+                    .child(row)
+            }))
             .into_any_element()
     }
-    fn remote_devices(&self, trust: &RemoteTrust, cx: &mut Context<Self>) -> AnyElement {
+    fn remote_devices(
+        &self,
+        trust: &RemoteTrust,
+        status: &RemoteStatus,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut table = div()
             .flex()
             .flex_col()
@@ -1171,8 +934,9 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(settings_section_heading(crate::i18n::text(
-                        "remote.devices",
+                    .child(settings_section_heading(tr(
+                        "remote.computers_heading",
+                        &[("account", account::username(status))],
                     )))
                     .when(!trust.devices.is_empty(), |row| {
                         row.child(
@@ -1439,7 +1203,7 @@ impl NativeRoot {
                 ],
             ),
             crate::i18n::text(if reset {
-                "remote.reset_identity"
+                "remote.reset"
             } else {
                 "account.sign_out"
             }),
@@ -1476,7 +1240,7 @@ impl NativeRoot {
             }),
         )
         .focus_handle(self.settings_page.remote.focus.clone())
-        .icon(if reset { "key-round.svg" } else { "globe.svg" })
+        .icon(if reset { "key-round.svg" } else { "unplug.svg" })
         .into_any_element()
     }
 }
@@ -1559,7 +1323,24 @@ mod tests {
                         .map(|reason| RemoteState::Stopped { reason }),
                     );
                     for state in states {
+                        let stop_reason = if let RemoteState::Stopped { reason } = state {
+                            Some(reason)
+                        } else {
+                            None
+                        };
+                        let enrolling = matches!(state, RemoteState::Enrolling { .. });
                         let off = matches!(state, RemoteState::Off);
+                        let signed_in = matches!(
+                            state,
+                            RemoteState::Connecting { .. }
+                                | RemoteState::Connected { .. }
+                                | RemoteState::Reconnecting { .. }
+                                | RemoteState::Paused
+                        );
+                        let waiting = matches!(
+                            state,
+                            RemoteState::Enrolling { .. } | RemoteState::Confirming { .. }
+                        );
                         store.update(&mut cx, |store, cx| {
                             store.remote_status = Some(RemoteStatus {
                                 state,
@@ -1577,21 +1358,264 @@ mod tests {
                         window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
                         cx.run_until_parked();
                         let mut visual = VisualTestContext::from_window(window.into(), &cx);
-                        let card = visual.debug_bounds("REMOTE_STATUS_CARD").unwrap();
-                        if off {
-                            let connect = visual.debug_bounds("REMOTE_CONNECT_BUTTON").unwrap();
-                            assert!(connect.size.width > px(0.));
-                            assert!(connect.size.width < card.size.width / 2.);
-                            assert!(connect.origin.x < card.origin.x + card.size.width / 4.);
-                            assert!(card.origin.y + card.size.height < px(900.));
-                        } else {
-                            assert!(visual.debug_bounds("REMOTE_CONNECT_BUTTON").is_none());
-                        }
+                        assert_eq!(
+                            visual.debug_bounds("REMOTE_STATUS_CARD").is_some(),
+                            signed_in
+                        );
+                        assert_eq!(
+                            visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some(),
+                            !signed_in && !waiting
+                        );
+                        assert_eq!(
+                            visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_some(),
+                            !signed_in && !waiting
+                        );
+                        assert_eq!(visual.debug_bounds("REMOTE_DEVICES").is_some(), signed_in);
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_APPROVAL_REMINDER").is_some(),
+                            enrolling
+                        );
+                        window
+                            .update(&mut cx, |root, _, cx| {
+                                root.settings_page.pane = SettingsPane::Account;
+                                cx.notify();
+                            })
+                            .unwrap();
+                        cx.run_until_parked();
+                        let card = visual.debug_bounds("ACCOUNT_STATUS_CARD").unwrap();
+                        assert!(card.bottom() < px(900.));
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_APPROVAL_REMINDER").is_some(),
+                            enrolling
+                        );
+                        assert_eq!(visual.debug_bounds("ACCOUNT_SIGN_IN").is_some(), off);
+                        assert_eq!(visual.debug_bounds("ACCOUNT_DETAILS").is_some(), signed_in);
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_RETRY").is_some(),
+                            matches!(
+                                stop_reason,
+                                Some(StopReason::Removed | StopReason::InUseElsewhere)
+                            )
+                        );
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_SIGN_IN_AGAIN").is_some(),
+                            matches!(
+                                stop_reason,
+                                Some(
+                                    StopReason::Removed | StopReason::Denied | StopReason::Expired
+                                )
+                            )
+                        );
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_STOP_SIGN_OUT").is_some(),
+                            stop_reason == Some(StopReason::InUseElsewhere)
+                        );
+                        assert_eq!(
+                            visual.debug_bounds("ACCOUNT_CHECK_UPDATES").is_some(),
+                            stop_reason == Some(StopReason::UpdateRequired)
+                        );
+                        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_none());
+                        window
+                            .update(&mut cx, |root, _, cx| {
+                                root.settings_page.pane = SettingsPane::Remote;
+                                cx.notify();
+                            })
+                            .unwrap();
                     }
                 }
             });
         }
     }
+    struct RemoteRequests {
+        calls: std::sync::Mutex<Vec<&'static str>>,
+        status: std::sync::Mutex<RemoteStatus>,
+    }
+    impl runner_core::protocol::Transport for RemoteRequests {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> Result<runner_core::protocol::Response, runner_core::protocol::ClientError> {
+            use runner_core::protocol::{Request, Response};
+            let mut status = self.status.lock().unwrap();
+            let mut calls = self.calls.lock().unwrap();
+            Ok(match request {
+                Request::remote_status {} => Response::remote_status(Ok(status.clone())),
+                Request::remote_enroll_start {
+                    origin,
+                    confirm_account,
+                } => {
+                    assert!(origin.is_none());
+                    assert!(!confirm_account);
+                    calls.push("sign in");
+                    status.state = RemoteState::Enrolling {
+                        user_code: "BCDF-GHJK".into(),
+                        verification_uri: "https://runner.example/add".into(),
+                        verification_uri_complete: "https://runner.example/add?code=BCDF-GHJK"
+                            .into(),
+                        expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+                    };
+                    Response::remote_enroll_start(Ok(status.clone()))
+                }
+                Request::remote_enroll_cancel {} => {
+                    calls.push("cancel");
+                    *status = RemoteStatus::default();
+                    Response::remote_enroll_cancel(Ok(status.clone()))
+                }
+                Request::remote_retry {} => {
+                    calls.push("retry");
+                    status.state = RemoteState::Connecting { attempt: 0 };
+                    Response::remote_retry(Ok(status.clone()))
+                }
+                Request::remote_set_paused { paused } => {
+                    calls.push(if paused { "pause" } else { "resume" });
+                    status.state = if paused {
+                        RemoteState::Paused
+                    } else {
+                        RemoteState::Connecting { attempt: 0 }
+                    };
+                    Response::remote_set_paused(Ok(status.clone()))
+                }
+                Request::remote_logout {} => {
+                    calls.push("sign out");
+                    *status = RemoteStatus::default();
+                    Response::remote_logout(Ok(runner_core::remote::RemoteLogout::Removed))
+                }
+                Request::remote_reset_identity {} => {
+                    calls.push("reset");
+                    *status = RemoteStatus::default();
+                    Response::remote_reset_identity(Ok(RemoteTrust::default()))
+                }
+                _ => {
+                    return Err(runner_core::protocol::ClientError::msg(
+                        "unused fixture request",
+                    ))
+                }
+            })
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            unreachable!("the request fixture does not subscribe")
+        }
+    }
+
+    #[test]
+    fn account_actions_reuse_requests_and_sign_out_and_reset_require_confirmation() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let window = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "account-actions".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let requests = std::sync::Arc::new(RemoteRequests {
+            calls: Default::default(),
+            status: Default::default(),
+        });
+        store.update(&mut cx, |store, _| {
+            store.client = DaemonClient::new(requests.clone())
+        });
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.route = crate::AppRoute::Settings;
+                root.settings_page.pane = SettingsPane::Account;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        let sign_in = visual.debug_bounds("ACCOUNT_SIGN_IN").unwrap();
+        visual.simulate_click(sign_in.center(), Default::default());
+        cx.run_until_parked();
+        assert_eq!(*requests.calls.lock().unwrap(), ["sign in"]);
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.remote_request(false, |c| c.remote_enroll_cancel(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.remote_request(false, |c| c.remote_retry(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        for paused in [true, false] {
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.remote_request(false, move |c| c.remote_set_paused(paused), cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+        }
+        assert_eq!(
+            *requests.calls.lock().unwrap(),
+            ["sign in", "cancel", "retry", "pause", "resume"]
+        );
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.confirm_sign_out(cx);
+                root.settings_page.remote.focus.focus(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+        assert!(!requests.calls.lock().unwrap().contains(&"sign out"));
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+        assert!(!requests.calls.lock().unwrap().contains(&"sign out"));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.confirm_sign_out(cx);
+                root.settings_page.remote.focus.focus(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert_eq!(requests.calls.lock().unwrap().last(), Some(&"sign out"));
+        for confirm in [false, true] {
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.settings_page.pane = SettingsPane::Remote;
+                    root.settings_page.remote.confirm = true;
+                    root.settings_page.remote.reset_identity = true;
+                    root.settings_page.remote.focus.focus(window, cx);
+                    cx.notify();
+                })
+                .unwrap();
+            cx.run_until_parked();
+            cx.simulate_keystrokes(window.into(), if confirm { "enter" } else { "escape" });
+            cx.run_until_parked();
+            assert_eq!(requests.calls.lock().unwrap().contains(&"reset"), confirm);
+        }
+        store.update(&mut cx, |store, cx| {
+            store.remote_status = Some(requests.status.lock().unwrap().clone());
+            cx.notify();
+        });
+        window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+        cx.run_until_parked();
+        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some());
+        let tailscale = visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").unwrap();
+        let before = requests.calls.lock().unwrap().len();
+        visual.simulate_click(tailscale.center(), Default::default());
+        cx.run_until_parked();
+        assert_eq!(requests.calls.lock().unwrap().len(), before);
+        let sign_in = visual.debug_bounds("REMOTE_SIGN_IN").unwrap();
+        visual.simulate_click(sign_in.center(), Default::default());
+        cx.run_until_parked();
+        assert_eq!(requests.calls.lock().unwrap().last(), Some(&"sign in"));
+    }
+
     #[test]
     fn pin_confirmation_and_lock_warning_keep_secrets_out_of_errors() {
         let pin = Secret("001234".into());
@@ -1818,6 +1842,7 @@ mod tests {
                     root
                 });
                 cx.simulate_window_resize(window.into(), size(px(1440.), px(1160.)));
+                cx.run_until_parked();
                 for variant in [
                     theme::ThemeVariant::Carbon,
                     theme::ThemeVariant::RunnerLight,
