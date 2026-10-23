@@ -262,7 +262,7 @@ impl Client {
             .open(&context, &id)
             .await
             .map_err(|f| f.message)?;
-        let (socket, records, public) =
+        let (socket, records, public, welcome) =
             route::pair(socket, &key, &pin, pairing_label(&context.name)).await?;
         if remote::fingerprint(&public) != computer.fingerprint {
             return Err("The computer's identity does not match the account listing.".into());
@@ -277,7 +277,12 @@ impl Client {
             }),
         )
         .await?;
-        let handle = route::spawn(self.clone(), computer, context, Some((socket, records)));
+        let handle = route::spawn(
+            self.clone(),
+            computer,
+            context,
+            Some((socket, records, welcome)),
+        );
         self.0
             .routes
             .lock()
@@ -304,6 +309,32 @@ impl Client {
         let route = route::spawn(self.clone(), computer, context, None);
         routes.insert(route.fingerprint.clone(), route.clone());
         Ok(route)
+    }
+    pub async fn request(
+        &self,
+        computer: String,
+        mut request: c::ClientMessage,
+    ) -> Result<remote::RemoteResult> {
+        if matches!(
+            request,
+            c::ClientMessage::Hello(_)
+                | c::ClientMessage::Attach(_)
+                | c::ClientMessage::Input(_)
+                | c::ClientMessage::TakeControl(_)
+                | c::ClientMessage::Viewport(_)
+                | c::ClientMessage::Detach(_)
+        ) {
+            return Err("Use the terminal client path for terminal requests; the channel manages its handshake.".into());
+        }
+        let route = self.route(&computer).await?;
+        let result = route
+            .request(move |id| {
+                request.set_id(id);
+                request
+            })
+            .await?;
+        let features = route.features.lock().unwrap().clone();
+        Ok(remote::RemoteResult { result, features })
     }
     pub async fn overview(&self, id: String) -> Result<c::Overview> {
         let route = self.route(&id).await?;

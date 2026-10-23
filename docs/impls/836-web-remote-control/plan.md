@@ -377,6 +377,53 @@ The crew shapes the history; a likely split, each commit building and passing it
 
 A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7c-client-app` on `feat/836-m7c-client-app`, with its brief as [`../briefs/836-m7c-client-app.md`](../briefs/836-m7c-client-app.md), run by a codex coder and reviewer, with Claude Code watching the mission and reviewing the PR for Jason; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
 
+### m8 — remote actions on the host
+
+m7c merged on 2026-10-23 as [#1005](https://github.com/yicheng47/runner/pull/1005), and Jason's live pass found that a remote window cannot start, stop or archive anything. He made the front page's actions, everything except Settings, part of the release that day; the spec's [Remote actions](../../features/836-web-remote-control.md#remote-actions) has the scope. m8 serves them from the host and carries them through the client core; m9 puts them in the app. No app UI.
+
+#### Settled for m8
+
+- **Mirrors, not passthrough.** Each request mirrors one client-protocol operation on the spec's allowlist, with its own versioned fields and golden file. The client protocol is never carried over the channel: it is locked to one build, while the companion protocol crosses versions.
+- **The host stays thin.** A handler decodes the request, calls the `AppCore` operation the client-protocol handler calls, and maps the outcome to `result` or `error`. It decides nothing the desktop would decide differently, and blocking work stays off the async runtime, as the adapter's does.
+- **Feed, answers and messages are served.** `feed`, `follow`, `unfollow`, `answer` and `post` are answered `unknownRequest` today (`companion/mod.rs`); m8 serves them as the desktop's feed and answer card read and write the event log.
+- **One client-protocol request** (*proposed*). `remote_request(computer, request)` carries any companion request to a computer and returns its result, and a followed mission's `feedAppended` arrives as a `remote/feed` event, so m9 needs no further client-protocol change. No CLI command.
+
+#### Commits
+
+The crew shapes the history; a likely split, each commit building and passing its tests:
+
+1. **Feed, answers and messages on the host.** `feed` pages newest first with its cursor, `follow` and `unfollow` with `feedAppended`, `answer` as the answer card answers, and `post` as the composer posts, each with the existing golden files.
+2. **The catalog and folders.** `catalog`, names only; `folders`, subfolder names and the parent, from the host's home folder when `path` is null, refusing a path that is not a folder.
+3. **Session actions.** `startChat`, `startShell`, `stop`, `resume`, `restart`, `fork` and `close`, each sized by the request's `cols` and `rows`.
+4. **Tabs, the sidebar and projects.** `layout`, `rename`, `archive`, `pin`, `move`, `reorderPinned`, `createProject` and `deleteProject`.
+5. **Missions.** `startMission`, `stopMission` and `resumeMission`; archiving, renaming, pinning and moving a mission go through the shared requests above.
+6. **The client core.** `remote_request` and `remote/feed` in `runnerd`'s client, and every new request in `welcome.features`.
+
+#### Checks
+
+- **`runner-core`**: every new message's golden file decodes and encodes unchanged; the unknown-field and later-field compatibility files as the existing ones; `features` names each new request.
+- **`runnerd`**, with the client against the real host side over the in-process relay: each action changes the host exactly as its client-protocol operation does (the same rows, events and `overview` push), and a failure answers `error` and changes nothing; a started session runs at the requested size and attaches with `take`; `folders` lists directories only and refuses a file or a missing path; `catalog` carries names only; the feed's pages, follows, answers and posts match the desktop's; a request for a Settings operation answers `unknownRequest`; a revoked device is refused at the channel, as today; none of the new requests is reachable through `runner call`.
+- **Secrets**: no credential, secret-store path, PIN, message body or terminal byte in a log line, an error or `Debug` output.
+- **Gates**: the required workspace gates, each logged with its exit code read directly.
+- **Live**: none in m8; m9 brings the actions to the app and its live checks to Jason.
+
+#### Easy to get wrong
+
+- A handler that writes rows itself instead of calling the operation diverges from the desktop; reuse the operation, even when it takes a little adapting.
+- A client that patches its state from a result instead of waiting for the `overview` push shows a change the host did not make.
+- `catalog` must not carry a Claude account's folder, a configuration path or an environment value; `folders` never lists files.
+- Paths are the host's, in its platform's form: a Windows host's path reaches a macOS client unchanged.
+- A session started without the client's size takes the host desktop's size; the request's size is required.
+- The companion protocol's existing messages and the channel's wire format are unchanged; the additions are new requests listed in `features`.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m8-remote-actions` on `feat/836-m8-remote-actions`, with its brief as [`../briefs/836-m8-remote-actions.md`](../briefs/836-m8-remote-actions.md), run by a codex coder and reviewer, with Claude Code watching the mission and reviewing the PR; a pull request against `nightly-remote`, driven green on macOS and Windows. No database migration, no new crate.
+
+### m9 — the front page on another computer
+
+After m8. The app's front page uses m8's requests: its actions go through one target, this computer or the window's computer, and every surface adopts it, so m7c's separate remote views give way to the local components. It carries the mission workspace in a remote window (feed, composer, answer cards, stop, resume and archive), New chat and Start mission with the host's catalog and the host folder picker, remote mission members in the mission's own pane arrangement, the remote tab header from the local one (live-fix Problem 11, 2026-10-23), the rest of the pane and workspace presentation parity, and the guide. The folder picker is drawn in Pencil and approved by Jason first. Planned in detail when m8 merges. Live checks are Jason's: start, stop, resume, fork, rename and archive a chat on the other computer; split and close panes; drawer shells; pin and move; start a mission with a crew and a host folder, answer and post; and the host's desktop showing each change at once.
+
 ## Tailscale — moved out
 
 Phase 4 until 2026-10-23, when Jason moved it out of the release into its own future feature, [#954](https://github.com/yicheng47/runner/issues/954), planned when its development starts. Its pairing and trust model are Phase 2's, unchanged, and since 2026-10-21 its client is m7's: one Runner reaches another directly over the tailnet, with no service involved, so it adds the host's listener and the client's direct route.

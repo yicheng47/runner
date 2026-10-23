@@ -1,4 +1,6 @@
+mod actions;
 pub mod core;
+pub(crate) mod feed;
 
 use crate::events::AppEvent;
 use core::{Control, Core, Failure};
@@ -20,6 +22,31 @@ use tokio::{
 
 pub const FEATURES: &[&str] = &[
     "overview",
+    "feed",
+    "follow",
+    "unfollow",
+    "answer",
+    "post",
+    "catalog",
+    "folders",
+    "startChat",
+    "startShell",
+    "stop",
+    "resume",
+    "restart",
+    "fork",
+    "close",
+    "rename",
+    "archive",
+    "layout",
+    "pin",
+    "move",
+    "reorderPinned",
+    "createProject",
+    "deleteProject",
+    "startMission",
+    "stopMission",
+    "resumeMission",
     "attach",
     "input",
     "takeControl",
@@ -252,6 +279,11 @@ impl Drop for Lease {
     }
 }
 
+struct FeedSubscription {
+    cursor: u64,
+    dirty: bool,
+}
+
 pub struct Adapter {
     lease: Arc<Lease>,
     core: Arc<dyn Core>,
@@ -264,6 +296,9 @@ pub struct Adapter {
     queued: usize,
     in_flight: usize,
     statuses: BTreeMap<String, SessionStatus>,
+    feeds: BTreeMap<String, FeedSubscription>,
+    last_feed: Option<String>,
+    feed_turn: bool,
     overview_due: Option<Instant>,
     last_overview: Option<Instant>,
 }
@@ -285,6 +320,9 @@ impl Adapter {
             queued: 0,
             in_flight: 0,
             statuses: BTreeMap::new(),
+            feeds: BTreeMap::new(),
+            last_feed: None,
+            feed_turn: true,
             overview_due: None,
             last_overview: None,
         })
@@ -362,6 +400,7 @@ impl Adapter {
         };
         let id;
         let result: core::Result<serde_json::Value> = match message {
+            ClientMessage::TakeControl(_) | ClientMessage::Viewport(_) => unreachable!(),
             ClientMessage::Hello(_) => return Err("unexpected hello"),
             ClientMessage::Overview(request) => {
                 id = request.id;
@@ -432,15 +471,51 @@ impl Adapter {
                 self.remove(&request.session, true);
                 Ok(serde_json::Value::Null)
             }
-            message => {
-                id = match message {
-                    ClientMessage::Feed(r) => r.id,
-                    ClientMessage::Follow(r) | ClientMessage::Unfollow(r) => r.id,
-                    ClientMessage::Answer(r) => r.id,
-                    ClientMessage::Post(r) => r.id,
-                    ClientMessage::Unknown(r) => r.id,
-                    _ => unreachable!(),
-                };
+            ClientMessage::Action(request) => {
+                id = request.id();
+                blocking(self.core.clone(), move |core| core.action(request)).await
+            }
+            ClientMessage::Feed(request) => {
+                id = request.id;
+                blocking(self.core.clone(), move |core| core.feed(request))
+                    .await
+                    .and_then(|page| serde_json::to_value(page).map_err(core::failed))
+            }
+            ClientMessage::Follow(request) => {
+                id = request.id;
+                let mission = request.mission.clone();
+                match blocking(self.core.clone(), move |core| core.feed_cursor(&mission)).await {
+                    Ok(cursor) => {
+                        self.feeds
+                            .entry(request.mission)
+                            .or_insert(FeedSubscription {
+                                cursor,
+                                dirty: false,
+                            });
+                        Ok(serde_json::Value::Null)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            ClientMessage::Unfollow(request) => {
+                id = request.id;
+                self.feeds.remove(&request.mission);
+                Ok(serde_json::Value::Null)
+            }
+            ClientMessage::Answer(request) => {
+                id = request.id;
+                blocking(self.core.clone(), move |core| core.answer(request))
+                    .await
+                    .map(|_| serde_json::Value::Null)
+            }
+            ClientMessage::Post(request) => {
+                id = request.id;
+                blocking(self.core.clone(), move |core| core.post(request))
+                    .await
+                    .map(|_| serde_json::Value::Null)
+            }
+            ClientMessage::Unknown(request) => {
+                id = request.id;
                 Err(Failure(
                     ErrorCode::UnknownRequest,
                     "The host does not serve that request.",
@@ -510,6 +585,12 @@ impl Adapter {
         if !terminal_credit {
             return Ok(None);
         }
+        if self.feed_turn {
+            if let Some(bytes) = self.next_feed().await? {
+                self.feed_turn = false;
+                return Ok(Some(bytes));
+            }
+        }
         for _ in 0..self.streams.len() {
             let mut stream = self.streams.pop_front().unwrap();
             let (resync, ended) = {
@@ -554,6 +635,7 @@ impl Adapter {
             }
             if let Some(message) = stream.chunk() {
                 self.streams.push_back(stream);
+                self.feed_turn = true;
                 return serde_json::to_vec(&message)
                     .map(Some)
                     .map_err(|_| "companion encoding failed");
@@ -574,7 +656,63 @@ impl Adapter {
             }
             self.streams.push_back(stream);
         }
-        Ok(None)
+        self.feed_turn = true;
+        self.next_feed().await
+    }
+    fn feed_changes(&mut self) {
+        if self.feeds.is_empty() {
+            return;
+        }
+        for feed in self.feeds.values_mut() {
+            feed.dirty = true;
+        }
+        self.ready.notify_one();
+    }
+    async fn next_feed(&mut self) -> Result<Option<Vec<u8>>, &'static str> {
+        if self.queued + self.in_flight + feed::MAX_BATCH_BYTES > MAX_MESSAGE_SIZE {
+            return Ok(None);
+        }
+        let next = self
+            .feeds
+            .iter()
+            .find(|(id, feed)| feed.dirty && self.last_feed.as_ref().is_none_or(|last| *id > last))
+            .or_else(|| self.feeds.iter().find(|(_, feed)| feed.dirty))
+            .map(|(id, feed)| (id.clone(), feed.cursor));
+        let Some((mission, cursor)) = next else {
+            return Ok(None);
+        };
+        self.last_feed = Some(mission.clone());
+        let id = mission.clone();
+        let message =
+            match blocking(self.core.clone(), move |core| core.feed_since(&id, cursor)).await {
+                Ok(updates) => {
+                    self.feeds.insert(
+                        mission.clone(),
+                        FeedSubscription {
+                            cursor: updates.cursor,
+                            dirty: updates.more,
+                        },
+                    );
+                    if updates.entries.is_empty() {
+                        Ok(None)
+                    } else {
+                        serde_json::to_vec(&HostMessage::FeedAppended(FeedAppended {
+                            mission,
+                            entries: updates.entries,
+                        }))
+                        .map(Some)
+                        .map_err(|_| "companion encoding failed")
+                    }
+                }
+                Err(_) => {
+                    self.feeds.remove(&mission);
+                    Ok(None)
+                }
+            };
+        if self.feeds.values().any(|feed| feed.dirty) {
+            self.ready.notify_one();
+        }
+        message
     }
     pub async fn changed(&mut self) -> Result<(), &'static str> {
         let due = self.overview_due;
@@ -591,10 +729,11 @@ impl Adapter {
                             }
                         }
                         if self.overview_due.is_none() { self.overview_due = Some(self.last_overview.map(|last| last + Duration::from_millis(250)).unwrap_or_else(Instant::now)); }
+                        if event.name == "event/appended" { self.feed_changes(); }
                         let overview = self.overview().await.map_err(|_| "core unavailable")?;
                         self.status_changes(&overview)?;
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => { self.overview_due = Some(Instant::now()); }
+                    Err(broadcast::error::RecvError::Lagged(_)) => { self.feed_changes(); self.overview_due = Some(Instant::now()); }
                     Err(broadcast::error::RecvError::Closed) => return Err("core stopped"),
                     _ => {}
                 }

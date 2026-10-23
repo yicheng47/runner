@@ -1,0 +1,7 @@
+{
+  "type": "resumeMission",
+  "id": 42,
+  "mission": "mission-a",
+  "cols": 120,
+  "rows": 40
+}

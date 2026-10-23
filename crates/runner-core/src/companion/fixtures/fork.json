@@ -1,0 +1,8 @@
+{
+  "type": "fork",
+  "id": 42,
+  "session": "session-a",
+  "title": "Review",
+  "cols": 120,
+  "rows": 40
+}

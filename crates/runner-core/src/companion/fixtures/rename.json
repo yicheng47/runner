@@ -1,0 +1,9 @@
+{
+  "type": "rename",
+  "id": 42,
+  "target": {
+    "kind": "tab",
+    "id": "tab-a"
+  },
+  "name": "Review"
+}

@@ -1,0 +1,10 @@
+{
+  "type": "reorderPinned",
+  "id": 42,
+  "order": [
+    {
+      "kind": "tab",
+      "id": "tab-a"
+    }
+  ]
+}

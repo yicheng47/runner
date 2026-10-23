@@ -80,7 +80,7 @@ Remote access never stops your agents or sessions. Closing the desktop app leave
 
 ## Who can reach this computer
 
-The service routes connections to computers on your account. Terminal access requires a paired computer: signing in to the account alone is not enough.
+The service routes connections to computers on your account. Terminal access requires a paired computer: signing in to the account alone is not enough. Treat paired computers as trusted to operate your chats, missions and projects as well as type into terminals. New chats use the host’s active Claude account. Settings, account selection, editing roles and crews, and restoring or deleting archived items stay on the host.
 
 Set a PIN in **Settings → Remote access → Set PIN**, or run `runner remote pin` in your own interactive terminal outside a Runner agent session. Choose a 6-digit PIN, then enter it again. Any six digits are allowed, including leading zeroes. If you choose repeated single digits, an ascending or descending sequence, or a common PIN, Runner warns that it could be guessed within five tries. **Use this PIN** keeps your choice; **Choose another** clears the entries so you can pick again. The CLI shows the warning in English and Chinese and asks for a separate `y` or `yes`; Enter alone cancels without changing the PIN. The CLI hides both entries; Runner never shows the PIN again. **Change PIN** replaces it without unpairing existing devices. Changing the PIN, turning off **Allow remote access**, signing out or resetting remote access invalidates pairings still in progress, including confirmations waiting for their trust save.
 

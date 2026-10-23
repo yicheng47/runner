@@ -1,0 +1,29 @@
+{
+  "type": "layout",
+  "id": 42,
+  "target": {
+    "kind": "tab",
+    "id": "tab-a"
+  },
+  "project": null,
+  "name": "Review",
+  "panes": {
+    "id": "s1",
+    "split": "row",
+    "sizes": [
+      0.3,
+      0.7
+    ],
+    "a": {
+      "id": "p1",
+      "session": "session-a"
+    },
+    "b": {
+      "id": "p2",
+      "session": null
+    }
+  },
+  "shells": [
+    "shell-a"
+  ]
+}
