@@ -156,3 +156,64 @@ Cause: a plaintext `unknownDevice` rejection was converted to an error before th
 Fix: remove that trust mutation. Rejections remain diagnostics; the client keeps its key and reports that this computer was not recognized, with fingerprint-verification guidance. The app's copy no longer claims that this unauthenticated response proves host revocation. Only an explicit Forget or submitting Pair again removes the saved key; the CLI retains its refusal to pair over an existing key. Inspection of the other pre-authentication paths found no other stored-pairing mutation: successful pairing saves keys after authenticated completion, while host device/last-seen updates follow verified handshakes; wrong-PIN lock accounting remains intentional.
 
 The fake relay sends each plaintext reject kind without authenticating a host. `unauthenticated_rejects_preserve_saved_pairing_keys_until_explicit_forget` fails before the fix (exit 100, `target/836-reject-trust-before.log`), then verifies unchanged saved keys and paired directory state until explicit Forget. The existing real-host-revoke relay case now verifies key retention followed by explicit Forget. English/Simplified Chinese copy, guide and spec match this behavior.
+
+### Problem 7: pending pairing survives a PIN change
+
+Cause: the pending host handshake captured the old PIN and could finish inside its deadline after Set PIN. Trust persistence is asynchronous, so checking only the final handshake would also leave a completion pending across a later change or remote-task restart.
+
+Fix: capture a pairing generation at handshake start and verify it before finishing and again after saving trust. Set PIN, turning off Allow remote access, signing out and Reset remote access invalidate it; restoring the remote task allocates a fresh process-wide generation. Before saving other changes or reporting success, each invalidating command durably removes unconfirmed devices through the ordered trust writer. This also orders older rollback snapshots, so they cannot restore removed trust. A failed save reports an error and restarts the remote task rather than acknowledging the changed in-memory state. Authenticated channels and existing trusted devices remain usable after Set PIN. Pause/reset retain their existing channel-closing behavior.
+
+The in-process relay regressions for a pending final handshake and a delayed trust-save completion both fail before the fix (2 failures, exit 100, `target/836-pending-pair-before.log`). They cover Set PIN, Allow remote access off, Reset remote access and a delayed completion after a simulated remote-task restart, including the resulting persisted trust. A separate regression confirms that an authenticated channel still answers requests after changing the PIN and that the new PIN can pair a new device. No sleeps or network are added.
+
+The first combined security run passed 48/49 tests (exit 100, `target/836-security-focused.log`): the existing socket-loop test still tried to set a now-rejected sequential fixture PIN. Its setup and peer input now use the same nontrivial test PIN. The corrected combined security run passes all 50 tests (exit 0, `target/836-security-focused-final.log`), including all host-channel/client relay cases and the new regressions.
+
+Jason's selected live rechecks, after code review: reject an obvious weak PIN in both app languages and from `runner remote pin`; accept a nontrivial PIN with leading zeroes; keep current pairings and authenticated terminals working after a PIN change; verify Pair again/Forget explicitly removes retained trust after fingerprint confirmation. Pending-handshake and forged-reject cases are covered by the fake relay and require no live attack. The larger pairing-code redesign and the remaining refactors are not implemented by this security diff.
+
+
+### Security and helper validation results
+
+| Check | Exit code | Evidence |
+| --- | --- | --- |
+| Final focused security regressions | 0 | `target/836-security-focused-final.log`: 50 passed |
+| `env -u CLAUDE_CONFIG_DIR cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci` | 0 | `target/836-security-nextest.log`: 2,755 passed, 6 skipped, in 299.998 seconds; no retries |
+| Workspace Clippy, warnings denied | 0 | `target/836-security-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-security-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-security-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-security-diff-check.log` |
+
+This complete workspace run covered the initial security/helper candidate, including the previously failing unchanged model-query fixtures; it does not erase the older failed runs recorded above. The CLI help golden took 67.245 seconds and passed. CLI help is unchanged, so `make guide-cli-check` is not applicable. The review below found a persistence gap that these green tests did not cover. The security and helper changes remain uncommitted pending clean review; the remaining terminal/sidebar reuse work is paused until the security fixes are clean. No live checks ran.
+
+### Problem 7 review correction: durable invalidation before success
+
+Reviewer message `01M5M9FKX9GDX3G5DH7G9H5VVM` found one P1 must-fix: a pairing could already have saved its provisional device while its completion remained unconsumed. The initial fix invalidated only process memory, then rolled trust back later. A process exit after Set PIN reported success could leave that device in the saved trust; a fresh daemon with a new writer could accept it. The reviewer found no additional must-fix in Problems 5/6 or the two helper extractions. Its independent 54 tests and whitespace check passed (exit 0, `target/836-reviewer-security.log`, `target/836-reviewer-security-diff-check.log`), but the verdict was not clean.
+
+The correction awaits removal of every unconfirmed device through the production command path and the existing ordered trust writer before other effects, including the new PIN save, execute. It snapshots trust before the transition so Reset identity can still preserve confirmed devices if saving its new identity fails. Pending bookkeeping is removed only after the filtered trust save succeeds. A write failure returns a command error and exits the remote task; a later completion cannot recreate successfully purged trust.
+
+Three additional regressions exercise the production command and effect path with an in-memory secret store and temporary files. They hold a saved pairing completion, run Set PIN, Allow remote access off, sign-out or Reset identity, then reload saved state into a fresh machine and new trust writer before consuming the old completion. A real Noise IK reconnect from the provisional device is refused; confirmed trust is retained except for Reset identity. A held writer proves the command and PIN save wait for durable removal; a failed writer proves the command reports failure and the stored PIN is unchanged, then retries through the same production path and verifies that a late completion cannot restore access. No sleeps, network or manually corrected trust save are used.
+
+| Check | Exit code | Evidence |
+| --- | --- | --- |
+| Fresh-load, held-write and failed-write regressions before durable invalidation | 100 (expected failure) | `target/836-pairing-durable-before.log`: all 3 failed |
+| Host/channel regressions after durable invalidation | 0 | `target/836-pairing-durable-focused.log`: 42 passed |
+| Workspace Clippy, warnings denied | 0 | `target/836-security-durable-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-security-durable-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-security-durable-fmt-check.log` |
+| First workspace run after durable invalidation | 100 | `target/836-security-durable-nextest.log`: 2,757 passed, 1 failed, 6 skipped; correction below |
+| Whitespace validation after durable invalidation | 0 | `target/836-security-durable-diff-check.log` |
+
+The first complete workspace run after this correction exposed a real regression in `daemon::server::tests::client_accept_errors_back_off_and_preserve_live_sessions`: setting the first PIN in an isolated daemon created `remote-trust.json`, despite there being no pending pairing or older trust writer. The correction uses the durable barrier only when the pairing writer already exists; without one, no pending pairing or detached trust write can exist. The existing test is unchanged. All 43 selected host/channel and server regressions then passed (exit 0, `target/836-pairing-durable-final-focused.log`). An intermediate attempt used let-chain syntax unsupported by this crate's Rust edition; nextest exited 101 and formatting exited 1 before running tests (`target/836-pairing-durable-parse.log`, `target/836-security-durable-fmt-parse.log`), then the syntax was corrected. Final formatting passes (exit 0, `target/836-security-durable-final-fmt-check.log`).
+
+| Final correction check | Exit code | Evidence |
+| --- | --- | --- |
+| Host/channel and isolated-server regressions | 0 | `target/836-pairing-durable-final-focused.log`: 43 passed |
+| Full workspace nextest after the first-PIN correction | 0 | `target/836-security-durable-final-nextest.log`: 2,758 passed, 6 skipped, 294.162 seconds; no retries |
+| Workspace Clippy, warnings denied | 0 | `target/836-security-durable-final-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-security-durable-final-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-security-durable-final-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-security-durable-final-diff-check.log` |
+
+The final full workspace run passes, including the unchanged isolated-server regression; the CLI help golden took 65.026 seconds and passed. All prior failures remain recorded. The corrected candidate received the clean whole-diff review below. Jason's live rechecks above remain unchanged; the persistence race is covered in process by fakes.
+
+### Security and helper review verdict
+
+The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete feature-branch working-tree diff in Runner message `01M5MAZZX6N9TPCP48CP38DKRR`, including Problems 5–7 and both helper extractions. It confirmed the durable command barrier, first-PIN guard, preserved confirmed trust and fresh-load regressions resolve the P1. Its independent security/helper checks passed (85 tests, exit 0, `target/836-reviewer-security-durable.log`), as did an explicit run of the isolated-server regression (1 test, exit 0, `target/836-reviewer-security-first-pin.log`) and whitespace validation (exit 0, `target/836-reviewer-security-durable-diff-check.log`). It inspected the final full workspace and both Clippy passes; earlier failures remain preserved. Live checks were skipped under the brief and remain Jason's selected checks above. Remaining terminal/sidebar/pane reuse work is outside this verdict and requires a separate working-tree review. No new-head CI result is claimed.
