@@ -1,8 +1,14 @@
 # 634 — File preview and code review
 
 > Tracking issue: [#634](https://github.com/yicheng47/runner/issues/634). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS and Windows.
-> Status: draft spec. Filed 2026-09-17, closed as not planned on 2026-09-22 under the "not an agent development environment" non-goal, and reopened by Jason on 2026-10-08 for 0.15: reading an agent's changes is still the most common reason to leave Runner, so the read-only viewer is back in and code review moved from Later into scope as phase 4. On 2026-10-09 Jason moved it to 0.14 as the release's key feature. Design first, in `runner/desktop/specs/793-634-glass-and-files.pen` in `yeelinks_design`, which it shares with liquid glass ([793](./archive/793-liquid-glass.md)) so the panel is designed in the new chrome, for sign-off before any code.
+> Status: phased spec; the bounded read-only first delivery was approved on 2026-10-22 (see below), while Git diff/review remains planned. Filed 2026-09-17, closed as not planned on 2026-09-22 under the "not an agent development environment" non-goal, and reopened by Jason on 2026-10-08 for 0.15: reading an agent's changes is still the most common reason to leave Runner, so the read-only viewer is back in and code review moved from Later into scope as phase 4. On 2026-10-09 Jason moved it to 0.14 as the release's key feature. Design first, in `runner/desktop/specs/793-634-glass-and-files.pen` in `yeelinks_design`, which it shares with liquid glass ([793](./archive/793-liquid-glass.md)) so the panel is designed in the new chrome, for sign-off before any code.
 > Related: [#458](https://github.com/yicheng47/runner/issues/458) (⌘-click file links, `file_links.rs`), [704](https://github.com/yicheng47/runner/issues/704) (session send, the delivery for a review sent to a direct chat; closed unbuilt on 2026-10-11), [826](./archive/826-targeted-messaging.md) (directed messages that wake only their recipient), [403](../product/vision.md#6-non-goals-long-view) (worktree isolation, still dropped).
+
+## Approved first delivery — 2026-10-22
+
+The user approved a screenshot-inspired tabbed right panel for both direct chats and Teams: preserve Info/Roles/Meta, add Files, closable canonical file tabs and a new-tab home, and provide bounded read-only Markdown/text/raster previews. Reuse the existing panel shells, splitters, terminal drawer, external file opener and Markdown renderer. Unsupported formats use an external-open fallback; no new editor, upload/share workflow, webview or daemon protocol is introduced.
+
+This delivery narrows phases 1–2 below: lazy directory browsing and file content preview only. Git status letters, Changed only, unified diffs, comparison bases and review delivery remain later work, not implemented claims. The supplied three screenshots are the approved interaction reference; existing design-system tokens and native platform chrome remain authoritative. Implementation plan: `docs/impls/2026-10-22-workspace-panel-files.md`. User guide: `docs/guide/guides/files-and-previews.md` and the Sessions/Missions concept pages.
 
 ## Motivation
 

@@ -807,6 +807,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_workspace_panel_visibility(cx);
         self.sync_theme(window, cx);
         runner_app::appearance::configure(self.settings(cx).window_material, cx);
         window.set_background_appearance(

@@ -35,3 +35,7 @@ While a mission is paused, its unread-response green dot is hidden in the sideba
 A “done” message or an idle agent does not automatically mean all sessions have exited. Stopping and archiving never revert repository changes.
 
 Closing Runner can leave missions working in its background service. **Settings → General → When Runner quits** controls that choice. See [Sessions](sessions.md) for relaunch and recovery behavior.
+
+## Workspace files
+
+The right panel provides [workspace files and read-only previews](../guides/files-and-previews.md) alongside its existing information views. File tabs do not start new sessions or modify files.

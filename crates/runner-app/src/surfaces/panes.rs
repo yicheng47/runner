@@ -310,6 +310,7 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
+            window,
             cx,
         );
         div()
@@ -511,21 +512,21 @@ impl NativeRoot {
                 .as_ref()
                 .map(|chat| chat.session_id.clone()),
         );
+        let panel_width = self.chat_panel_effective_width(window, cx);
         let side_panel = self.cached_region(
             "side-panel",
             gpui::StyleRefinement::default()
-                .w(rems(
-                    self.settings(cx).chat_panel_width * panel_visibility / 16.,
-                ))
+                .w(rems(panel_width * panel_visibility / 16.))
                 .h_full()
                 .flex_none(),
-            move |root, _, cx| {
+            move |root, window, cx| {
                 root.render_chat_side_panel(
                     root.active_chat_detail.as_ref(),
                     root.session_key_copy.clone(),
                     panel_visibility,
                     panel_open || panel_animating,
                     panel_open && !panel_animating,
+                    window,
                     cx,
                 )
             },
@@ -535,7 +536,7 @@ impl NativeRoot {
         // centres on the border the panel draws.
         let panel_resize = (panel_open || panel_animating).then(|| {
             let zoom = self.settings(cx).app_zoom;
-            let divider = self.settings(cx).chat_panel_width * panel_visibility * zoom - 0.5;
+            let divider = panel_width * panel_visibility * zoom - 0.5;
             resize_strip(
                 "chat-panel-resize",
                 ResizeAxis::Columns,
@@ -590,7 +591,14 @@ impl NativeRoot {
                 |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    let width = app_settings::clamp_chat_panel_width(width);
+                    let host_width =
+                        f32::from(event.bounds.size.width) / this.settings(cx).app_zoom;
+                    let limit = crate::workspace_panel::bounded_panel_width(
+                        app_settings::CHAT_PANEL_MAX,
+                        host_width,
+                    )
+                    .max(app_settings::CHAT_PANEL_MIN);
+                    let width = app_settings::clamp_chat_panel_width(width).min(limit);
                     if !this.chat_panel_resizing {
                         this.chat_panel_resizing = true;
                         cx.notify();
@@ -1092,6 +1100,7 @@ impl NativeRoot {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -1099,11 +1108,12 @@ impl NativeRoot {
         visibility: f32,
         show_panel: bool,
         border_on: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         #[cfg(test)]
         crate::render_counts::count_render("side-panel", cx);
-        let width = self.settings(cx).chat_panel_width;
+        let width = self.chat_panel_effective_width(window, cx);
         let visible_width = width * visibility;
         if !show_panel {
             return div()
@@ -1115,6 +1125,8 @@ impl NativeRoot {
                 .overflow_hidden()
                 .into_any_element();
         }
+        let workspace_panel = self.workspace_panel_for_chat(detail, window, cx);
+        let info_selected = workspace_panel.read(cx).active_builtin() == Some(PanelBuiltin::Info);
         let role = detail
             .and_then(|detail| detail.role_id.as_deref())
             .and_then(|role_id| {
@@ -1125,41 +1137,21 @@ impl NativeRoot {
                     .find(|role| role.id == role_id)
                     .cloned()
             });
-        let collapse_root = cx.entity();
+        let tab_strip = workspace_panel.update(cx, |panel, panel_cx| {
+            panel.render_header(width, window, panel_cx)
+        });
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
-            div()
-                .flex_none()
-                .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
-                .pl_4()
-                .pr_2()
-                .flex()
-                .items_center()
-                .justify_end()
-                .border_b_1()
-                .border_color(theme::border())
-                .rounded_tr(rems(11. / 16.))
-                .map(|element| {
-                    #[cfg(test)]
-                    let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
-                    element
-                })
-                .child(
-                    IconButton::new("collapse-chat-panel", "panel-right-open.svg")
-                        .tooltip(crate::i18n::text("ui.collapse_side_panel"))
-                        .on_press(move |_, cx| {
-                            collapse_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.chat_panel_open = false;
-                                    true
-                                });
-                                cx.notify();
-                            });
-                        }),
-                ),
+            div().flex_none().child(tab_strip).map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
+                element
+            }),
             cx,
         );
-        let content = if let Some(detail) = detail {
+        let content = if !info_selected {
+            workspace_panel.clone().into_any_element()
+        } else if let Some(detail) = detail {
             let open_root = cx.entity();
             let toggle_root = cx.entity();
             let actions = ChatPanelActions {
@@ -1217,8 +1209,10 @@ impl NativeRoot {
                             .id("chat-panel-scroll")
                             .flex_1()
                             .min_h(px(0.))
-                            .overflow_y_scroll()
-                            .p_5()
+                            .when(info_selected, |body| body.overflow_y_scroll().p_5())
+                            .when(!info_selected, |body| {
+                                body.flex().flex_col().overflow_hidden()
+                            })
                             .child(content),
                     ),
             );
@@ -3841,6 +3835,121 @@ pub(crate) fn adjacent_pane_index(
         return None;
     }
     Some((current as isize + direction).rem_euclid(pane_count as isize) as usize)
+}
+
+use crate::workspace_panel::{
+    workspace_root, HostedPanel, PanelBuiltin, PanelEvent, WorkspacePanel,
+};
+
+impl NativeRoot {
+    fn chat_panel_effective_width(&self, window: &Window, cx: &App) -> f32 {
+        let settings = self.settings(cx);
+        let sidebar = if self.sidebar_collapsed {
+            0.
+        } else {
+            settings.sidebar_width
+        };
+        let host = f32::from(window.viewport_size().width) / settings.app_zoom - sidebar - 16.;
+        crate::workspace_panel::bounded_panel_width(settings.chat_panel_width, host)
+    }
+
+    pub(crate) fn sync_workspace_panel_visibility(&self, cx: &mut Context<Self>) {
+        let selected_chat = if self.settings(cx).chat_panel_open {
+            match self.route {
+                AppRoute::Chat => self.active_chat_detail.as_ref().filter(|detail| {
+                    !Runtime::parse(&detail.agent_runtime).is_some_and(Runtime::is_shell)
+                }),
+                AppRoute::ArchivedChat => self.archived_chat_detail.as_ref(),
+                _ => None,
+            }
+            .map(|detail| detail.session_id.as_str())
+        } else {
+            None
+        };
+        for (id, hosted) in self.workspace_panels.borrow().iter() {
+            hosted.panel.update(cx, |panel, _| {
+                panel.set_visible(selected_chat == Some(id.as_str()))
+            });
+        }
+        let selected_mission = match &self.route {
+            AppRoute::Mission(id) if self.settings(cx).mission_rail_open => Some(id.clone()),
+            _ => None,
+        };
+        self.mission_workspace.update(cx, |workspace, cx| {
+            workspace.sync_workspace_panel_visibility(selected_mission.as_deref(), cx)
+        });
+    }
+
+    pub(crate) fn workspace_panel_for_chat(
+        &self,
+        detail: Option<&DirectSessionEntry>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<WorkspacePanel> {
+        let key = detail
+            .map(|detail| detail.session_id.clone())
+            .unwrap_or_default();
+        let root = {
+            let store = self.app_store.read(cx);
+            let project = detail
+                .and_then(|detail| detail.project_id.as_deref())
+                .and_then(|id| store.projects.iter().find(|project| project.id == id));
+            workspace_root(
+                detail.and_then(|detail| detail.cwd.as_deref()),
+                project.map(|project| project.cwd.as_str()),
+                &self.settings(cx).default_working_dir,
+            )
+        };
+        let panel = {
+            let mut panels = self.workspace_panels.borrow_mut();
+            panels
+                .entry(key)
+                .or_insert_with(|| {
+                    let panel = cx.new(|cx| WorkspacePanel::new(&[PanelBuiltin::Info], cx));
+                    let observe = cx.observe(&panel, |_, _, cx| cx.notify());
+                    let events = cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+                        match event {
+                            PanelEvent::Collapse => {
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.chat_panel_open = false;
+                                    true
+                                });
+                            }
+                            PanelEvent::Width(width) => {
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.chat_panel_width =
+                                        crate::app_settings::clamp_chat_panel_width(*width);
+                                    true
+                                });
+                            }
+                            PanelEvent::Terminal => {
+                                if !this
+                                    .tabs
+                                    .active()
+                                    .is_some_and(|layout| layout.drawer_open())
+                                {
+                                    this.toggle_terminal_drawer(window, cx);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    });
+                    HostedPanel {
+                        panel,
+                        _subscriptions: vec![observe, events],
+                    }
+                })
+                .panel
+                .clone()
+        };
+        let terminal_available = self.route == AppRoute::Chat && !self.active_tab_is_terminal(cx);
+        panel.update(cx, |panel, cx| {
+            panel.set_root(root, cx);
+            panel.set_visible(self.settings(cx).chat_panel_open);
+            panel.set_terminal_available(terminal_available, cx);
+        });
+        panel
+    }
 }
 
 #[cfg(test)]

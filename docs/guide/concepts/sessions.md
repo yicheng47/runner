@@ -39,3 +39,7 @@ Runner's background service, `runnerd`, owns processes independently of the app 
 If the processes were stopped for shutdown or an update, **Resume running agents on launch** controls their automatic recovery. Manually stopped sessions stay stopped until you resume them. Recovery depends on the agent's saved conversation identity and history; it cannot restore an unsaved conversation from terminal pixels alone.
 
 If the daemon crashes, Runner reconnects and offers recovery for affected sessions. Use **Settings → Diagnostics → Open log folder** when a failure repeats. See [Troubleshooting](../guides/troubleshooting.md) for a missing conversation or a failed launch.
+
+## Workspace files
+
+The right panel provides [workspace files and read-only previews](../guides/files-and-previews.md) alongside its existing information views. File tabs do not start new sessions or modify files.

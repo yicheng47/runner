@@ -155,12 +155,11 @@ impl MissionWorkspace {
         if rail_animating {
             window.request_animation_frame();
         }
+        let panel_width = self.mission_rail_effective_width(window, cx);
         let rail = self.cached_region(
             "mission-rail",
             gpui::StyleRefinement::default()
-                .w(rems(
-                    self.settings(cx).mission_rail_width * rail_visibility / 16.,
-                ))
+                .w(rems(panel_width * rail_visibility / 16.))
                 .h_full()
                 .flex_none(),
             move |workspace, window, cx| {
@@ -200,7 +199,14 @@ impl MissionWorkspace {
                 |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    let width = app_settings::clamp_mission_rail_width(width);
+                    let host_width =
+                        f32::from(event.bounds.size.width) / this.settings(cx).app_zoom;
+                    let limit = crate::workspace_panel::bounded_panel_width(
+                        app_settings::MISSION_RAIL_MAX,
+                        host_width,
+                    )
+                    .max(app_settings::MISSION_RAIL_MIN);
+                    let width = app_settings::clamp_mission_rail_width(width).min(limit);
                     this.update_app_settings(cx, false, |settings| {
                         if settings.mission_rail_width == width {
                             return false;

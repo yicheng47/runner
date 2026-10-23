@@ -26,7 +26,7 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = self.settings(cx).mission_rail_width;
+        let width = self.mission_rail_effective_width(window, cx);
         let visible_width = width * visibility;
         if !show_rail {
             return div()
@@ -39,73 +39,19 @@ impl MissionWorkspace {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let root = cx.entity();
-        let roles_root = root.clone();
-        let meta_root = root.clone();
-        let collapse_root = root;
-        let rail_view = self.rail_view;
-        let header = div()
-            .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
-            .flex_none()
-            .px_4()
-            .flex()
-            .items_center()
-            .border_b_1()
-            .border_color(theme::border())
-            .rounded_tr(rems(11. / 16.))
-            .map(|element| {
-                #[cfg(test)]
-                let element = crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
-                element
-            })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        rail_view_button(
-                            "mission-rail-roles",
-                            "users.svg",
-                            rail_view == MissionRailView::Roles,
-                        )
-                        .on_click(move |_, _, cx| {
-                            roles_root.update(cx, |this, cx| {
-                                this.set_mission_rail_view(MissionRailView::Roles, cx)
-                            });
-                        }),
-                    )
-                    .child(
-                        rail_view_button(
-                            "mission-rail-meta",
-                            "info.svg",
-                            rail_view == MissionRailView::Meta,
-                        )
-                        .on_click(move |_, _, cx| {
-                            meta_root.update(cx, |this, cx| {
-                                this.set_mission_rail_view(MissionRailView::Meta, cx)
-                            });
-                        }),
-                    ),
-            )
-            .child(
-                div().ml_auto().child(
-                    IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                        .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))
-                        .on_press(move |_, cx| {
-                            collapse_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.mission_rail_open = false;
-                                    true
-                                });
-                                cx.notify();
-                            });
-                        }),
-                ),
-            );
-        let body = match rail_view {
-            MissionRailView::Roles => self.render_roles_rail(window, cx),
-            MissionRailView::Meta => self.render_mission_meta_panel(cx),
+        let panel = self.workspace_panel_for_mission(window, cx);
+        let strip = panel.update(cx, |panel, panel_cx| {
+            panel.render_header(width, window, panel_cx)
+        });
+        let header = div().flex_none().child(strip).map(|element| {
+            #[cfg(test)]
+            let element = crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
+            element
+        });
+        let body = match panel.read(cx).active_builtin() {
+            Some(PanelBuiltin::Roles) => self.render_roles_rail(window, cx),
+            Some(PanelBuiltin::Meta) => self.render_mission_meta_panel(cx),
+            _ => panel.clone().into_any_element(),
         };
         let drag = MissionRailResizeDrag;
         let rail = div()
@@ -170,11 +116,6 @@ impl MissionWorkspace {
             })
             .child(rail)
             .into_any_element()
-    }
-
-    fn set_mission_rail_view(&mut self, view: MissionRailView, cx: &mut Context<Self>) {
-        self.rail_view = view;
-        cx.notify();
     }
 
     fn render_roles_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -841,54 +782,6 @@ impl MissionWorkspace {
     }
 }
 
-fn rail_view_button(
-    id: impl Into<gpui::ElementId>,
-    icon: &'static str,
-    active: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .map(|button| {
-            #[cfg(windows)]
-            let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-            button
-        })
-        .group("mission-rail-view-button")
-        .size(rems(28. / 16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_sm()
-        .cursor_pointer()
-        .text_color(if active {
-            theme::text()
-        } else {
-            theme::muted()
-        })
-        .when(active, |button| {
-            button.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-        })
-        .hover(|button| {
-            button
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                .text_color(theme::text())
-        })
-        .child(
-            svg()
-                .flex_none()
-                .path(icon)
-                .size(rems(14. / 16.))
-                .text_color(if active {
-                    theme::text()
-                } else {
-                    theme::muted()
-                })
-                .group_hover("mission-rail-view-button", |icon| {
-                    icon.text_color(theme::text())
-                }),
-        )
-}
-
 fn rail_section_label(label: &'static str) -> AnyElement {
     div()
         .pt_5()
@@ -941,5 +834,128 @@ fn format_relative_time(started_at: chrono::DateTime<Utc>) -> String {
             let days = hours / 24;
             crate::i18n::tnf("format.day_ago", (days) as usize, &[])
         }
+    }
+}
+
+use crate::workspace_panel::{
+    workspace_root, HostedPanel, PanelBuiltin, PanelEvent, WorkspacePanel,
+};
+
+impl MissionWorkspace {
+    pub(super) fn mission_rail_effective_width(&self, window: &Window, cx: &App) -> f32 {
+        let settings = self.settings(cx);
+        let sidebar = if self.sidebar_collapsed {
+            0.
+        } else {
+            settings.sidebar_width
+        };
+        let host = f32::from(window.viewport_size().width) / settings.app_zoom - sidebar - 16.;
+        crate::workspace_panel::bounded_panel_width(settings.mission_rail_width, host)
+    }
+
+    pub(crate) fn sync_workspace_panel_visibility(
+        &self,
+        selected: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        for (id, hosted) in self.workspace_panels.borrow().iter() {
+            hosted.panel.update(cx, |panel, _| {
+                panel.set_visible(selected == Some(id.as_str()))
+            });
+        }
+    }
+
+    pub(super) fn workspace_panel_for_mission(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<WorkspacePanel> {
+        let key = self.mission_id.clone().unwrap_or_default();
+        let root = {
+            let store = self.app_store.read(cx);
+            let project = self
+                .mission
+                .as_ref()
+                .and_then(|mission| mission.project_id.as_deref())
+                .and_then(|id| store.projects.iter().find(|project| project.id == id));
+            workspace_root(
+                self.mission
+                    .as_ref()
+                    .and_then(|mission| mission.cwd.as_deref()),
+                project.map(|project| project.cwd.as_str()),
+                &self.settings(cx).default_working_dir,
+            )
+        };
+        let panel = {
+            let mut panels = self.workspace_panels.borrow_mut();
+            panels
+                .entry(key)
+                .or_insert_with(|| {
+                    let panel = cx.new(|cx| {
+                        WorkspacePanel::new(&[PanelBuiltin::Roles, PanelBuiltin::Meta], cx)
+                    });
+                    let mission_id = self.mission_id.clone();
+                    let observe = cx.observe(&panel, move |this, panel, cx| {
+                        if this.mission_id == mission_id {
+                            match panel.read(cx).active_builtin() {
+                                Some(PanelBuiltin::Roles) => {
+                                    this.rail_view = MissionRailView::Roles
+                                }
+                                Some(PanelBuiltin::Meta) => this.rail_view = MissionRailView::Meta,
+                                _ => {}
+                            }
+                            cx.notify();
+                        }
+                    });
+                    let events = cx.subscribe_in(&panel, window, |this, _, event, window, cx| {
+                        match event {
+                            PanelEvent::Collapse => {
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.mission_rail_open = false;
+                                    true
+                                });
+                            }
+                            PanelEvent::Width(width) => {
+                                this.update_app_settings(cx, true, |settings| {
+                                    settings.mission_rail_width =
+                                        crate::app_settings::clamp_mission_rail_width(*width);
+                                    true
+                                });
+                            }
+                            PanelEvent::Terminal => {
+                                if !this.layout.drawer.open() {
+                                    this.toggle_terminal_drawer(window, cx);
+                                }
+                            }
+                        }
+                        cx.notify();
+                    });
+                    HostedPanel {
+                        panel,
+                        _subscriptions: vec![observe, events],
+                    }
+                })
+                .panel
+                .clone()
+        };
+        let terminal_available =
+            mission_drawer_available(self.archived(), self.secondary_state(cx).secondary)
+                && self.mission.is_some();
+        panel.update(cx, |panel, cx| {
+            panel.set_root(root, cx);
+            panel.set_visible(self.settings(cx).mission_rail_open);
+            panel.set_terminal_available(terminal_available, cx);
+            let selected = match self.rail_view {
+                MissionRailView::Roles => PanelBuiltin::Roles,
+                MissionRailView::Meta => PanelBuiltin::Meta,
+            };
+            if panel
+                .active_builtin()
+                .is_some_and(|active| active != selected)
+            {
+                panel.activate_builtin(selected, cx);
+            }
+        });
+        panel
     }
 }
