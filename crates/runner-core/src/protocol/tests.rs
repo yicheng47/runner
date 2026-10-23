@@ -6,6 +6,21 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+impl Sample for crate::remote::Computer {
+    fn sample() -> Self {
+        Self::default()
+    }
+}
+impl Sample for crate::remote::RemoteOverview {
+    fn sample() -> Self {
+        Self(crate::companion::Overview {
+            projects: Vec::new(),
+            tabs: Vec::new(),
+            missions: Vec::new(),
+            sessions: BTreeMap::new(),
+        })
+    }
+}
 impl Sample for crate::remote::RemoteTrust {
     fn sample() -> Self {
         Self::default()

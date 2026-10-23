@@ -1,4 +1,5 @@
 mod channels;
+mod client;
 mod machine;
 mod persistence;
 pub mod store;
@@ -37,6 +38,7 @@ pub enum Reply {
 }
 #[derive(Clone)]
 pub struct RemoteHandle {
+    client: Option<client::Client>,
     companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
     tx: mpsc::Sender<Envelope>,
     status: watch::Receiver<RemoteStatus>,
@@ -52,6 +54,7 @@ impl Default for RemoteHandle {
         let (_, status) = watch::channel(RemoteStatus::default());
         let (_, stopped) = watch::channel(true);
         Self {
+            client: None,
             companion: Default::default(),
             tx,
             status,
@@ -64,6 +67,66 @@ impl Default for RemoteHandle {
     }
 }
 impl RemoteHandle {
+    fn client(&self) -> Result<&client::Client, String> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| "Remote client is unavailable".into())
+    }
+    pub async fn computers(&self) -> Result<Vec<remote::Computer>, String> {
+        self.client()?.computers().await
+    }
+    pub async fn pair(&self, computer: String, pin: remote::Secret) -> Result<(), String> {
+        self.client()?.pair(computer, pin).await
+    }
+    pub async fn forget(&self, computer: String) -> Result<(), String> {
+        self.client()?.forget(computer).await
+    }
+    pub async fn overview(
+        &self,
+        computer: String,
+    ) -> Result<runner_core::companion::Overview, String> {
+        self.client()?.overview(computer).await
+    }
+    pub async fn follow(&self, computer: String, owner: u64, follow: bool) -> Result<(), String> {
+        self.client()?.follow(computer, owner, follow).await
+    }
+    pub async fn attach_remote(
+        &self,
+        config: remote::RemoteTerminal,
+    ) -> Result<runner_core::protocol::terminal::TerminalAttachment, String> {
+        self.client()?.attach(config).await
+    }
+    pub async fn remote_input(
+        &self,
+        computer: String,
+        session: String,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        self.client()?.input(computer, session, bytes).await
+    }
+    pub async fn remote_resize(
+        &self,
+        computer: String,
+        session: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        self.client()?
+            .queue_viewport(computer, session, cols, rows)
+            .await
+    }
+    pub async fn remote_viewport(
+        &self,
+        computer: String,
+        session: String,
+        cols: u16,
+        rows: u16,
+        take: bool,
+    ) -> Result<(), String> {
+        self.client()?
+            .viewport(computer, session, cols, rows, take)
+            .await
+    }
     pub fn set_companion_core(&self, core: Arc<dyn crate::companion::core::Core>) {
         let _ = self.companion.set(core);
     }
@@ -139,8 +202,9 @@ impl RemoteHandle {
         }
     }
     pub async fn reset_identity(&self) -> Result<RemoteTrust, String> {
-        self.trust_command(Command::ResetIdentity(Identity::generate()?))
-            .await
+        let identity = Identity::generate()?;
+        self.client()?.reset().await?;
+        self.trust_command(Command::ResetIdentity(identity)).await
     }
     pub async fn shutdown(&self) {
         self.cancel.cancel();
@@ -155,6 +219,11 @@ impl RemoteHandle {
         .await;
     }
     pub fn owner_gone(&self, owner: u64) {
+        if let Some(client) = self.client.clone() {
+            tokio::spawn(async move {
+                client.owner_gone(owner).await;
+            });
+        }
         let (reply, _) = oneshot::channel();
         let envelope = Envelope {
             command: Command::OwnerGone(owner),
@@ -242,6 +311,9 @@ fn spawn_with_clock(
     let (stopped_tx, stopped) = watch::channel(false);
     #[cfg(test)]
     let (restart_tx, restarts) = watch::channel(0);
+    let client_root = root.clone();
+    let client_store = store.clone();
+    let client_events = events.clone();
     tokio::spawn(async move {
         let mut attempt = 0;
         loop {
@@ -275,7 +347,15 @@ fn spawn_with_clock(
         }
         stopped_tx.send_replace(true);
     });
+    let client = client::Client::new(
+        client_root,
+        client_store,
+        status.clone(),
+        client_events,
+        cancel.clone(),
+    );
     RemoteHandle {
+        client: Some(client),
         companion,
         tx,
         status,

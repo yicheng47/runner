@@ -9,6 +9,10 @@ Every public `runner` command and option below comes from the CLI shipped with t
 - [Agent guide](#agent-guide)
 - [runner](#runner)
 - [runner remote](#runner-remote)
+- [runner remote computers](#runner-remote-computers)
+- [runner remote pair](#runner-remote-pair)
+- [runner remote forget](#runner-remote-forget)
+- [runner remote overview](#runner-remote-overview)
 - [runner remote login](#runner-remote-login)
 - [runner remote logout](#runner-remote-logout)
 - [runner remote status](#runner-remote-status)
@@ -257,6 +261,10 @@ Connect this computer to your remote access account
 Usage: runner remote [OPTIONS] <COMMAND>
 
 Commands:
+  computers       List this account's computers and their pairing status
+  pair            Pair with a computer by its id (interactive terminal required)
+  forget          Forget this computer's saved key for another computer
+  overview        Show another computer's projects, tabs, missions and sessions
   login           Connect this computer to your account (interactive terminal required)
   logout          Disconnect this computer and delete its enrollment credential
   status          Show remote access status
@@ -264,6 +272,67 @@ Commands:
   devices         List devices paired with this computer
   revoke          Revoke a paired device by its fingerprint
   reset-identity  Disconnect, unpair every device and create a new identity (interactive terminal required)
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote computers
+
+```text
+List this account's computers and their pairing status
+
+Usage: runner remote computers [OPTIONS]
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote pair
+
+```text
+Pair with a computer by its id (interactive terminal required)
+
+Usage: runner remote pair [OPTIONS] <COMPUTER>
+
+Arguments:
+  <COMPUTER>
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote forget
+
+```text
+Forget this computer's saved key for another computer
+
+Usage: runner remote forget [OPTIONS] <COMPUTER>
+
+Arguments:
+  <COMPUTER>
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner remote overview
+
+```text
+Show another computer's projects, tabs, missions and sessions
+
+Usage: runner remote overview [OPTIONS] <COMPUTER>
+
+Arguments:
+  <COMPUTER>
 
 Options:
       --json  Print the tool result as exact JSON

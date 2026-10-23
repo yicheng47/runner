@@ -49,13 +49,36 @@ impl Transport for InProcessTransport {
             .attach_terminal(id)
             .map_err(|error| ClientError::msg(error.to_string()))
     }
+    fn attach_remote(
+        &self,
+        config: runner_core::remote::RemoteTerminal,
+    ) -> Result<TerminalAttachment, ClientError> {
+        block_on(self.0.remote.attach_remote(config)).map_err(ClientError::msg)
+    }
     fn input(&self, id: &str, bytes: &[u8]) -> Result<(), ClientError> {
+        if let Some((computer, session)) = runner_core::remote::terminal_target(id) {
+            return block_on(self.0.remote.remote_input(
+                computer.into(),
+                session.into(),
+                bytes.into(),
+            ))
+            .map_err(ClientError::msg);
+        }
         self.0
             .sessions
             .queue_terminal_input(id, bytes)
             .map_err(|error| ClientError::msg(error.to_string()))
     }
     fn resize(&self, id: &str, origin: u64, cols: u16, rows: u16) {
+        if let Some((computer, session)) = runner_core::remote::terminal_target(id) {
+            let _ = block_on(self.0.remote.remote_resize(
+                computer.into(),
+                session.into(),
+                cols,
+                rows,
+            ));
+            return;
+        }
         let _ = self
             .0
             .sessions
