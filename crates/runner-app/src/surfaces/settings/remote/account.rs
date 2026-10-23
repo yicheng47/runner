@@ -175,6 +175,7 @@ impl NativeRoot {
 
     pub(crate) fn confirm_sign_out(&mut self, cx: &mut Context<Self>) {
         self.settings_page.remote.reset_identity = false;
+        self.settings_page.remote.disable_access = false;
         self.settings_page.remote.confirm = true;
         cx.notify();
     }

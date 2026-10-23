@@ -1149,9 +1149,10 @@
 
 "ui.remote_access" = "Remote access"
 
-"remote.subtitle" = "Reach this computer’s chats and missions from your other computers, and open theirs from here."
 "remote.off" = "This computer is not connected"
 "remote.intro" = "Connect this computer to your account. Your other computers can pair with its PIN and open this one from Runner’s sidebar."
+"remote.feature_detail" = "Let your computers open each other through Runner’s relay. Invite-only for now."
+"remote.feature_off_detail" = "Turn on Remote access to add the computer picker, Account and pairing."
 "remote.private_beta" = "Private beta"
 "remote.beta_detail" = "Remote access is invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code."
 "remote.step_connect" = "Connect here"

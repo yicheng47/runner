@@ -104,6 +104,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.app_store.read(cx).remote_access_enabled() {
+            return;
+        }
         if let Some(remote) = self
             .remote_window
             .as_mut()

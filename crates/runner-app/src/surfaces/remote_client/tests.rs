@@ -359,6 +359,7 @@ fn fixture(
     });
     let clients = cx.new(|cx| model::ClientState::new(fake.client(), cx));
     store.update(cx, |store, _| {
+        store.settings.remote_access_enabled = true;
         store.client = fake.client();
         store.remote_clients = clients.clone();
     });
@@ -1221,6 +1222,58 @@ fn remote_sidebar_uses_session_titles_for_unnamed_tabs_and_tracks_overview_updat
                 .is_some());
         });
     }
+}
+
+#[test]
+fn disabling_remote_access_returns_every_window_to_this_computer() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let first = add_window(&mut cx, &store, temp.path(), "remote-disable-first");
+    let second = add_window(&mut cx, &store, temp.path(), "remote-disable-second");
+    for window in [first, second] {
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.visit_computer(computers()[1].clone(), window, cx)
+            })
+            .unwrap();
+    }
+    cx.run_until_parked();
+    for window in [first, second] {
+        window
+            .read_with(&cx, |root, _| assert!(root.remote_window.is_some()))
+            .unwrap();
+    }
+    *fake.status.lock().unwrap() = RemoteStatus::default();
+    store.update(&mut cx, |store, cx| {
+        store.remote_status = Some(RemoteStatus::default());
+        store.update_settings(
+            |settings| {
+                settings.remote_access_enabled = false;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    for window in [first, second] {
+        window
+            .read_with(&cx, |root, _| {
+                assert!(root.remote_window.is_none());
+                assert!(!root.client_ui.picker_open);
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+    }
+    assert!(fake
+        .follows
+        .lock()
+        .unwrap()
+        .contains(&("host".into(), false)));
 }
 
 #[test]

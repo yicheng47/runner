@@ -2,22 +2,28 @@
 
 Connect this computer to your account so Runner on your other computers can reach its chats and missions. Remote access is a private beta, invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code. Sessions are encrypted end to end; the service relays them.
 
+## Turn on Remote access
+
+Open **Settings → Remote access** and turn on **Remote access**. It is off by default during the private beta. Turning it on adds Account in Settings, the sidebar’s computer picker, and pairing; it does not start sign-in. While off, Runner shows the plain Settings gear in its footer and keeps Remote access in Settings so you can find it. The choice is saved and applies to every window.
+
+A computer that is already signed in, including through `runner remote login`, always shows Remote access as on. Signing out from Account or the avatar menu keeps the Remote access switch on. Turning the switch off while signed in asks for Sign out confirmation first. Cancel keeps everything visible; confirm signs this computer out and hides the remote surfaces once it is signed out. Its identity, PIN and paired computers stay. A failed sign-out keeps remote surfaces visible and shows the error. Windows viewing another computer return to this computer when Remote access becomes off. PIN and Reset dialogs in other windows close too.
+
 ## Sign in from Runner
 
-1. Open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
+1. Turn on **Settings → Remote access → Remote access**, then open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
 2. Runner shows a short code, a fingerprint and the time left, and opens the approval page in your browser. You can also copy the link or open the short link on another device and enter the code.
 3. Sign in, check that the page shows the same fingerprint as Runner, name this computer and approve it.
 4. Account shows your account, service, this computer and its fingerprint. If you started from Remote access, that pane shows the relay page once approval completes.
 
-The round avatar in the sidebar footer shows your account’s initial when signed in and a person icon otherwise. Its menu opens Account, Settings and **Sign out…**. Signed out, it offers Settings and **Sign in…**, which opens Account, where you can start approval. Account shows its status card and **Sign out on this computer** when signed in.
+While Remote access is on, the round avatar in the sidebar footer shows your account’s initial when signed in and a person icon otherwise. Its menu opens Account, Settings and **Sign out…**. Signed out, it offers Settings and **Sign in…**, which opens Account, where you can start approval. Account shows its status card and **Sign out on this computer** when signed in.
 
 If Runner cannot reach the service, it tries for up to 30 seconds, then returns to Not signed in with an error. Check the service address and your network, then choose **Sign in** again.
 
 ## Through Runner’s relay
 
-Remote access opens directly on the relay’s sign-in state while signed out. Runner’s relay is the only route in this release; Tailscale is planned separately.
+With its switch on, Remote access opens directly on the relay’s sign-in state while signed out. Runner’s relay is the only route in this release; Tailscale is planned separately.
 
-The relay page shows the connection, **Allow remote access**, the PIN and paired computers. Its Route section identifies the relay and links to Account. **Reset remote access** makes a new identity, unpairs every computer, clears the PIN, signs out and returns to relay sign-in.
+The relay page shows the connection, **Allow remote access**, the PIN and paired computers. Its Route section identifies the relay and links to Account. **Reset remote access** makes a new identity, unpairs every computer, clears the PIN, signs out and returns to relay sign-in with Remote access still on.
 
 ## Connect from a terminal
 
@@ -58,7 +64,7 @@ Sign both computers in to the same account. On the computer you want to reach, e
 
 The picker lists this computer and the account’s other computers, including offline and unpaired ones. Each remote row shows online or offline status first, including when it was last seen when available; an unpaired computer adds **Not paired**, such as **Online · Not paired**. The trigger and computer rows omit attention counters at this stage. Click a computer to switch this window; hold Shift while clicking, or use its window button, to open another window. Choose this computer to return to your local tabs and panes. A local mission keeps its layout and selection; its terminals resume and its feed catches up when you return. Each window chooses independently, and every window opens on this computer after restarting Runner. Your local notification settings continue to apply while a remote window is active; clicking a local chat or mission alert returns a window to this computer and opens that item.
 
-While signed out, the picker shows **This computer** and **Sign in to see your computers…**. That action opens Settings → Account; start approval there when ready. Tab and Shift-Tab move through the picker’s controls; moving past either end closes it. Escape closes it while a control inside is focused. Signed out is a normal state: the picker does not fetch account computers, show old remote rows or display a refresh warning.
+With Remote access on and this computer signed out, the picker shows **This computer** and **Sign in to see your computers…**. That action opens Settings → Account; start approval there when ready. Tab and Shift-Tab move through the picker’s controls; moving past either end closes it. Escape closes it while a control inside is focused. Signed out is a normal state: the picker does not fetch account computers, show old remote rows or display a refresh warning.
 
 If the computer list cannot refresh while signed in, the picker shows a warning below its available rows. Check Account and your connection, then reopen the picker to try again.
 

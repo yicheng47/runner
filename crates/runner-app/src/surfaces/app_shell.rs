@@ -1438,7 +1438,9 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .child(self.render_computer_trigger(cx))
+            .when(self.app_store.read(cx).remote_access_enabled(), |sidebar| {
+                sidebar.child(self.render_computer_trigger(cx))
+            })
             .child(if self.remote_window.is_some() {
                 self.render_remote_sidebar(cx)
             } else {
@@ -2994,6 +2996,9 @@ mod tests {
                     let mut cx = TestAppContext::single();
                     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
                     store.update(&mut cx, |store, _| {
+                        store.settings.remote_access_enabled = true
+                    });
+                    store.update(&mut cx, |store, _| {
                         store.settings.app_theme = if variant.is_light() {
                             theme::ThemeIntent::Light
                         } else {
@@ -3083,6 +3088,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            store.settings.remote_access_enabled = true
+        });
         let host = cx.add_window(|window, cx| {
             let mut root = NativeRoot::new(
                 "sidebar-footer-actions".into(),

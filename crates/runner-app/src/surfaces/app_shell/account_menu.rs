@@ -103,6 +103,39 @@ impl NativeRoot {
 
     pub(super) fn render_account_avatar(&self, cx: &mut Context<Self>) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
+        if !self.app_store.read(cx).remote_access_enabled() {
+            return div()
+                .id("sidebar-settings")
+                .debug_selector(|| "SIDEBAR_SETTINGS".into())
+                .tab_index(0)
+                .flex_none()
+                .size(px(32. * zoom))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .occlude()
+                .hover(|button| button.bg(theme::chrome_hover()))
+                .focus_visible(|button| button.bg(theme::chrome_hover()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(
+                    cx.listener(|root, _, window, cx| root.enter_settings_route(None, window, cx)),
+                )
+                .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        root.enter_settings_route(None, window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .child(
+                    svg()
+                        .path("settings.svg")
+                        .size(px(16. * zoom))
+                        .text_color(theme::muted()),
+                )
+                .into_any_element();
+        }
         let status = self
             .app_store
             .read(cx)
@@ -178,7 +211,7 @@ impl NativeRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.account_menu.state.open {
+        if !self.account_menu.state.open || !self.app_store.read(cx).remote_access_enabled() {
             return None;
         }
         let anchor = self.account_menu.anchor?;
@@ -392,6 +425,9 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                store.update(&mut cx, |store, _| {
+                    store.settings.remote_access_enabled = true
+                });
                 let host = cx.add_window(|window, cx| {
                     NativeRoot::new(
                         "avatar-menu".into(),

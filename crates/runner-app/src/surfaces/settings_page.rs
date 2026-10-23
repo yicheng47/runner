@@ -267,7 +267,7 @@ const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.system", SYSTEM_PANES),
 ];
 
-fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
+fn filtered_nav_groups(query: &str, remote_access: bool) -> Vec<(&'static str, Vec<SettingsPane>)> {
     let query = query.trim().to_lowercase();
     NAV_GROUPS
         .iter()
@@ -275,6 +275,7 @@ fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
             let panes = panes
                 .iter()
                 .copied()
+                .filter(|pane| remote_access || *pane != SettingsPane::Account)
                 .filter(|pane| query.is_empty() || pane.label().to_lowercase().contains(&query))
                 .collect::<Vec<_>>();
             (!panes.is_empty()).then_some((crate::i18n::text(label), panes))
@@ -933,6 +934,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pane =
+            if pane == SettingsPane::Account && !self.app_store.read(cx).remote_access_enabled() {
+                SettingsPane::Remote
+            } else {
+                pane
+            };
         if self.settings_page.pane != pane {
             self.dismiss_remote_dialog();
         }
@@ -1266,7 +1273,10 @@ impl NativeRoot {
     ) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
         let width = self.settings(cx).sidebar_width * zoom;
-        let groups = filtered_nav_groups(&self.settings_page.search_query);
+        let groups = filtered_nav_groups(
+            &self.settings_page.search_query,
+            self.app_store.read(cx).remote_access_enabled(),
+        );
         let active = self.settings_page.pane;
         let nav = if groups.is_empty() {
             vec![div()
@@ -1508,6 +1518,7 @@ impl NativeRoot {
         let key_root = root.clone();
         div()
             .id(SharedString::from(format!("settings-nav-{}", pane.key())))
+            .debug_selector(move || format!("SETTINGS_NAV_{}", pane.key()))
             .tab_index(0)
             .px(rems(10. / 16.))
             .py_1()
@@ -3546,7 +3557,7 @@ mod tests {
 
     #[test]
     fn nav_search_filters_labels_and_removes_empty_groups() {
-        let all = filtered_nav_groups("");
+        let all = filtered_nav_groups("", true);
         assert_eq!(all.len(), 3);
         assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
         assert_eq!(
@@ -3584,20 +3595,20 @@ mod tests {
         );
         assert_eq!(SettingsPane::from_route(Some("mcp")), SettingsPane::Mcp);
         assert_eq!(
-            filtered_nav_groups("mcp"),
+            filtered_nav_groups("mcp", true),
             vec![("Integrations", vec![SettingsPane::Mcp])]
         );
         assert_eq!(
-            filtered_nav_groups("skills"),
+            filtered_nav_groups("skills", true),
             vec![("Integrations", vec![SettingsPane::Skills])]
         );
 
-        let terminal = filtered_nav_groups("  TERM  ");
+        let terminal = filtered_nav_groups("  TERM  ", true);
         assert_eq!(terminal, vec![("App", vec![SettingsPane::Terminal])]);
 
-        let archived = filtered_nav_groups("archived");
+        let archived = filtered_nav_groups("archived", true);
         assert_eq!(archived, vec![("App", vec![SettingsPane::Archived])]);
-        assert!(filtered_nav_groups("no such setting").is_empty());
+        assert!(filtered_nav_groups("no such setting", true).is_empty());
     }
 
     #[test]

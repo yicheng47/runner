@@ -199,7 +199,7 @@ impl NativeRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.client_ui.picker_open {
+        if !self.client_ui.picker_open || !self.app_store.read(cx).remote_access_enabled() {
             return None;
         }
         let anchor = self.client_ui.anchor?;
