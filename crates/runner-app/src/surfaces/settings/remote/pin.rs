@@ -9,22 +9,26 @@ use runner_core::remote::Secret;
 use std::ops::Range;
 
 // A PIN never enters the general text field's undo history, clipboard or shaped text.
-pub(super) struct PinField {
+pub(crate) struct PinField {
     value: Secret,
-    pub(super) focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
     painted: Option<Bounds<Pixels>>,
+    pub(crate) invalid: bool,
+    pub(crate) disabled: bool,
 }
 
 impl PinField {
-    pub(super) fn new(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         Self {
             value: Secret::default(),
             focus: cx.focus_handle(),
             painted: None,
+            invalid: false,
+            disabled: false,
         }
     }
 
-    pub(super) fn value(&self) -> &Secret {
+    pub(crate) fn value(&self) -> &Secret {
         &self.value
     }
 
@@ -33,6 +37,9 @@ impl PinField {
     }
 
     fn replace(&mut self, range: Option<Range<usize>>, text: &str) -> bool {
+        if self.disabled {
+            return false;
+        }
         let range = range.unwrap_or_else(|| self.selection());
         if !text.bytes().all(|b| b.is_ascii_digit())
             || range.start > range.end
@@ -57,6 +64,10 @@ impl PinField {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled {
+            cx.stop_propagation();
+            return;
+        }
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
         let command = if cfg!(windows) {
@@ -137,7 +148,9 @@ impl Render for PinField {
                     .justify_center()
                     .rounded(rems(6. / 16.))
                     .border(rems(if current { 1.5 / 16. } else { 1. / 16. }))
-                    .border_color(if current {
+                    .border_color(if self.invalid {
+                        theme::danger()
+                    } else if current {
                         theme::accent()
                     } else {
                         theme::border_strong()

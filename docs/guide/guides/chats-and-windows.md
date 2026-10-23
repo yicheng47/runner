@@ -44,6 +44,6 @@ On Windows, launching Runner while it is running, from the Start menu, a shortcu
 
 **⌘W** / **Ctrl+Shift+W** acts on the focused drawer, pane or chat tab. It is different from closing the whole window. Use **Stop** when you specifically want to halt an agent, and **Archive** when you want a chat out of active lists.
 
-For alerts while the app is in the background, open **Settings → Notifications**. Chat events are enabled by default; mission events are opt-in. Clicking a notification opens its chat or mission.
+For alerts while the app is in the background, open **Settings → Notifications**. Chat events are enabled by default; mission events are opt-in. Clicking a notification opens its chat or mission. When the active window shows another computer, local alerts can still appear; clicking one returns a window to this computer and opens the local item.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.md) for all defaults and customization.

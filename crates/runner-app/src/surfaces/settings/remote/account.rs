@@ -651,7 +651,7 @@ impl NativeRoot {
     }
 }
 
-pub(super) fn username(status: &RemoteStatus) -> &str {
+pub(crate) fn username(status: &RemoteStatus) -> &str {
     status
         .account
         .as_ref()
