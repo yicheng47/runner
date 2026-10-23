@@ -1,5 +1,5 @@
 use std::path::Path;
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(unix)]
 use std::path::PathBuf;
 
 pub type StoreResult<T> = Result<T, &'static str>;
@@ -11,21 +11,31 @@ pub trait SecretStore: Send + Sync {
 
 pub struct OsStore {
     namespace: String,
-    #[cfg(not(any(target_os = "macos", windows)))]
-    root: PathBuf,
+    #[cfg(unix)]
+    file: Option<FileStore>,
 }
 impl OsStore {
     pub fn new(root: &Path, debug: bool) -> Self {
-        Self::named(
+        let store = Self::named(
             root,
             &format!("{}.remote", runner_core::app_paths::app_identifier(debug)),
-        )
+        );
+        #[cfg(target_os = "macos")]
+        let store = Self {
+            file: debug.then(|| FileStore { root: root.into() }),
+            ..store
+        };
+        store
     }
     fn named(_root: &Path, namespace: &str) -> Self {
         Self {
             namespace: namespace.into(),
-            #[cfg(not(any(target_os = "macos", windows)))]
-            root: _root.into(),
+            #[cfg(unix)]
+            file: if cfg!(target_os = "macos") {
+                None
+            } else {
+                Some(FileStore { root: _root.into() })
+            },
         }
     }
 }
@@ -44,6 +54,9 @@ impl OsStore {
 #[cfg(target_os = "macos")]
 impl SecretStore for OsStore {
     fn get(&self, origin: &str) -> StoreResult<Option<Vec<u8>>> {
+        if let Some(file) = &self.file {
+            return file.get(origin);
+        }
         match security_framework::passwords::generic_password(self.options(origin)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) if e.code() == -25300 => Ok(None),
@@ -51,10 +64,16 @@ impl SecretStore for OsStore {
         }
     }
     fn put(&self, origin: &str, value: &[u8]) -> StoreResult<()> {
+        if let Some(file) = &self.file {
+            return file.put(origin, value);
+        }
         security_framework::passwords::set_generic_password_options(value, self.options(origin))
             .map_err(|_| "Keychain write failed")
     }
     fn delete(&self, origin: &str) -> StoreResult<()> {
+        if let Some(file) = &self.file {
+            return file.delete(origin);
+        }
         match security_framework::passwords::delete_generic_password_options(self.options(origin)) {
             Ok(()) => Ok(()),
             Err(e) if e.code() == -25300 => Ok(()),
@@ -133,18 +152,27 @@ impl SecretStore for OsStore {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
-impl OsStore {
+#[cfg(unix)]
+struct FileStore {
+    root: PathBuf,
+}
+#[cfg(unix)]
+impl FileStore {
     fn path(&self, name: &str) -> PathBuf {
-        self.root.join(if name == IDENTITY_NAME {
-            "remote-identity.json"
-        } else {
-            "remote-secrets.json"
-        })
+        use sha2::{Digest, Sha256};
+        let filename = match name {
+            IDENTITY_NAME => "remote-identity.json".into(),
+            CLIENT_KEYS_NAME => "remote-client-keys.json".into(),
+            _ => format!(
+                "remote-credential-{:x}.json",
+                Sha256::digest(name.as_bytes())
+            ),
+        };
+        self.root.join(filename)
     }
 }
-#[cfg(not(any(target_os = "macos", windows)))]
-impl SecretStore for OsStore {
+#[cfg(unix)]
+impl SecretStore for FileStore {
     fn get(&self, origin: &str) -> StoreResult<Option<Vec<u8>>> {
         use std::os::unix::fs::MetadataExt;
         let path = self.path(origin);
@@ -191,8 +219,21 @@ impl SecretStore for OsStore {
         }
     }
 }
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+#[cfg(not(any(target_os = "macos", windows)))]
+impl SecretStore for OsStore {
+    fn get(&self, origin: &str) -> StoreResult<Option<Vec<u8>>> {
+        self.file.as_ref().unwrap().get(origin)
+    }
+    fn put(&self, origin: &str, value: &[u8]) -> StoreResult<()> {
+        self.file.as_ref().unwrap().put(origin, value)
+    }
+    fn delete(&self, origin: &str) -> StoreResult<()> {
+        self.file.as_ref().unwrap().delete(origin)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -434,4 +475,95 @@ pub fn restore(
         secrets = None;
     }
     Ok((identity, secrets))
+}
+
+pub const CLIENT_KEYS_NAME: &str = "client-keys";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ClientKey {
+    pub private: runner_core::remote::Secret,
+    pub public: Vec<u8>,
+    pub name: String,
+    pub paired_at: chrono::DateTime<chrono::Utc>,
+}
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct ClientKeys(pub std::collections::BTreeMap<String, ClientKey>);
+impl ClientKeys {
+    pub fn load(store: &dyn SecretStore) -> StoreResult<Self> {
+        let Some(bytes) = store.get(CLIENT_KEYS_NAME)? else {
+            return Ok(Self::default());
+        };
+        let keys: Self = serde_json::from_slice(&bytes).map_err(|_| "Invalid client keys")?;
+        for (fingerprint, key) in &keys.0 {
+            runner_core::remote::HostKey::from_private(&key.private.0)?;
+            if key.public.len() != 32
+                || runner_core::remote::fingerprint(&key.public) != *fingerprint
+            {
+                return Err("Invalid pinned computer key");
+            }
+        }
+        Ok(keys)
+    }
+    pub fn save(&self, store: &dyn SecretStore) -> StoreResult<()> {
+        if self.0.is_empty() {
+            return store.delete(CLIENT_KEYS_NAME);
+        }
+        let bytes = serde_json::to_vec(self).map_err(|_| "Could not encode client keys")?;
+        store.put(CLIENT_KEYS_NAME, &bytes)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod file_tests {
+    use super::*;
+    #[test]
+    fn file_items_are_independent_private_and_reject_unsafe_files() {
+        let root = tempfile::tempdir().unwrap();
+        let store = FileStore {
+            root: root.path().into(),
+        };
+        for (name, value) in [
+            (IDENTITY_NAME, b"identity".as_slice()),
+            (CLIENT_KEYS_NAME, b"client"),
+            ("https://one.invalid", b"one"),
+            ("https://two.invalid", b"two"),
+        ] {
+            store.put(name, value).unwrap();
+            assert_eq!(store.get(name).unwrap().unwrap(), value);
+            assert_eq!(
+                std::fs::metadata(store.path(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        store.delete("https://one.invalid").unwrap();
+        assert_eq!(store.get("https://two.invalid").unwrap().unwrap(), b"two");
+        assert_eq!(store.get(IDENTITY_NAME).unwrap().unwrap(), b"identity");
+        assert_eq!(store.get(CLIENT_KEYS_NAME).unwrap().unwrap(), b"client");
+        let path = store.path(CLIENT_KEYS_NAME);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(store.get(CLIENT_KEYS_NAME).is_err());
+        store.delete(CLIENT_KEYS_NAME).unwrap();
+        std::os::unix::fs::symlink(store.path(IDENTITY_NAME), path).unwrap();
+        assert!(store.get(CLIENT_KEYS_NAME).is_err());
+    }
+    #[test]
+    fn mac_development_uses_files_and_production_uses_keychain() {
+        let root = tempfile::tempdir().unwrap();
+        let debug = OsStore::new(root.path(), true);
+        let release = OsStore::new(root.path(), false);
+        #[cfg(target_os = "macos")]
+        {
+            assert!(debug.file.is_some());
+            assert!(release.file.is_none());
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(debug.file.is_some());
+            assert!(release.file.is_some());
+        }
+    }
 }

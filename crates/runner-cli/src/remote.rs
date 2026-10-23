@@ -8,6 +8,14 @@ use std::io::{IsTerminal, Write};
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
+    /// List this account's computers and their pairing status.
+    Computers,
+    /// Pair with a computer by its id (interactive terminal required).
+    Pair { computer: String },
+    /// Forget this computer's saved key for another computer.
+    Forget { computer: String },
+    /// Show another computer's projects, tabs, missions and sessions.
+    Overview { computer: String },
     /// Connect this computer to your account (interactive terminal required).
     Login {
         #[arg(long)]
@@ -30,6 +38,7 @@ fn interactive_command(command: &RemoteCommand) -> Option<&'static str> {
     match command {
         RemoteCommand::Login { .. } => Some("login"),
         RemoteCommand::Pin => Some("pin"),
+        RemoteCommand::Pair { .. } => Some("pair"),
         RemoteCommand::ResetIdentity => Some("reset-identity"),
         _ => None,
     }
@@ -94,9 +103,93 @@ async fn refresh_event(
 async fn execute(command: &RemoteCommand, json: bool) -> Result<i32, ClientError> {
     let connection = SocketClient::connect().await?;
     let client = connection.daemon();
-    let mut events = connection.subscribe();
+    let events = connection.subscribe();
+    execute_connected(command, json, client, events).await
+}
+async fn execute_connected(
+    command: &RemoteCommand,
+    json: bool,
+    client: DaemonClient,
+    mut events: Box<dyn runner_core::protocol::EventSubscription>,
+) -> Result<i32, ClientError> {
     let mut status = typed(client.clone(), |c| c.remote_status()).await?;
     match command {
+        RemoteCommand::Computers => {
+            let computers = typed(client, |c| c.remote_computers()).await?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&computers)
+                        .map_err(|_| ClientError::Protocol("Could not encode computers".into()))?
+                );
+            } else {
+                for computer in computers {
+                    println!(
+                        "{}  {}{}  {}  {}",
+                        computer.id,
+                        computer.name,
+                        if computer.is_self {
+                            " (this computer)"
+                        } else {
+                            ""
+                        },
+                        if computer.online { "online" } else { "offline" },
+                        if computer.paired {
+                            "paired"
+                        } else {
+                            "not paired"
+                        }
+                    );
+                    if !computer.online {
+                        if let Some(at) = computer.last_seen_at {
+                            println!("  Last seen  {at}");
+                        }
+                    }
+                }
+            }
+            Ok(0)
+        }
+        RemoteCommand::Pair { computer } => {
+            let pin = rpassword::prompt_password("Other computer's PIN (6 digits): ")
+                .map_err(|_| ClientError::Protocol("Could not read PIN".into()))?;
+            if pin.len() != 6 || !pin.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(ClientError::Refused(
+                    "The PIN must be exactly six digits.".into(),
+                ));
+            }
+            let computer = computer.clone();
+            pair_computer(client, computer, Secret(pin)).await?;
+            if json {
+                println!("null");
+            } else {
+                println!("Computer paired.");
+            }
+            Ok(0)
+        }
+        RemoteCommand::Forget { computer } => {
+            let computer = computer.clone();
+            typed(client, move |c| c.remote_forget(computer)).await?;
+            if json {
+                println!("null");
+            } else {
+                println!("Computer forgotten.");
+            }
+            Ok(0)
+        }
+        RemoteCommand::Overview { computer } => {
+            let computer = computer.clone();
+            let overview = typed(client, move |c| c.remote_overview(computer)).await?;
+            println!(
+                "{}",
+                if json {
+                    serde_json::to_string(&overview)
+                } else {
+                    serde_json::to_string_pretty(&overview)
+                }
+                .map_err(|_| ClientError::Protocol("Could not encode remote overview".into()))?
+            );
+            Ok(0)
+        }
         RemoteCommand::Status => {
             let trust = typed(client.clone(), |c| c.remote_trust()).await?;
             if json {
@@ -295,6 +388,13 @@ async fn execute(command: &RemoteCommand, json: bool) -> Result<i32, ClientError
             }
         }
     }
+}
+async fn pair_computer(
+    client: DaemonClient,
+    computer: String,
+    pin: Secret,
+) -> Result<(), ClientError> {
+    typed(client, move |c| c.remote_pair(computer, pin)).await
 }
 fn status_with_trust(status: &RemoteStatus, trust: &RemoteTrust) -> serde_json::Value {
     let mut value = serde_json::to_value(status).expect("RemoteStatus serializes to JSON");
@@ -502,5 +602,98 @@ mod tests {
         ] {
             assert!(!login_allowed(input.0, input.1, input.2));
         }
+    }
+}
+
+#[cfg(test)]
+mod computer_tests {
+    use super::*;
+    use runner_core::protocol::{
+        ClientError as ProtocolError, EventSubscription, Request, Response, Transport,
+    };
+    use std::sync::{Arc, Mutex};
+    struct Source(Mutex<Vec<Request>>);
+    impl Transport for Source {
+        fn call(&self, request: Request) -> Result<Response, ProtocolError> {
+            let response = match &request {
+                Request::remote_status {} => Response::remote_status(Ok(RemoteStatus::default())),
+                Request::remote_computers {} => Response::remote_computers(Ok(Vec::new())),
+                Request::remote_forget { computer } => {
+                    assert_eq!(computer, "42");
+                    Response::remote_forget(Ok(()))
+                }
+                Request::remote_overview { computer } => {
+                    assert_eq!(computer, "42");
+                    Response::remote_overview(Ok(runner_core::remote::RemoteOverview(
+                        runner_core::companion::Overview {
+                            projects: vec![],
+                            tabs: vec![],
+                            missions: vec![],
+                            sessions: Default::default(),
+                        },
+                    )))
+                }
+                Request::remote_pair { computer, pin } => {
+                    assert_eq!(computer, "42");
+                    assert_eq!(pin.0, "012345");
+                    Response::remote_pair(Ok(()))
+                }
+                _ => panic!("unexpected computer command"),
+            };
+            self.0.lock().unwrap().push(request);
+            Ok(response)
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(NoEvents)
+        }
+    }
+    struct NoEvents;
+    impl EventSubscription for NoEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            runner_core::protocol::ClientEvent,
+                            runner_core::protocol::EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(std::future::pending())
+        }
+    }
+    #[tokio::test]
+    async fn computer_commands_make_only_the_expected_daemon_calls() {
+        let source = Arc::new(Source(Mutex::new(Vec::new())));
+        let client = DaemonClient::new(source.clone());
+        for command in [
+            RemoteCommand::Computers,
+            RemoteCommand::Forget {
+                computer: "42".into(),
+            },
+            RemoteCommand::Overview {
+                computer: "42".into(),
+            },
+        ] {
+            assert_eq!(
+                execute_connected(&command, true, client.clone(), client.subscribe())
+                    .await
+                    .unwrap(),
+                0
+            );
+        }
+        pair_computer(client, "42".into(), Secret("012345".into()))
+            .await
+            .unwrap();
+        let calls = source.0.lock().unwrap();
+        assert_eq!(calls.len(), 7);
+        assert!(matches!(calls[1], Request::remote_computers {}));
+        assert!(matches!(calls[3], Request::remote_forget { .. }));
+        assert!(matches!(calls[5], Request::remote_overview { .. }));
+        assert!(matches!(calls[6], Request::remote_pair { .. }));
+        assert!(!format!("{:?}", calls[6]).contains("012345"));
     }
 }

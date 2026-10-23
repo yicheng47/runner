@@ -15,11 +15,24 @@ impl ClientError {
         }
     }
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClientEvent {
     pub name: String,
     pub payload: serde_json::Value,
 }
+impl std::fmt::Debug for ClientEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut event = f.debug_struct("ClientEvent");
+        event.field("name", &self.name);
+        if self.name.starts_with("remote/") {
+            event.field("payload", &"[redacted]");
+        } else {
+            event.field("payload", &self.payload);
+        }
+        event.finish()
+    }
+}
+
 #[derive(Debug)]
 pub enum EventError {
     Lagged(u64),
@@ -41,6 +54,14 @@ pub trait Transport: Send + Sync {
         _session_id: &str,
     ) -> Result<super::terminal::TerminalAttachment, ClientError> {
         Err(ClientError::msg("terminal attachment is unavailable"))
+    }
+    fn attach_remote(
+        &self,
+        _config: crate::remote::RemoteTerminal,
+    ) -> Result<super::terminal::TerminalAttachment, ClientError> {
+        Err(ClientError::msg(
+            "remote terminal attachment is unavailable",
+        ))
     }
     fn input(&self, _session_id: &str, _bytes: &[u8]) -> Result<(), ClientError> {
         Err(ClientError::msg("terminal input is unavailable"))
@@ -71,6 +92,12 @@ impl DaemonClient {
         session_id: &str,
     ) -> Result<super::terminal::TerminalAttachment, ClientError> {
         self.transport.attach(session_id)
+    }
+    pub fn attach_remote(
+        &self,
+        config: crate::remote::RemoteTerminal,
+    ) -> Result<super::terminal::TerminalAttachment, ClientError> {
+        self.transport.attach_remote(config)
     }
     pub fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), ClientError> {
         self.transport.input(session_id, bytes)

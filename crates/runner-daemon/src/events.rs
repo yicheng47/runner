@@ -15,10 +15,22 @@ use tokio::sync::broadcast;
 /// One frontend-observable event. `name` is the channel the GPUI frontend
 /// subscribes to (`"session/exit"`, `"chat/layout-changed"`, …); every
 /// producer uses a static string so a typo is greppable.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppEvent {
     pub name: &'static str,
     pub payload: serde_json::Value,
+}
+impl std::fmt::Debug for AppEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut event = f.debug_struct("AppEvent");
+        event.field("name", &self.name);
+        if self.name.starts_with("remote/") {
+            event.field("payload", &"[redacted]");
+        } else {
+            event.field("payload", &self.payload);
+        }
+        event.finish()
+    }
 }
 
 /// Buffered events per subscriber. A lagged subscriber drops oldest-first

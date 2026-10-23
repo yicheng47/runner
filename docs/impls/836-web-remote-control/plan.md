@@ -287,6 +287,56 @@ R2 merged in `runner_server` on 2026-10-22 as #21: one enrollment per computer, 
 
 A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7a-account` on `feat/836-m7a-account`, with its brief as [`../briefs/836-m7a-account.md`](../briefs/836-m7a-account.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
 
+### m7b — the client core
+
+m7a merged on 2026-10-22 as [#993](https://github.com/yicheng47/runner/pull/993). m7b makes `runnerd` a client: it lists the account's computers, pairs with one by its PIN, connects again with the key it kept, and speaks the companion protocol to it, so the app and the CLI reach another computer's overview and terminals through the client protocol as they reach local ones. The service side is `runner_server`'s R2 ([#21](https://github.com/YeelinksCo/runner_server/pull/21)): `HostClientService.ListAccountHosts` and `GET /relay/client?host=<id>`, both authenticated by this computer's existing host credential. The channel's client half is already in `runner-core` (`BrowserPair`, `BrowserConnect`, the records) and replayed by the host's tests; m7b runs it for real. No app UI beyond two small fixes; the computer picker, the PIN dialog and remote panes are m7c's.
+
+Jason also folded in two small fixes on 2026-10-23: Account moves below General in Settings, and macOS development builds keep remote secrets in a file, since every rebuild of the ad-hoc-signed `runnerd` made the Keychain ask for the login password at startup.
+
+#### Settled for m7b
+
+- **Where the client lives.** In `runnerd`, beside its host role, as the spec proposed. Keys and channels never live in the app or the CLI.
+- **A key per host** (Jason, 2026-10-23). The client makes a new X25519 key for each computer it pairs with, as the spec proposed, rather than reusing its own identity key. How a host's device list is matched to the account's computers for m7c's access column stays open for m7c.
+- **The client's store** (*proposed*). One secret-store item, `client-keys`, beside `host-identity`: for each paired computer, keyed by that computer's identity fingerprint, the client's private key, the computer's pinned public key, its name and when it was paired. The fingerprint is stable across that computer's sign-outs; the service's host id is not, so each listing maps ids to fingerprints. A listed computer whose fingerprint differs from the pinned key's shows as not paired. Signing out keeps the item; Reset remote access deletes it with the identity; Forget removes one entry.
+- **Signed in is enough** (*proposed*). The client needs the computer's credential and an activated enrollment, so it works whenever this computer is signed in, including while Allow remote access is off: pausing stops others reaching this computer, not this computer reaching others.
+- **Channels are opened on use** (*proposed*). `runnerd` opens a channel to a computer when a request needs one, keeps it while anything follows that computer's overview or has a terminal attached, and closes it a minute after the last use. A dropped route reconnects with backoff while something still uses it, re-attaches with a fresh snapshot, and never replays input.
+- **Remote terminals use the client protocol's terminal types** (*proposed*). Attaching a remote terminal returns the same `TerminalAttachment` (snapshot, then `Output`, `Resized` and `Resync`) as a local one, so m7c's panes reuse the desktop's terminal view. The companion `Controller` maps to `TerminalController`: `you` is the desktop's own control, and the host's desktop or another client is a remote controller with its name.
+- **The device name** sent in `pairFinish` uses this computer's service name, shortened only when needed to a UTF-8-safe prefix of at most 64 bytes. The full service name stays unchanged in Account and the computer directory. Jason approved this compatibility rule in the mission on 2026-10-23 (message `01M5J94VEDNX1DNH68CW2GMC87`): the service allows 64 Unicode scalar values, while the frozen pairing payload allows 64 UTF-8 bytes. The host and wire contract stay unchanged.
+
+#### Commits
+
+The crew shapes the history; a likely split, each commit building and passing its tests:
+
+1. **Account below General.** `APP_PANES` puts Account after General; the nav test and the spec's "first in its App group" follow.
+2. **Development secrets in a file on macOS.** A debug build on macOS uses the existing file store, under the development data directory with mode 0600, instead of the Keychain; release builds and Windows are unchanged. The file store maps each item name, `host-identity`, an origin's credential and `client-keys`, to its own file.
+3. **The account's computers and the client's keys.** `ListAccountHosts` over the existing RPC helper, the `client-keys` store, and client-protocol requests to list the computers (each with `self`, `online`, last seen, and whether this computer is paired with it) and to forget one.
+4. **Pairing and connecting.** The `/relay/client` route with the `runner-client.v1` subprotocol and a Bearer credential; the client's channel task with its records and credit; a request to pair with a computer by its PIN, surfacing each reject reason; connecting with the kept key, and forgetting it after `unknownDevice`.
+5. **The companion client.** `hello` and `welcome`; following a computer's overview and status pushes as client-protocol events; attaching, input, take control, viewport and detach for its terminals; reconnecting.
+6. **The CLI and the guide.** `runner remote computers`, `runner remote pair <computer>` (an interactive PIN prompt, refused in agent sessions as `runner remote pin` is), `runner remote forget <computer>` and `runner remote overview <computer>`, with `--json` where the others have it; `make guide-cli`; and the guide's section on reaching another computer from the CLI.
+
+#### Checks
+
+- **`runner-core`**: the client's records and credit against the vectors' `records` array, and a message over 1 MiB ending the channel.
+- **`runnerd`**, with the client against the real host side over an in-process relay that numbers channels as `/relay/host` does: pairing; each reject reason (`noPin`, `pinLocked`, `wrongPin`, `busy`, `badHandshake`); connecting after pairing; Revoke on the host, then `unknownDevice` and the client forgetting its key; the host's Reset identity; a listed fingerprint that differs from the pinned key; the overview and its pushes; a terminal's snapshot, output, input and resize through `TerminalAttachment`, with take control and viewport following Terminal size; a client that grants no credit stalling only its own channel; a dropped route reconnecting to a fresh snapshot without replaying input; and the idle close.
+- **The service calls**: `ListAccountHosts`'s request and its errors (`unauthenticated`, `resource_exhausted`), `/relay/client`'s refusals and close codes (4401, 4404, 4409, 4426, 4429) surfacing as clear errors, and the credential only ever in the `Authorization` header.
+- **Secrets**: no PIN, private key, ISK, credential, message body or terminal byte in a log line, an error or `Debug` output.
+- **The two fixes**: the Settings nav order, and the store chosen per build and platform.
+- **The CLI**: each new command's tool calls, the interactive refusal inside agent sessions, and `make guide-cli-check`.
+- **Gates**: the required workspace gates, each logged with its exit code read directly.
+- **Live, pending for Jason**: two Runners against a local `runner_server`: list, pair, a wrong PIN, the overview, a terminal's output, input and resize, Revoke and Forget, and a dropped route.
+
+#### Easy to get wrong
+
+- Pairing is never retried on its own: each `wrongPin` costs one of the host's five attempts.
+- The host's pinned key is checked on every connect; a mismatch is a failure, never a silent re-pair.
+- `ListAccountHosts` allows 60 calls a minute and `/relay/client` 60 opens a minute per computer, so listings are cached for a few seconds and reconnects back off.
+- Secret-store reads and writes stay off the async runtime, as the host's do.
+- The host side, the companion protocol and the channel's wire format are unchanged; a change there is a finding to raise, not to make.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7b-client-core` on `feat/836-m7b-client-core`, with its brief as [`../briefs/836-m7b-client-core.md`](../briefs/836-m7b-client-core.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. Live checks wait for Jason. No database migration, no new crate.
+
 ## Phase 4 — Tailscale
 
 Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged. Since 2026-10-21 its client is m7's: one Runner reaches another directly over the tailnet, with no service involved, so Phase 4 adds the host's listener and the client's direct route.
