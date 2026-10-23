@@ -241,8 +241,8 @@ impl SettingsPane {
 }
 
 const APP_PANES: &[SettingsPane] = &[
-    SettingsPane::Account,
     SettingsPane::General,
+    SettingsPane::Account,
     SettingsPane::Appearance,
     SettingsPane::Notifications,
     SettingsPane::Remote,
@@ -3554,8 +3554,8 @@ mod tests {
             (
                 "App",
                 vec![
-                    SettingsPane::Account,
                     SettingsPane::General,
+                    SettingsPane::Account,
                     SettingsPane::Appearance,
                     SettingsPane::Notifications,
                     SettingsPane::Remote,

@@ -65,8 +65,26 @@ pub async fn rpc<T: DeserializeOwned>(
     credential: Option<&Secret>,
     body: &impl Serialize,
 ) -> Result<T, Failure> {
+    rpc_service(
+        client,
+        origin,
+        "HostEnrollmentService",
+        method,
+        credential,
+        body,
+    )
+    .await
+}
+pub async fn rpc_service<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    origin: &str,
+    service: &str,
+    method: &str,
+    credential: Option<&Secret>,
+    body: &impl Serialize,
+) -> Result<T, Failure> {
     let mut request = client
-        .post(format!("{origin}{}{method}", remote::RPC_PATH))
+        .post(format!("{origin}/api/runner_server.v1.{service}/{method}"))
         .json(body);
     if let Some(secret) = credential {
         request = request.header(reqwest::header::AUTHORIZATION, authorization(secret)?);
@@ -186,5 +204,142 @@ pub async fn socket(upgraded: Box<dyn Connection>, host: &HostInfo) -> Result<So
 impl std::fmt::Debug for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RemoteFailure([redacted])")
+    }
+}
+
+pub async fn connect_client(
+    client: &reqwest::Client,
+    origin: &str,
+    computer: &str,
+    credential: &Secret,
+) -> Result<Socket, Failure> {
+    let (request, key) = client_request(client, origin, computer, credential)?;
+    let response = client
+        .execute(request)
+        .await
+        .map_err(|_| Failure::network())?;
+    let status = response.status().as_u16();
+    if status != 101 {
+        let after = response
+            .headers()
+            .get("Retry-After")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok());
+        return Err(client_refusal(status, after));
+    }
+
+    let expected = tungstenite::handshake::derive_accept_key(key.as_bytes());
+    if response
+        .headers()
+        .get("Sec-WebSocket-Accept")
+        .and_then(|h| h.to_str().ok())
+        != Some(expected.as_str())
+        || response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|h| h.to_str().ok())
+            != Some("runner-client.v1")
+    {
+        return Err(Failure::protocol());
+    }
+    let upgraded = response.upgrade().await.map_err(|_| Failure::network())?;
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(remote::MAX_RELAY_SIZE - 4))
+        .max_frame_size(Some(remote::MAX_RELAY_SIZE - 4));
+    Ok(WebSocketStream::from_raw_socket(
+        Box::new(upgraded) as Box<dyn Connection>,
+        Role::Client,
+        Some(config),
+    )
+    .await)
+}
+
+fn client_request(
+    client: &reqwest::Client,
+    origin: &str,
+    computer: &str,
+    credential: &Secret,
+) -> Result<(reqwest::Request, String), Failure> {
+    let mut url = reqwest::Url::parse(origin).map_err(|_| Failure::protocol())?;
+    url.set_path("/relay/client");
+    url.query_pairs_mut().append_pair("host", computer);
+    let key = tungstenite::handshake::client::generate_key();
+    let request = client
+        .get(url)
+        .version(reqwest::Version::HTTP_11)
+        .header(reqwest::header::AUTHORIZATION, authorization(credential)?)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", &key)
+        .header("Sec-WebSocket-Protocol", "runner-client.v1")
+        .build()
+        .map_err(|_| Failure::protocol())?;
+    Ok((request, key))
+}
+
+fn client_refusal(status: u16, after: Option<u64>) -> Failure {
+    let code = match status {
+        400 => "unsupported_protocol",
+        401 => "unauthenticated",
+        403 => "permission_denied",
+        404 => "not_found",
+        429 => "rate_limited",
+        _ => "unavailable",
+    };
+    Failure {
+        code: code.into(),
+        message: format!("Remote route refused: {code} (HTTP {status})."),
+        retry: if status == 429 {
+            remote::Retry::After(after.unwrap_or(60))
+        } else {
+            remote::upgrade_action(status, after)
+        },
+    }
+}
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+    #[test]
+    fn client_upgrade_uses_bearer_header_and_refusals_are_static() {
+        let client = client().unwrap();
+        let (request, _) = client_request(
+            &client,
+            "https://relay.invalid",
+            "42",
+            &Secret("credential-canary".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            request.url().as_str(),
+            "https://relay.invalid/relay/client?host=42"
+        );
+        assert_eq!(
+            request.headers()["Sec-WebSocket-Protocol"],
+            "runner-client.v1"
+        );
+        assert_eq!(
+            request.headers()["Authorization"],
+            "Bearer credential-canary"
+        );
+        assert!(request.headers()["Authorization"].is_sensitive());
+        assert!(!request.headers().contains_key("Origin"));
+        assert!(!format!("{request:?}").contains("credential-canary"));
+        for (status, code) in [
+            (400, "unsupported_protocol"),
+            (401, "unauthenticated"),
+            (403, "permission_denied"),
+            (404, "not_found"),
+            (429, "rate_limited"),
+            (503, "unavailable"),
+        ] {
+            let failure = client_refusal(status, Some(73));
+            assert_eq!(failure.code, code);
+            assert!(failure.message.contains(code));
+            assert!(!format!("{failure:?}").contains(code));
+            if status == 429 {
+                assert_eq!(failure.retry, remote::Retry::After(73));
+            }
+        }
     }
 }

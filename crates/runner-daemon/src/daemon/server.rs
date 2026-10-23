@@ -7,7 +7,7 @@ use runner_core::app_paths::IpcEndpoint;
 use runner_core::daemon_process::{
     self, NativePaths, RESUME_SHUTDOWN_TIMEOUT, RUNTIME_SHUTDOWN_TIMEOUT, SHUTDOWN_TIMEOUT,
 };
-use runner_core::protocol::terminal::{TerminalAttachment, TerminalFrame};
+use runner_core::protocol::terminal::{TerminalAttachment, TerminalFrame, TerminalSubscription};
 use runner_core::protocol::wire::{self, Binary, Frame};
 use runner_core::protocol::{ClientError, Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -409,19 +409,35 @@ impl Drop for Connected {
 struct Attachments {
     core: AppCore,
     ids: Mutex<HashMap<u64, (String, u64)>>,
+    remote: Mutex<HashMap<u64, Arc<dyn Fn() + Send + Sync>>>,
+    resyncing: Mutex<HashMap<u64, Box<dyn TerminalSubscription>>>,
 }
 impl Attachments {
+    fn retain_resync(&self, id: u64, frames: Box<dyn TerminalSubscription>) {
+        let ids = self.ids.lock().unwrap();
+        if ids.contains_key(&id) {
+            self.resyncing.lock().unwrap().insert(id, frames);
+        }
+    }
     fn remove(&self, id: u64) {
+        if let Some(cancel) = self.remote.lock().unwrap().remove(&id) {
+            cancel();
+        }
         if let Some((session, subscriber)) = self.ids.lock().unwrap().remove(&id) {
             self.core.sessions.detach_terminal(&session, subscriber);
         }
+        self.resyncing.lock().unwrap().remove(&id);
     }
 }
 impl Drop for Attachments {
     fn drop(&mut self) {
+        for (_, cancel) in self.remote.get_mut().unwrap().drain() {
+            cancel();
+        }
         for (_, (session, subscriber)) in self.ids.get_mut().unwrap().drain() {
             self.core.sessions.detach_terminal(&session, subscriber);
         }
+        self.resyncing.get_mut().unwrap().clear();
     }
 }
 
@@ -461,6 +477,17 @@ struct ConnectionWindows {
 
 impl ConnectionWindows {
     fn dispatch(&self, request: Request) -> Option<Response> {
+        if let Request::remote_follow { computer, follow } = request {
+            return Some(Response::remote_follow(
+                super::block_on(async {
+                    tokio::select! {
+                        biased;
+                        _ = self.closed.cancelled() => { self.core.remote.owner_gone(self.id); Err("Remote overview client disconnected.".into()) }
+                        result = self.core.remote.follow(computer, self.id, follow) => result,
+                    }
+                }).map_err(ClientError::msg),
+            ));
+        }
         if let Request::remote_enroll_start {
             origin,
             confirm_account,
@@ -689,6 +716,8 @@ async fn connection(
     let attachments = Arc::new(Attachments {
         core: core.clone(),
         ids: Mutex::default(),
+        remote: Mutex::default(),
+        resyncing: Mutex::default(),
     });
     let (control_tx, mut controls) = mpsc::channel::<Frame>(128);
     let (terminal_tx, mut terminals) = mpsc::channel::<Frame>(64);
@@ -728,20 +757,41 @@ async fn connection(
             };
             let mut apply = || -> Result<()> {
                 if frame.kind == wire::INPUT {
-                    input_core
-                        .sessions
-                        .queue_terminal_input(&session, binary.0)?;
+                    if let Some((computer, target)) = runner_core::remote::terminal_target(&session)
+                    {
+                        super::block_on(input_core.remote.remote_input(
+                            computer.into(),
+                            target.into(),
+                            binary.0.into(),
+                        ))
+                        .map_err(anyhow::Error::msg)?;
+                    } else {
+                        input_core
+                            .sessions
+                            .queue_terminal_input(&session, binary.0)?;
+                    }
                 } else {
                     let origin = binary.u64()?;
                     let cols = binary.u16()?;
                     let rows = binary.u16()?;
-                    input_core.sessions.resize_terminal(
-                        &session,
-                        origin,
-                        cols,
-                        rows,
-                        &input_core.db,
-                    )?;
+                    if let Some((computer, target)) = runner_core::remote::terminal_target(&session)
+                    {
+                        super::block_on(input_core.remote.remote_resize(
+                            computer.into(),
+                            target.into(),
+                            cols,
+                            rows,
+                        ))
+                        .map_err(anyhow::Error::msg)?;
+                    } else {
+                        input_core.sessions.resize_terminal(
+                            &session,
+                            origin,
+                            cols,
+                            rows,
+                            &input_core.db,
+                        )?;
+                    }
                 }
                 Ok(())
             };
@@ -806,18 +856,31 @@ async fn connection(
                         }
                         wire::ATTACH => {
                             let mut binary = Binary(&frame.payload); let id = binary.u64()?; let session = binary.string()?;
+                            let config: Option<runner_core::remote::RemoteTerminal> = if binary.0.is_empty() { None } else { Some(serde_json::from_slice(binary.0).map_err(|_| anyhow::anyhow!("Invalid remote terminal configuration"))?) };
+                            if config.as_ref().is_some_and(|c| c.address() != session) { anyhow::bail!("Remote terminal address does not match"); }
                             attachments.ids.lock().unwrap().insert(id, (session.clone(), 0));
                             let core = core.clone(); let tx = terminal_tx.clone(); let controls = control_tx.clone(); let attachments = attachments.clone(); let cancel = local.clone();
                             tokio::task::spawn_blocking(move || {
                                 if cancel.is_cancelled() { return; }
-                                match core.sessions.attach_terminal(&session) {
+                                let remote = config.is_some();
+                                let attached = match config {
+                                    Some(config) => super::block_on(core.remote.attach_remote(config)).map_err(crate::error::Error::msg),
+                                    None => core.sessions.attach_terminal(&session),
+                                };
+                                match attached {
                                     Ok(attachment) => {
                                         {
                                             let mut ids = attachments.ids.lock().unwrap();
-                                            if let Some(entry) = ids.get_mut(&id) { entry.1 = attachment.subscriber_id; }
-                                            else { core.sessions.detach_terminal(&session, attachment.subscriber_id); return; }
+                                            if let Some(entry) = ids.get_mut(&id) { entry.1 = attachment.subscriber_id; attachments.remote.lock().unwrap().insert(id, attachment.frames.cancellation()); }
+                                            else { (attachment.frames.cancellation())(); core.sessions.detach_terminal(&session, attachment.subscriber_id); return; }
                                         }
-                                        let _ = forward_terminal(id, attachment, &tx, &cancel);
+                                        if let Ok(Some(frames)) = forward_terminal(id, attachment, &tx, &cancel) {
+                                            if remote {
+                                                // Resync ownership lasts until the client replaces or detaches it.
+                                                attachments.retain_resync(id, frames);
+                                                return;
+                                            }
+                                        }
                                         attachments.remove(id);
                                     }
                                     Err(error) => { attachments.remove(id); let mut frame = wire::numbered(wire::ATTACH_ERROR, id); frame.payload.extend_from_slice(error.to_string().as_bytes()); let _ = controls.blocking_send(frame); }
@@ -829,7 +892,13 @@ async fn connection(
                         _ => anyhow::bail!("unexpected client frame"),
                     }
                 }
-                Some(frame) = terminals.recv() => write_frame(&mut write, frame).await?,
+                Some(frame) = terminals.recv() => {
+                    #[cfg(test)]
+                    let kind = frame.kind;
+                    write_frame(&mut write, frame).await?;
+                    #[cfg(test)]
+                    core.events.emit("test/terminal-written", &serde_json::json!({"kind":kind}));
+                },
             }
         }
         Ok(())
@@ -854,7 +923,7 @@ fn forward_terminal(
     mut attachment: TerminalAttachment,
     tx: &mpsc::Sender<Frame>,
     cancel: &CancellationToken,
-) -> Result<()> {
+) -> Result<Option<Box<dyn TerminalSubscription>>> {
     tx.blocking_send(wire::snapshot_header(
         id,
         attachment.subscriber_id,
@@ -889,13 +958,17 @@ fn forward_terminal(
             Ok(TerminalFrame::Resync) => wire::numbered(wire::RESYNC, id),
             Err(_) => wire::numbered(wire::TERMINAL_CLOSED, id),
         };
-        let end = frame.kind == wire::TERMINAL_CLOSED || frame.kind == wire::RESYNC;
+        let resync = frame.kind == wire::RESYNC;
+        let end = frame.kind == wire::TERMINAL_CLOSED;
         tx.blocking_send(frame)?;
+        if resync {
+            return Ok(Some(attachment.frames));
+        }
         if end {
             break;
         }
     }
-    Ok(())
+    Ok(None)
 }
 fn send_chunks(
     tx: &mpsc::Sender<Frame>,

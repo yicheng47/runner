@@ -27,12 +27,17 @@ fn request_timeout(request: &Request, timeout: Duration) -> Option<Duration> {
         | Request::remote_set_pin { .. }
         | Request::remote_unlock_pin { .. }
         | Request::remote_revoke_device { .. }
-        | Request::remote_reset_identity { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
+        | Request::remote_reset_identity { .. }
+        | Request::remote_computers { .. }
+        | Request::remote_pair { .. }
+        | Request::remote_forget { .. }
+        | Request::remote_overview { .. }
+        | Request::remote_follow { .. }
+        | Request::remote_take_control { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
         Request::session_fork { .. } => Some(timeout.max(FORK_REQUEST_TIMEOUT)),
         _ => Some(timeout),
     }
 }
-const QUEUE_CAPACITY: usize = 64;
 
 #[cfg(unix)]
 type Stream = std::os::unix::net::UnixStream;
@@ -157,7 +162,7 @@ impl Frames {
         if state.closed {
             return;
         }
-        if state.frames.len() == QUEUE_CAPACITY {
+        if state.frames.len() == TERMINAL_QUEUE_CAPACITY {
             state.frames.clear();
             state.output.clear();
             state.frames.push_back(TerminalFrame::Resync);
@@ -589,44 +594,13 @@ impl Transport for SocketTransport {
         *self.observer.lock().unwrap() = Some(observer);
     }
     fn attach(&self, session_id: &str) -> Result<TerminalAttachment, ClientError> {
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let (done, result) = mpsc::channel();
-        let queue = Arc::new(Frames::default());
-        let subscriber = Arc::new(AtomicU64::new(0));
-        self.attaching.lock().unwrap().insert(
-            id,
-            PendingAttach {
-                done,
-                snapshot: None,
-                queue: queue.clone(),
-                subscriber: subscriber.clone(),
-            },
-        );
-        let mut frame = wire::numbered(wire::ATTACH, id);
-        frame
-            .payload
-            .extend(wire::session_payload(session_id).map_err(client_error)?);
-        let snapshot = self.send(frame).and_then(|()| {
-            result
-                .recv_timeout(self.timeout)
-                .map_err(|_| ClientError::msg("runnerd attach deadline exceeded"))?
-        });
-        self.attaching.lock().unwrap().remove(&id);
-        match snapshot {
-            Ok(snapshot) => Ok(TerminalAttachment {
-                subscriber_id: subscriber.load(Ordering::Relaxed),
-                snapshot,
-                frames: Box::new(Subscription {
-                    queue,
-                    owner: self.own.clone(),
-                    id,
-                }),
-            }),
-            Err(error) => {
-                let _ = self.send(wire::numbered(wire::DETACH, id));
-                Err(error)
-            }
-        }
+        self.attach_terminal(session_id, None)
+    }
+    fn attach_remote(
+        &self,
+        config: crate::remote::RemoteTerminal,
+    ) -> Result<TerminalAttachment, ClientError> {
+        self.attach_terminal(&config.address(), Some(&config))
     }
     fn input(&self, session_id: &str, bytes: &[u8]) -> Result<(), ClientError> {
         let _ordered = self.one_way.lock().unwrap();
@@ -654,6 +628,63 @@ impl Transport for SocketTransport {
                 let _ = self.events.send(wire::Event {
                     event: Some(ClientEvent { name: "session/input-error".into(), payload: serde_json::json!({"session_id": session_id, "message": error.to_string()}) }), lagged: None,
                 });
+            }
+        }
+    }
+}
+impl SocketTransport {
+    fn attach_terminal(
+        &self,
+        session_id: &str,
+        config: Option<&crate::remote::RemoteTerminal>,
+    ) -> Result<TerminalAttachment, ClientError> {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (done, result) = mpsc::channel();
+        let queue = Arc::new(Frames::default());
+        let subscriber = Arc::new(AtomicU64::new(0));
+        self.attaching.lock().unwrap().insert(
+            id,
+            PendingAttach {
+                done,
+                snapshot: None,
+                queue: queue.clone(),
+                subscriber: subscriber.clone(),
+            },
+        );
+        let mut frame = wire::numbered(wire::ATTACH, id);
+        frame
+            .payload
+            .extend(wire::session_payload(session_id).map_err(client_error)?);
+        if let Some(config) = config {
+            frame.payload.extend(
+                serde_json::to_vec(config).map_err(|_| {
+                    ClientError::msg("Could not encode remote terminal configuration")
+                })?,
+            );
+        }
+        let snapshot = self.send(frame).and_then(|()| {
+            result
+                .recv_timeout(if config.is_some() {
+                    self.timeout.max(REMOTE_REQUEST_TIMEOUT)
+                } else {
+                    self.timeout
+                })
+                .map_err(|_| ClientError::msg("runnerd attach deadline exceeded"))?
+        });
+        self.attaching.lock().unwrap().remove(&id);
+        match snapshot {
+            Ok(snapshot) => Ok(TerminalAttachment {
+                subscriber_id: subscriber.load(Ordering::Relaxed),
+                snapshot,
+                frames: Box::new(Subscription {
+                    queue,
+                    owner: self.own.clone(),
+                    id,
+                }),
+            }),
+            Err(error) => {
+                let _ = self.send(wire::numbered(wire::DETACH, id));
+                Err(error)
             }
         }
     }
@@ -926,7 +957,7 @@ mod tests {
     #[test]
     fn client_terminal_overflow_requests_resync() {
         let queue = Frames::default();
-        for seq in 0..=QUEUE_CAPACITY as u64 {
+        for seq in 0..=TERMINAL_QUEUE_CAPACITY as u64 {
             queue.push(TerminalFrame::Output {
                 seq,
                 bytes: vec![42],
