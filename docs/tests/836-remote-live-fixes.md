@@ -79,3 +79,55 @@ The next review found a P2 in the new Tab handler: GPUI’s global focus travers
 ### Whole-diff review verdict
 
 On 2026-10-23 the reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete working-tree diff, including both problems and the keyboard correction, in Runner message `01M5M1ZP3EC21KVJZ07G5M3N81`. Its independent panel, signed-out and boundary regressions passed (3 tests, exit 0, `target/836-reviewer-tab-corrected.log`), as did whitespace validation (exit 0, `target/836-reviewer-tab-diff-check.log`). The reviewer skipped live checks under the brief and left the selected rechecks to Jason. The clean review authorizes the brief’s commit/push/PR workflow against `nightly-remote`; macOS and Windows CI must be green before the PR is called ready.
+
+## Problem 3: blank remote sidebar tab labels
+
+Jason connected the development client to the installed host successfully, then showed several chat rows with icons and status but no titles. This is a current m7c defect: the remote sidebar already mirrors projects, tabs and missions. Dimmed New chat, role and crew are intentional because companion protocol v1 has no creation requests.
+
+Cause: the remote sidebar and workspace header rendered only the tab node’s explicit `name`. Normal tabs leave that name empty and take their visible label from the first session in pane order; the companion overview already includes those session titles.
+
+Title fix: use the explicit tab name when present, otherwise the first populated pane’s session title in layout order. Untitled sessions fall back to their runtime (or the generic chat/terminal label), and empty tabs use the localized empty-tab label. The same resolution drives project rows, recent rows and the workspace header, and follows overview pushes. Jason then clarified that the whole remote project/tab structure felt unfinished and directed reuse of the current frontend sidebar components. The earlier title-only candidate passed 2,742 workspace tests (6 skipped), both Clippy variants, formatting and whitespace, all exit 0 (`target/836-sidebar-counts-*.log`); those results precede the shared-sidebar work below.
+
+The fake-driven `remote_sidebar_uses_session_titles_for_unnamed_tabs_and_tracks_overview_updates` reproduces the missing project-row title before the fix (`target/836-sidebar-titles-before.log`, exit 100). It then checks project and recent titles, the active header, a pushed title change, an explicit-name override, split-pane order, empty tabs in English/Simplified Chinese and the untitled runtime fallback. The focused remote-client run before the final counter test passed 21 tests (`target/836-sidebar-counts-focused.log`, exit 0).
+
+Structural cause: the remote view duplicated a simplified sidebar, ignored pin grouping, did not indent or collapse project children, and added a separate root-missions section. The overview's separate tab/mission arrays also lacked mixed sibling and pin order. The fix shares the local sidebar's tree model and row, section-header, workspace, scroll/layout and project-child components. Both sources adapt to the same node shape and presentation; remote row activation remains on the remote controller. Remote creation controls have no handlers, and remote collapse state never writes local settings. Project children and sections collapse, and existing runtime/split/mission marks, selection geometry and pin markers are reused.
+
+Jason approved the optional overview `sidebar` node field through Runner messages `01M5M65NATDM421Y2VVAZZ1EP0` and `01M5M65NB689F8RYGMAANGJG54`, asking for the same kind/id/parent/position/pinned-position structure and matching companion goldens/spec. The host supplies its canonical node positions; the frontend uses them for mixed project, recent and pinned order. Missing metadata retains the older-host fallback, and future node kinds are ignored. No new request, service call, crate or migration. The protocol section and goldens are updated in this PR.
+
+The structural regression reproduced the missing PINNED section before the fix (`target/836-sidebar-structure-before.log`, exit 100). Fake-driven checks cover pin exclusion from projects/recents, indented project tabs and missions, project/section collapse, selection, pushed pin changes, shuffled metadata with mixed row/pin order, moved membership, authoritative empty metadata, future kinds and older-host fallback. A shared-tree test compares local node rows with remote metadata. The shared disabled-controls regression verifies that mouse/keyboard activation opens no local creation modal and preserves local route/tabs. The daemon's in-process overview tests verify project/tab/mission metadata against canonical nodes; companion goldens verify optional-field compatibility.
+
+Jason should recheck PINNED/PROJECTS/RECENTS, project indentation and collapse, provider/split/mission icons, the previously blank remote titles, selection, scrolling and host-driven order/title updates. Check that returning local preserves its sidebar state. Matching mixed row and pin order requires the updated host too; the older installed host retains fallback order. Live checks remain his; the crew operates neither app.
+
+## Problem 4: remove picker attention counters
+
+Jason removed the computer picker’s amber number and attention counters from this stage, and requested that design board `l2uAX` keep only A. This supersedes the initial badge-retention behavior and tests recorded under Problem 2; the earlier results remain historical evidence.
+
+Fix: remove the trigger and row counters, the remote detail’s numeric attention suffix, their unused aggregation/localization and attention-only overview prefetches. Directory refreshes do not open remote overviews until a computer is selected. Preserve connection status, selection and chat/mission attention indicators. Design board `l2uAX` now contains only `pMdgR` (A), without either counter; B and C were deleted. The updated `runner/desktop/specs/836-web-remote-control.pen` was visually verified, explicitly saved and pushed in `yeelinks_design` commit `3042ccd`.
+
+The revised signed-out fake regression fails before removal (`target/836-no-counters-before.log`, exit 100) with a nonzero local attention fixture. It now checks that the trigger and row counters are absent while sign-in behavior remains intact. `signed_in_picker_omits_local_and_remote_attention_counters` covers signed-in local and remote windows with nonzero local and remote attention. The guide and current spec reflect the decision.
+
+Jason should check the trigger and dropdown while local, remote and signed out: no amber count or numeric attention suffix; connection state, selected computer and normal switching still work. No crew live checks ran.
+
+### Combined Problems 3 and 4 validation
+
+| Check | Exit code | Evidence |
+| --- | --- | --- |
+| Intermediate combined focused run | 100 | `target/836-sidebar-shared-final-focused.log`: 122 passed, 1 failed; fixture correction below |
+| `env -u CLAUDE_CONFIG_DIR cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci` | 100 | `target/836-shared-sidebar-nextest.log`: 2,745 passed, 2 failed, 6 skipped, in 301.571 seconds; all sidebar and companion regressions passed |
+| One isolated retry of both failing model-query fixtures, one test thread | 0 | `target/836-shared-sidebar-model-query-retry.log`: both passed without code changes |
+| Workspace Clippy, warnings denied | 0 | `target/836-shared-sidebar-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-shared-sidebar-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-shared-sidebar-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-shared-sidebar-diff-check.log` |
+
+The intermediate focused failure was in the new mission metadata fixture: `node::upsert` preserves an existing node's pin state, so assigning a pin on the input row did not pin it. The fixture now uses `node::set_pinned` and checks the stored position and pin. Its corrected regression passes in the workspace run.
+
+The workspace failures were in unchanged `runtime_status::models::tests::process_tests` fixtures: `spawn_failure_timeout_and_cache_write_failure_are_contained` observed no catalog instead of its fake `memory` catalog at `tests.rs:578`, and `concurrent_refreshes_share_one_query_and_obsolete_results_are_discarded` hit its 30-second deadline at `tests.rs:183`. Both passed in one isolated retry with no code changes. The workspace command remains recorded as failed; no full-suite green result is claimed. No model-query implementation or test is changed by this diff. CLI help is unchanged, so `make guide-cli-check` is not applicable.
+
+### Problems 1–4 review verdict
+
+The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the whole feature-branch working-tree diff in Runner message `01M5M7YMZRWF2D54EGGYXVGYAQ`. Its independent shared-sidebar, remote-client, companion and overview tests passed (116 tests, exit 0, `target/836-reviewer-shared-sidebar.log`); whitespace validation passed (exit 0, `target/836-reviewer-shared-sidebar-diff-check.log`). It inspected the approved Pencil A and confirmed that it has no counts. The full workspace failures and successful isolated retries above remain preserved. Live checks were skipped under the brief; Jason's selected rechecks remain above. The subsequent behavior-neutral reuse work requested in human message `01M5M77X1ZT1Q0WV1WFXB0AJGD` is separate and requires its own review.
+
+### PR CI history before Problems 3 and 4
+
+PR #1010 initially contained Problems 1 and 2 at `31993ce7`. macOS CI passed (2,740 tests passed, 6 skipped). Windows attempt 1 exited 1 with 2,624 passed / 1 failed / 4 skipped: only the brief’s known `terminal_output_reuses_split_siblings_and_title_changes_update_sidebar` flake failed. Unchanged attempt 2 exited 1 with the same totals: the redraw test passed, but `shell_echo_two_clients_and_identical_reattach_snapshot` hit its 10-second terminal-output deadline at `daemon_process.rs:419`; that test passed in attempt 1. All four picker regressions passed in both Windows attempts. Logs: `target/836-ci-windows-failed.log`, `target/836-ci-windows-retry-failed.log`, `target/836-ci-macos.log`. A third unchanged Windows run was already running when Jason questioned repeated runs. It exceeded the earlier runtimes and was superseded by Problems 3 and 4; cancellation was requested with `gh run cancel 39933610530` (exit 0). The cancelled attempt’s tests had completed successfully (2,625 passed, 4 skipped); cancellation occurred in the remaining job steps, so it is not a green CI claim (`target/836-ci-windows-cancelled.log`). No further automatic retry of that old candidate will be started. New Problems 3 and 4 remain uncommitted pending whole-diff review.

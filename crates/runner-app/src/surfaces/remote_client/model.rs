@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use futures::{channel::mpsc, future::BoxFuture, FutureExt, StreamExt};
 use gpui::{AppContext, Context, Entity};
 use runner_core::{
-    companion::{Overview, Status, StatusPush},
+    companion::{Overview, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
     remote::{Computer, PairedDevice, RemoteTrust},
 };
@@ -45,7 +45,6 @@ pub(crate) enum Command {
     Retry(String),
     Forget(String),
     Reconnected,
-    Preview(String),
     Paired(String),
 }
 
@@ -200,12 +199,6 @@ impl ClientState {
                                 .insert(computer.id.clone(), Connection::Revoked);
                         }
                     }
-                    for computer in computers
-                        .iter()
-                        .filter(|c| !c.is_self && c.paired && c.online)
-                    {
-                        self.send(Command::Preview(computer.id.clone()));
-                    }
                     computers.sort_by_key(|computer| !computer.is_self);
                     self.computers = computers;
                 }
@@ -334,7 +327,6 @@ impl ClientState {
 }
 
 enum ComputerCommand {
-    Preview,
     Acquire,
     Release,
     Retry,
@@ -386,7 +378,6 @@ pub(super) async fn run_commands(
             Command::Release(id) => (id, ComputerCommand::Release),
             Command::Retry(id) => (id, ComputerCommand::Retry),
             Command::Forget(id) => (id, ComputerCommand::Forget),
-            Command::Preview(id) => (id, ComputerCommand::Preview),
             Command::Paired(id) => (id, ComputerCommand::Reconnected),
         };
         let worker = workers.entry(computer.clone()).or_insert_with(|| {
@@ -417,11 +408,6 @@ async fn computer_requests(
     let mut follows = 0;
     while let Some(command) = requests.next().await {
         match command {
-            ComputerCommand::Preview => {
-                if let Ok(overview) = client.remote_overview(computer.clone()) {
-                    let _ = updates.unbounded_send(Update::Overview(computer.clone(), overview.0));
-                }
-            }
             ComputerCommand::Acquire => {
                 follows += 1;
                 if follows == 1 {
@@ -466,19 +452,6 @@ fn load(client: &DaemonClient, computer: &str, updates: &mpsc::UnboundedSender<U
             ));
         }
     }
-}
-
-pub(crate) fn needs_you(overview: &Overview) -> usize {
-    overview
-        .sessions
-        .values()
-        .filter(|session| session.status.status == Status::NeedsYou)
-        .count()
-        + overview
-            .missions
-            .iter()
-            .map(|mission| mission.asks.len())
-            .sum::<usize>()
 }
 
 pub(crate) fn device_name(name: &str) -> &str {

@@ -79,7 +79,6 @@ impl NativeRoot {
             .map(|remote| remote.computer.name.clone())
             .or(local_name)
             .unwrap_or_else(|| crate::i18n::text("client.this_computer").into());
-        let badge = self.local_attention_count(cx);
         let owner = cx.weak_entity();
         div()
             .mx_3()
@@ -161,15 +160,6 @@ impl NativeRoot {
                             ),
                         }
                     }))
-                    .children((badge > 0).then(|| {
-                        div()
-                            .rounded_full()
-                            .px_2()
-                            .bg(theme::with_alpha(theme::warning(), 0.15))
-                            .text_color(theme::warning())
-                            .text_size(theme::text_micro())
-                            .child(badge.to_string())
-                    }))
                     .child(icon("chevrons-up-down.svg", theme::faint())),
             )
             .child(
@@ -191,19 +181,6 @@ impl NativeRoot {
             self.client_ui.picker_focus.focus(window, cx);
         }
         cx.notify();
-    }
-    fn local_attention_count(&self, cx: &App) -> usize {
-        let store = self.app_store.read(cx);
-        store
-            .session_statuses
-            .values()
-            .filter(|status| !status.observation.interactions.is_empty())
-            .count()
-            + store
-                .missions
-                .iter()
-                .map(|mission| mission.pending_ask_count)
-                .sum::<usize>()
     }
     pub(crate) fn render_computer_picker(
         &mut self,
@@ -248,29 +225,13 @@ impl NativeRoot {
                     .as_ref()
                     .is_some_and(|remote| remote.computer.id == computer.id)
             };
-            let badge = if computer.is_self {
-                self.local_attention_count(cx)
-            } else {
-                clients
-                    .read(cx)
-                    .overviews
-                    .get(&computer.id)
-                    .map(model::needs_you)
-                    .unwrap_or(0)
-            };
-            let mut detail = if computer.is_self {
+            let detail = if computer.is_self {
                 crate::i18n::text("client.this_computer").into()
             } else if !computer.paired {
                 crate::i18n::text("client.unpaired_picker").into()
             } else {
                 status_label(computer, false)
             };
-            if badge > 0 && !computer.is_self {
-                detail = format!(
-                    "{detail} · {}",
-                    crate::i18n::tf("client.needs_you", &[("count", badge.to_string())])
-                );
-            }
             let trust = self
                 .app_store
                 .read(cx)
@@ -355,16 +316,6 @@ impl NativeRoot {
                                 )
                             }),
                     )
-                    .children((badge > 0).then(|| {
-                        div()
-                            .debug_selector(|| "COMPUTER_PICKER_ROW_BADGE".into())
-                            .rounded_full()
-                            .px_2()
-                            .bg(theme::with_alpha(theme::warning(), 0.15))
-                            .text_color(theme::warning())
-                            .text_size(theme::text_micro())
-                            .child(badge.to_string())
-                    }))
                     .when(selected, |row| {
                         row.child(icon("check.svg", theme::accent()))
                     })

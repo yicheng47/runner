@@ -1347,7 +1347,6 @@
 "client.picker_sign_in" = "登录以查看你的电脑…"
 "client.open_window" = "在新窗口中打开"
 "client.unpaired_picker" = "未配对 · 配对后打开"
-"client.needs_you" = "{count} 项需要你处理"
 "client.connection_live" = "{computer} · 中继 · 已加密"
 "client.connection_opening" = "正在通过中继连接…"
 "client.connection_reconnecting" = "正在重新连接 {computer}…"

@@ -58,6 +58,7 @@ struct Fake {
     enrolls: AtomicUsize,
     computers: Mutex<Vec<Computer>>,
     overview: Mutex<Overview>,
+    overview_calls: AtomicUsize,
     events: Mutex<Vec<futures::channel::mpsc::UnboundedSender<ClientEvent>>>,
     follows: Mutex<Vec<(String, bool)>>,
     pairs: AtomicUsize,
@@ -125,6 +126,7 @@ impl Transport for Fake {
                 Response::remote_follow(Ok(()))
             }
             Request::remote_overview { computer } => {
+                self.overview_calls.fetch_add(1, Ordering::SeqCst);
                 let gate = self.overview_gates.lock().unwrap().remove(&computer);
                 if let Some(gate) = gate {
                     if let Some(started) = self.overview_started.lock().unwrap().as_ref() {
@@ -259,8 +261,6 @@ fn computers() -> Vec<Computer> {
 fn overview() -> Overview {
     serde_json::from_value(serde_json::json!({"projects":[{"id":"p", "name":"Remote project"}], "tabs":[{"id":"remote-tab","project":"p","name":"Remote tab","pinned":true,"panes":{"session":"s"},"shells":[]}],"missions":[{"id":"remote-mission","title":"Remote mission","project":null,"crew":"Duo","state":"running","pinned":false,"members":[],"asks":[],"shells":[]}],"sessions":{"s":{"kind":"chat","title":"Remote session","runtime":"codex","status":"needsYou","reason":"approval","unread":true}}})).unwrap()
 }
-fn fixture(
-    cx: &mut TestAppContext,
 fn sidebar_overview() -> Overview {
     let mut data = overview();
     let mut project_tab = data.tabs[0].clone();
@@ -286,6 +286,8 @@ fn sidebar_overview() -> Overview {
     data.missions.push(project_mission);
     data
 }
+fn fixture(
+    cx: &mut TestAppContext,
     path: &std::path::Path,
 ) -> (Entity<AppStore>, Arc<Fake>, Entity<model::ClientState>) {
     let store = crate::app_store::test_lifecycle_store(cx, path);
@@ -307,6 +309,7 @@ fn sidebar_overview() -> Overview {
         enrolls: AtomicUsize::new(0),
         computers: Mutex::new(computers()),
         overview: Mutex::new(overview()),
+        overview_calls: AtomicUsize::new(0),
         events: Mutex::default(),
         follows: Mutex::default(),
         pairs: AtomicUsize::new(0),
@@ -610,9 +613,6 @@ fn one_pin_request_per_submit_and_every_refusal_is_rendered_without_exposing_pin
     }
 }
 
-#[test]
-fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs() {
-    let _theme = crate::theme_snapshot::ThemeGuard::new();
 #[test]
 fn shared_remote_sidebar_controls_do_not_open_local_creation_or_change_local_state() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
@@ -995,6 +995,9 @@ fn remote_sidebar_uses_session_titles_for_unnamed_tabs_and_tracks_overview_updat
     }
 }
 
+#[test]
+fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
             let temp = tempfile::tempdir().unwrap();
@@ -1194,7 +1197,71 @@ fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
 }
 
 #[test]
-fn signed_out_picker_keeps_local_attention_and_opens_account_without_listing_or_enrolling() {
+fn signed_in_picker_omits_local_and_remote_attention_counters() {
+    use runner_core::protocol::status::{
+        AgentObservation, AgentStatus, HumanInteraction, WaitReason,
+    };
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "no-picker-counters");
+    for remote in [false, true] {
+        if remote {
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.choose_computer(computers()[1].clone(), false, window, cx);
+                })
+                .unwrap();
+        }
+        cx.run_until_parked();
+        store.update(&mut cx, |store, cx| {
+            store.session_statuses.insert(
+                "local-attention".into(),
+                AgentStatus {
+                    observation: AgentObservation {
+                        interactions: vec![HumanInteraction {
+                            id: "local-approval".into(),
+                            reason: WaitReason::Approval,
+                            owners: Vec::new(),
+                            since: 1,
+                        }],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            cx.notify();
+        });
+        clients.update(&mut cx, |clients, cx| {
+            clients.overviews.insert("host".into(), overview());
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        assert_eq!(
+            fake.overview_calls.load(Ordering::SeqCst),
+            usize::from(remote)
+        );
+        let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+        assert!(visual
+            .debug_bounds("COMPUTER_PICKER_TRIGGER_BADGE")
+            .is_none());
+        visual.simulate_click(trigger.center(), Default::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_some());
+        assert_eq!(
+            fake.overview_calls.load(Ordering::SeqCst),
+            usize::from(remote)
+        );
+        assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_none());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+    }
+}
+
+#[test]
+fn signed_out_picker_omits_attention_and_opens_account_without_listing_or_enrolling() {
     use runner_core::protocol::status::{
         AgentObservation, AgentStatus, HumanInteraction, WaitReason,
     };
@@ -1270,7 +1337,10 @@ fn signed_out_picker_keeps_local_attention_and_opens_account_without_listing_or_
                     assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_some());
                     let name = visual.debug_bounds("COMPUTER_PICKER_NAME").unwrap();
                     assert!(name.size.width > px(0.) && name.size.height > px(0.));
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_some());
+                    assert!(visual
+                        .debug_bounds("COMPUTER_PICKER_TRIGGER_BADGE")
+                        .is_none());
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_none());
                     assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_none());
                     assert!(visual.debug_bounds("COMPUTER_PICKER_DETAIL").is_none());
                     assert!(visual.debug_bounds("COMPUTER_PICKER_ERROR").is_none());
@@ -1800,7 +1870,7 @@ fn slow_overview_and_directory_do_not_block_other_computers() {
     });
     let timeout = std::time::Duration::from_secs(5);
     commands
-        .unbounded_send(Command::Preview("host".into()))
+        .unbounded_send(Command::Acquire("host".into()))
         .unwrap();
     assert_eq!(entered.recv_timeout(timeout).unwrap(), "host");
     commands.unbounded_send(Command::Refresh).unwrap();
@@ -1843,10 +1913,16 @@ fn slow_overview_and_directory_do_not_block_other_computers() {
         job.join().unwrap();
     }
     observer.join().unwrap();
-    assert_eq!(
-        fake.follows.lock().unwrap().last(),
-        Some(&("other".into(), false))
-    );
+    let follows = fake.follows.lock().unwrap();
+    for id in ["host", "other"] {
+        assert_eq!(
+            follows
+                .iter()
+                .filter(|(computer, follow)| computer == id && !follow)
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

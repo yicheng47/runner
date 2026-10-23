@@ -1347,7 +1347,6 @@
 "client.picker_sign_in" = "Sign in to see your computers…"
 "client.open_window" = "Open in another window"
 "client.unpaired_picker" = "Not paired · pair to open"
-"client.needs_you" = "{count} need you"
 "client.connection_live" = "{computer} · relay · encrypted"
 "client.connection_opening" = "Connecting through the relay…"
 "client.connection_reconnecting" = "Reconnecting to {computer}…"
