@@ -1344,6 +1344,7 @@
 "client.fingerprint_changed" = "{computer}’s fingerprint changed to {fingerprint}. Check it in {computer}’s Settings first."
 "client.list_hint" = "To let a computer open this one, pick this computer in its sidebar and enter this computer’s PIN. Pair here to open that computer from this one."
 "client.picker_hint" = "Click to switch this window, ⇧-click or the window button for another window, ⋯ to revoke or forget a computer."
+"client.picker_sign_in" = "Sign in to see your computers…"
 "client.open_window" = "Open in another window"
 "client.unpaired_picker" = "Not paired · pair to open"
 "client.needs_you" = "{count} need you"

@@ -58,23 +58,26 @@ impl NativeRoot {
     pub(crate) fn render_computer_trigger(&self, cx: &mut Context<Self>) -> AnyElement {
         let clients = state(&self.app_store, cx);
         let current = self.remote_window.as_ref();
+        let status = self
+            .app_store
+            .read(cx)
+            .remote_status
+            .clone()
+            .unwrap_or_default();
+        let local_name = if crate::surfaces::settings::remote::account::signed_in(&status) {
+            clients
+                .read(cx)
+                .computers
+                .iter()
+                .find(|computer| computer.is_self)
+                .map(|computer| computer.name.clone())
+                .or(status.host_name)
+        } else {
+            None
+        };
         let name = current
             .map(|remote| remote.computer.name.clone())
-            .or_else(|| {
-                clients
-                    .read(cx)
-                    .computers
-                    .iter()
-                    .find(|computer| computer.is_self)
-                    .map(|c| c.name.clone())
-            })
-            .or_else(|| {
-                self.app_store
-                    .read(cx)
-                    .remote_status
-                    .as_ref()
-                    .and_then(|status| status.host_name.clone())
-            })
+            .or(local_name)
             .unwrap_or_else(|| crate::i18n::text("client.this_computer").into());
         let badge = self.local_attention_count(cx);
         let owner = cx.weak_entity();
@@ -212,20 +215,24 @@ impl NativeRoot {
         }
         let anchor = self.client_ui.anchor?;
         let clients = state(&self.app_store, cx);
-        let mut computers = clients.read(cx).computers.clone();
+        let status = self
+            .app_store
+            .read(cx)
+            .remote_status
+            .clone()
+            .unwrap_or_default();
+        let signed_in = crate::surfaces::settings::remote::account::signed_in(&status);
+        let mut computers = if signed_in {
+            clients.read(cx).computers.clone()
+        } else {
+            Vec::new()
+        };
         if !computers.iter().any(|c| c.is_self) {
-            let status = self
-                .app_store
-                .read(cx)
-                .remote_status
-                .clone()
-                .unwrap_or_default();
             computers.insert(
                 0,
                 Computer {
                     id: status.host_id.unwrap_or_default(),
-                    name: status
-                        .host_name
+                    name: if signed_in { status.host_name } else { None }
                         .unwrap_or_else(|| crate::i18n::text("client.this_computer").into()),
                     is_self: true,
                     ..Default::default()
@@ -279,6 +286,9 @@ impl NativeRoot {
                 div()
                     .id(SharedString::from(format!("computer-{}", computer.id)))
                     .debug_selector(|| "COMPUTER_PICKER_ROW".into())
+                    .when(!computer.is_self, |row| {
+                        row.debug_selector(|| "COMPUTER_PICKER_REMOTE_ROW".into())
+                    })
                     .tab_index(0)
                     .flex()
                     .items_center()
@@ -325,6 +335,7 @@ impl NativeRoot {
                             .gap_1()
                             .child(
                                 div()
+                                    .debug_selector(|| "COMPUTER_PICKER_NAME".into())
                                     .truncate()
                                     .font_weight(if selected {
                                         FontWeight::SEMIBOLD
@@ -333,16 +344,20 @@ impl NativeRoot {
                                     })
                                     .child(computer.name.clone()),
                             )
-                            .child(
-                                div()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::faint())
-                                    .truncate()
-                                    .child(detail),
-                            ),
+                            .when(signed_in, |column| {
+                                column.child(
+                                    div()
+                                        .debug_selector(|| "COMPUTER_PICKER_DETAIL".into())
+                                        .text_size(theme::text_meta())
+                                        .text_color(theme::faint())
+                                        .truncate()
+                                        .child(detail),
+                                )
+                            }),
                     )
                     .children((badge > 0).then(|| {
                         div()
+                            .debug_selector(|| "COMPUTER_PICKER_ROW_BADGE".into())
                             .rounded_full()
                             .px_2()
                             .bg(theme::with_alpha(theme::warning(), 0.15))
@@ -385,12 +400,26 @@ impl NativeRoot {
             .shadow_2xl()
             .track_focus(&self.client_ui.picker_focus)
             .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
-                if event.keystroke.key == "escape" {
-                    root.client_ui.picker_open = false;
-                    root.root_focus.focus(window, cx);
-                    cx.stop_propagation();
-                    cx.notify();
+                match event.keystroke.key.as_str() {
+                    "escape" => {
+                        root.client_ui.picker_open = false;
+                        root.root_focus.focus(window, cx);
+                    }
+                    "tab" => {
+                        if event.keystroke.modifiers.shift {
+                            window.focus_prev(cx);
+                        } else {
+                            window.focus_next(cx);
+                        }
+                        if !root.client_ui.picker_focus.contains_focused(window, cx) {
+                            root.client_ui.picker_open = false;
+                            root.root_focus.focus(window, cx);
+                        }
+                    }
+                    _ => return,
                 }
+                cx.stop_propagation();
+                cx.notify();
             }))
             .flex()
             .flex_col()
@@ -404,9 +433,10 @@ impl NativeRoot {
                 menu
             })
             .children(rows)
-            .when(clients.read(cx).action_failed, |menu| {
+            .when(signed_in && clients.read(cx).action_failed, |menu| {
                 menu.child(
                     div()
+                        .debug_selector(|| "COMPUTER_PICKER_ACTION_ERROR".into())
                         .px_2()
                         .py_2()
                         .text_size(theme::text_meta())
@@ -414,7 +444,7 @@ impl NativeRoot {
                         .child(crate::i18n::text("client.action_failed")),
                 )
             })
-            .when(clients.read(cx).directory_error, |menu| {
+            .when(signed_in && clients.read(cx).directory_error, |menu| {
                 menu.child(
                     div()
                         .debug_selector(|| "COMPUTER_PICKER_ERROR".into())
@@ -425,16 +455,48 @@ impl NativeRoot {
                         .child(crate::i18n::text("client.directory_failed")),
                 )
             })
-            .child(
-                div()
-                    .debug_selector(|| "COMPUTER_PICKER_HINT".into())
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .p_2()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text("client.picker_hint")),
-            );
+            .when(signed_in, |menu| {
+                menu.child(
+                    div()
+                        .debug_selector(|| "COMPUTER_PICKER_HINT".into())
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .p_2()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(crate::i18n::text("client.picker_hint")),
+                )
+            })
+            .when(!signed_in, |menu| {
+                menu.child(div().h(px(1.)).bg(theme::border()).my_1())
+                    .child(
+                        div()
+                            .id("computer-picker-sign-in")
+                            .debug_selector(|| "COMPUTER_PICKER_SIGN_IN".into())
+                            .tab_index(0)
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_2()
+                            .py_2()
+                            .rounded(rems(6. / 16.))
+                            .cursor_pointer()
+                            .hover(|row| row.bg(theme::chrome_hover()))
+                            .child(icon("log-in.svg", theme::muted()))
+                            .child(crate::i18n::text("client.picker_sign_in"))
+                            .on_click(cx.listener(|root, _, window, cx| {
+                                root.client_ui.picker_open = false;
+                                root.enter_settings_route(Some("account"), window, cx);
+                            }))
+                            .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    root.client_ui.picker_open = false;
+                                    root.enter_settings_route(Some("account"), window, cx);
+                                    cx.stop_propagation();
+                                }
+                            })),
+                    )
+            });
         Some(popup_layer(
             anchor,
             window,

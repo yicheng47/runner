@@ -354,9 +354,16 @@ pub(super) async fn run_commands(
     spawn(
         async move {
             while refreshes.next().await.is_some() {
-                let _ = directory_updates.unbounded_send(Update::Computers(
-                    directory_client.remote_computers().map_err(|_| ()),
-                ));
+                let computers = match directory_client.remote_status() {
+                    Ok(status)
+                        if crate::surfaces::settings::remote::account::signed_in(&status) =>
+                    {
+                        directory_client.remote_computers().map_err(|_| ())
+                    }
+                    Ok(_) => Ok(Vec::new()),
+                    Err(_) => Err(()),
+                };
+                let _ = directory_updates.unbounded_send(Update::Computers(computers));
             }
         }
         .boxed(),

@@ -37,4 +37,45 @@ The first review found no implementation defect but identified that the regressi
 
 ### Review verdict
 
-On 2026-10-23 the reviewer reported **NO REMAINING MUST-FIX ISSUES** for Problem 1 in Runner message `01M5M09FPTVZ5RYYHA04DX41H1`. Its independent corrected regression and whitespace check both exited 0 (`target/836-reviewer-picker-corrected.log`, `target/836-reviewer-diff-check-corrected.log`). Live checks were skipped under the mission brief and remain Jason’s selected follow-up above. This verdict covers only the transparent-picker fix; the signed-out picker design is pending Jason’s choice, and PR action remains on hold.
+On 2026-10-23 the reviewer reported **NO REMAINING MUST-FIX ISSUES** for Problem 1 in Runner message `01M5M09FPTVZ5RYYHA04DX41H1`. Its independent corrected regression and whitespace check both exited 0 (`target/836-reviewer-picker-corrected.log`, `target/836-reviewer-diff-check-corrected.log`). Live checks were skipped under the mission brief and remain Jason’s selected follow-up above. This verdict covers only the transparent-picker fix; at that point the signed-out picker design choice was pending.
+
+## Problem 2: signed out appears as a refresh failure
+
+Jason’s follow-up screenshot shows the opaque picker displaying a refresh warning while signed out. He requested a normal default dropdown, reviewed three Pencil variants and chose **A** on 2026-10-23. Design: `runner/desktop/specs/836-web-remote-control.pen` in `yeelinks_design`, frame `l2uAX`, **836 · 2.0 Signed-out computer picker · A approved**.
+
+Cause: the picker did not distinguish signed-out presentation from a failed account directory refresh, and the shared directory worker requested `remote_computers` even without an activated account.
+
+Fix: signed out shows a single-line **This computer** row, its local attention badge and a compact **Sign in to see your computers…** row. The action opens Account by mouse or keyboard without beginning enrollment. Cached account computers, access/directory errors and the remote hint are hidden in this state. Directory refreshes, including after local daemon reconnection, check the daemon’s current public account status first and skip listing while signed out. Existing signed-in states and genuine listing failures retain their behavior. No protocol or service contract changes.
+
+### Selected validation
+
+- Fake-driven `signed_out_picker_keeps_local_attention_and_opens_account_without_listing_or_enrolling`: English and Simplified Chinese; unknown status, Off and Stopped with retained account/host metadata; local row, attention badge and no duplicate subtitle; no stale rows/errors/hint; mouse, Tab/Enter and Tab/Space open Account without enrollment; no directory calls on picker opens or daemon reconnection.
+- Fake-driven `account_sign_in_resumes_directory_refresh_and_signed_in_failures_remain_errors`: sign-out and sign-in transitions through Paused, Connecting, Connected and Reconnecting; listing resumes on sign-in and genuine directory failures remain errors.
+- Fake-driven `picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal`: signed-in and signed-out pickers; forward/reverse boundary traversal dismisses and returns focus to the workspace root; Escape works after internal traversal, and subsequent Enter/Space do not activate underlying controls.
+- Re-run the opaque-panel regression to retain signed-in error rendering, geometry and material coverage; run the brief’s required workspace gates. No CLI help changes.
+- Live checks remain Jason’s: while signed out, open the picker and see only the local row and sign-in action; retain the local attention badge; activate sign-in by mouse or keyboard and reach Account; after signing in, see account computers and retain a real directory-error warning when a refresh fails. Neither crew slot operates the live apps.
+
+### Results
+
+| Check | Exit code | Evidence |
+| --- | --- | --- |
+| Signed-out regression before the fix | 100 (expected failure) | `target/836-signed-out-before.log`: an additional `remote_computers` call occurred |
+| Final focused regressions | 0 | `target/836-signed-out-final-focused.log`: 3 passed |
+| `env -u CLAUDE_CONFIG_DIR cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci` | 0 | `target/836-signed-out-nextest.log`: 2,739 passed, 6 skipped |
+| Workspace Clippy, warnings denied | 0 | `target/836-signed-out-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-signed-out-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-signed-out-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-signed-out-diff-check.log` |
+| Remote-client regressions after the Tab-boundary correction | 0 | `target/836-picker-tab-after.log`: 20 passed |
+| Workspace nextest after the Tab-boundary correction | 100 | `target/836-picker-tab-nextest.log`: 2,739 passed, 1 failed, 6 skipped; isolated retry below |
+| Isolated retry of daemon model-query fixture | 0 | `target/836-picker-tab-model-query-retry.log`: `concurrent_refreshes_share_one_query_and_obsolete_results_are_discarded` passed |
+| Clippy, with and without updater, after the Tab-boundary correction | 0 each | `target/836-picker-tab-clippy.log`, `target/836-picker-tab-clippy-updater.log` |
+| Formatting and whitespace after the Tab-boundary correction | 0 each | `target/836-picker-tab-fmt-check.log`, `target/836-picker-tab-diff-check.log` |
+
+Intermediate runs `target/836-signed-out-after.log` and `target/836-signed-out-fixed.log` exited 100 while the new test’s local-attention fixture was being corrected: a window/settings snapshot replaces manually seeded status, so each activation now has a fresh window and seeds attention after startup. The final test verifies a nonzero local name and badge before activating sign-in. The workspace suite for that candidate passes, including the OpenCode fixture that failed in the earlier Problem 1 run; that earlier failure remains preserved above.
+
+The next review found a P2 in the new Tab handler: GPUI’s global focus traversal could leave the picker open while focus moved to the background. The boundary regression reproduces it (`target/836-picker-tab-before.log`, exit 100). The correction dismisses the picker and restores workspace-root focus whenever Tab or Shift-Tab leaves its focus subtree. The remote-client tests, both Clippy configurations, formatting and whitespace pass for the correction. Its workspace run hit an unrelated 30-second `query did not finish` failure in `runner-daemon`’s `runtime_status::models::tests::process_tests::concurrent_refreshes_share_one_query_and_obsolete_results_are_discarded` at `runtime_status/models/tests.rs:183`; an isolated retry passed without code changes. This final workspace run is recorded as failed, not a clean full-suite pass.
+
+### Whole-diff review verdict
+
+On 2026-10-23 the reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete working-tree diff, including both problems and the keyboard correction, in Runner message `01M5M1ZP3EC21KVJZ07G5M3N81`. Its independent panel, signed-out and boundary regressions passed (3 tests, exit 0, `target/836-reviewer-tab-corrected.log`), as did whitespace validation (exit 0, `target/836-reviewer-tab-diff-check.log`). The reviewer skipped live checks under the brief and left the selected rechecks to Jason. The clean review authorizes the brief’s commit/push/PR workflow against `nightly-remote`; macOS and Windows CI must be green before the PR is called ready.

@@ -10,7 +10,7 @@ use runner_core::{
         },
         ClientError, ClientEvent, EventError, EventSubscription, Request, Response, Transport,
     },
-    remote::{PairedDevice, RemoteTerminal},
+    remote::{PairedDevice, RemoteAccount, RemoteState, RemoteStatus, RemoteTerminal, StopReason},
 };
 use std::{
     future::Future,
@@ -53,6 +53,9 @@ impl TerminalSubscription for Frames {
 }
 struct Fake {
     base: runner_daemon::daemon::InProcessTransport,
+    status: Mutex<RemoteStatus>,
+    directory_calls: AtomicUsize,
+    enrolls: AtomicUsize,
     computers: Mutex<Vec<Computer>>,
     overview: Mutex<Overview>,
     events: Mutex<Vec<futures::channel::mpsc::UnboundedSender<ClientEvent>>>,
@@ -95,7 +98,15 @@ impl Fake {
 impl Transport for Fake {
     fn call(&self, request: Request) -> Result<Response, ClientError> {
         Ok(match request {
+            Request::remote_status {} => {
+                Response::remote_status(Ok(self.status.lock().unwrap().clone()))
+            }
+            Request::remote_enroll_start { .. } => {
+                self.enrolls.fetch_add(1, Ordering::SeqCst);
+                Response::remote_enroll_start(Err(ClientError::msg("test enrollment refused")))
+            }
             Request::remote_computers {} => {
+                self.directory_calls.fetch_add(1, Ordering::SeqCst);
                 let gate = self.directory_gate.lock().unwrap().take();
                 if let Some(gate) = gate {
                     if let Some(started) = self.directory_started.lock().unwrap().as_ref() {
@@ -263,6 +274,12 @@ fn fixture(
         base: runner_daemon::daemon::InProcessTransport(
             store.read_with(cx, |store, _| store.test_core.clone()),
         ),
+        status: Mutex::new(RemoteStatus {
+            state: RemoteState::Paused,
+            ..Default::default()
+        }),
+        directory_calls: AtomicUsize::new(0),
+        enrolls: AtomicUsize::new(0),
         computers: Mutex::new(computers()),
         overview: Mutex::new(overview()),
         events: Mutex::default(),
@@ -294,6 +311,9 @@ fn fixture(
     });
     clients.update(cx, |clients, cx| clients.refresh(cx));
     cx.run_until_parked();
+    store.update(cx, |store, _| {
+        store.remote_status = Some(fake.status.lock().unwrap().clone());
+    });
     (store, fake, clients)
 }
 fn add_window(
@@ -763,6 +783,235 @@ fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
                 }
             }
         });
+    }
+}
+
+#[test]
+fn signed_out_picker_keeps_local_attention_and_opens_account_without_listing_or_enrolling() {
+    use runner_core::protocol::status::{
+        AgentObservation, AgentStatus, HumanInteraction, WaitReason,
+    };
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            for remote_state in [
+                None,
+                Some(RemoteState::Off),
+                Some(RemoteState::Stopped {
+                    reason: StopReason::Removed,
+                }),
+            ] {
+                for activation in ["click", "enter", "space"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut cx = TestAppContext::single();
+                    let (store, fake, clients) = fixture(&mut cx, temp.path());
+                    let status = RemoteStatus {
+                        state: remote_state.clone().unwrap_or_default(),
+                        host_id: Some("old-host".into()),
+                        host_name: Some("Old computer name".into()),
+                        account: Some(RemoteAccount {
+                            username: "old-account".into(),
+                            display_name: "Old account".into(),
+                        }),
+                        ..Default::default()
+                    };
+                    *fake.status.lock().unwrap() = status.clone();
+                    fake.fail_directory.store(true, Ordering::SeqCst);
+                    store.update(&mut cx, |store, _| {
+                        store.remote_status = remote_state.as_ref().map(|_| status.clone());
+                    });
+                    let calls = fake.directory_calls.load(Ordering::SeqCst);
+                    let window = add_window(&mut cx, &store, temp.path(), "signed-out-picker");
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    visual.run_until_parked();
+                    store.update(&mut visual, |store, cx| {
+                        store.session_statuses.insert(
+                            "local-attention".into(),
+                            AgentStatus {
+                                observation: AgentObservation {
+                                    interactions: vec![HumanInteraction {
+                                        id: "local-approval".into(),
+                                        reason: WaitReason::Approval,
+                                        owners: Vec::new(),
+                                        since: 1,
+                                    }],
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                        );
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    window
+                        .update(&mut visual, |root, _, cx| {
+                            root.route = AppRoute::Chat;
+                            cx.notify();
+                        })
+                        .unwrap();
+                    visual.run_until_parked();
+                    let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+                    visual.simulate_click(trigger.center(), Default::default());
+                    visual.run_until_parked();
+                    clients.update(&mut visual, |clients, cx| {
+                        clients.directory_error = true;
+                        clients.action_failed = true;
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_some());
+                    let name = visual.debug_bounds("COMPUTER_PICKER_NAME").unwrap();
+                    assert!(name.size.width > px(0.) && name.size.height > px(0.));
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_some());
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_none());
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_DETAIL").is_none());
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_ERROR").is_none());
+                    assert!(visual
+                        .debug_bounds("COMPUTER_PICKER_ACTION_ERROR")
+                        .is_none());
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_HINT").is_none());
+                    let sign_in = visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").unwrap();
+                    if activation == "click" {
+                        visual.simulate_click(sign_in.center(), Default::default());
+                    } else {
+                        visual.simulate_keystrokes(&format!("tab tab {activation}"));
+                    }
+                    visual.run_until_parked();
+                    assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                    assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
+                    window
+                        .read_with(&visual, |root, _| {
+                            assert!(
+                                root.settings_page.pane
+                                    == crate::surfaces::settings_page::SettingsPane::Account
+                            );
+                        })
+                        .unwrap();
+                    assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
+                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                    fake.emit("daemon/reconnected", serde_json::json!({}));
+                    visual.run_until_parked();
+                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn account_sign_in_resumes_directory_refresh_and_signed_in_failures_remain_errors() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (_, fake, clients) = fixture(&mut cx, temp.path());
+    for remote_state in [
+        RemoteState::Paused,
+        RemoteState::Connecting { attempt: 1 },
+        RemoteState::Connected {
+            since: chrono::Utc::now(),
+        },
+        RemoteState::Reconnecting {
+            attempt: 1,
+            next_retry_at: chrono::Utc::now(),
+        },
+    ] {
+        let off = RemoteStatus::default();
+        *fake.status.lock().unwrap() = off.clone();
+        fake.emit("remote/status", serde_json::to_value(off).unwrap());
+        cx.run_until_parked();
+        let calls = fake.directory_calls.load(Ordering::SeqCst);
+        clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+        fake.emit("daemon/reconnected", serde_json::json!({}));
+        cx.run_until_parked();
+        assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+        clients.read_with(&cx, |clients, _| assert!(clients.computers.is_empty()));
+
+        let status = RemoteStatus {
+            state: remote_state,
+            ..Default::default()
+        };
+        *fake.status.lock().unwrap() = status.clone();
+        fake.fail_directory.store(false, Ordering::SeqCst);
+        fake.emit("remote/status", serde_json::to_value(status).unwrap());
+        cx.run_until_parked();
+        assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls + 1);
+        clients.read_with(&cx, |clients, _| {
+            assert_eq!(clients.computers.len(), 2);
+            assert!(!clients.directory_error);
+        });
+        fake.fail_directory.store(true, Ordering::SeqCst);
+        clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+        cx.run_until_parked();
+        clients.read_with(&cx, |clients, _| assert!(clients.directory_error));
+    }
+}
+
+#[test]
+fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for signed in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        if !signed {
+            *fake.status.lock().unwrap() = RemoteStatus::default();
+            store.update(&mut cx, |store, _| {
+                store.remote_status = Some(RemoteStatus::default())
+            });
+        }
+        let window = add_window(&mut cx, &store, temp.path(), "picker-focus");
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, _, cx| {
+                root.route = AppRoute::Chat;
+                cx.notify();
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+        visual.simulate_click(trigger.center(), Default::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("tab escape");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+        for direction in ["tab", "shift-tab"] {
+            visual.simulate_click(trigger.center(), Default::default());
+            visual.run_until_parked();
+            let mut dismissed = false;
+            for _ in 0..16 {
+                visual.simulate_keystrokes(direction);
+                visual.run_until_parked();
+                dismissed = window
+                    .update(&mut visual, |root, window, cx| {
+                        if root.client_ui.picker_open {
+                            assert!(
+                                root.client_ui.picker_focus.contains_focused(window, cx),
+                                "focus left an open computer picker"
+                            );
+                            false
+                        } else {
+                            assert!(root.root_focus.is_focused(window));
+                            true
+                        }
+                    })
+                    .unwrap();
+                if dismissed {
+                    break;
+                }
+            }
+            assert!(dismissed, "Tab traversal did not reach the picker boundary");
+            visual.simulate_keystrokes("escape enter space");
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+            assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_none());
+            window
+                .read_with(&visual, |root, _| assert_eq!(root.route, AppRoute::Chat))
+                .unwrap();
+            assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
+            assert_eq!(fake.pairs.load(Ordering::SeqCst), 0);
+        }
     }
 }
 
