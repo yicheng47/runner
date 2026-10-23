@@ -22,7 +22,7 @@ Everything that matters happens between the two ends, inside an encrypted **chan
 Because the relay is only a route, two consequences follow:
 
 - **Each end reconnects itself.** When the service restarts for a deploy, both WebSockets close. The host's `runnerd` reconnects after a random 1–10 seconds (`remote/machine.rs`, `Retry::Restart`); the client reconnects on its own as well and opens a fresh channel once its host is back. Pairing, keys and sessions survive; only the channel's session keys, the scroll position and anything typed during the gap are lost.
-- **The route is replaceable.** Phase 4 carries the same channel over Tailscale, from one Runner straight to the other, and the service is not involved at all. Nothing above the route changes.
+- **The route is replaceable.** A later Tailscale route ([#954](https://github.com/yicheng47/runner/issues/954)) would carry the same channel, from one Runner straight to the other, and the service is not involved at all. Nothing above the route changes.
 
 ## 2. The layers: what wraps what
 
@@ -106,11 +106,13 @@ sequenceDiagram
     Note over C: it decrypts, so the host knew the PIN:<br/>keep the host's key
 ```
 
-Three details are easy to miss:
+Five details are easy to miss:
 
 - **The client trusts the host's key only after the host's first `data` frame decrypts.** Message 2 carries a static key before any PIN has entered the handshake, so on its own it proves nothing. Only a host that derived the same ISK can produce a frame the client can open.
 - **A failed authentication counts as a wrong PIN.** The host cannot tell a wrong PIN from a tampered message, so both count toward the lock. Malformed frames and invalid points do not (`channels.rs`, `authorize`).
 - **Attempts are serialized.** The host checks the lock again before reading each `pairFinish` and reads them one at a time, so five parallel attempts cannot slip past the fifth failure.
+- **Weak PINs remain a user choice.** Shared detection identifies repeated single digits, ascending/descending runs and a short list of common PINs. Settings and the CLI warn that the PIN could be guessed within five tries, then require an explicit confirmation to keep it. The host validates only the six-digit ASCII format; no confirmation flag or new wire field is introduced. CPace still allows one online guess per attempt.
+- **Pending pairings are invalidated.** Set PIN, disabling remote access, sign-out and identity reset advance a generation checked before `pairFinish` and after the trust save. Before an invalidating command saves its other changes or reports success, the ordered trust writer durably removes unconfirmed devices and prevents older snapshots from restoring them. Save failure reports an error and restarts the remote task. This protects a fresh process loading trust from disk as well as delayed completions within the process; the generation stays distinct across remote-task restarts. Already authenticated channels remain usable after a PIN change.
 
 Code: `channel/cpace.rs`; `channel/handshake.rs`, `HostPair::start` and `HostPair::finish` for the host, `BrowserPair` for the client; `runner-daemon/src/remote/channels.rs`, `authorize`, for the lock and recording the device.
 
@@ -128,7 +130,7 @@ sequenceDiagram
     Note over C,H: transport keys ready; data frames follow
 ```
 
-`IK`'s first message is encrypted to the host's static key, and it carries the client's static key, which the host looks up in `remote-trust.json`. Two failures share one answer, `unknownDevice`: Revoke removed the client's key from the list, or Reset identity gave the host a new key, so the client's message no longer decrypts. Either way the client forgets its keys for that host and offers to pair again.
+`IK`'s first message is encrypted to the host's static key, and it carries the client's static key, which the host looks up in `remote-trust.json`. Two failures share one answer, `unknownDevice`: Revoke removed the client's key from the list, or Reset identity gave the host a new key, so the client's message no longer decrypts. This rejection is plaintext and unauthenticated, so a relay can forge it. The client keeps its saved keys, reports that this computer was not recognized, and offers explicit Pair again after fingerprint verification. Only Forget or submitting Pair again removes the saved key.
 
 Code: `channel/handshake.rs`, `connect` for the host and `BrowserConnect` for the client.
 

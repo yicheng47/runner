@@ -243,7 +243,7 @@ impl Client {
         .map_err(Into::into)
     }
     pub async fn pair(&self, id: String, pin: Secret) -> Result<()> {
-        super::trust::validate_pin(&pin.0)?;
+        remote::validate_pin_format(&pin.0).map_err(|error| error.message())?;
         let computer = self.computer(&id).await?;
         let _pairing = self.0.pairing.lock().await;
         if self.keys().await?.0.contains_key(&computer.fingerprint) {

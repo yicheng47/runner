@@ -18,6 +18,7 @@ impl Sample for crate::remote::RemoteOverview {
             tabs: Vec::new(),
             missions: Vec::new(),
             sessions: BTreeMap::new(),
+            sidebar: None,
         })
     }
 }

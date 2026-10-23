@@ -726,7 +726,10 @@ impl MissionWorkspace {
                             .size(rems(12. / 16.))
                             .text_color(theme::muted()),
                     )
-                    .child(format_relative_time(mission.started_at)),
+                    .child(runner_app::text_util::format_relative_time(
+                        mission.started_at,
+                        Utc::now(),
+                    )),
             ))
             .child(
                 div()
@@ -922,24 +925,4 @@ fn tracked_uppercase(label: &str) -> String {
         .map(|character| character.to_string())
         .collect::<Vec<_>>()
         .join("\u{2009}")
-}
-
-fn format_relative_time(started_at: chrono::DateTime<Utc>) -> String {
-    let minutes = Utc::now()
-        .signed_duration_since(started_at)
-        .num_minutes()
-        .max(0);
-    if minutes < 1 {
-        crate::i18n::text("ui.just_now").into()
-    } else if minutes < 60 {
-        crate::i18n::tnf("format.minute_ago", (minutes) as usize, &[])
-    } else {
-        let hours = minutes / 60;
-        if hours < 24 {
-            crate::i18n::tnf("format.hour_ago", (hours) as usize, &[])
-        } else {
-            let days = hours / 24;
-            crate::i18n::tnf("format.day_ago", (days) as usize, &[])
-        }
-    }
 }

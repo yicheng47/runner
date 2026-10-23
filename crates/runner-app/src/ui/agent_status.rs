@@ -877,6 +877,7 @@ impl StatusRollup {
         };
         let glyph = if Self::priority(status) == 2 {
             div()
+                .debug_selector(|| "STATUS_ROLLUP_UNREAD_DOT".into())
                 .size(rems(6. / 16.))
                 .rounded_full()
                 .bg(theme::accent())
@@ -885,6 +886,14 @@ impl StatusRollup {
             status_glyph(attention_presentation(status), (id.clone(), "glyph"))
         };
         let indicator = div()
+            .debug_selector({
+                let label = if Self::priority(status) == 2 {
+                    "Unread".into()
+                } else {
+                    format!("{:?}", attention_presentation(status).kind)
+                };
+                move || format!("STATUS_ROLLUP:{label}")
+            })
             .flex_none()
             .flex()
             .items_center()

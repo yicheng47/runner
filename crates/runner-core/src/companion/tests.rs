@@ -41,6 +41,8 @@ const HOST_FIXTURES: &[&str] = &[
     "error_failed",
     "unsupported_version",
     "overview_push",
+    "overview_without_sidebar",
+    "unknown_sidebar_kind",
     "status",
     "feed_appended",
     "snapshot",
@@ -96,6 +98,32 @@ fn round_trip<T: DeserializeOwned + Serialize>(name: &str) {
         serde_json::to_value(value).unwrap(),
         fixture(name),
         "{name}"
+    );
+}
+
+#[test]
+fn overview_sidebar_nodes_are_optional_and_preserve_order_metadata() {
+    let HostMessage::Overview(old) = decode("overview_without_sidebar") else {
+        panic!("overview expected")
+    };
+    assert!(old.sidebar.is_none());
+    let current: Overview =
+        serde_json::from_value(fixture("result_overview")["result"].clone()).unwrap();
+    let nodes = current.sidebar.unwrap();
+    assert_eq!(nodes.len(), 3);
+    assert_eq!(nodes[0].kind, SidebarNodeKind::Project);
+    assert_eq!(
+        nodes[1].parent.as_deref(),
+        Some("01KZ0000000000000000000000")
+    );
+    assert_eq!(nodes[1].position, 1);
+    assert_eq!(nodes[2].pinned_position, Some(0));
+    let HostMessage::Overview(future) = decode("unknown_sidebar_kind") else {
+        panic!("overview expected")
+    };
+    assert_eq!(
+        future.sidebar.unwrap()[3].kind,
+        SidebarNodeKind::Unrecognized("futureKind".into())
     );
 }
 

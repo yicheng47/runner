@@ -70,19 +70,10 @@ fn seen_time(value: &str) -> String {
     let Ok(time) = chrono::DateTime::parse_from_rfc3339(value) else {
         return value.into();
     };
-    let minutes = chrono::Utc::now()
-        .signed_duration_since(time)
-        .num_minutes()
-        .max(0) as usize;
-    if minutes == 0 {
-        crate::i18n::text("ui.just_now").into()
-    } else if minutes < 60 {
-        crate::i18n::tnf("format.minute_ago", minutes, &[])
-    } else if minutes < 1440 {
-        crate::i18n::tnf("format.hour_ago", minutes / 60, &[])
-    } else {
-        crate::i18n::tnf("format.day_ago", minutes / 1440, &[])
-    }
+    runner_app::text_util::format_relative_time(
+        time.with_timezone(&chrono::Utc),
+        chrono::Utc::now(),
+    )
 }
 
 impl NativeRoot {
@@ -181,18 +172,7 @@ impl NativeRoot {
         let clients = state(&self.app_store, cx);
         let mut computers = clients.read(cx).computers.clone();
         if !computers.iter().any(|computer| computer.is_self) {
-            computers.insert(
-                0,
-                Computer {
-                    id: status.host_id.clone().unwrap_or_default(),
-                    name: status
-                        .host_name
-                        .clone()
-                        .unwrap_or_else(|| crate::i18n::text("client.this_computer").into()),
-                    is_self: true,
-                    ..Default::default()
-                },
-            );
+            computers.insert(0, model::this_computer(status, true));
         }
         let rows = computer_rows(&computers, trust);
         let count = rows.len();

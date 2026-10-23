@@ -1,11 +1,9 @@
 use super::elements::attention_indicator;
 use super::elements::chat_tab_row_active;
 use super::elements::empty_sidebar_label;
-use super::elements::pin_indicator;
 use super::elements::project_row_action;
 use super::elements::project_row_label;
 use super::elements::sidebar_icon;
-use super::elements::sidebar_row_label;
 use super::elements::sidebar_row_shell;
 use super::elements::sidebar_row_trailing_slot;
 use super::elements::sidebar_tab_target;
@@ -23,7 +21,7 @@ use runner_app::ui::Tooltip;
 use runner_core::protocol::mission::MissionSummary;
 use runner_core::protocol::node::{NodeRow, NodeType};
 
-pub(super) fn project_header_icon(collapsed: bool) -> ChatIcon {
+pub(crate) fn project_header_icon(collapsed: bool) -> ChatIcon {
     ChatIcon::generic(if collapsed {
         "folder.svg"
     } else {
@@ -149,15 +147,17 @@ impl Sidebar {
                     ),
                 )
             };
-            sidebar_row_shell(
+            sidebar_item_row(
                 SharedString::from(format!("sidebar-tab-{}", node.id)),
-                active,
-                false,
+                &SidebarItemView {
+                    title: label.clone(),
+                    icon: leaf_icon,
+                    live,
+                    selected: active,
+                    pinned: node.pinned_position.is_some(),
+                },
             )
-            .children(node.pinned_position.is_some().then(pin_indicator))
             .when(!live, |row| row.text_color(theme::faint()))
-            .child(sidebar_icon(leaf_icon, live))
-            .child(sidebar_row_label(label.clone(), active, false))
             .child(trailing)
             .on_hover({
                 let id = node.id.clone();
@@ -282,14 +282,16 @@ impl Sidebar {
                     cx,
                 ))
             };
-            sidebar_row_shell(
+            sidebar_item_row(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
-                active,
-                false,
+                &SidebarItemView {
+                    title: label.clone(),
+                    icon: ChatIcon::mission(),
+                    live: summary.any_session_live,
+                    selected: active,
+                    pinned: node.pinned_position.is_some(),
+                },
             )
-            .children(node.pinned_position.is_some().then(pin_indicator))
-            .child(sidebar_icon(ChatIcon::mission(), summary.any_session_live))
-            .child(sidebar_row_label(label.clone(), active, false))
             .child(trailing)
             .on_hover({
                 let id = node.id.clone();
@@ -557,14 +559,7 @@ impl Sidebar {
             .gap(rems(2. / 16.))
             .child(header_wrap)
             .children((!collapsed).then(|| {
-                div()
-                    .ml_3()
-                    .pl_2()
-                    .flex()
-                    .flex_col()
-                    .gap(rems(2. / 16.))
-                    .border_l_1()
-                    .border_color(theme::chrome_border())
+                project_children()
                     .children(if nested.is_empty() {
                         if self.dragged_id.is_some() {
                             vec![self.render_empty_project_drop_area(node.id.clone(), cx)]

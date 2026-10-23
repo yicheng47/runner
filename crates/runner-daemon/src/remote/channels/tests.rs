@@ -1,7 +1,7 @@
 use super::super::trust::Trust;
 use super::super::{
     machine::{Command, Effect, Input},
-    store::Identity,
+    store::{Identity, MemoryStore, SecretStore},
 };
 use super::*;
 use channel::{BrowserConnect, BrowserPair};
@@ -17,6 +17,70 @@ struct Relay {
     events: crate::events::EventChannel,
 }
 impl Relay {
+    async fn command_persisted(
+        &mut self,
+        command: Command,
+        store: Arc<dyn SecretStore>,
+    ) -> Result<(), String> {
+        let writes = std::sync::OnceLock::from(self.writes.clone());
+        let clock = Clock::default();
+        let effects = super::super::apply_input(
+            &mut self.machine,
+            Input::Command(command),
+            &clock,
+            self.root.path(),
+            &writes,
+        )
+        .await
+        .map_err(|error| match error {
+            super::super::ApplyError::Command(error) => error,
+            super::super::ApplyError::Persistence(error) => error.into(),
+        })?;
+        transition(&mut self.routes, &mut self.machine, &effects, None);
+        let tx = super::super::Snapshots {
+            status: tokio::sync::watch::channel(self.machine.status.clone()).0,
+            trust: tokio::sync::watch::channel(self.machine.trust()).0,
+        };
+        super::super::perform(
+            &mut self.machine,
+            effects,
+            &mut None,
+            &super::super::transport::client().map_err(str::to_owned)?,
+            &store,
+            self.root.path(),
+            &self.events,
+            &tx,
+            &clock,
+            &writes,
+        )
+        .await
+        .map_err(str::to_owned)?;
+        Ok(())
+    }
+
+    async fn saved_pending_pair(&mut self, id: u32) -> Completion {
+        let browser = self.pair_start(id, "012345").await;
+        let response = self.frame(id).await;
+        let (_, finish, _) = browser.finish(&response, "pending browser").unwrap();
+        let instance = self.routes.as_ref().unwrap().entries[&id].instance;
+        let (reply, _) = oneshot::channel();
+        self.routes.as_mut().unwrap().handle(
+            Event::Handshake {
+                channel: id,
+                instance,
+                frame: finish,
+                reply,
+            },
+            &mut self.machine,
+            self.root.path(),
+            &Clock::default(),
+            &self.events,
+        );
+        let completion = self.writes.next().await;
+        assert!(completion.saved);
+        completion
+    }
+
     fn new() -> Self {
         Self::with_core(Arc::new(crate::companion::tests::Fake::default()))
     }
@@ -151,6 +215,280 @@ impl Relay {
             revoke.as_deref(),
         )
     }
+}
+
+#[tokio::test]
+async fn invalidating_commands_remove_pending_trust_before_a_fresh_daemon_load() {
+    for action in ["pin", "pause", "logout", "reset"] {
+        let mut relay = Relay::new();
+        let store = Arc::new(MemoryStore::default());
+        relay
+            .machine
+            .identity
+            .as_ref()
+            .unwrap()
+            .save(store.as_ref())
+            .unwrap();
+        let (mut confirmed, _) = relay.pair_finish(1, "012345").await;
+        relay.hello(1, &mut confirmed).await;
+        let _completion = relay.saved_pending_pair(2).await;
+        let command = match action {
+            "pin" => Command::SetPin(Secret("019438".into())),
+            "pause" => Command::Pause(true),
+            "logout" => Command::Logout,
+            _ => Command::ResetIdentity(Identity::generate().unwrap()),
+        };
+        relay
+            .command_persisted(command, store.clone())
+            .await
+            .unwrap();
+        assert_fresh_load_refuses_pending_pair(&relay, store.as_ref(), action != "reset");
+    }
+}
+
+fn assert_fresh_load_refuses_pending_pair(
+    relay: &Relay,
+    store: &dyn SecretStore,
+    keeps_confirmed: bool,
+) {
+    let (mut machine, _) = Machine::restore(
+        super::super::persistence::Saved::load(relay.root.path()).unwrap(),
+        None,
+        chrono::Utc::now(),
+    );
+    machine.identity = Identity::load(store).unwrap();
+    machine.trust = Trust::load(relay.root.path()).unwrap();
+    let writes = Arc::new(TrustWrites::default());
+    let mut channels = Channels::new(writes.clone(), relay.companion.clone());
+    let host = machine.identity.as_ref().unwrap().host_key().unwrap();
+    for (device, allowed) in [(2, false), (1, keeps_confirmed)] {
+        let id = u32::from(device) + 20;
+        channels.open(id, &machine).unwrap();
+        let (_, connect) = BrowserConnect::start(
+            NoiseKeys {
+                private: &[device; 32],
+                fixed_ephemeral: None,
+            },
+            &host.public,
+        )
+        .unwrap();
+        let result = authorize(
+            channels.entries.get_mut(&id).unwrap(),
+            &connect,
+            &mut machine,
+            &Clock::default(),
+            &mut false,
+            &writes.unconfirmed.lock().unwrap(),
+        );
+        if allowed {
+            assert!(matches!(result, Ok((Some(_), _, _))));
+        } else {
+            assert!(matches!(result, Err(Reject::UnknownDevice)));
+        }
+    }
+    assert_eq!(machine.trust.devices.len(), usize::from(keeps_confirmed));
+}
+
+#[tokio::test]
+async fn pin_change_waits_for_pending_trust_removal_before_saving_the_pin() {
+    use std::future::Future;
+    let mut relay = Relay::new();
+    let store = Arc::new(MemoryStore::default());
+    relay
+        .machine
+        .identity
+        .as_ref()
+        .unwrap()
+        .save(store.as_ref())
+        .unwrap();
+    let (mut confirmed, _) = relay.pair_finish(1, "012345").await;
+    relay.hello(1, &mut confirmed).await;
+    let _completion = relay.saved_pending_pair(2).await;
+    let writes = relay.writes.clone();
+    let issued = writes.issued.load(Ordering::Relaxed);
+    let mut command =
+        Box::pin(relay.command_persisted(Command::SetPin(Secret("019438".into())), store.clone()));
+    {
+        let _held = writes.saved.lock().unwrap();
+        let waker = futures_util::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(command.as_mut().poll(&mut cx).is_pending());
+        assert!(writes.issued.load(Ordering::Relaxed) > issued);
+        assert!(
+            Identity::load(store.as_ref())
+                .unwrap()
+                .unwrap()
+                .pin
+                .unwrap()
+                .0
+                == "012345"
+        );
+    }
+    command.await.unwrap();
+    assert_fresh_load_refuses_pending_pair(&relay, store.as_ref(), true);
+}
+
+#[tokio::test]
+async fn failed_pending_trust_removal_does_not_report_pin_change_success() {
+    let mut relay = Relay::new();
+    let store = Arc::new(MemoryStore::default());
+    relay
+        .machine
+        .identity
+        .as_ref()
+        .unwrap()
+        .save(store.as_ref())
+        .unwrap();
+    let (mut confirmed, _) = relay.pair_finish(1, "012345").await;
+    relay.hello(1, &mut confirmed).await;
+    let completion = relay.saved_pending_pair(2).await;
+    let path = relay.root.path().join("remote-trust.json");
+    let held = relay.root.path().join("held-trust.json");
+    std::fs::rename(&path, &held).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    let result = relay
+        .command_persisted(Command::SetPin(Secret("019438".into())), store.clone())
+        .await;
+    assert!(result.is_err());
+    assert!(
+        Identity::load(store.as_ref())
+            .unwrap()
+            .unwrap()
+            .pin
+            .unwrap()
+            .0
+            == "012345"
+    );
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&held, &path).unwrap();
+    relay
+        .command_persisted(Command::SetPin(Secret("019438".into())), store.clone())
+        .await
+        .unwrap();
+    assert_fresh_load_refuses_pending_pair(&relay, store.as_ref(), true);
+    relay.writes.complete(
+        completion,
+        relay.routes.as_mut(),
+        &mut relay.machine,
+        relay.root.path(),
+        &relay.events,
+    );
+    assert_fresh_load_refuses_pending_pair(&relay, store.as_ref(), true);
+}
+
+#[tokio::test]
+async fn pending_pairing_cannot_finish_after_pin_change_pause_or_identity_reset() {
+    for action in ["pin", "pause", "reset"] {
+        let mut relay = Relay::new();
+        let browser = relay.pair_start(1, "012345").await;
+        let response = relay.frame(1).await;
+        let (_, finish, _) = browser.finish(&response, "pending browser").unwrap();
+        let command = match action {
+            "pin" => Command::SetPin(Secret("019438".into())),
+            "pause" => Command::Pause(true),
+            _ => Command::ResetIdentity(Identity::generate().unwrap()),
+        };
+        relay
+            .machine
+            .step(Input::Command(command), chrono::Utc::now(), &mut || 0)
+            .unwrap();
+        let entry = relay.routes.as_mut().unwrap().entries.get_mut(&1).unwrap();
+        let mut paired = false;
+        let result = authorize(
+            entry,
+            &finish,
+            &mut relay.machine,
+            &Clock::default(),
+            &mut paired,
+            &HashMap::new(),
+        );
+        assert!(matches!(result, Err(Reject::BadHandshake)));
+        assert!(!paired);
+        assert!(relay.machine.trust.devices.is_empty());
+        assert_eq!(relay.machine.trust.failed_pins, 0);
+    }
+}
+
+#[tokio::test]
+async fn pending_pairing_save_cannot_grant_access_after_pin_change_pause_or_identity_reset() {
+    for action in ["pin", "pause", "reset", "restart"] {
+        let mut relay = Relay::new();
+        let mut events = relay.events.subscribe();
+        let browser = relay.pair_start(1, "012345").await;
+        let response = relay.frame(1).await;
+        let (_, finish, _) = browser.finish(&response, "pending browser").unwrap();
+        let instance = relay.routes.as_ref().unwrap().entries[&1].instance;
+        let (reply, decision) = oneshot::channel();
+        relay.routes.as_mut().unwrap().handle(
+            Event::Handshake {
+                channel: 1,
+                instance,
+                frame: finish,
+                reply,
+            },
+            &mut relay.machine,
+            relay.root.path(),
+            &Clock::default(),
+            &relay.events,
+        );
+        let completion = relay.writes.next().await;
+        let command = match action {
+            "pin" | "restart" => Command::SetPin(Secret("019438".into())),
+            "pause" => Command::Pause(true),
+            _ => Command::ResetIdentity(Identity::generate().unwrap()),
+        };
+        relay.command(command);
+        if action == "restart" {
+            relay.routes = None;
+            let old = std::mem::take(&mut relay.machine);
+            let (mut restored, _) = Machine::restore(old.saved, old.secrets, chrono::Utc::now());
+            restored.identity = old.identity;
+            restored.trust = old.trust;
+            relay.machine = restored;
+        }
+        relay.writes.complete(
+            completion,
+            relay.routes.as_mut(),
+            &mut relay.machine,
+            relay.root.path(),
+            &relay.events,
+        );
+        if action == "pin" {
+            assert!(matches!(
+                decision.await.unwrap(),
+                Decision::Reject(Reject::BadHandshake)
+            ));
+        }
+        assert!(relay.machine.trust.devices.is_empty());
+        assert!(events.try_recv().is_err());
+        relay
+            .writes
+            .save(relay.machine.trust.clone(), relay.root.path().into())
+            .await
+            .unwrap();
+        assert!(Trust::load(relay.root.path()).unwrap().devices.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn pin_change_preserves_authenticated_channels_and_new_pin_pairs_successfully() {
+    let mut relay = Relay::new();
+    let (mut first, _) = relay.pair_finish(1, "012345").await;
+    assert_eq!(relay.hello(1, &mut first).await["type"], "welcome");
+    let before = relay.machine.trust.devices.clone();
+    assert!(relay
+        .command(Command::SetPin(Secret("019438".into())))
+        .is_empty());
+    assert!(relay.machine.trust.devices == before);
+    assert!(relay.routes.as_ref().unwrap().entries[&1].ready);
+    first
+        .queue(br#"{"type":"overview","id":1}"#.to_vec())
+        .unwrap();
+    relay.flush(1, &mut first);
+    assert_eq!(relay.message(1, &mut first).await["type"], "result");
+    let (mut second, _) = relay.pair_finish(2, "019438").await;
+    assert_eq!(relay.hello(2, &mut second).await["type"], "welcome");
+    assert_eq!(relay.machine.trust.devices.len(), 2);
 }
 
 #[tokio::test]
@@ -655,7 +993,7 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
         crate::events::EventChannel::new(),
     );
     handle.set_companion_core(Arc::new(crate::companion::tests::Fake::default()));
-    handle.set_pin(Secret("012345".into())).await.unwrap();
+    handle.set_pin(Secret("019438".into())).await.unwrap();
     let (host_io, peer_io) = tokio::io::duplex(remote::MAX_RELAY_SIZE * 2);
     let mut peer = WebSocketStream::from_raw_socket(peer_io, Role::Server, None).await;
     let host = transport::socket(
@@ -681,7 +1019,7 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
             private: &[1; 32],
             fixed_ephemeral: None,
         },
-        "012345",
+        "019438",
         [2; 16],
         [3; 32],
     )

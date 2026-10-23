@@ -5,6 +5,14 @@ use super::{
 };
 use chrono::{DateTime, Duration, Utc};
 use runner_core::remote::{self, *};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Trust-save completions outlive the remote task, so its generation cannot restart at zero.
+static PAIRING_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_pairing_generation() -> u64 {
+    PAIRING_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Debug)]
 pub enum Command {
@@ -86,6 +94,7 @@ pub struct Machine {
     pub host: HostInfo,
     pub identity: Option<Identity>,
     pub trust: super::trust::Trust,
+    pub(super) pairing_generation: u64,
     pub status: RemoteStatus,
     pub saved: Option<Saved>,
     pub secrets: Option<Secrets>,
@@ -119,6 +128,7 @@ impl Machine {
         let mut m = Self {
             saved,
             secrets,
+            pairing_generation: next_pairing_generation(),
             ..Self::default()
         };
         let mut effects = Vec::new();
@@ -323,6 +333,7 @@ impl Machine {
                         s.paused = paused;
                         effects.push(Effect::Save);
                         if paused {
+                            self.pairing_generation = next_pairing_generation();
                             self.status.state = RemoteState::Paused;
                             self.deadline = (!s.activated).then_some(s.claim_expires_at);
                             effects.push(Effect::Close);
@@ -362,6 +373,7 @@ impl Machine {
                             .as_mut()
                             .ok_or("Host identity is unavailable")?
                             .pin = Some(pin);
+                        self.pairing_generation = next_pairing_generation();
                         effects.push(Effect::SaveIdentity);
                     }
                     Command::UnlockPin => {
@@ -703,6 +715,7 @@ impl Machine {
         self.last_frame = None;
     }
     fn logout(&mut self, effects: &mut Vec<Effect>) {
+        self.pairing_generation = next_pairing_generation();
         effects.push(Effect::Close);
         if let Some(s) = &self.secrets {
             effects.push(Effect::Delete(self.status.origin.clone()));

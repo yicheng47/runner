@@ -4,7 +4,7 @@ use runner_core::{
     protocol::DaemonClient,
     remote::{RemoteLogout, RemoteState, RemoteStatus, RemoteTrust, Secret},
 };
-use std::io::{IsTerminal, Write};
+use std::io::{BufRead, IsTerminal, Write};
 
 #[derive(Debug, Subcommand)]
 pub enum RemoteCommand {
@@ -406,18 +406,41 @@ fn read_pin() -> Result<Secret, ClientError> {
         .map_err(|_| ClientError::Protocol("Could not read PIN".into()))?;
     let confirmation = rpassword::prompt_password("Repeat PIN: ")
         .map_err(|_| ClientError::Protocol("Could not read PIN confirmation".into()))?;
-    confirmed_pin(pin, confirmation)
+    let pin = confirmed_pin(pin, confirmation)?;
+    confirm_weak_pin(
+        pin,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stderr().lock(),
+    )
 }
 fn confirmed_pin(pin: String, confirmation: String) -> Result<Secret, ClientError> {
     if pin != confirmation {
         return Err(ClientError::Refused("The PINs do not match.".into()));
     }
-    if pin.len() != 6 || !pin.bytes().all(|c| c.is_ascii_digit()) {
-        return Err(ClientError::Refused(
-            "The PIN must be exactly six digits.".into(),
-        ));
-    }
+    runner_core::remote::validate_pin_format(&pin)
+        .map_err(|error| ClientError::Refused(error.message().into()))?;
     Ok(Secret(pin))
+}
+fn confirm_weak_pin(
+    pin: Secret,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<Secret, ClientError> {
+    if !runner_core::remote::is_weak_pin(&pin.0) {
+        return Ok(pin);
+    }
+    writeln!(output, "Warning: this PIN could be guessed within five tries.\n警告：此 PIN 可能在五次尝试内被猜中。")
+        .and_then(|_| write!(output, "Use this PIN anyway? / 仍然使用？ [y/N]: "))
+        .and_then(|_| output.flush())
+        .map_err(|_| ClientError::Protocol("Could not display PIN warning".into()))?;
+    let mut answer = String::new();
+    input
+        .read_line(&mut answer)
+        .map_err(|_| ClientError::Protocol("Could not read PIN confirmation".into()))?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Err(ClientError::Refused("PIN was not changed.".into()));
+    }
+    Ok(pin)
 }
 fn print_status(s: &RemoteStatus, trust: &RemoteTrust) {
     let state = match &s.state {
@@ -559,6 +582,9 @@ mod tests {
     }
     #[test]
     fn pin_confirmation_validates_without_echoing_the_input() {
+        for pin in ["000000", "123456", "111111", "121212", "654321"] {
+            assert!(confirmed_pin(pin.into(), pin.into()).unwrap().0 == pin);
+        }
         assert_eq!(
             confirmed_pin("001234".into(), "001234".into()).unwrap().0,
             "001234"
@@ -591,6 +617,32 @@ mod tests {
         let value = status_with_trust(&RemoteStatus::default(), &RemoteTrust::default());
         assert_eq!(value["state"]["kind"], "off");
         assert_eq!(value["trust"]["pin_set"], false);
+    }
+
+    #[test]
+    fn weak_pin_cli_warning_requires_explicit_confirmation_without_echoing_the_pin() {
+        for answer in ["", "\n", "n\n", "no\n", "yes\n", "Y\n"] {
+            let mut output = Vec::new();
+            let result = confirm_weak_pin(
+                Secret("121212".into()),
+                &mut std::io::Cursor::new(answer),
+                &mut output,
+            );
+            let accepted = matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+            assert_eq!(result.is_ok(), accepted);
+            let warning = String::from_utf8(output).unwrap();
+            assert!(warning.contains("five tries") && warning.contains("五次尝试"));
+            assert!(!warning.contains("121212"));
+            match result {
+                Ok(pin) => assert!(pin.0 == "121212"),
+                Err(error) => assert!(!error.to_string().contains("121212")),
+            }
+        }
+        let mut input = std::io::Cursor::new("n\n");
+        let mut output = Vec::new();
+        assert!(confirm_weak_pin(Secret("019438".into()), &mut input, &mut output).is_ok());
+        assert!(output.is_empty());
+        assert_eq!(input.position(), 0);
     }
     #[test]
     fn only_person_at_two_terminals_can_login() {
@@ -630,6 +682,7 @@ mod computer_tests {
                             tabs: vec![],
                             missions: vec![],
                             sessions: Default::default(),
+                            sidebar: None,
                         },
                     )))
                 }
