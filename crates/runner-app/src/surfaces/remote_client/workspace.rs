@@ -1,6 +1,10 @@
 use super::*;
+use crate::surfaces::sidebar::{self, SidebarItemView};
+use crate::surfaces::sidebar_logic::SidebarTree;
 use runner_app::ui::button::spinner;
-use runner_core::companion::{Overview, Pane, SplitDirection, Status};
+use runner_core::companion::{
+    Overview, Pane, SidebarNode, SidebarNodeKind, SplitDirection, Status,
+};
 use runner_core::remote::RemoteTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -37,6 +41,11 @@ pub(crate) struct RemoteWindow {
     pub(super) connection: Connection,
     epoch: u64,
     wake: futures::channel::mpsc::UnboundedSender<String>,
+    sidebar_scroll: ScrollHandle,
+    sidebar_scrollbar: Entity<Scrollbar>,
+    collapsed_projects: HashSet<String>,
+    sidebar_projects_open: bool,
+    sidebar_recents_open: bool,
 }
 impl Drop for RemoteWindow {
     fn drop(&mut self) {
@@ -154,6 +163,9 @@ impl NativeRoot {
             .get(&computer.id)
             .copied()
             .unwrap_or_default();
+        let sidebar_scroll = ScrollHandle::new();
+        let scroll_owner = cx.entity_id();
+        let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
         self.remote_window = Some(RemoteWindow {
             computer,
             _follow: follow,
@@ -170,6 +182,11 @@ impl NativeRoot {
             connection: Connection::Opening,
             epoch,
             wake,
+            sidebar_scroll,
+            sidebar_scrollbar,
+            collapsed_projects: HashSet::new(),
+            sidebar_projects_open: true,
+            sidebar_recents_open: true,
         });
         self.client_ui.picker_open = false;
         self.attached.clear();
@@ -405,112 +422,90 @@ impl NativeRoot {
         let remote = self.remote_window.as_ref().unwrap();
         let clients = state(&self.app_store, cx);
         let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
-        let mut content = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .child(
-                div()
-                    .px_5()
-                    .pb_3()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .opacity(0.35)
-                    .children(
-                        [
-                            ("message-square-plus.svg", "ui.new_chat"),
-                            ("user.svg", "noun.role"),
-                            ("users.svg", "noun.crew"),
-                        ]
-                        .map(|(glyph, key)| {
-                            div()
-                                .debug_selector(|| "REMOTE_DISABLED_CREATE".into())
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(icon(glyph, theme::muted()))
-                                .child(crate::i18n::text(key))
-                        }),
-                    ),
-            )
-            .child(div().mx_4().h(px(1.)).bg(theme::border()));
-        let mut rows = div()
-            .id("remote-sidebar-scroll")
-            .overflow_y_scroll()
-            .flex_1()
-            .min_h_0()
-            .px_3()
-            .py_3()
-            .flex()
-            .flex_col()
-            .gap_1();
+        let mut scroll =
+            sidebar::sidebar_scroll_container("remote-sidebar-scroll", &remote.sidebar_scroll);
         if let Some(overview) = overview.as_ref() {
-            rows = rows.child(section(crate::i18n::text("heading.projects")));
-            for project in &overview.projects {
-                rows = rows.child(
-                    div()
-                        .px_2()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .text_color(theme::muted())
-                        .child(icon("folder.svg", theme::muted()))
-                        .child(project.name.clone()),
-                );
-                for tab in overview
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.project.as_deref() == Some(&project.id))
-                {
-                    rows = rows.child(self.remote_sidebar_row(
-                        &tab.name,
-                        Item::Tab(tab.id.clone()),
-                        tab_attention(&tab.panes, overview),
-                        cx,
-                    ));
-                }
-                for mission in overview
-                    .missions
-                    .iter()
-                    .filter(|mission| mission.project.as_deref() == Some(&project.id))
-                {
-                    rows = rows.child(self.remote_sidebar_row(
-                        &mission.title,
-                        Item::Mission(mission.id.clone()),
-                        mission.asks.len(),
-                        cx,
-                    ));
-                }
-            }
-            rows = rows.child(section(crate::i18n::text("client.recent")));
-            for tab in overview.tabs.iter().filter(|tab| tab.project.is_none()) {
-                rows = rows.child(self.remote_sidebar_row(
-                    &tab.name,
-                    Item::Tab(tab.id.clone()),
-                    tab_attention(&tab.panes, overview),
-                    cx,
-                ));
-            }
-            rows = rows.child(section(crate::i18n::text("client.missions")));
-            for mission in overview
-                .missions
+            let tree = remote_sidebar_tree(overview);
+            let pinned = tree
+                .pinned
                 .iter()
-                .filter(|mission| mission.project.is_none())
-            {
-                rows = rows.child(self.remote_sidebar_row(
-                    &mission.title,
-                    Item::Mission(mission.id.clone()),
-                    mission.asks.len(),
-                    cx,
-                ));
+                .filter_map(|node| self.render_remote_sidebar_node(node, overview, cx))
+                .collect::<Vec<_>>();
+            let has_pinned = !pinned.is_empty();
+            if has_pinned {
+                scroll = scroll
+                    .child(sidebar::section_title(crate::i18n::text("heading.pinned")))
+                    .child(
+                        div()
+                            .px_3()
+                            .pt_1()
+                            .flex()
+                            .flex_col()
+                            .gap(rems(2. / 16.))
+                            .children(pinned),
+                    );
+            }
+            scroll = scroll.child(div().when(has_pinned, |row| row.mt_5()).child(
+                sidebar::sidebar_section_header(
+                    "remote-projects-section".into(),
+                    crate::i18n::text("heading.projects"),
+                    remote.sidebar_projects_open,
+                    div().into_any_element(),
+                    cx.listener(|root, _, _, cx| {
+                        if let Some(remote) = root.remote_window.as_mut() {
+                            remote.sidebar_projects_open = !remote.sidebar_projects_open;
+                            cx.notify();
+                        }
+                    }),
+                ),
+            ));
+            if remote.sidebar_projects_open {
+                let mut projects = div().px_3().pt_1().flex().flex_col().gap(rems(2. / 16.));
+                for node in &tree.projects {
+                    if let Some(project) = overview
+                        .projects
+                        .iter()
+                        .find(|project| project.id == node.id)
+                    {
+                        projects = projects
+                            .child(self.render_remote_project(project, overview, &tree, cx));
+                    }
+                }
+                if tree.projects.is_empty() {
+                    projects = projects.child(sidebar::empty_sidebar_label(crate::i18n::text(
+                        "ui.no_projects_yet",
+                    )));
+                }
+                scroll = scroll.child(projects);
+            }
+            scroll = scroll.child(div().mt_5().child(sidebar::sidebar_section_header(
+                "remote-recents-section".into(),
+                crate::i18n::text("heading.recents"),
+                remote.sidebar_recents_open,
+                div().into_any_element(),
+                cx.listener(|root, _, _, cx| {
+                    if let Some(remote) = root.remote_window.as_mut() {
+                        remote.sidebar_recents_open = !remote.sidebar_recents_open;
+                        cx.notify();
+                    }
+                }),
+            )));
+            if remote.sidebar_recents_open {
+                let mut recent = div().px_3().pt_1().flex().flex_col().gap(rems(2. / 16.));
+                for node in tree.children(None) {
+                    if let Some(row) = self.render_remote_sidebar_node(node, overview, cx) {
+                        recent = recent.child(row);
+                    }
+                }
+                if tree.children(None).next().is_none() {
+                    recent =
+                        recent.child(sidebar::empty_sidebar_label(crate::i18n::text("ui.empty")));
+                }
+                scroll = scroll.child(recent);
             }
         } else {
             for width in [160., 200., 130., 170.] {
-                rows = rows.child(
+                scroll = scroll.child(
                     div()
                         .mx_2()
                         .my_2()
@@ -522,8 +517,136 @@ impl NativeRoot {
                 );
             }
         }
-        content = content.child(rows);
-        content.into_any_element()
+        let workspace = [
+            sidebar::workspace_new_chat_row(None, false, |_, _| {}),
+            sidebar::workspace_row(
+                "remote-workspace-role",
+                "user.svg",
+                crate::i18n::text("noun.role"),
+                false,
+                false,
+                |_, _| {},
+            ),
+            sidebar::workspace_row(
+                "remote-workspace-crew",
+                "users.svg",
+                crate::i18n::text("noun.crew"),
+                false,
+                false,
+                |_, _| {},
+            ),
+        ]
+        .map(|row| {
+            div()
+                .debug_selector(|| "REMOTE_DISABLED_CREATE".into())
+                .child(row)
+                .into_any_element()
+        });
+        sidebar::sidebar_contents(
+            workspace,
+            sidebar::sidebar_scroll_frame()
+                .child(scroll)
+                .child(remote.sidebar_scrollbar.clone())
+                .into_any_element(),
+        )
+        .into_any_element()
+    }
+    fn toggle_remote_project(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(remote) = self.remote_window.as_mut() {
+            if !remote.collapsed_projects.remove(id) {
+                remote.collapsed_projects.insert(id.to_owned());
+            }
+            cx.notify();
+        }
+    }
+    fn render_remote_sidebar_node(
+        &self,
+        node: &SidebarNode,
+        overview: &Overview,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        match node.kind {
+            SidebarNodeKind::Tab => {
+                let tab = overview.tabs.iter().find(|tab| tab.id == node.id)?;
+                Some(self.remote_sidebar_row(
+                    &tab_title(tab, overview),
+                    Item::Tab(tab.id.clone()),
+                    tab_attention(&tab.panes, overview),
+                    cx,
+                ))
+            }
+            SidebarNodeKind::Mission => {
+                let mission = overview
+                    .missions
+                    .iter()
+                    .find(|mission| mission.id == node.id)?;
+                Some(self.remote_sidebar_row(
+                    &mission.title,
+                    Item::Mission(mission.id.clone()),
+                    mission.asks.len(),
+                    cx,
+                ))
+            }
+            _ => None,
+        }
+    }
+    fn render_remote_project(
+        &self,
+        project: &runner_core::companion::Project,
+        overview: &Overview,
+        tree: &SidebarTree,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let collapsed = self
+            .remote_window
+            .as_ref()
+            .unwrap()
+            .collapsed_projects
+            .contains(&project.id);
+        let click_id = project.id.clone();
+        let key_id = project.id.clone();
+        let header = sidebar::sidebar_row_shell(
+            format!("remote-project-{}", project.id).into(),
+            false,
+            false,
+        )
+        .debug_selector({
+            let id = project.id.clone();
+            move || format!("REMOTE_PROJECT:{id}")
+        })
+        .tab_index(0)
+        .child(icon(
+            if collapsed {
+                "chevron-right.svg"
+            } else {
+                "chevron-down.svg"
+            },
+            theme::muted(),
+        ))
+        .child(sidebar::sidebar_icon(
+            sidebar::project_header_icon(collapsed),
+            true,
+        ))
+        .child(sidebar::project_row_label(project.name.clone()))
+        .on_click(cx.listener(move |root, _, _, cx| root.toggle_remote_project(&click_id, cx)))
+        .on_key_down(cx.listener(move |root, event: &KeyDownEvent, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                root.toggle_remote_project(&key_id, cx);
+                cx.stop_propagation();
+            }
+        }));
+        let mut body = div().flex().flex_col().gap(rems(2. / 16.)).child(header);
+        if !collapsed {
+            let mut rows = tree
+                .children(Some(&project.id))
+                .filter_map(|node| self.render_remote_sidebar_node(node, overview, cx))
+                .collect::<Vec<_>>();
+            if rows.is_empty() {
+                rows.push(sidebar::empty_sidebar_label(crate::i18n::text("ui.empty")));
+            }
+            body = body.child(sidebar::project_children().children(rows));
+        }
+        body.into_any_element()
     }
     fn remote_sidebar_row(
         &self,
@@ -541,100 +664,112 @@ impl NativeRoot {
             Item::Mission(id) => format!("remote-mission-{id}"),
             Item::Shell(id) => format!("remote-shell-{id}"),
         };
-        let (working, unread, needs_input, stopped) = {
-            let clients = state(&self.app_store, cx);
-            let overview = self
-                .remote_window
-                .as_ref()
-                .and_then(|remote| clients.read(cx).overviews.get(&remote.computer.id));
-            let mut ids = Vec::new();
-            if let Some(overview) = overview {
-                match &item {
-                    Item::Tab(id) => {
-                        if let Some(tab) = overview.tabs.iter().find(|tab| &tab.id == id) {
-                            session_ids(&tab.panes, &mut ids);
-                        }
-                    }
-                    Item::Mission(id) => {
-                        if let Some(mission) =
-                            overview.missions.iter().find(|mission| &mission.id == id)
-                        {
-                            ids.extend(mission.members.iter().map(|member| member.session.clone()));
-                        }
-                    }
-                    Item::Shell(id) => ids.push(id.clone()),
-                }
-                let statuses = ids
-                    .iter()
-                    .filter_map(|id| overview.sessions.get(id))
-                    .map(|session| &session.status)
-                    .collect::<Vec<_>>();
-                (
-                    statuses
-                        .iter()
-                        .any(|s| matches!(s.status, Status::Working | Status::Starting)),
-                    statuses.iter().any(|s| s.unread),
-                    attention > 0 || statuses.iter().any(|s| s.status == Status::NeedsYou),
-                    !statuses.is_empty()
-                        && statuses
-                            .iter()
-                            .all(|s| matches!(s.status, Status::Stopped | Status::Error)),
-                )
-            } else {
-                (false, false, attention > 0, false)
-            }
+        let mut glyph = match &item {
+            Item::Mission(_) => ChatIcon::mission(),
+            Item::Shell(_) => ChatIcon::for_runtime("shell"),
+            Item::Tab(_) => ChatIcon::generic("message-square.svg"),
         };
-        div()
-            .id(SharedString::from(key))
-            .debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
-            .tab_index(0)
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .rounded(rems(6. / 16.))
-            .bg(if selected {
-                theme::chrome_selected()
-            } else {
-                gpui::transparent_black()
-            })
-            .cursor_pointer()
-            .hover(|row| row.bg(theme::chrome_hover()))
-            .on_click(cx.listener({
-                let item = item.clone();
-                move |root, _, _, cx| root.select_remote_item(item.clone(), cx)
-            }))
-            .on_key_down(cx.listener(move |root, event: &KeyDownEvent, _, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    root.select_remote_item(item.clone(), cx);
-                    cx.stop_propagation();
+        let mut pinned = false;
+        let (working, unread, needs_input, stopped) =
+            {
+                let clients = state(&self.app_store, cx);
+                let overview = self
+                    .remote_window
+                    .as_ref()
+                    .and_then(|remote| clients.read(cx).overviews.get(&remote.computer.id));
+                let mut ids = Vec::new();
+                if let Some(overview) = overview {
+                    match &item {
+                        Item::Tab(id) => {
+                            if let Some(tab) = overview.tabs.iter().find(|tab| &tab.id == id) {
+                                session_ids(&tab.panes, &mut ids);
+                                pinned = tab.pinned;
+                                glyph =
+                                    if matches!(tab.panes, Pane::Split { .. }) {
+                                        ChatIcon::split()
+                                    } else {
+                                        let session =
+                                            ids.iter().find_map(|id| overview.sessions.get(id));
+                                        ChatIcon::for_runtime(session.and_then(|session| {
+                                    if session.kind == runner_core::companion::SessionKind::Shell {
+                                        Some("shell")
+                                    } else {
+                                        session.runtime.as_deref()
+                                    }
+                                }).unwrap_or_default())
+                                    };
+                            }
+                        }
+                        Item::Mission(id) => {
+                            if let Some(mission) =
+                                overview.missions.iter().find(|mission| &mission.id == id)
+                            {
+                                pinned = mission.pinned;
+                                ids.extend(
+                                    mission.members.iter().map(|member| member.session.clone()),
+                                );
+                            }
+                        }
+                        Item::Shell(id) => ids.push(id.clone()),
+                    }
+                    let statuses = ids
+                        .iter()
+                        .filter_map(|id| overview.sessions.get(id))
+                        .map(|session| &session.status)
+                        .collect::<Vec<_>>();
+                    (
+                        statuses
+                            .iter()
+                            .any(|s| matches!(s.status, Status::Working | Status::Starting)),
+                        statuses.iter().any(|s| s.unread),
+                        attention > 0 || statuses.iter().any(|s| s.status == Status::NeedsYou),
+                        !statuses.is_empty()
+                            && statuses
+                                .iter()
+                                .all(|s| matches!(s.status, Status::Stopped | Status::Error)),
+                    )
+                } else {
+                    (false, false, attention > 0, false)
                 }
-            }))
-            .child(icon("message-square.svg", theme::muted()))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .font_weight(if unread {
-                        FontWeight::SEMIBOLD
-                    } else {
-                        FontWeight::NORMAL
-                    })
-                    .text_color(if stopped {
-                        theme::faint()
-                    } else {
-                        theme::text()
-                    })
-                    .child(name.to_string()),
-            )
-            .children(needs_input.then(|| icon("hand.svg", theme::warning())))
-            .children(
-                (working && !needs_input)
-                    .then(|| spinner("remote-sidebar-working", 12., theme::muted())),
-            )
-            .into_any_element()
+            };
+        sidebar::sidebar_item_row(
+            key.into(),
+            &SidebarItemView {
+                title: name.to_owned(),
+                icon: glyph,
+                live: !stopped,
+                selected,
+                pinned,
+            },
+        )
+        .debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
+        .tab_index(0)
+        .when(stopped, |row| row.text_color(theme::faint()))
+        .on_click(cx.listener({
+            let item = item.clone();
+            move |root, _, _, cx| root.select_remote_item(item.clone(), cx)
+        }))
+        .on_key_down(cx.listener(move |root, event: &KeyDownEvent, _, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                root.select_remote_item(item.clone(), cx);
+                cx.stop_propagation();
+            }
+        }))
+        .child(
+            sidebar::sidebar_row_trailing_slot()
+                .children(needs_input.then(|| icon("hand.svg", theme::warning())))
+                .children(
+                    (working && !needs_input)
+                        .then(|| spinner("remote-sidebar-working", 12., theme::muted())),
+                )
+                .children((unread && !working && !needs_input).then(|| {
+                    div()
+                        .size(rems(5. / 16.))
+                        .rounded_full()
+                        .bg(theme::accent())
+                })),
+        )
+        .into_any_element()
     }
     pub(crate) fn render_remote_connection(&self, _cx: &mut Context<Self>) -> AnyElement {
         let remote = self.remote_window.as_ref().unwrap();
@@ -692,7 +827,7 @@ impl NativeRoot {
                     .tabs
                     .iter()
                     .find(|tab| &tab.id == id)
-                    .map(|tab| tab.name.clone()),
+                    .map(|tab| tab_title(tab, overview)),
                 Item::Mission(id) => overview
                     .missions
                     .iter()
@@ -714,6 +849,10 @@ impl NativeRoot {
             .child(
                 div()
                     .h(rems(44. / 16.))
+                    .debug_selector({
+                        let title = title.clone();
+                        move || format!("REMOTE_WORKSPACE_TITLE:{title}")
+                    })
                     .flex_none()
                     .flex()
                     .items_center()
@@ -1315,14 +1454,67 @@ impl NativeRoot {
             .into_any_element()
     }
 }
-fn section(title: &str) -> gpui::Div {
-    div()
-        .px_2()
-        .pt_4()
-        .pb_2()
-        .text_size(theme::text_meta())
-        .text_color(theme::faint())
-        .child(title.to_string())
+fn remote_sidebar_tree(overview: &Overview) -> SidebarTree {
+    let nodes = overview.sidebar.clone().unwrap_or_else(|| {
+        let mut nodes = overview
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(position, project)| SidebarNode {
+                kind: SidebarNodeKind::Project,
+                id: project.id.clone(),
+                parent: None,
+                position: position as i64,
+                pinned_position: None,
+            })
+            .collect::<Vec<_>>();
+        for (position, tab) in overview.tabs.iter().enumerate() {
+            nodes.push(SidebarNode {
+                kind: SidebarNodeKind::Tab,
+                id: tab.id.clone(),
+                parent: tab.project.clone(),
+                position: position as i64,
+                pinned_position: tab.pinned.then_some(position as i64),
+            });
+        }
+        for (position, mission) in overview.missions.iter().enumerate() {
+            let position = (overview.tabs.len() + position) as i64;
+            nodes.push(SidebarNode {
+                kind: SidebarNodeKind::Mission,
+                id: mission.id.clone(),
+                parent: mission.project.clone(),
+                position,
+                pinned_position: mission.pinned.then_some(position),
+            });
+        }
+        nodes
+    });
+    SidebarTree::new(nodes)
+}
+
+fn tab_title(tab: &runner_core::companion::Tab, overview: &Overview) -> String {
+    if !tab.name.is_empty() {
+        return tab.name.clone();
+    }
+    let mut ids = Vec::new();
+    session_ids(&tab.panes, &mut ids);
+    ids.iter()
+        .find_map(|id| overview.sessions.get(id))
+        .map(|session| {
+            if !session.title.is_empty() {
+                session.title.clone()
+            } else if session.kind == runner_core::companion::SessionKind::Shell {
+                crate::i18n::text("ui.terminal").into()
+            } else {
+                session
+                    .runtime
+                    .as_deref()
+                    .and_then(runner_core::Runtime::parse)
+                    .map(|runtime| runtime.display_name().to_owned())
+                    .unwrap_or_else(|| crate::i18n::text("ui.new_chat").into())
+            }
+        })
+        .unwrap_or_else(|| crate::i18n::text("ui.empty_tab").into())
 }
 fn tab_attention(pane: &Pane, overview: &Overview) -> usize {
     let mut ids = Vec::new();

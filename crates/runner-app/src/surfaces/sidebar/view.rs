@@ -5,18 +5,16 @@ use super::elements::workspace_row;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{
-    attention_rollups, indicator_visible, take_drag_state, DropKind,
+    attention_rollups, indicator_visible, take_drag_state, DropKind, SidebarTree,
 };
 use crate::*;
-use gpui::{svg, FontWeight};
-use runner_core::protocol::node::NodeType;
 
 // Shared with the layout probe so the production flex constraints stay under test.
-pub(super) fn sidebar_scroll_frame() -> gpui::Div {
+pub(crate) fn sidebar_scroll_frame() -> gpui::Div {
     div().relative().min_h(px(0.)).flex_1().flex().flex_col()
 }
 
-pub(super) fn sidebar_scroll_container(
+pub(crate) fn sidebar_scroll_container(
     id: &'static str,
     scroll: &gpui::ScrollHandle,
 ) -> gpui::Stateful<gpui::Div> {
@@ -30,6 +28,40 @@ pub(super) fn sidebar_scroll_container(
         .overflow_y_scroll()
         .scrollbar_width(px(0.))
         .track_scroll(scroll)
+}
+
+pub(crate) fn sidebar_contents(
+    workspace_rows: impl IntoIterator<Item = AnyElement>,
+    scroll: AnyElement,
+) -> gpui::Div {
+    div()
+        .min_h(px(0.))
+        .flex_1()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .pb_3()
+        .child(
+            crate::platform_ui::sidebar_section().child(
+                div()
+                    .px_3()
+                    .pb_1()
+                    .flex()
+                    .flex_col()
+                    .gap(rems(2. / 16.))
+                    .children(workspace_rows),
+            ),
+        )
+        .child(
+            div()
+                .mx_4()
+                .mb_4()
+                .mt(rems(10. / 16.))
+                .h(px(1.))
+                .flex_none()
+                .bg(theme::chrome_selected_border()),
+        )
+        .child(scroll)
 }
 
 impl Sidebar {
@@ -67,25 +99,29 @@ impl Sidebar {
         );
         if !active_only {
             let rows = self.resolved_sidebar_rows(cx);
-            let mut pinned = rows
+            let tree = SidebarTree::from_local(&self.app_store.read(cx).nodes);
+            let resolve = |id: &str| rows.iter().find(|row| row.node().id == id).cloned();
+            let pinned = tree
+                .pinned
                 .iter()
-                .filter(|row| row.node().pinned_position.is_some())
-                .cloned()
+                .filter_map(|node| resolve(&node.id))
                 .collect::<Vec<_>>();
-            pinned.sort_by_key(|row| row.node().pinned_position);
             let has_pinned = !pinned.is_empty();
-            let root_rows = self.scope_rows(&rows, None);
-            let project_nodes = self
-                .app_store
-                .read(cx)
-                .nodes
+            let root_rows = tree
+                .children(None)
+                .filter_map(|node| resolve(&node.id))
+                .collect::<Vec<_>>();
+            let project_nodes = tree
+                .projects
                 .iter()
-                .filter(|node| {
-                    node.parent_id.is_none()
-                        && node.pinned_position.is_none()
-                        && node.node_type == NodeType::Project
+                .filter_map(|project| {
+                    self.app_store
+                        .read(cx)
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == project.id)
+                        .cloned()
                 })
-                .cloned()
                 .collect::<Vec<_>>();
             let tab_index_by_node = self.tab_index_by_node.clone();
             let rollups = attention_rollups(
@@ -201,7 +237,10 @@ impl Sidebar {
                                                 node.ref_id.as_deref() == Some(project.id.as_str())
                                             })?
                                             .clone();
-                                        let nested = self.scope_rows(&rows, Some(&node.id));
+                                        let nested = tree
+                                            .children(Some(&node.id))
+                                            .filter_map(|node| resolve(&node.id))
+                                            .collect();
                                         let attention = rollups
                                             .get(&Some(node.id.clone()))
                                             .copied()
@@ -237,70 +276,32 @@ impl Sidebar {
                     .flex_1()
                     .flex()
                     .flex_col()
-                    .child(
+                    .child(sidebar_section_header(
+                        "toggle-chats-section".into(),
+                        crate::i18n::text("heading.recents"),
+                        chats_open,
                         div()
-                            .px_5()
-                            .pb(rems(6. / 16.))
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id("toggle-chats-section")
-                                    .group("sidebar-chats-section")
-                                    .min_w(px(0.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(rems(6. / 16.))
-                                    .cursor_pointer()
-                                    .text_color(theme::faint())
-                                    .hover(|header| header.text_color(theme::muted()))
-                                    .child(
-                                        div()
-                                            .min_w(px(0.))
-                                            .text_size(theme::text_ui())
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(crate::i18n::text("heading.recents")),
-                                    )
-                                    .child(
-                                        svg()
-                                            .flex_none()
-                                            .path(if chats_open {
-                                                "chevron-down.svg"
-                                            } else {
-                                                "chevron-right.svg"
-                                            })
-                                            .size(rems(10. / 16.))
-                                            .text_color(theme::faint())
-                                            .group_hover("sidebar-chats-section", |icon| {
-                                                icon.text_color(theme::muted())
-                                            }),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let open = !this.settings(cx).sidebar_chats_open;
-                                        this.update_app_settings(cx, true, |settings| {
-                                            settings.sidebar_chats_open = open;
-                                            true
-                                        });
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(rems(6. / 16.))
-                                    .children((!chats_open).then(|| {
-                                        self.render_status_attention(
-                                            &root_rows,
-                                            "recent-section-attention".into(),
-                                            cx,
-                                        )
-                                    }))
-                                    .child(create_menu),
-                            ),
-                    )
+                            .gap(rems(6. / 16.))
+                            .children((!chats_open).then(|| {
+                                self.render_status_attention(
+                                    &root_rows,
+                                    "recent-section-attention".into(),
+                                    cx,
+                                )
+                            }))
+                            .child(create_menu)
+                            .into_any_element(),
+                        cx.listener(|this, _, _, cx| {
+                            let open = !this.settings(cx).sidebar_chats_open;
+                            this.update_app_settings(cx, true, |settings| {
+                                settings.sidebar_chats_open = open;
+                                true
+                            });
+                            cx.notify();
+                        }),
+                    ))
                     .children(chats_open.then(|| {
                         let visible = root_rows
                             .iter()
@@ -374,7 +375,7 @@ impl Sidebar {
                         &self.app_store.read(cx).settings.keymap_overrides,
                     )
                     .map(|combo| keymap::format_combo(&combo));
-                    workspace_new_chat_row(shortcut, move |window, cx| {
+                    workspace_new_chat_row(shortcut, true, move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
                                 let scope =
@@ -389,6 +390,7 @@ impl Sidebar {
                     "user.svg",
                     crate::i18n::text("noun.role"),
                     active,
+                    true,
                     {
                         let shell = self.shell.clone();
                         move |window, cx| {
@@ -405,6 +407,7 @@ impl Sidebar {
                     "users.svg",
                     crate::i18n::text("noun.crew"),
                     active,
+                    true,
                     {
                         let shell = self.shell.clone();
                         move |window, cx| {
@@ -418,39 +421,14 @@ impl Sidebar {
                 ),
             }
         });
-        div()
-            .min_h(px(0.))
-            .flex_1()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .pb_3()
-            .child(
-                crate::platform_ui::sidebar_section().child(
-                    div()
-                        .px_3()
-                        .pb_1()
-                        .flex()
-                        .flex_col()
-                        .gap(rems(2. / 16.))
-                        .children(workspace_rows),
-                ),
-            )
-            .child(
-                div()
-                    .mx_4()
-                    .mb_4()
-                    .mt(rems(10. / 16.))
-                    .h(px(1.))
-                    .flex_none()
-                    .bg(theme::chrome_selected_border()),
-            )
-            .child(
-                sidebar_scroll_frame()
-                    .child(scroll)
-                    .child(self.scrollbar.clone()),
-            )
-            .into_any_element()
+        sidebar_contents(
+            workspace_rows,
+            sidebar_scroll_frame()
+                .child(scroll)
+                .child(self.scrollbar.clone())
+                .into_any_element(),
+        )
+        .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -468,60 +446,25 @@ impl Sidebar {
         F: Fn(&mut Sidebar, &mut Context<Sidebar>) + 'static,
         G: Fn(&mut Window, &mut App) + 'static,
     {
-        div()
-            .px_5()
-            .pb(rems(6. / 16.))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .id(SharedString::from(format!("toggle-{label}")))
-                    .group("sidebar-section-toggle")
-                    .min_w(px(0.))
-                    .flex()
-                    .items_center()
-                    .gap(rems(6. / 16.))
-                    .cursor_pointer()
-                    .text_color(theme::faint())
-                    .hover(|header| header.text_color(theme::muted()))
-                    .child(
-                        div()
-                            .text_size(theme::text_ui())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(label),
-                    )
-                    .child(
-                        svg()
-                            .flex_none()
-                            .path(if open {
-                                "chevron-down.svg"
-                            } else {
-                                "chevron-right.svg"
-                            })
-                            .size(rems(10. / 16.))
-                            .text_color(theme::faint())
-                            .group_hover("sidebar-section-toggle", |icon| {
-                                icon.text_color(theme::muted())
-                            }),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| on_toggle(this, cx))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(rems(6. / 16.))
-                    .children(attention)
-                    .child(
-                        IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
-                            .size(IconButtonSize::Sm)
-                            .tooltip(plus_title)
-                            .on_press(on_plus),
-                    ),
-            )
-            .into_any_element()
+        sidebar_section_header(
+            format!("toggle-{label}").into(),
+            label,
+            open,
+            div()
+                .flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .children(attention)
+                .child(
+                    IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
+                        .size(IconButtonSize::Sm)
+                        .tooltip(plus_title)
+                        .on_press(on_plus),
+                )
+                .into_any_element(),
+            cx.listener(move |this, _, _, cx| on_toggle(this, cx)),
+        )
+        .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]

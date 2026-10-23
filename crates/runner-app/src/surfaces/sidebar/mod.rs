@@ -19,8 +19,13 @@ use elements::sidebar_tab_target;
 
 pub(crate) use archive::{archive_all_confirmation_body, archive_targets_for_chats};
 pub(crate) use elements::{
-    default_session_label, direct_chat_display_status, session_label, session_label_live,
+    default_session_label, direct_chat_display_status, empty_sidebar_label, project_children,
+    project_row_label, section_title, session_label, session_label_live, sidebar_icon,
+    sidebar_item_row, sidebar_row_shell, sidebar_row_trailing_slot, sidebar_section_header,
+    workspace_new_chat_row, workspace_row, SidebarItemView,
 };
+pub(crate) use rows_render::project_header_icon;
+pub(crate) use view::{sidebar_contents, sidebar_scroll_container, sidebar_scroll_frame};
 
 use super::*;
 use crate::surfaces::sidebar_logic::{

@@ -7,6 +7,7 @@ use super::{wire_enum, SessionStatus};
 wire_enum!(MissionState, Stopped, { Running => "running", Stopped => "stopped" });
 wire_enum!(SessionKind, Chat, { Chat => "chat", Agent => "agent", Shell => "shell" });
 wire_enum!(SplitDirection, Row, { Row => "row", Column => "column" });
+wire_enum!(SidebarNodeKind, Tab, { Project => "project", Tab => "tab", Mission => "mission" });
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,18 @@ pub struct Overview {
     pub tabs: Vec<Tab>,
     pub missions: Vec<Mission>,
     pub sessions: BTreeMap<String, Session>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<Vec<SidebarNode>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarNode {
+    pub kind: SidebarNodeKind,
+    pub id: String,
+    pub parent: Option<String>,
+    pub position: i64,
+    pub pinned_position: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

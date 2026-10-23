@@ -261,6 +261,31 @@ fn overview() -> Overview {
 }
 fn fixture(
     cx: &mut TestAppContext,
+fn sidebar_overview() -> Overview {
+    let mut data = overview();
+    let mut project_tab = data.tabs[0].clone();
+    project_tab.id = "project-tab".into();
+    project_tab.name = "Project tab".into();
+    project_tab.pinned = false;
+    data.tabs.push(project_tab);
+    let mut recent_tab = data.tabs[1].clone();
+    recent_tab.id = "recent-tab".into();
+    recent_tab.name = "Recent tab".into();
+    recent_tab.project = None;
+    data.tabs.push(recent_tab);
+    let mut pinned_mission = data.missions[0].clone();
+    pinned_mission.id = "pinned-mission".into();
+    pinned_mission.title = "Pinned mission".into();
+    pinned_mission.project = Some("p".into());
+    pinned_mission.pinned = true;
+    data.missions.push(pinned_mission);
+    let mut project_mission = data.missions[0].clone();
+    project_mission.id = "project-mission".into();
+    project_mission.title = "Project mission".into();
+    project_mission.project = Some("p".into());
+    data.missions.push(project_mission);
+    data
+}
     path: &std::path::Path,
 ) -> (Entity<AppStore>, Arc<Fake>, Entity<model::ClientState>) {
     let store = crate::app_store::test_lifecycle_store(cx, path);
@@ -588,6 +613,388 @@ fn one_pin_request_per_submit_and_every_refusal_is_rendered_without_exposing_pin
 #[test]
 fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
+#[test]
+fn shared_remote_sidebar_controls_do_not_open_local_creation_or_change_local_state() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, _, _) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "remote-sidebar-actions");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let original = window
+        .read_with(&cx, |root, _| {
+            (
+                root.route.clone(),
+                root.tabs
+                    .tabs()
+                    .iter()
+                    .map(|tab| tab.serialize().unwrap())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    for selector in [
+        "SIDEBAR_WORKSPACE_NEW_CHAT",
+        "SIDEBAR_WORKSPACE:remote-workspace-role",
+        "SIDEBAR_WORKSPACE:remote-workspace-crew",
+    ] {
+        let bounds = visual.debug_bounds(selector).unwrap();
+        visual.simulate_click(bounds.center(), Default::default());
+        visual.simulate_keystrokes("enter space");
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_window.is_some());
+                assert!(root.route == original.0);
+                assert!(root.start_chat_modal.is_none());
+                assert!(root.start_mission_modal.is_none());
+                assert!(root.project_modal.is_none());
+                assert_eq!(
+                    root.tabs
+                        .tabs()
+                        .iter()
+                        .map(|tab| tab.serialize().unwrap())
+                        .collect::<Vec<_>>(),
+                    original.1
+                );
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn remote_sidebar_node_metadata_preserves_mixed_order_and_updates_placement() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let mut data = sidebar_overview();
+    data.projects.insert(
+        0,
+        runner_core::companion::Project {
+            id: "q".into(),
+            name: "Other project".into(),
+        },
+    );
+    data.sidebar = Some(serde_json::from_value(serde_json::json!([
+        {"kind":"tab","id":"recent-tab","parent":null,"position":1,"pinnedPosition":null},
+        {"kind":"tab","id":"remote-tab","parent":"p","position":0,"pinnedPosition":1},
+        {"kind":"project","id":"q","parent":null,"position":1,"pinnedPosition":null},
+        {"kind":"mission","id":"project-mission","parent":"p","position":1,"pinnedPosition":null},
+        {"kind":"mission","id":"pinned-mission","parent":"p","position":2,"pinnedPosition":0},
+        {"kind":"tab","id":"project-tab","parent":"p","position":2,"pinnedPosition":null},
+        {"kind":"mission","id":"remote-mission","parent":null,"position":0,"pinnedPosition":null},
+        {"kind":"project","id":"p","parent":null,"position":0,"pinnedPosition":null},
+        {"kind":"futureKind","id":"future","parent":null,"position":3,"pinnedPosition":null}
+    ])).unwrap());
+    *fake.overview.lock().unwrap() = data.clone();
+    let window = add_window(&mut cx, &store, temp.path(), "sidebar-node-order");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let before = |visual: &mut VisualTestContext, a, b| {
+        assert!(
+            visual.debug_bounds(a).unwrap().top() < visual.debug_bounds(b).unwrap().top(),
+            "{a} must precede {b}"
+        );
+    };
+    before(
+        &mut visual,
+        "SIDEBAR_ITEM_TITLE:Pinned mission",
+        "SIDEBAR_ITEM_TITLE:Remote tab",
+    );
+    before(&mut visual, "REMOTE_PROJECT:p", "REMOTE_PROJECT:q");
+    before(
+        &mut visual,
+        "SIDEBAR_ITEM_TITLE:Project mission",
+        "SIDEBAR_ITEM_TITLE:Project tab",
+    );
+    before(
+        &mut visual,
+        "SIDEBAR_ITEM_TITLE:Remote mission",
+        "SIDEBAR_ITEM_TITLE:Recent tab",
+    );
+    let moved = data
+        .sidebar
+        .as_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|node| node.id == "project-tab")
+        .unwrap();
+    moved.parent = None;
+    moved.position = -1;
+    data.tabs
+        .iter_mut()
+        .find(|tab| tab.id == "project-tab")
+        .unwrap()
+        .project = None;
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer":"host","overview":data}),
+    );
+    visual.run_until_parked();
+    before(
+        &mut visual,
+        "SIDEBAR_SECTION:RECENTS",
+        "SIDEBAR_ITEM_TITLE:Project tab",
+    );
+    before(
+        &mut visual,
+        "SIDEBAR_ITEM_TITLE:Project tab",
+        "SIDEBAR_ITEM_TITLE:Remote mission",
+    );
+    data.sidebar = Some(Vec::new());
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer":"host","overview":data}),
+    );
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Remote tab")
+        .is_none());
+    assert!(visual.debug_bounds("REMOTE_PROJECT:p").is_none());
+}
+
+#[test]
+fn remote_sidebar_groups_pins_projects_and_recents_and_collapses_project_children() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let mut data = sidebar_overview();
+    *fake.overview.lock().unwrap() = data.clone();
+    let window = add_window(&mut cx, &store, temp.path(), "sidebar-structure");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let local_settings = store.read_with(&visual, |store, _| {
+        (
+            store.settings.sidebar_projects_open,
+            store.settings.sidebar_chats_open,
+            store.settings.sidebar_collapsed_projects.clone(),
+        )
+    });
+    let pinned = visual.debug_bounds("SIDEBAR_SECTION:PINNED").unwrap();
+    let projects = visual.debug_bounds("SIDEBAR_SECTION:PROJECTS").unwrap();
+    let recents = visual.debug_bounds("SIDEBAR_SECTION:RECENTS").unwrap();
+    assert!(pinned.top() < projects.top() && projects.top() < recents.top());
+    for selector in [
+        "SIDEBAR_ITEM_TITLE:Remote tab",
+        "SIDEBAR_ITEM_TITLE:Pinned mission",
+    ] {
+        let row = visual.debug_bounds(selector).unwrap();
+        assert!(row.top() > pinned.bottom() && row.bottom() < projects.top());
+    }
+    let project = visual.debug_bounds("REMOTE_PROJECT:p").unwrap();
+    let child = visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Project tab")
+        .unwrap();
+    let recent = visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Recent tab")
+        .unwrap();
+    assert!(child.top() > project.bottom() && child.bottom() < recents.top());
+    assert!(child.left() > recent.left());
+    assert!(recent.top() > recents.bottom());
+    assert!(
+        visual
+            .debug_bounds("SIDEBAR_ITEM_TITLE:Remote mission")
+            .unwrap()
+            .top()
+            > recents.bottom()
+    );
+    assert!(visual.debug_bounds("SIDEBAR_SECTION:MISSIONS").is_none());
+    visual.simulate_click(project.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Project tab")
+        .is_none());
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Project mission")
+        .is_none());
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Remote tab")
+        .is_some());
+    visual.simulate_click(project.center(), Default::default());
+    visual.run_until_parked();
+    let child = visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Project tab")
+        .unwrap();
+    visual.simulate_click(child.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("REMOTE_WORKSPACE_TITLE:Project tab")
+        .is_some());
+    data.tabs[1].pinned = true;
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer":"host","overview":data}),
+    );
+    visual.run_until_parked();
+    let moved = visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Project tab")
+        .unwrap();
+    let projects = visual.debug_bounds("SIDEBAR_SECTION:PROJECTS").unwrap();
+    assert!(moved.bottom() < projects.top());
+    visual.simulate_click(
+        point(projects.left() + px(24.), projects.center().y),
+        Default::default(),
+    );
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("REMOTE_PROJECT:p").is_none());
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Remote tab")
+        .is_some());
+    visual.simulate_click(
+        point(projects.left() + px(24.), projects.center().y),
+        Default::default(),
+    );
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("REMOTE_PROJECT:p").is_some());
+    let recents = visual.debug_bounds("SIDEBAR_SECTION:RECENTS").unwrap();
+    visual.simulate_click(
+        point(recents.left() + px(24.), recents.center().y),
+        Default::default(),
+    );
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Recent tab")
+        .is_none());
+    assert_eq!(
+        store.read_with(&visual, |store, _| (
+            store.settings.sidebar_projects_open,
+            store.settings.sidebar_chats_open,
+            store.settings.sidebar_collapsed_projects.clone()
+        )),
+        local_settings
+    );
+}
+
+#[test]
+fn remote_sidebar_uses_session_titles_for_unnamed_tabs_and_tracks_overview_updates() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, _) = fixture(&mut cx, temp.path());
+            let mut data = overview();
+            data.tabs[0].name.clear();
+            data.sessions.get_mut("s").unwrap().title = "Project chat title".into();
+            let mut recent = data.tabs[0].clone();
+            recent.id = "recent".into();
+            recent.project = None;
+            recent.panes = runner_core::companion::Pane::Leaf {
+                session: Some("recent-session".into()),
+            };
+            let mut session = data.sessions["s"].clone();
+            session.title = "Recent chat title".into();
+            data.sessions.insert("recent-session".into(), session);
+            data.tabs.push(recent);
+            *fake.overview.lock().unwrap() = data.clone();
+            let window = add_window(&mut cx, &store, temp.path(), "remote-titles");
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.choose_computer(computers()[1].clone(), false, window, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            for selector in [
+                "SIDEBAR_ITEM_TITLE:Project chat title",
+                "SIDEBAR_ITEM_TITLE:Recent chat title",
+                "REMOTE_WORKSPACE_TITLE:Project chat title",
+            ] {
+                let bounds = visual.debug_bounds(selector).expect(selector);
+                assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+            }
+            data.sessions.get_mut("s").unwrap().title = "Updated chat title".into();
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("SIDEBAR_ITEM_TITLE:Project chat title")
+                .is_none());
+            assert!(visual
+                .debug_bounds("SIDEBAR_ITEM_TITLE:Updated chat title")
+                .is_some());
+            assert!(visual
+                .debug_bounds("REMOTE_WORKSPACE_TITLE:Updated chat title")
+                .is_some());
+            data.tabs[0].name = "Named tab".into();
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("SIDEBAR_ITEM_TITLE:Named tab")
+                .is_some());
+            assert!(visual
+                .debug_bounds("REMOTE_WORKSPACE_TITLE:Named tab")
+                .is_some());
+            data.tabs[0].name.clear();
+            data.tabs[0].panes = runner_core::companion::Pane::Split {
+                split: runner_core::companion::SplitDirection::Row,
+                sizes: [0.5, 0.5],
+                a: Box::new(runner_core::companion::Pane::Leaf {
+                    session: Some("recent-session".into()),
+                }),
+                b: Box::new(runner_core::companion::Pane::Leaf {
+                    session: Some("s".into()),
+                }),
+            };
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("REMOTE_WORKSPACE_TITLE:Recent chat title")
+                .is_some());
+            data.tabs[0].panes = runner_core::companion::Pane::Leaf { session: None };
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            let empty = match locale {
+                Locale::English => "REMOTE_WORKSPACE_TITLE:Empty tab",
+                Locale::SimplifiedChinese => "REMOTE_WORKSPACE_TITLE:空标签页",
+            };
+            assert!(visual.debug_bounds(empty).is_some());
+            data.tabs[0].panes = runner_core::companion::Pane::Leaf {
+                session: Some("s".into()),
+            };
+            data.sessions.get_mut("s").unwrap().title.clear();
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("SIDEBAR_ITEM_TITLE:Codex").is_some());
+            assert!(visual
+                .debug_bounds("REMOTE_WORKSPACE_TITLE:Codex")
+                .is_some());
+        });
+    }
+}
+
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
             let temp = tempfile::tempdir().unwrap();

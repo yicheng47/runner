@@ -16,23 +16,100 @@ pub(super) fn project_name_from_path(path: &str) -> String {
         .to_owned()
 }
 
-pub(super) fn section_title(label: &'static str) -> AnyElement {
+pub(crate) fn section_title(label: &'static str) -> gpui::Div {
     div()
+        .debug_selector(move || format!("SIDEBAR_SECTION:{label}"))
         .px_5()
         .pb_2()
         .text_size(theme::text_ui())
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
         .child(label)
-        .into_any_element()
 }
 
-pub(super) fn workspace_new_chat_row(
+pub(crate) fn sidebar_section_header(
+    id: SharedString,
+    label: &'static str,
+    open: bool,
+    trailing: AnyElement,
+    on_toggle: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Div {
+    div()
+        .debug_selector(move || format!("SIDEBAR_SECTION:{label}"))
+        .px_5()
+        .pb(rems(6. / 16.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .id(id)
+                .group("sidebar-section-toggle")
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .cursor_pointer()
+                .text_color(theme::faint())
+                .hover(|header| header.text_color(theme::muted()))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .text_size(theme::text_ui())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(label),
+                )
+                .child(
+                    svg()
+                        .flex_none()
+                        .path(if open {
+                            "chevron-down.svg"
+                        } else {
+                            "chevron-right.svg"
+                        })
+                        .size(rems(10. / 16.))
+                        .text_color(theme::faint())
+                        .group_hover("sidebar-section-toggle", |icon| {
+                            icon.text_color(theme::muted())
+                        }),
+                )
+                .on_click(on_toggle),
+        )
+        .child(trailing)
+}
+
+pub(crate) struct SidebarItemView {
+    pub(crate) title: String,
+    pub(crate) icon: ChatIcon,
+    pub(crate) live: bool,
+    pub(crate) selected: bool,
+    pub(crate) pinned: bool,
+}
+
+pub(crate) fn sidebar_item_row(
+    id: SharedString,
+    item: &SidebarItemView,
+) -> gpui::Stateful<gpui::Div> {
+    sidebar_row_shell(id, item.selected, false)
+        .children(item.pinned.then(pin_indicator))
+        .child(sidebar_icon(item.icon, item.live))
+        .child(
+            sidebar_row_label(item.title.clone(), item.selected, false).debug_selector({
+                let title = item.title.clone();
+                move || format!("SIDEBAR_ITEM_TITLE:{title}")
+            }),
+        )
+}
+
+pub(crate) fn workspace_new_chat_row(
     shortcut: Option<String>,
+    enabled: bool,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     div()
         .id("workspace-new-chat")
+        .debug_selector(|| "SIDEBAR_WORKSPACE_NEW_CHAT".into())
         .w_full()
         .px(rems(10. / 16.))
         .py(rems(6. / 16.))
@@ -42,10 +119,12 @@ pub(super) fn workspace_new_chat_row(
         .rounded_sm()
         .border_1()
         .border_color(gpui::transparent_black())
-        .cursor_pointer()
-        .hover(|row| {
-            row.border_color(theme::chrome_selected_border())
-                .bg(theme::chrome_hover())
+        .when(!enabled, |row| row.opacity(0.35))
+        .when(enabled, |row| {
+            row.cursor_pointer().hover(|row| {
+                row.border_color(theme::chrome_selected_border())
+                    .bg(theme::chrome_hover())
+            })
         })
         .child(
             svg()
@@ -71,7 +150,9 @@ pub(super) fn workspace_new_chat_row(
                 .text_color(theme::faint())
                 .child(shortcut)
         }))
-        .on_click(move |_, window, cx| on_click(window, cx))
+        .when(enabled, |row| {
+            row.on_click(move |_, window, cx| on_click(window, cx))
+        })
         .into_any_element()
 }
 
@@ -140,18 +221,20 @@ pub(super) fn project_row_action(
     Tooltip::new(tooltip_id, tooltip, button).into_any_element()
 }
 
-pub(super) fn workspace_row(
+pub(crate) fn workspace_row(
     id: &'static str,
     icon: &'static str,
     label: &'static str,
     active: bool,
+    enabled: bool,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let on_click = Rc::new(on_click);
     let key_click = Rc::clone(&on_click);
     div()
         .id(id)
-        .tab_index(0)
+        .debug_selector(move || format!("SIDEBAR_WORKSPACE:{id}"))
+        .tab_index(if enabled { 0 } else { -1 })
         .px(rems(10. / 16.))
         .py(rems(6. / 16.))
         .flex()
@@ -167,7 +250,8 @@ pub(super) fn workspace_row(
         .when(active, |row| row.bg(theme::chrome_selected()))
         // A shadow paints its whole box, which shows through glass's translucent fill.
         .when(active && !theme::is_glass(), |row| row.shadow_sm())
-        .cursor_pointer()
+        .when(enabled, |row| row.cursor_pointer())
+        .when(!enabled, |row| row.opacity(0.35))
         .text_size(theme::text_title())
         .font_weight(if active {
             FontWeight::SEMIBOLD
@@ -201,17 +285,19 @@ pub(super) fn workspace_row(
                 }),
         )
         .child(label)
-        .on_click(move |_, window, cx| on_click(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                key_click(window, cx);
-            }
+        .when(enabled, |row| {
+            row.on_click(move |_, window, cx| on_click(window, cx))
+                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        key_click(window, cx);
+                    }
+                })
         })
         .into_any_element()
 }
 
-pub(super) fn empty_sidebar_label(label: &'static str) -> AnyElement {
+pub(crate) fn empty_sidebar_label(label: &'static str) -> AnyElement {
     div()
         .px(rems(10. / 16.))
         .py_1()
@@ -221,7 +307,7 @@ pub(super) fn empty_sidebar_label(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn sidebar_row_shell(
+pub(crate) fn sidebar_row_shell(
     id: SharedString,
     selected: bool,
     accent_bar: bool,
@@ -271,7 +357,7 @@ pub(super) fn sidebar_row_shell(
         })
 }
 
-pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) -> AnyElement {
+pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) -> gpui::Div {
     div()
         .min_w(px(0.))
         .flex_1()
@@ -285,12 +371,11 @@ pub(super) fn sidebar_row_label(label: String, selected: bool, monospace: bool) 
             FontWeight::NORMAL
         })
         .child(label)
-        .into_any_element()
 }
 
 /// One cell for the row's status, its "more" button, or its shortcut pill,
 /// all 16 px or less and centred so they swap in place.
-pub(super) fn sidebar_row_trailing_slot() -> gpui::Div {
+pub(crate) fn sidebar_row_trailing_slot() -> gpui::Div {
     div()
         .size(rems(1.))
         .flex_none()
@@ -348,7 +433,7 @@ pub(super) fn sidebar_fork_menu_target(
     })
 }
 
-pub(super) fn project_row_label(label: String) -> AnyElement {
+pub(crate) fn project_row_label(label: String) -> AnyElement {
     div()
         .min_w(px(0.))
         .flex_1()
@@ -358,7 +443,18 @@ pub(super) fn project_row_label(label: String) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn sidebar_icon(icon: ChatIcon, live: bool) -> AnyElement {
+pub(crate) fn project_children() -> gpui::Div {
+    div()
+        .ml_3()
+        .pl_2()
+        .flex()
+        .flex_col()
+        .gap(rems(2. / 16.))
+        .border_l_1()
+        .border_color(theme::chrome_border())
+}
+
+pub(crate) fn sidebar_icon(icon: ChatIcon, live: bool) -> AnyElement {
     icon.render(rems(12. / 16.), sidebar_icon_color(icon, live), live)
 }
 

@@ -318,6 +318,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
         tabs: vec![],
         missions: vec![],
         sessions: BTreeMap::new(),
+        sidebar: None,
     };
     let mut ids = Vec::new();
     for node in sidebar_order(&nodes) {
@@ -463,6 +464,44 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
             },
         );
     }
+    overview.sidebar = Some(
+        nodes
+            .iter()
+            .filter_map(|node| {
+                let (kind, id, parent) = match node.node_type {
+                    repo::node::NodeType::Project => {
+                        let project = overview
+                            .projects
+                            .iter()
+                            .find(|project| node.ref_id.as_deref() == Some(&project.id))?;
+                        (SidebarNodeKind::Project, project.id.clone(), None)
+                    }
+                    repo::node::NodeType::Tab => {
+                        let tab = overview.tabs.iter().find(|tab| tab.id == node.id)?;
+                        (SidebarNodeKind::Tab, tab.id.clone(), tab.project.clone())
+                    }
+                    repo::node::NodeType::Mission => {
+                        let mission = overview
+                            .missions
+                            .iter()
+                            .find(|mission| node.ref_id.as_deref() == Some(&mission.id))?;
+                        (
+                            SidebarNodeKind::Mission,
+                            mission.id.clone(),
+                            mission.project.clone(),
+                        )
+                    }
+                };
+                Some(SidebarNode {
+                    kind,
+                    id,
+                    parent,
+                    position: node.position,
+                    pinned_position: node.pinned_position,
+                })
+            })
+            .collect(),
+    );
     Ok(overview)
 }
 
@@ -513,6 +552,21 @@ mod tests {
         assert!(overview.sessions["a"].status.unread);
         assert!(!overview.sessions["b"].status.unread);
         assert_eq!(overview.sessions["a"].runtime.as_deref(), Some("codex"));
+        let sidebar = overview.sidebar.as_ref().unwrap();
+        assert!(sidebar.contains(&SidebarNode {
+            kind: SidebarNodeKind::Project,
+            id: project.id.clone(),
+            parent: None,
+            position: parent.position,
+            pinned_position: None,
+        }));
+        assert!(sidebar.contains(&SidebarNode {
+            kind: SidebarNodeKind::Tab,
+            id: node.id.clone(),
+            parent: Some(project.id.clone()),
+            position: node.position,
+            pinned_position: Some(0),
+        }));
         assert_eq!(Arc::strong_count(&core), 1);
         assert!(matches!(
             Arc::new(DaemonCore(backend.0.clone())).attach("missing", 0),
@@ -605,6 +659,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let core = crate::test_support::test_core_in(temp.path().into());
         let conn = core.db.get().unwrap();
+        let project = repo::project::create(&conn, "Mission project", "/tmp/m5").unwrap();
         let now = chrono::Utc::now();
         crate::test_support::insert_test_role(&conn, "agent-role", "coder", "codex", "codex");
         crate::test_support::insert_test_role(&conn, "shell-role", "shell", "shell", "zsh");
@@ -633,7 +688,7 @@ mod tests {
             &repo::mission::MissionRow {
                 id: "mission".into(),
                 crew_id: Some("crew".into()),
-                project_id: None,
+                project_id: Some(project.id.clone()),
                 title: "Test mission".into(),
                 status: crate::model::MissionStatus::Running,
                 goal_override: None,
@@ -655,7 +710,12 @@ mod tests {
         shell.role_id = Some("shell-role".into());
         shell.agent_runtime = Some("shell".into());
         repo::session::insert(&conn, &shell).unwrap();
-        let node = repo::node::ensure_mission_node(&conn, "mission", None).unwrap();
+        let mut node =
+            repo::node::ensure_mission_node(&conn, "mission", Some(&project.id)).unwrap();
+        node.position = 4;
+        repo::node::upsert(&conn, &node).unwrap();
+        repo::node::set_pinned(&conn, &node.id, true).unwrap();
+        repo::mission::set_pinned_at(&conn, "mission", Some(now)).unwrap();
         repo::node::set_layout(&conn, &node.id, r#"{"drawer":{"shells":["shell"]}}"#).unwrap();
         let mission_dir = runner_core::event_log::mission_dir(temp.path(), Some("crew"), "mission");
         let roster = crate::ops::mission::roster::snapshot(
@@ -692,6 +752,18 @@ mod tests {
         assert_eq!(overview.sessions["agent"].kind, SessionKind::Agent);
         assert_eq!(overview.sessions["shell"].kind, SessionKind::Shell);
         assert_eq!(overview.sessions["shell"].runtime, None);
+        let stored_node = repo::node::get(&core.db.get().unwrap(), &node.id)
+            .unwrap()
+            .unwrap();
+        assert!(overview.sidebar.as_ref().unwrap().contains(&SidebarNode {
+            kind: SidebarNodeKind::Mission,
+            id: "mission".into(),
+            parent: Some(project.id.clone()),
+            position: stored_node.position,
+            pinned_position: stored_node.pinned_position,
+        }));
+        assert_eq!(stored_node.position, 4);
+        assert_eq!(stored_node.pinned_position, Some(0));
         assert!(overview.tabs.is_empty());
     }
 }

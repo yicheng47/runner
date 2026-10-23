@@ -429,7 +429,7 @@ impl Sidebar {
                 .child(self.rename.as_ref().unwrap().input.clone())
                 .into_any_element()
         } else {
-            sidebar_row_label(label, active, false)
+            sidebar_row_label(label, active, false).into_any_element()
         };
         let index = index.filter(|index| {
             keymap::effective_binding(

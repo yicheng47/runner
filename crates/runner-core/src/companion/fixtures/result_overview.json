@@ -128,6 +128,29 @@
         "reason": null,
         "unread": false
       }
-    }
+    },
+    "sidebar": [
+      {
+        "kind": "project",
+        "id": "01KZ0000000000000000000000",
+        "parent": null,
+        "position": 0,
+        "pinnedPosition": null
+      },
+      {
+        "kind": "tab",
+        "id": "01MT0000000000000000000000",
+        "parent": "01KZ0000000000000000000000",
+        "position": 1,
+        "pinnedPosition": null
+      },
+      {
+        "kind": "mission",
+        "id": "01M50000000000000000000000",
+        "parent": null,
+        "position": 2,
+        "pinnedPosition": 0
+      }
+    ]
   }
 }

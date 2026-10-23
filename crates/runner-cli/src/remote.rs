@@ -630,6 +630,7 @@ mod computer_tests {
                             tabs: vec![],
                             missions: vec![],
                             sessions: Default::default(),
+                            sidebar: None,
                         },
                     )))
                 }
