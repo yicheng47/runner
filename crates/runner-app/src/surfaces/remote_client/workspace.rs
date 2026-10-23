@@ -1215,47 +1215,27 @@ impl NativeRoot {
                             cx.stop_propagation();
                             return;
                         }
-                        let key = &event.keystroke;
                         let option_is_meta = option_as_meta.is_meta(cx);
-                        if runner_app::terminal_ime::swallows_option_copy(key, option_is_meta) {
-                            cx.stop_propagation();
-                            return;
-                        }
-                        if runner_app::terminal_ime::terminal_key_route(
+                        let _ = crate::terminal::input::handle_key(
+                            &key_terminal,
                             input.read(cx).is_composing(),
-                            key,
+                            &event.keystroke,
                             option_is_meta,
-                        ) == runner_app::terminal_ime::TerminalKeyRoute::Raw
-                            && key_terminal
-                                .send_key(
-                                    &key.key,
-                                    key.modifiers.control,
-                                    key.modifiers.alt,
-                                    key.modifiers.shift,
-                                    key.key_char.as_deref(),
-                                )
-                                .unwrap_or(false)
-                        {
-                            key_terminal.scroll_to_bottom();
-                            cx.stop_propagation();
-                        }
+                            cx,
+                        );
                     })
                     .on_action(move |_: &Copy, _, cx| {
-                        let Some(text) = copy_terminal.selection_text() else {
+                        if !crate::terminal::input::copy_selection(&copy_terminal, cx) {
                             #[cfg(windows)]
                             cx.propagate();
-                            return;
-                        };
-                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        cx.stop_propagation();
+                        }
                     })
                     .on_action(move |_: &Paste, _, cx| {
                         if interactive {
-                            if let Some(text) =
-                                cx.read_from_clipboard().and_then(|item| item.text())
-                            {
-                                let _ = paste_terminal.paste(&text);
-                            }
+                            let _ = crate::terminal::input::paste_text_from_clipboard(
+                                &paste_terminal,
+                                cx,
+                            );
                         }
                         cx.stop_propagation();
                     })

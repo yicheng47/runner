@@ -44,10 +44,10 @@ use futures::StreamExt as _;
 #[cfg(all(target_os = "macos", not(test)))]
 use gpui::QuitMode;
 use gpui::{
-    actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds,
-    ClipboardItem, Context, CursorStyle, DragMoveEvent, Entity, FocusHandle, Global, KeyDownEvent,
-    Menu, MenuItem, MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription,
-    SystemMenuType, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds, Context,
+    CursorStyle, DragMoveEvent, Entity, FocusHandle, Global, KeyDownEvent, Menu, MenuItem,
+    MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription, SystemMenuType,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::NativePaths;
 use runner_app::pane_layout::{

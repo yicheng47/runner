@@ -167,7 +167,7 @@ The in-process relay regressions for a pending final handshake and a delayed tru
 
 The first combined security run passed 48/49 tests (exit 100, `target/836-security-focused.log`): the existing socket-loop test still tried to set a now-rejected sequential fixture PIN. Its setup and peer input now use the same nontrivial test PIN. The corrected combined security run passes all 50 tests (exit 0, `target/836-security-focused-final.log`), including all host-channel/client relay cases and the new regressions.
 
-Jason's selected live rechecks, after code review: reject an obvious weak PIN in both app languages and from `runner remote pin`; accept a nontrivial PIN with leading zeroes; keep current pairings and authenticated terminals working after a PIN change; verify Pair again/Forget explicitly removes retained trust after fingerprint confirmation. Pending-handshake and forged-reject cases are covered by the fake relay and require no live attack. The larger pairing-code redesign and the remaining refactors are not implemented by this security diff.
+Jason's selected live rechecks, after code review: show the weak-PIN warning in both app languages and from `runner remote pin`, confirm that declining leaves the PIN unchanged and explicitly accepting keeps it; accept a PIN with leading zeroes; keep current pairings and authenticated terminals working after a PIN change; verify Pair again/Forget explicitly removes retained trust after fingerprint confirmation. Pending-handshake and forged-reject cases are covered by the fake relay and require no live attack. The larger pairing-code redesign and the remaining refactors are not implemented by this security diff.
 
 
 ### Security and helper validation results
@@ -217,3 +217,52 @@ The final full workspace run passes, including the unchanged isolated-server reg
 ### Security and helper review verdict
 
 The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete feature-branch working-tree diff in Runner message `01M5MAZZX6N9TPCP48CP38DKRR`, including Problems 5–7 and both helper extractions. It confirmed the durable command barrier, first-PIN guard, preserved confirmed trust and fresh-load regressions resolve the P1. Its independent security/helper checks passed (85 tests, exit 0, `target/836-reviewer-security-durable.log`), as did an explicit run of the isolated-server regression (1 test, exit 0, `target/836-reviewer-security-first-pin.log`) and whitespace validation (exit 0, `target/836-reviewer-security-durable-diff-check.log`). It inspected the final full workspace and both Clippy passes; earlier failures remain preserved. Live checks were skipped under the brief and remain Jason's selected checks above. Remaining terminal/sidebar/pane reuse work is outside this verdict and requires a separate working-tree review. No new-head CI result is claimed.
+
+## Shared terminal input, copy and paste
+
+This behavior-neutral step implements item 1 of human Runner message `01M5M77X1ZT1Q0WV1WFXB0AJGD`. Chat, mission, agent update and remote terminals now call one terminal-module handler for Option-as-Meta, Option-copy swallowing, IME/shortcut routing, raw key encoding and scroll-to-bottom on a successful send. The handler returns the existing send result; each surface retains its own error, notification and propagation behavior. Copy uses one selection-to-clipboard helper, retaining the surfaces' Windows propagation behavior when no selection exists. Local chat and mission paste use one text/image dispatch helper after their existing file/image resolution; agent update and remote keep text-only clipboard paste through a shared helper. Interactive/control guards are unchanged. Existing tests are untouched.
+
+New fake-transport tests cover composing/printable/shortcut/Option key routes, raw Meta encoding, scroll behavior on success and failure, unchanged clipboard without a selection, copying the selected text, bracketed text paste, runtime/platform image shortcuts and surfaced write errors. The two new tests and eight existing terminal-control tests pass (10 tests, exit 0, `target/836-shared-input-focused.log`); this focused command selected the app binary, so it does not claim library IME-test coverage. A now-unused `ClipboardItem` import reported in that run was removed. All required full gates pass below; the working-tree review is clean. No live app, daemon, agent or service check ran.
+
+The remaining pane-renderer and terminal-surface consolidation is outside this step. The current remote split normalizes/clamps its ratio and draws a one-pixel separator; the local card renderer uses percent sizes, resize gutters and bottom-corner padding. Reusing its card geometry changes the remote terminal viewport and resulting host size, beyond a strictly behavior-neutral extraction. The sidebar status renderers likewise differ in glyphs, dot size and tooltips. These presentation differences were flagged through Runner before implementing the remaining items, as the human request requires. Jason approved adopting local presentation here, including its viewport/host PTY size changes, in Runner message `01M5MCYXH6HFG2C9RK5MHDKB97`. That work remains separate from the PIN warning revision.
+
+| Shared input check | Exit code | Evidence |
+| --- | --- | --- |
+| New shared-input and existing terminal-control regressions | 0 | `target/836-shared-input-focused.log`: 10 passed |
+| Full workspace nextest | 0 | `target/836-shared-input-nextest.log`: 2,760 passed, 6 skipped, 291.920 seconds; no retries |
+| Workspace Clippy, warnings denied | 0 | `target/836-shared-input-clippy.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-shared-input-clippy-updater.log` |
+| `cargo fmt --all --check` | 0 | `target/836-shared-input-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-shared-input-diff-check.log` |
+
+The full run includes the library's five IME and five clipboard/paste tests. The CLI help golden took 65.032 seconds and passed. CLI help is unchanged, so `make guide-cli-check` is not applicable. This is local validation; PR #1010 still has the older pushed candidate and has no new-head CI result for these changes.
+
+### Shared input review verdict
+
+The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete feature-branch working-tree diff in Runner message `01M5MBXB5Z3AANPVKZCTPP7RN7`, including the shared terminal input/copy/paste extraction. It independently passed 25 shared-input, control, updater, library IME and library paste tests (exit 0, `target/836-reviewer-shared-input.log`) and whitespace validation (exit 0, `target/836-reviewer-shared-input-diff-check.log`), and inspected the full workspace and both Clippy passes. It confirmed existing tests and all surface-specific guards, error handling, notifications and Windows propagation are preserved. No additional live matrix is needed for this behavior-neutral extraction; no crew live checks ran. Earlier UI/security rechecks remain Jason's. Sidebar-decoration, pane-renderer and terminal-surface presentation work remains outside this verdict; Jason subsequently authorized local presentation in Runner message `01M5MCYXH6HFG2C9RK5MHDKB97`.
+
+## Current-head CI before the PIN-policy revision
+
+The reviewed candidate at `40419794` was pushed to PR #1010 against `nightly-remote`. `gh pr checks 1010 --watch` exited 0 with no retries: macOS passed in 11m50s (2,760 tests passed, 6 skipped) and Windows passed in 16m33s (2,645 passed, 4 skipped), run `39954124901`. Evidence: `target/836-ci-current-watch.log`, `target/836-ci-current-macos-final.log`, `target/836-ci-current-windows-final.log`. The first attempt to download the completed macOS job's logs exited 1 only because GitHub's CLI waits for the entire workflow to finish; both final downloads exited 0. The tree was clean and synchronized with origin. These CI results cover the previous rejection policy and do not claim CI for the revised warning behavior.
+
+## Problem 5 revision: warn and allow
+
+Human Runner message `01M5MD17NHSYJ2XB6FERGRZJG5` explicitly replaces rejection with a private warning and affirmative confirmation while preserving all six-digit PINs on the wire. English/Simplified Chinese Pencil states `awP6z` / `Xs2de` were drawn and visually checked before implementation; layout warnings were corrected, the file was saved with Cmd+S and design commit `d25a03d` was pushed. The new fake-driven regressions and focused pass are detailed under Problem 5 above. No redesign, protocol change, live app/service check or actual secret-store read is involved. This revision will be reviewed on the working-tree diff, then folded into Problem 5's commit as Jason requested; the remaining presentation reuse work is still separate.
+
+| Warning revision check | Exit code | Evidence |
+| --- | --- | --- |
+| New GUI/fake-store regressions against the rejection candidate | 100 (expected failure) | `target/836-weak-pin-warning-before.log`: both failed |
+| Initial focused warning checks | 0 | `target/836-weak-pin-warning-focused.log`: 10 passed |
+| First compile after adding held-key coverage | 101 | `target/836-weak-pin-warning-held-compile.log`: the test event lacked GPUI's required `prefer_character_input` field |
+| Final focused checks, including held Enter/Space at both warning buttons | 0 | `target/836-weak-pin-warning-focused-final.log`: 10 passed |
+| `env -u CLAUDE_CONFIG_DIR cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci` | 0 | `target/836-weak-pin-warning-workspace-final.log`: 2,762 passed, 6 skipped, 299.580 seconds |
+| Workspace Clippy, warnings denied | 0 | `target/836-weak-pin-warning-clippy-final.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-weak-pin-warning-clippy-updater-final.log` |
+| `cargo fmt --all --check` | 0 | `target/836-weak-pin-warning-fmt-final.log` |
+| `git diff --check` | 0 | `target/836-weak-pin-warning-diff-final.log` |
+
+The held-key test compile error was corrected by explicitly setting `prefer_character_input: false`; the final focused and full runs include that correction. The full run had no failures or retries. Its only slow test, the CLI help golden, passed in 64.936 seconds. CLI help is unchanged, so `make guide-cli-check` is not applicable. The GUI regression uses a fake lifecycle store and verifies the submission boundary without a live RPC; the daemon regression uses an in-memory secret store. Problems 6 and 7 and their trust-invalidation behavior are unchanged. These local gates cover the warning revision; the earlier CI result at `40419794` does not.
+
+### Warning revision review verdict
+
+The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the handed-off whole working-tree diff in Runner message `01M5MEKT93NDXV8ND103XGZHKB`, including the app actions/focus/held-key handling, CLI interactive and save boundaries, both host validators, tests, locales and documentation. It independently passed 11 focused checks (exit 0, `target/836-reviewer-weak-pin-warning.log`) and whitespace validation (exit 0, `target/836-reviewer-weak-pin-warning-diff-check.log`), inspected the full workspace and both Clippy passes, and checked Pencil frames `awP6z` / `Xs2de` read only. No native UI, real CLI, pairing or service check ran under the mission restriction. Jason should recheck warning/cancel/accept in both UI languages and interactive CLI, a leading-zero PIN and preservation of existing pairing/terminal access. The previous Problems 6/7 review stands; the remaining presentation reuse and Problems 8–11 are outside this verdict. The warning revision folds into the original Problem 5 commit; its CI must be checked on the new pushed head.
