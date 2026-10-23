@@ -1003,7 +1003,7 @@ async fn delayed_start_and_signout_survive_the_client_transport_budget() {
     assert_eq!(snapshot, original);
     let (pin_done, pin_received) = std::sync::mpsc::channel();
     let queued_pin = tokio::task::spawn_blocking(move || {
-        let result = client.remote_set_pin(remote::Secret("654321".into()));
+        let result = client.remote_set_pin(remote::Secret("903617".into()));
         let _ = pin_done.send(());
         result
     });
@@ -1031,10 +1031,47 @@ async fn delayed_start_and_signout_survive_the_client_transport_budget() {
             .pin
             .unwrap()
             .0,
-        "654321"
+        "903617"
     );
     assert!(matches!(core.remote.status().state, RemoteState::Off));
     core.remote.shutdown().await;
+}
+
+#[tokio::test]
+async fn weak_pin_commands_are_allowed_without_unpairing_existing_devices() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store.clone(),
+        crate::events::EventChannel::new(),
+    );
+    handle
+        .set_pin(remote::Secret("019438".into()))
+        .await
+        .unwrap();
+    handle
+        .record_paired(vec![3; 32], "Test device".into())
+        .await
+        .unwrap();
+    let before = handle.trust();
+    for pin in [
+        "000000", "123456", "111111", "121212", "654321", "112233", "123123",
+    ] {
+        let result = handle.set_pin(remote::Secret(pin.into())).await;
+        assert!(result.is_ok(), "six-digit PIN must remain valid");
+        assert!(handle.trust() == before);
+        assert!(
+            Identity::load(store.as_ref())
+                .unwrap()
+                .unwrap()
+                .pin
+                .unwrap()
+                .0
+                == pin
+        );
+    }
+    handle.shutdown().await;
 }
 
 #[tokio::test]
@@ -1064,7 +1101,7 @@ async fn trust_commands_persist_without_exposing_secrets_and_reset_signs_out() {
         .unwrap();
     assert_eq!(trust::Trust::load(root.path()).unwrap().failed_pins, 0);
     handle
-        .set_pin(remote::Secret("999999".into()))
+        .set_pin(remote::Secret("903617".into()))
         .await
         .unwrap();
     assert_eq!(handle.trust().devices.len(), 1);

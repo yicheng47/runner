@@ -29,6 +29,7 @@ pub(crate) struct RemotePaneState {
 struct PinDialog {
     fields: [gpui::Entity<PinField>; 2],
     step: usize,
+    warning: bool,
     secondary_focus: gpui::FocusHandle,
     primary_focus: gpui::FocusHandle,
     _subscriptions: Vec<gpui::Subscription>,
@@ -53,9 +54,7 @@ pub(crate) fn warn_pin_lock(previous: Option<&RemoteTrust>, next: &RemoteTrust) 
     previous.is_some_and(|p| p.pin_set && !p.pin_locked) && next.pin_locked
 }
 fn confirmed_pin(first: &Secret, second: &Secret) -> Result<Secret, &'static str> {
-    if first.0.len() != 6 || !first.0.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("remote.pin_invalid");
-    }
+    runner_core::remote::validate_pin_format(&first.0).map_err(|_| "remote.pin_invalid")?;
     if first.0 != second.0 {
         return Err("remote.pin_mismatch");
     }
@@ -613,6 +612,7 @@ impl NativeRoot {
         self.settings_page.remote.pin = Some(PinDialog {
             fields,
             step: 0,
+            warning: false,
             secondary_focus: cx.focus_handle(),
             primary_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -623,7 +623,7 @@ impl NativeRoot {
         let Some(dialog) = &mut self.settings_page.remote.pin else {
             return;
         };
-        if dialog.fields[dialog.step].read(cx).value().0.len() != 6 {
+        if dialog.warning || dialog.fields[dialog.step].read(cx).value().0.len() != 6 {
             return;
         }
         if dialog.step == 0 {
@@ -637,31 +637,50 @@ impl NativeRoot {
             dialog.fields[1].read(cx).value(),
         ) {
             Ok(pin) => {
-                self.settings_page.remote.pin = None;
-                self.remote_request(
-                    false,
-                    move |c| {
-                        c.remote_set_pin(pin)?;
-                        c.remote_status()
-                    },
-                    cx,
-                );
+                if runner_core::remote::is_weak_pin(&pin.0) {
+                    dialog.warning = true;
+                    dialog.secondary_focus.focus(window, cx);
+                } else {
+                    self.remote_submit_pin(pin, cx);
+                }
             }
-            Err(_) => {
+            Err(error) => {
                 self.remote_open_pin(cx);
                 self.settings_page.remote.pin.as_ref().unwrap().fields[0]
                     .read(cx)
                     .focus
                     .clone()
                     .focus(window, cx);
-                self.show_toast(
-                    crate::i18n::text("remote.pin_mismatch"),
-                    crate::toast::ToastTone::Error,
-                    cx,
-                );
+                self.show_toast(crate::i18n::text(error), crate::toast::ToastTone::Error, cx);
             }
         }
         cx.notify();
+    }
+
+    fn remote_accept_pin_warning(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self
+            .settings_page
+            .remote
+            .pin
+            .as_ref()
+            .filter(|dialog| dialog.warning)
+        else {
+            return;
+        };
+        let pin = dialog.fields[0].read(cx).value().clone();
+        self.remote_submit_pin(pin, cx);
+    }
+
+    fn remote_submit_pin(&mut self, pin: Secret, cx: &mut Context<Self>) {
+        self.settings_page.remote.pin = None;
+        self.remote_request(
+            false,
+            move |c| {
+                c.remote_set_pin(pin)?;
+                c.remote_status()
+            },
+            cx,
+        );
     }
     fn remote_pairing(&self, trust: &RemoteTrust, cx: &mut Context<Self>) -> AnyElement {
         let mut rows = Vec::new();
@@ -753,6 +772,7 @@ impl NativeRoot {
         let dialog = self.settings_page.remote.pin.as_ref().unwrap();
         let field = dialog.fields[dialog.step].clone();
         let confirming = dialog.step == 1;
+        let warning = dialog.warning;
         let complete = field.read(cx).value().0.len() == 6;
         let changing = self
             .app_store
@@ -772,6 +792,14 @@ impl NativeRoot {
             .p_4()
             .bg(theme::scrim())
             .occlude()
+            .capture_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                if warning
+                    && event.is_held
+                    && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                }
+            })
             .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
                 cancel.update(cx, |r, cx| {
                     r.settings_page.remote.pin = None;
@@ -791,12 +819,17 @@ impl NativeRoot {
                     }
                     "tab" => {
                         if let Some(dialog) = &r.settings_page.remote.pin {
-                            let field = dialog.fields[dialog.step].read(cx);
-                            let mut stops =
-                                vec![field.focus.clone(), dialog.secondary_focus.clone()];
-                            if field.value().0.len() == 6 {
-                                stops.push(dialog.primary_focus.clone());
-                            }
+                            let stops = if dialog.warning {
+                                vec![dialog.secondary_focus.clone(), dialog.primary_focus.clone()]
+                            } else {
+                                let field = dialog.fields[dialog.step].read(cx);
+                                let mut stops =
+                                    vec![field.focus.clone(), dialog.secondary_focus.clone()];
+                                if field.value().0.len() == 6 {
+                                    stops.push(dialog.primary_focus.clone());
+                                }
+                                stops
+                            };
                             let current = stops
                                 .iter()
                                 .position(|focus| focus.is_focused(window))
@@ -836,11 +869,21 @@ impl NativeRoot {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(
                                 svg()
-                                    .path("key-round.svg")
+                                    .path(if warning {
+                                        "triangle-alert.svg"
+                                    } else {
+                                        "key-round.svg"
+                                    })
                                     .size(rems(1.))
-                                    .text_color(theme::muted()),
+                                    .text_color(if warning {
+                                        theme::warning()
+                                    } else {
+                                        theme::muted()
+                                    }),
                             )
-                            .child(crate::i18n::text(if changing {
+                            .child(crate::i18n::text(if warning {
+                                "remote.pin_weak_title"
+                            } else if changing {
                                 "remote.change_pin"
                             } else {
                                 "remote.set_pin_title"
@@ -848,40 +891,54 @@ impl NativeRoot {
                     )
                     .child(
                         div()
+                            .debug_selector(move || {
+                                if warning {
+                                    "REMOTE_PIN_WARNING"
+                                } else {
+                                    "REMOTE_PIN_EXPLANATION"
+                                }
+                                .into()
+                            })
                             .text_size(theme::text_body())
                             .text_color(theme::muted())
-                            .child(crate::i18n::text("remote.pin_explanation")),
+                            .child(crate::i18n::text(if warning {
+                                "remote.pin_weak"
+                            } else {
+                                "remote.pin_explanation"
+                            })),
                     )
-                    .child(
-                        div()
-                            .debug_selector(move || {
-                                format!("REMOTE_PIN_STEP_{}", usize::from(confirming))
-                            })
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(theme::text_ui())
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text(if confirming {
-                                        "remote.confirm_pin"
-                                    } else {
-                                        "remote.choose_pin"
-                                    })),
-                            )
-                            .child(field)
-                            .child(
-                                div()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::faint())
-                                    .child(crate::i18n::text(if confirming {
-                                        "remote.pin_hint_confirm"
-                                    } else {
-                                        "remote.pin_hint"
-                                    })),
-                            ),
-                    )
+                    .when(!warning, |panel| {
+                        panel.child(
+                            div()
+                                .debug_selector(move || {
+                                    format!("REMOTE_PIN_STEP_{}", usize::from(confirming))
+                                })
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_size(theme::text_ui())
+                                        .text_color(theme::muted())
+                                        .child(crate::i18n::text(if confirming {
+                                            "remote.confirm_pin"
+                                        } else {
+                                            "remote.choose_pin"
+                                        })),
+                                )
+                                .child(field)
+                                .child(
+                                    div()
+                                        .text_size(theme::text_meta())
+                                        .text_color(theme::faint())
+                                        .child(crate::i18n::text(if confirming {
+                                            "remote.pin_hint_confirm"
+                                        } else {
+                                            "remote.pin_hint"
+                                        })),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -894,7 +951,9 @@ impl NativeRoot {
                                     .child(
                                         Button::new(
                                             "remote-pin-cancel",
-                                            crate::i18n::text(if confirming {
+                                            crate::i18n::text(if warning {
+                                                "remote.pin_choose_another"
+                                            } else if confirming {
                                                 "remote.pin_back"
                                             } else {
                                                 "ui.cancel"
@@ -908,7 +967,7 @@ impl NativeRoot {
                                             let root = cx.entity();
                                             move |window, cx| {
                                                 root.update(cx, |r, cx| {
-                                                    if confirming {
+                                                    if warning || confirming {
                                                         r.remote_open_pin(cx);
                                                         r.settings_page
                                                             .remote
@@ -933,7 +992,9 @@ impl NativeRoot {
                                 div().debug_selector(|| "REMOTE_PIN_PRIMARY".into()).child(
                                     Button::new(
                                         "remote-pin-save",
-                                        crate::i18n::text(if confirming {
+                                        crate::i18n::text(if warning {
+                                            "remote.pin_use"
+                                        } else if confirming {
                                             "remote.set_pin"
                                         } else {
                                             "remote.pin_continue"
@@ -947,7 +1008,11 @@ impl NativeRoot {
                                     .on_press(
                                         move |window, cx| {
                                             save.update(cx, |r, cx| {
-                                                r.remote_advance_pin(window, cx)
+                                                if warning {
+                                                    r.remote_accept_pin_warning(cx)
+                                                } else {
+                                                    r.remote_advance_pin(window, cx)
+                                                }
                                             })
                                         },
                                     ),
@@ -1416,6 +1481,10 @@ mod tests {
     fn pin_confirmation_and_lock_warning_keep_secrets_out_of_errors() {
         let pin = Secret("001234".into());
         assert!(confirmed_pin(&pin, &pin).unwrap().0 == pin.0);
+        for weak in ["000000", "123456", "111111", "121212", "654321"] {
+            let weak = Secret(weak.into());
+            assert!(confirmed_pin(&weak, &weak).unwrap().0 == weak.0);
+        }
         for invalid in [
             "12345",
             "1234567",
@@ -1446,6 +1515,115 @@ mod tests {
         assert!(warn_pin_lock(Some(&unlocked), &locked));
         assert!(!warn_pin_lock(Some(&locked), &locked));
         assert!(!warn_pin_lock(Some(&locked), &unlocked));
+    }
+
+    #[test]
+    fn weak_pin_warning_requires_an_explicit_choice_and_keeps_the_pin_private() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for locale in [Locale::English, Locale::SimplifiedChinese] {
+            with_locale(locale, || {
+                for action in ["choose", "enter", "escape", "mouse", "keyboard"] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut cx = TestAppContext::single();
+                    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                    let window = cx.add_window(|window, cx| {
+                        let mut root = NativeRoot::new(
+                            "weak-pin-warning".into(),
+                            temp.path().join("logs"),
+                            None,
+                            None,
+                            store.clone(),
+                            window,
+                            cx,
+                        );
+                        root.route = crate::AppRoute::Settings;
+                        root.settings_page.pane = SettingsPane::Remote;
+                        root.remote_open_pin(cx);
+                        root.settings_page.remote.pin.as_ref().unwrap().fields[0]
+                            .read(cx)
+                            .focus
+                            .clone()
+                            .focus(window, cx);
+                        root
+                    });
+                    cx.simulate_window_resize(window.into(), size(px(1200.), px(900.)));
+                    cx.simulate_keystrokes(window.into(), "0 0 0 0 0 0 enter 0 0 0 0 0 0 enter");
+                    cx.run_until_parked();
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    assert!(visual.debug_bounds("REMOTE_PIN_WARNING").is_some());
+                    assert!(visual.debug_bounds("REMOTE_PIN_BOX_0").is_none());
+                    assert!(!crate::i18n::text("remote.pin_weak").contains("000000"));
+                    assert!(crate::i18n::text("remote.pin_weak").contains(match locale {
+                        Locale::English => "five",
+                        Locale::SimplifiedChinese => "五",
+                    }));
+                    for focus_next in [false, true] {
+                        if focus_next {
+                            cx.simulate_keystrokes(window.into(), "tab");
+                        }
+                        for key in ["enter", "space"] {
+                            visual.simulate_event(gpui::KeyDownEvent {
+                                keystroke: gpui::Keystroke::parse(key).unwrap(),
+                                is_held: true,
+                                prefer_character_input: false,
+                            });
+                        }
+                        assert!(visual.debug_bounds("REMOTE_PIN_WARNING").is_some());
+                        window
+                            .read_with(&cx, |root, _| {
+                                assert_eq!(root.settings_page.remote.request_generation, 0);
+                            })
+                            .unwrap();
+                    }
+                    cx.simulate_keystrokes(window.into(), "shift-tab");
+                    window
+                        .update(&mut cx, |root, window, _| {
+                            assert_eq!(root.settings_page.remote.request_generation, 0);
+                            assert!(root
+                                .settings_page
+                                .remote
+                                .pin
+                                .as_ref()
+                                .unwrap()
+                                .secondary_focus
+                                .is_focused(window));
+                            assert!(root.toasts.active().is_none());
+                        })
+                        .unwrap();
+                    match action {
+                        "choose" => {
+                            let button = visual.debug_bounds("REMOTE_PIN_SECONDARY").unwrap();
+                            visual.simulate_click(button.center(), Default::default());
+                        }
+                        "enter" => cx.simulate_keystrokes(window.into(), "enter"),
+                        "escape" => cx.simulate_keystrokes(window.into(), "escape"),
+                        "mouse" => {
+                            let button = visual.debug_bounds("REMOTE_PIN_PRIMARY").unwrap();
+                            visual.simulate_click(button.center(), Default::default());
+                        }
+                        _ => {
+                            cx.simulate_keystrokes(window.into(), "tab shift-tab tab space");
+                        }
+                    }
+                    window
+                        .read_with(&cx, |root, cx| {
+                            let submitted = matches!(action, "mouse" | "keyboard");
+                            assert_eq!(root.settings_page.remote.request_generation > 0, submitted);
+                            if matches!(action, "choose" | "enter") {
+                                let dialog = root.settings_page.remote.pin.as_ref().unwrap();
+                                assert_eq!(dialog.step, 0);
+                                assert!(dialog
+                                    .fields
+                                    .iter()
+                                    .all(|field| { field.read(cx).value().0.is_empty() }));
+                            } else {
+                                assert!(root.settings_page.remote.pin.is_none());
+                            }
+                        })
+                        .unwrap();
+                }
+            });
+        }
     }
 
     #[test]

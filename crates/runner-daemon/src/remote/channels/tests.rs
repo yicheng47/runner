@@ -655,7 +655,7 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
         crate::events::EventChannel::new(),
     );
     handle.set_companion_core(Arc::new(crate::companion::tests::Fake::default()));
-    handle.set_pin(Secret("012345".into())).await.unwrap();
+    handle.set_pin(Secret("019438".into())).await.unwrap();
     let (host_io, peer_io) = tokio::io::duplex(remote::MAX_RELAY_SIZE * 2);
     let mut peer = WebSocketStream::from_raw_socket(peer_io, Role::Server, None).await;
     let host = transport::socket(
@@ -681,7 +681,7 @@ async fn socket_loop_pairs_over_an_in_process_websocket_and_answers_heartbeats()
             private: &[1; 32],
             fixed_ephemeral: None,
         },
-        "012345",
+        "019438",
         [2; 16],
         [3; 32],
     )

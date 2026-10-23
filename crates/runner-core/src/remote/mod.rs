@@ -14,6 +14,45 @@ pub const RPC_PATH: &str = "/api/runner_server.v1.HostEnrollmentService/";
 pub const MAX_CONTROL_SIZE: usize = 64 * 1024;
 pub const MAX_RELAY_SIZE: usize = crate::companion::channel::MAX_FRAME + 4;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinError {
+    Format,
+}
+
+impl PinError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Format => "The PIN must be exactly six digits.",
+        }
+    }
+}
+
+pub fn validate_pin_format(pin: &str) -> Result<(), PinError> {
+    if pin.len() != 6 || !pin.bytes().all(|digit| digit.is_ascii_digit()) {
+        return Err(PinError::Format);
+    }
+    Ok(())
+}
+
+pub fn is_weak_pin(pin: &str) -> bool {
+    if validate_pin_format(pin).is_err() {
+        return false;
+    }
+    let digits = pin.as_bytes();
+    digits.iter().all(|digit| *digit == digits[0])
+        || digits
+            .windows(2)
+            .all(|pair| pair[1] == b'0' + (pair[0] - b'0' + 1) % 10)
+        || digits
+            .windows(2)
+            .all(|pair| pair[1] == b'0' + (pair[0] - b'0' + 9) % 10)
+        || [
+            "121212", "123123", "112233", "123321", "111222", "000111", "159753", "147258",
+            "789456", "696969", "101010", "112358",
+        ]
+        .contains(&pin)
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(pub String);
@@ -280,6 +319,27 @@ mod tests {
             "Bearer [redacted] and [redacted]!"
         );
     }
+    #[test]
+    fn weak_pin_patterns_are_detected_without_rejecting_six_digit_pins() {
+        for pin in [
+            "000000", "111111", "222222", "333333", "444444", "555555", "666666", "777777",
+            "888888", "999999", "012345", "123456", "456789", "890123", "654321", "987654",
+            "210987", "121212", "123123", "112233", "123321", "111222", "000111", "159753",
+            "147258", "789456", "696969", "101010", "112358",
+        ] {
+            assert!(is_weak_pin(pin));
+            assert!(validate_pin_format(pin).is_ok());
+        }
+        for pin in ["001234", "019438", "903617"] {
+            assert!(!is_weak_pin(pin));
+            assert!(validate_pin_format(pin).is_ok());
+        }
+        for pin in ["", "12345", "1234567", "１２３４５６", "12345a", " 123456"] {
+            assert!(!is_weak_pin(pin));
+            assert_eq!(validate_pin_format(pin), Err(PinError::Format));
+        }
+    }
+
     #[test]
     fn future_fields_and_types_are_ignored() {
         assert!(matches!(

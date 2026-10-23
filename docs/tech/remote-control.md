@@ -106,11 +106,12 @@ sequenceDiagram
     Note over C: it decrypts, so the host knew the PIN:<br/>keep the host's key
 ```
 
-Three details are easy to miss:
+Four details are easy to miss:
 
 - **The client trusts the host's key only after the host's first `data` frame decrypts.** Message 2 carries a static key before any PIN has entered the handshake, so on its own it proves nothing. Only a host that derived the same ISK can produce a frame the client can open.
 - **A failed authentication counts as a wrong PIN.** The host cannot tell a wrong PIN from a tampered message, so both count toward the lock. Malformed frames and invalid points do not (`channels.rs`, `authorize`).
 - **Attempts are serialized.** The host checks the lock again before reading each `pairFinish` and reads them one at a time, so five parallel attempts cannot slip past the fifth failure.
+- **Weak PINs remain a user choice.** Shared detection identifies repeated single digits, ascending/descending runs and a short list of common PINs. Settings and the CLI warn that the PIN could be guessed within five tries, then require an explicit confirmation to keep it. The host validates only the six-digit ASCII format; no confirmation flag or new wire field is introduced. CPace still allows one online guess per attempt.
 
 Code: `channel/cpace.rs`; `channel/handshake.rs`, `HostPair::start` and `HostPair::finish` for the host, `BrowserPair` for the client; `runner-daemon/src/remote/channels.rs`, `authorize`, for the lock and recording the device.
 
