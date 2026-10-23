@@ -70,6 +70,7 @@ struct Fake {
     snapshot: Mutex<Vec<u8>>,
     fail_attach: AtomicBool,
     fail_take: AtomicBool,
+    fail_directory: AtomicBool,
     overview_gates: Mutex<HashMap<String, mpsc::Receiver<()>>>,
     overview_started: Mutex<Option<mpsc::Sender<String>>>,
     directory_gate: Mutex<Option<mpsc::Receiver<()>>>,
@@ -102,7 +103,11 @@ impl Transport for Fake {
                     }
                     gate.recv().unwrap();
                 }
-                Response::remote_computers(Ok(self.computers.lock().unwrap().clone()))
+                Response::remote_computers(if self.fail_directory.load(Ordering::SeqCst) {
+                    Err(ClientError::msg("test directory unavailable"))
+                } else {
+                    Ok(self.computers.lock().unwrap().clone())
+                })
             }
             Request::remote_follow { computer, follow } => {
                 self.follows.lock().unwrap().push((computer, follow));
@@ -275,6 +280,7 @@ fn fixture(
         snapshot: Mutex::new(b"remote output".to_vec()),
         fail_attach: AtomicBool::new(false),
         fail_take: AtomicBool::new(false),
+        fail_directory: AtomicBool::new(false),
         overview_gates: Mutex::default(),
         overview_started: Mutex::default(),
         directory_gate: Mutex::default(),
@@ -662,6 +668,100 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                 fake.follows.lock().unwrap().last(),
                 Some(&("host".into(), false))
             );
+        });
+    }
+}
+
+#[test]
+fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            cx.update(|cx| {
+                cx.set_global(runner_app::appearance::Appearance {
+                    reduce_transparency: false,
+                    ..Default::default()
+                });
+            });
+            let (store, fake, clients) = fixture(&mut cx, temp.path());
+            let window = add_window(&mut cx, &store, temp.path(), "picker-panel");
+            for failed in [false, true] {
+                fake.fail_directory.store(failed, Ordering::SeqCst);
+                clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+                cx.run_until_parked();
+                assert_eq!(
+                    clients.read_with(&cx, |clients, _| clients.directory_error),
+                    failed
+                );
+                for variant in [
+                    theme::ThemeVariant::Carbon,
+                    theme::ThemeVariant::RunnerLight,
+                ] {
+                    for glass in [false, true] {
+                        for zoom in [1., 1.5] {
+                            store.update(&mut cx, |store, _| {
+                                store.settings.app_zoom = zoom;
+                                store.settings.app_theme = if variant.is_light() {
+                                    theme::ThemeIntent::Light
+                                } else {
+                                    theme::ThemeIntent::Dark
+                                };
+                                store.settings.light_app_theme = theme::LightTheme::RunnerLight;
+                                store.settings.dark_app_theme = theme::DarkTheme::Runner;
+                                store.settings.window_material = if glass {
+                                    runner_app::appearance::WindowMaterial::Glass
+                                } else {
+                                    runner_app::appearance::WindowMaterial::Solid
+                                };
+                            });
+                            window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+                            cx.run_until_parked();
+                            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                            let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+                            visual.simulate_click(trigger.center(), Default::default());
+                            visual.run_until_parked();
+                            assert_eq!(theme::active_variant(), variant);
+                            assert_eq!(theme::is_glass(), glass && cfg!(target_os = "macos"));
+                            crate::theme_snapshot::assert_fill(
+                                &mut visual,
+                                "COMPUTER_PICKER_PANEL",
+                                theme::colors().panel,
+                            );
+                            let panel = visual.debug_bounds("COMPUTER_PICKER_PANEL").unwrap();
+                            assert_eq!(panel.size.width, px(320. * zoom));
+                            assert!(panel.top() > trigger.bottom());
+                            for selector in ["COMPUTER_PICKER_ROW", "COMPUTER_PICKER_HINT"] {
+                                let content = visual.debug_bounds(selector).unwrap();
+                                assert!(panel.contains(&content.origin));
+                                assert!(panel.contains(&content.bottom_right()));
+                            }
+                            let error = visual.debug_bounds("COMPUTER_PICKER_ERROR");
+                            assert_eq!(error.is_some(), failed);
+                            if let Some(error) = error {
+                                assert!(panel.contains(&error.origin));
+                                assert!(panel.contains(&error.bottom_right()));
+                            }
+                            visual.simulate_keystrokes("escape");
+                            visual.run_until_parked();
+                            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                            visual.simulate_click(trigger.center(), Default::default());
+                            visual.run_until_parked();
+                            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_some());
+                            visual.simulate_click(trigger.center(), Default::default());
+                            visual.run_until_parked();
+                            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                            visual.simulate_click(trigger.center(), Default::default());
+                            visual.run_until_parked();
+                            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_some());
+                            visual.simulate_click(point(px(1400.), px(850.)), Default::default());
+                            visual.run_until_parked();
+                            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                        }
+                    }
+                }
+            }
         });
     }
 }

@@ -58,6 +58,8 @@ Sign both computers in to the same account. On the computer you want to reach, e
 
 The picker lists this computer and the account’s other computers, including offline and unpaired ones. It shows available attention counts from their overviews. Click a computer to switch this window; hold Shift while clicking, or use its window button, to open another window. Choose this computer to return to your local tabs and panes. A local mission keeps its layout and selection; its terminals resume and its feed catches up when you return. Each window chooses independently, and every window opens on this computer after restarting Runner. Your local notification settings continue to apply while a remote window is active; clicking a local chat or mission alert returns a window to this computer and opens that item.
 
+If the computer list cannot refresh, the picker shows a warning below its available rows. Check Account and your connection, then reopen the picker to try again.
+
 A remote window shows only that computer’s projects, tabs, missions and terminals. New chat, role and crew are unavailable there. Choose a tab or mission to open its terminals; the first available tab or mission opens when you enter. Remote mission feeds, replies and posting are planned for later. Shells already attached to a remote tab or mission can also be opened.
 
 Opening a terminal takes control at its pane’s size. Type, paste text, select, copy and resize as in a local terminal. If the host desktop or another client takes control, the terminal remains visible with typing off and **Take control** above it. Leaving the computer releases its terminal attachments and keeps the last size on the host.

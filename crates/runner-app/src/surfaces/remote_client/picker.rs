@@ -378,6 +378,11 @@ impl NativeRoot {
         }
         let owner = cx.weak_entity();
         let menu = div()
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .shadow_2xl()
             .track_focus(&self.client_ui.picker_focus)
             .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
@@ -392,6 +397,12 @@ impl NativeRoot {
             .gap_1()
             .p_1()
             .text_size(theme::text_body())
+            .when(cfg!(test), |menu| {
+                #[cfg(test)]
+                return crate::theme_snapshot::record_fill("COMPUTER_PICKER_PANEL", menu);
+                #[cfg(not(test))]
+                menu
+            })
             .children(rows)
             .when(clients.read(cx).action_failed, |menu| {
                 menu.child(
@@ -406,6 +417,7 @@ impl NativeRoot {
             .when(clients.read(cx).directory_error, |menu| {
                 menu.child(
                     div()
+                        .debug_selector(|| "COMPUTER_PICKER_ERROR".into())
                         .px_2()
                         .py_2()
                         .text_size(theme::text_meta())
@@ -415,6 +427,7 @@ impl NativeRoot {
             })
             .child(
                 div()
+                    .debug_selector(|| "COMPUTER_PICKER_HINT".into())
                     .border_t_1()
                     .border_color(theme::border())
                     .p_2()
