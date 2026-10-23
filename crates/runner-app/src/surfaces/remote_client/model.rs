@@ -5,8 +5,22 @@ use gpui::{AppContext, Context, Entity};
 use runner_core::{
     companion::{Overview, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
-    remote::{Computer, PairedDevice, RemoteTrust},
+    remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
 };
+
+pub(crate) fn this_computer(status: &RemoteStatus, show_host_name: bool) -> Computer {
+    Computer {
+        id: status.host_id.clone().unwrap_or_default(),
+        name: status
+            .host_name
+            .as_ref()
+            .filter(|_| show_host_name)
+            .cloned()
+            .unwrap_or_else(|| crate::i18n::text("client.this_computer").into()),
+        is_self: true,
+        ..Default::default()
+    }
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Connection {

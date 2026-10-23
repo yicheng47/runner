@@ -1,9 +1,25 @@
-//! Text offset helpers for IME input: UTF-16 ⇄ UTF-8 conversion
+//! Text formatting and IME offsets: UTF-16 ⇄ UTF-8 conversion
 //! (NSTextInputClient speaks UTF-16 code units) and grapheme-cluster
 //! boundaries (so Backspace deletes 👨‍👩‍👧‍👦 as one unit, not one code
 //! point at a time).
 
 use unicode_segmentation::UnicodeSegmentation as _;
+
+pub fn format_relative_time(
+    value: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let minutes = now.signed_duration_since(value).num_minutes().max(0) as usize;
+    if minutes == 0 {
+        crate::i18n::text("ui.just_now").into()
+    } else if minutes < 60 {
+        crate::i18n::tnf("format.minute_ago", minutes, &[])
+    } else if minutes < 1440 {
+        crate::i18n::tnf("format.hour_ago", minutes / 60, &[])
+    } else {
+        crate::i18n::tnf("format.day_ago", minutes / 1440, &[])
+    }
+}
 
 /// UTF-8 byte offset for a UTF-16 code-unit offset into `s`.
 pub fn offset_from_utf16(s: &str, utf16_offset: usize) -> usize {
@@ -76,4 +92,52 @@ pub fn next_grapheme_boundary(s: &str, offset: usize) -> usize {
         .next()
         .map(|g| offset + g.len())
         .unwrap_or(s.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_time_keeps_future_and_unit_boundaries_localized() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-23T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for (locale, expected) in [
+            (
+                crate::i18n::Locale::English,
+                [
+                    "just now",
+                    "just now",
+                    "1 minute ago",
+                    "59 minutes ago",
+                    "1 hour ago",
+                    "23 hours ago",
+                    "1 day ago",
+                ],
+            ),
+            (
+                crate::i18n::Locale::SimplifiedChinese,
+                [
+                    "刚刚",
+                    "刚刚",
+                    "1 分钟前",
+                    "59 分钟前",
+                    "1 小时前",
+                    "23 小时前",
+                    "1 天前",
+                ],
+            ),
+        ] {
+            crate::i18n::testing::with_locale(locale, || {
+                for (minutes, expected) in [-1, 0, 1, 59, 60, 1439, 1440].into_iter().zip(expected)
+                {
+                    assert_eq!(
+                        format_relative_time(now - chrono::Duration::minutes(minutes), now),
+                        expected
+                    );
+                }
+            });
+        }
+    }
 }

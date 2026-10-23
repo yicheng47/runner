@@ -261,6 +261,31 @@ fn computers() -> Vec<Computer> {
 fn overview() -> Overview {
     serde_json::from_value(serde_json::json!({"projects":[{"id":"p", "name":"Remote project"}], "tabs":[{"id":"remote-tab","project":"p","name":"Remote tab","pinned":true,"panes":{"session":"s"},"shells":[]}],"missions":[{"id":"remote-mission","title":"Remote mission","project":null,"crew":"Duo","state":"running","pinned":false,"members":[],"asks":[],"shells":[]}],"sessions":{"s":{"kind":"chat","title":"Remote session","runtime":"codex","status":"needsYou","reason":"approval","unread":true}}})).unwrap()
 }
+
+#[test]
+fn synthesized_computer_preserves_identity_and_only_shows_the_host_name_when_requested() {
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let status = RemoteStatus {
+                host_id: Some("local-host".into()),
+                host_name: Some("Local host".into()),
+                ..Default::default()
+            };
+            let named = model::this_computer(&status, true);
+            assert_eq!(named.id, "local-host");
+            assert_eq!(named.name, "Local host");
+            assert!(named.is_self);
+            let generic = model::this_computer(&status, false);
+            assert_eq!(generic.id, named.id);
+            assert_eq!(generic.name, crate::i18n::text("client.this_computer"));
+            assert!(generic.is_self);
+            let missing = model::this_computer(&RemoteStatus::default(), true);
+            assert!(missing.id.is_empty());
+            assert_eq!(missing.name, generic.name);
+            assert!(missing.is_self);
+        });
+    }
+}
 fn sidebar_overview() -> Overview {
     let mut data = overview();
     let mut project_tab = data.tabs[0].clone();

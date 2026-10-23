@@ -205,16 +205,7 @@ impl NativeRoot {
             Vec::new()
         };
         if !computers.iter().any(|c| c.is_self) {
-            computers.insert(
-                0,
-                Computer {
-                    id: status.host_id.unwrap_or_default(),
-                    name: if signed_in { status.host_name } else { None }
-                        .unwrap_or_else(|| crate::i18n::text("client.this_computer").into()),
-                    is_self: true,
-                    ..Default::default()
-                },
-            );
+            computers.insert(0, model::this_computer(&status, signed_in));
         }
         let mut rows = Vec::new();
         for computer in &computers {
