@@ -1,0 +1,11 @@
+{
+  "type": "startMission",
+  "id": 42,
+  "crew": "crew-a",
+  "project": null,
+  "title": "Review",
+  "goal": "Implement the task",
+  "cwd": "C:\\work\\runner",
+  "cols": 120,
+  "rows": 40
+}

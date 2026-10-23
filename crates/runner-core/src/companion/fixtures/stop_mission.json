@@ -1,0 +1,5 @@
+{
+  "type": "stopMission",
+  "id": 42,
+  "mission": "mission-a"
+}

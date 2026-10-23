@@ -988,8 +988,17 @@ pub async fn mission_stop_impl(state: &AppCore, id: String) -> Result<Mission> {
 }
 
 pub fn mission_resume(state: &AppCore, id: &str) -> Result<ResumeMissionOutput> {
+    mission_resume_with_size(state, id, None)
+}
+
+pub fn mission_resume_with_size(
+    state: &AppCore,
+    id: &str,
+    size: Option<(u16, u16)>,
+) -> Result<ResumeMissionOutput> {
     mission_resume_with(state, id, |state, session_id| {
-        crate::ops::session::session_resume(state, session_id, None, None).map(|_| ())
+        crate::ops::session::session_resume(state, session_id, size.map(|s| s.0), size.map(|s| s.1))
+            .map(|_| ())
     })
 }
 

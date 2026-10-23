@@ -250,6 +250,7 @@ async fn deliver(
 }
 #[derive(Default)]
 struct TestCore {
+    backend: std::sync::OnceLock<Arc<dyn Core>>,
     fake: crate::companion::tests::Fake,
     streams: StdMutex<Vec<std::sync::mpsc::Sender<TerminalFrame>>>,
     sizes: StdMutex<Vec<(u16, u16, &'static str)>>,
@@ -300,13 +301,44 @@ impl TestCore {
     }
 }
 impl crate::companion::core::Core for TestCore {
+    fn action(
+        &self,
+        request: c::ActionRequest,
+    ) -> crate::companion::core::Result<serde_json::Value> {
+        self.backend.get().unwrap().action(request)
+    }
+    fn feed(&self, request: c::FeedRequest) -> crate::companion::core::Result<c::FeedPage> {
+        self.backend.get().unwrap().feed(request)
+    }
+    fn feed_cursor(&self, mission: &str) -> crate::companion::core::Result<u64> {
+        self.backend.get().unwrap().feed_cursor(mission)
+    }
+    fn feed_since(
+        &self,
+        mission: &str,
+        cursor: u64,
+    ) -> crate::companion::core::Result<crate::companion::feed::Updates> {
+        self.backend.get().unwrap().feed_since(mission, cursor)
+    }
+    fn answer(&self, request: c::AnswerRequest) -> crate::companion::core::Result<()> {
+        self.backend.get().unwrap().answer(request)
+    }
+    fn post(&self, request: c::PostRequest) -> crate::companion::core::Result<()> {
+        self.backend.get().unwrap().post(request)
+    }
     fn overview(&self) -> crate::companion::core::Result<c::Overview> {
+        if let Some(core) = self.backend.get() {
+            return core.overview();
+        }
         self.fake.overview()
     }
     fn subscribe(
         &self,
     ) -> crate::companion::core::Result<tokio::sync::broadcast::Receiver<crate::events::AppEvent>>
     {
+        if let Some(core) = self.backend.get() {
+            return core.subscribe();
+        }
         self.fake.subscribe()
     }
     fn attach(
@@ -314,6 +346,9 @@ impl crate::companion::core::Core for TestCore {
         target: &str,
         history: usize,
     ) -> crate::companion::core::Result<crate::companion::core::Attachment> {
+        if let Some(core) = self.backend.get() {
+            return core.clone().attach(target, history);
+        }
         self.attaches.fetch_add(1, Ordering::Relaxed);
         if self.stopped.load(Ordering::Relaxed) {
             return Err(crate::companion::core::Failure(
@@ -330,12 +365,15 @@ impl crate::companion::core::Core for TestCore {
     }
     fn resize(
         &self,
-        _: &str,
-        _: u64,
-        _: &str,
+        session: &str,
+        channel: u64,
+        name: &str,
         size: (u16, u16),
         control: crate::companion::core::Control,
     ) -> crate::companion::core::Result<()> {
+        if let Some(core) = self.backend.get() {
+            return core.resize(session, channel, name, size, control);
+        }
         let mode = match control {
             crate::companion::core::Control::Take => "take",
             crate::companion::core::Control::IfFree => "ifFree",
@@ -345,14 +383,25 @@ impl crate::companion::core::Core for TestCore {
         Ok(())
     }
     fn input(&self, target: &str, bytes: &[u8]) -> crate::companion::core::Result<()> {
+        if let Some(core) = self.backend.get() {
+            return core.input(target, bytes);
+        }
         self.fake.input(target, bytes)
     }
-    fn detach(&self, _: &str, _: u64, _: u64, _: bool) {}
+    fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool) {
+        if let Some(core) = self.backend.get() {
+            core.detach(session, subscriber, channel, release);
+        }
+    }
     fn closed_reason(&self, _: &str) -> c::ClosedReason {
         self.closed.notify_one();
         c::ClosedReason::Exited
     }
-    fn release_channel(&self, _: u64) {}
+    fn release_channel(&self, channel: u64) {
+        if let Some(core) = self.backend.get() {
+            core.release_channel(channel);
+        }
+    }
 }
 
 #[tokio::test]
@@ -645,7 +694,7 @@ async fn a_client_without_credit_does_not_stall_a_second_client() {
     let context = fixture.client.context().await.unwrap();
     let socket = fixture.relay.open(&context, "2").await.unwrap();
     let key = remote::HostKey::generate().unwrap();
-    let (mut socket, mut records, _) =
+    let (mut socket, mut records, _, _) =
         route::pair(socket, &key, &Secret("012345".into()), "stalled")
             .await
             .unwrap();
@@ -1354,3 +1403,6 @@ async fn ipc_slow_resync_keeps_the_final_snapshot_after_the_host_terminal_closes
     );
     assert_eq!(fixture.core.attaches.load(Ordering::Relaxed), 1);
 }
+
+#[path = "action_tests.rs"]
+mod action_tests;

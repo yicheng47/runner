@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "mission": "mission-a",
+    "sessions": [
+      "session-a"
+    ]
+  }
+}

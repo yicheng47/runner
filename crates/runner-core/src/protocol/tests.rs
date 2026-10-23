@@ -6,6 +6,19 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+impl Sample for crate::companion::ClientMessage {
+    fn sample() -> Self {
+        Self::Overview(crate::companion::OverviewRequest { id: 7 })
+    }
+}
+impl Sample for crate::remote::RemoteResult {
+    fn sample() -> Self {
+        Self {
+            result: serde_json::json!({"session":"s"}),
+            features: vec!["startChat".into()],
+        }
+    }
+}
 impl Sample for crate::remote::Computer {
     fn sample() -> Self {
         Self::default()

@@ -1,0 +1,15 @@
+{
+  "type": "move",
+  "id": 42,
+  "target": {
+    "kind": "tab",
+    "id": "tab-a"
+  },
+  "project": null,
+  "order": [
+    {
+      "kind": "tab",
+      "id": "tab-a"
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "type": "deleteProject",
+  "id": 42,
+  "project": "project-a",
+  "force": false
+}

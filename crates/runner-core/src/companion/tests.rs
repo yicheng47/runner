@@ -10,6 +10,28 @@ use crate::protocol::{
 
 const CLIENT_FIXTURES: &[&str] = &[
     "hello",
+    "layout_split",
+    "start_chat_role",
+    "catalog",
+    "folders",
+    "start_chat",
+    "start_shell",
+    "stop",
+    "resume",
+    "restart",
+    "fork",
+    "close",
+    "rename",
+    "archive",
+    "layout",
+    "pin",
+    "move",
+    "reorder_pinned",
+    "create_project",
+    "delete_project",
+    "start_mission",
+    "stop_mission",
+    "resume_mission",
     "overview_request",
     "feed_request",
     "follow",
@@ -29,6 +51,14 @@ const CLIENT_FIXTURES: &[&str] = &[
 ];
 const HOST_FIXTURES: &[&str] = &[
     "welcome",
+    "result_catalog",
+    "result_folders",
+    "result_session",
+    "result_mission",
+    "result_resume_mission",
+    "result_layout",
+    "result_project",
+    "result_delete_project",
     "result_empty",
     "result_overview",
     "result_feed",
@@ -45,6 +75,7 @@ const HOST_FIXTURES: &[&str] = &[
     "unknown_sidebar_kind",
     "status",
     "feed_appended",
+    "feed_entry_too_large",
     "snapshot",
     "snapshot_final",
     "snapshot_rep",
@@ -70,7 +101,11 @@ const HOST_FIXTURES: &[&str] = &[
     "unknown_feed_kind",
 ];
 
-const CLIENT_COMPAT_FIXTURES: &[(&str, &str)] = &[("unknown_field", "hello")];
+const CLIENT_COMPAT_FIXTURES: &[(&str, &str)] = &[
+    ("unknown_field", "hello"),
+    ("unknown_field_start_chat", "start_chat"),
+    ("start_chat_minimal", "start_chat"),
+];
 const HOST_COMPAT_FIXTURES: &[(&str, &str)] = &[
     ("unknown_field_status_id", "status"),
     ("unknown_fields_resized_you", "resized"),
@@ -755,4 +790,76 @@ fn snapshot_continuation_defaults_and_validation() {
     value["precedingChar"] = json!(null);
     value["unfinishedLen"] = json!(-1);
     assert!(serde_json::from_value::<Snapshot>(value).is_err());
+}
+
+#[test]
+fn action_fields_are_required_when_load_bearing_and_debug_keeps_bodies_private() {
+    for name in [
+        "start_chat",
+        "start_shell",
+        "resume",
+        "restart",
+        "fork",
+        "start_mission",
+        "resume_mission",
+    ] {
+        for field in ["cols", "rows"] {
+            let mut value = fixture(name);
+            value.as_object_mut().unwrap().remove(field);
+            let error = ClientMessage::decode(&serde_json::to_vec(&value).unwrap()).unwrap_err();
+            assert_eq!(error.id, Some(42));
+            assert_eq!(error.code, ErrorCode::BadRequest);
+            assert!(error.message.contains(&format!("missing field {field}.")));
+        }
+    }
+    for value in [
+        json!({"type":"post","id":7,"mission":"m","to":[],"text":"private-body-canary"}),
+        json!({"type":"futureSettings","id":8,"credential":"private-body-canary"}),
+    ] {
+        let message = ClientMessage::decode(&serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(!format!("{message:?}").contains("private-body-canary"));
+    }
+    let result = HostMessage::Result(ResultMessage {
+        id: 7,
+        result: json!({"text":"private-body-canary"}),
+    });
+    assert!(!format!("{result:?}").contains("private-body-canary"));
+    let response = crate::protocol::Response::remote_request(Ok(crate::remote::RemoteResult {
+        result: json!({"text":"private-body-canary"}),
+        features: vec![],
+    }));
+    assert!(!format!("{response:?}").contains("private-body-canary"));
+}
+
+#[test]
+fn catalog_and_folder_results_have_their_own_wire_types() {
+    let catalog: Catalog =
+        serde_json::from_value(fixture("result_catalog")["result"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(catalog).unwrap(),
+        fixture("result_catalog")["result"]
+    );
+    let folders: FolderPage =
+        serde_json::from_value(fixture("result_folders")["result"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(folders).unwrap(),
+        fixture("result_folders")["result"]
+    );
+    for name in CLIENT_FIXTURES {
+        let value = fixture(name);
+        if ActionRequest::NAMES.contains(&value["type"].as_str().unwrap()) {
+            let mut future = value.clone();
+            future["futureField"] = json!({"new":true});
+            assert_eq!(
+                serde_json::to_value(
+                    ClientMessage::decode(&serde_json::to_vec(&future).unwrap()).unwrap()
+                )
+                .unwrap(),
+                value
+            );
+        }
+    }
+    let mut invalid = fixture("layout_split");
+    invalid["panes"]["sizes"] = json!([1]);
+    assert!(ClientMessage::decode(&serde_json::to_vec(&invalid).unwrap()).is_err());
 }

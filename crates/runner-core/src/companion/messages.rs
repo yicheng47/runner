@@ -6,7 +6,7 @@ use super::{
     DEFAULT_HISTORY,
 };
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ClientMessage {
     Hello(Hello),
@@ -23,6 +23,50 @@ pub enum ClientMessage {
     Detach(SessionRequest),
     #[serde(untagged)]
     Unknown(UnknownRequest),
+    #[serde(untagged)]
+    Action(super::ActionRequest),
+}
+
+impl std::fmt::Debug for ClientMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientMessage")
+            .field("id", &self.id())
+            .finish_non_exhaustive()
+    }
+}
+impl ClientMessage {
+    pub fn id(&self) -> Option<u64> {
+        Some(match self {
+            Self::Hello(_) => return None,
+            Self::Overview(r) => r.id,
+            Self::Feed(r) => r.id,
+            Self::Follow(r) | Self::Unfollow(r) => r.id,
+            Self::Answer(r) => r.id,
+            Self::Post(r) => r.id,
+            Self::Attach(r) => r.id,
+            Self::Input(r) => r.id,
+            Self::TakeControl(r) | Self::Viewport(r) => r.id,
+            Self::Detach(r) => r.id,
+            Self::Unknown(r) => r.id,
+            Self::Action(r) => r.id(),
+        })
+    }
+    pub fn set_id(&mut self, value: u64) {
+        match self {
+            Self::Hello(_) => {}
+            Self::Overview(r) => r.id = value,
+            Self::Feed(r) => r.id = value,
+            Self::Follow(r) | Self::Unfollow(r) => r.id = value,
+            Self::Answer(r) => r.id = value,
+            Self::Post(r) => r.id = value,
+            Self::Attach(r) => r.id = value,
+            Self::Input(r) => r.id = value,
+            Self::TakeControl(r) | Self::Viewport(r) => r.id = value,
+            Self::Detach(r) => r.id = value,
+            Self::Unknown(r) => r.id = value,
+            Self::Action(r) => r.set_id(value),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -101,6 +145,21 @@ impl ClientMessage {
             "viewport" => decode!(Viewport, session: String => "a string",
                 cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer"),
             "detach" => decode!(Detach, session: String => "a string"),
+            name if super::ActionRequest::NAMES.contains(&name) => {
+                serde_json::from_value(value.clone())
+                    .map(Self::Action)
+                    .map_err(|_| {
+                        Self::bad_request(
+                            id,
+                            &format!(
+                                "{}: {}",
+                                header.kind,
+                                super::ActionRequest::field_problem(name, &value)
+                                    .unwrap_or_else(|| "invalid request fields.".into())
+                            ),
+                        )
+                    })
+            }
             _ => serde_json::from_value(value)
                 .map(Self::Unknown)
                 .map_err(|_| Self::bad_request(id, "The unknown request envelope is invalid.")),
@@ -108,7 +167,11 @@ impl ClientMessage {
     }
 }
 
-fn field_problem<T: DeserializeOwned>(body: &Value, field: &str, expected: &str) -> Option<String> {
+pub(super) fn field_problem<T: DeserializeOwned>(
+    body: &Value,
+    field: &str,
+    expected: &str,
+) -> Option<String> {
     let value = body.get(field);
     if serde_json::from_value::<T>(value.cloned().unwrap_or(Value::Null)).is_ok() {
         None
@@ -126,7 +189,7 @@ impl<'de> Deserialize<'de> for ClientMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HostMessage {
     Welcome(Welcome),
@@ -141,6 +204,12 @@ pub enum HostMessage {
     Closed(Closed),
     #[serde(untagged)]
     Unknown(UnknownPush),
+}
+
+impl std::fmt::Debug for HostMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostMessage([redacted])")
+    }
 }
 
 impl<'de> Deserialize<'de> for HostMessage {

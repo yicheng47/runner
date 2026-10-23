@@ -1,0 +1,10 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "target": {
+      "kind": "tab",
+      "id": "tab-a"
+    }
+  }
+}
