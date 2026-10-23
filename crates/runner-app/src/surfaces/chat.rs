@@ -990,6 +990,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<()> {
+        if self.remote_window.is_some() {
+            return Ok(());
+        }
         if self.closing {
             return Ok(());
         }

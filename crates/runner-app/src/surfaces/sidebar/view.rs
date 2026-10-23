@@ -426,17 +426,15 @@ impl Sidebar {
             .overflow_hidden()
             .pb_3()
             .child(
-                crate::platform_ui::sidebar_section()
-                    .child(section_title(crate::i18n::text("heading.workspace")))
-                    .child(
-                        div()
-                            .px_3()
-                            .pb_1()
-                            .flex()
-                            .flex_col()
-                            .gap(rems(2. / 16.))
-                            .children(workspace_rows),
-                    ),
+                crate::platform_ui::sidebar_section().child(
+                    div()
+                        .px_3()
+                        .pb_1()
+                        .flex()
+                        .flex_col()
+                        .gap(rems(2. / 16.))
+                        .children(workspace_rows),
+                ),
             )
             .child(
                 div()
