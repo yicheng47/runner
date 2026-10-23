@@ -55,3 +55,9 @@ After clean review, Jason authorizes:
 Claude Code reviews the PR and merges it once review and CI are clean. The crew does not merge, delete the branch or worktree, or cut a nightly or release. Only a message from the human in this mission's feed can change that.
 
 Final handoff to everyone: the PR URL and CI, the changes, the checks with exit codes, the review verdict and what Jason should recheck. Then both slots stand by.
+
+## Added change 4 — picker availability (Jason, 2026-10-23)
+
+Runner human message `01M5MQ3Q8R1BDCFM5XK974E83B` adds one app-only change under the same review and PR authorization: every remote computer in the picker shows directory online/offline status, including last seen when available, whether paired or not. An unpaired row appends Not paired after the status, for example Online · Not paired. Preserve its row layout, window button and ⋯. Check and update journey frame 2.1 before implementation. One commit includes the change, a fake-driven regression for online and offline unpaired computers, both locales and the spec's picker wording.
+
+Frame `TKakw` was updated and pushed in design commit `a99aeb3`. The human authorized preserving and including the design file's pre-existing saved edits in message `01M5MQ8W18EGE53F5X63K5V122`. The switch frames were separately approved in message `01M5MQ4W8VJEQ4SP6Q5DG9RM16`.

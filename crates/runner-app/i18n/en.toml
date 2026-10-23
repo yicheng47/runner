@@ -1335,7 +1335,7 @@
 "client.picker_hint" = "Click to switch this window, ⇧-click or the window button for another window, ⋯ to revoke or forget a computer."
 "client.picker_sign_in" = "Sign in to see your computers…"
 "client.open_window" = "Open in another window"
-"client.unpaired_picker" = "Not paired · pair to open"
+"client.unpaired_picker" = "{status} · Not paired"
 "client.connection_live" = "{computer} · relay · encrypted"
 "client.connection_opening" = "Connecting through the relay…"
 "client.connection_reconnecting" = "Reconnecting to {computer}…"

@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) fn computer_detail(computer: &Computer) -> String {
+    if computer.is_self {
+        return crate::i18n::text("client.this_computer").into();
+    }
+    let status = status_label(computer, false);
+    if computer.paired {
+        status
+    } else {
+        crate::i18n::tf("client.unpaired_picker", &[("status", status)])
+    }
+}
+
 impl NativeRoot {
     pub(super) fn choose_computer(
         &mut self,
@@ -216,13 +228,7 @@ impl NativeRoot {
                     .as_ref()
                     .is_some_and(|remote| remote.computer.id == computer.id)
             };
-            let detail = if computer.is_self {
-                crate::i18n::text("client.this_computer").into()
-            } else if !computer.paired {
-                crate::i18n::text("client.unpaired_picker").into()
-            } else {
-                status_label(computer, false)
-            };
+            let detail = computer_detail(computer);
             let trust = self
                 .app_store
                 .read(cx)

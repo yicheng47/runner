@@ -1335,7 +1335,7 @@
 "client.picker_hint" = "点击以切换当前窗口；按住 ⇧ 点击或点击窗口按钮在新窗口打开；点击 ⋯ 撤销访问或忘记电脑。"
 "client.picker_sign_in" = "登录以查看你的电脑…"
 "client.open_window" = "在新窗口中打开"
-"client.unpaired_picker" = "未配对 · 配对后打开"
+"client.unpaired_picker" = "{status} · 未配对"
 "client.connection_live" = "{computer} · 中继 · 已加密"
 "client.connection_opening" = "正在通过中继连接…"
 "client.connection_reconnecting" = "正在重新连接 {computer}…"

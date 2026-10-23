@@ -1331,6 +1331,58 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
 }
 
 #[test]
+fn picker_status_precedes_unpaired_detail_from_directory() {
+    for (locale, online, offline) in [
+        (
+            Locale::English,
+            "Online · Not paired",
+            "Offline · seen 1 hour ago · Not paired",
+        ),
+        (
+            Locale::SimplifiedChinese,
+            "在线 · 未配对",
+            "离线 · 最后在线 1 小时前 · 未配对",
+        ),
+    ] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (_store, fake, clients) = fixture(&mut cx, temp.path());
+            let remote = computers().into_iter().find(|c| !c.is_self).unwrap();
+            *fake.computers.lock().unwrap() = vec![
+                Computer {
+                    id: "unpaired-online".into(),
+                    online: true,
+                    paired: false,
+                    ..remote.clone()
+                },
+                Computer {
+                    id: "unpaired-offline".into(),
+                    online: false,
+                    paired: false,
+                    last_seen_at: Some(
+                        (chrono::Utc::now() - chrono::Duration::minutes(90)).to_rfc3339(),
+                    ),
+                    ..remote
+                },
+            ];
+            let before = fake.directory_calls.load(Ordering::SeqCst);
+            clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+            cx.run_until_parked();
+            assert_eq!(fake.directory_calls.load(Ordering::SeqCst), before + 1);
+            let details = clients.read_with(&cx, |clients, _| {
+                clients
+                    .computers
+                    .iter()
+                    .map(picker::computer_detail)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(details, [online, offline]);
+        });
+    }
+}
+
+#[test]
 fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
