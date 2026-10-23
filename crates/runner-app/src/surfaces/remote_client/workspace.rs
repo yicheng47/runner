@@ -670,7 +670,7 @@ impl NativeRoot {
             Item::Tab(_) => ChatIcon::generic("message-square.svg"),
         };
         let mut pinned = false;
-        let (working, unread, needs_input, stopped) =
+        let (live, rollup) =
             {
                 let clients = state(&self.app_store, cx);
                 let overview = self
@@ -678,6 +678,7 @@ impl NativeRoot {
                     .as_ref()
                     .and_then(|remote| clients.read(cx).overviews.get(&remote.computer.id));
                 let mut ids = Vec::new();
+                let mut clear_stale_unread = false;
                 if let Some(overview) = overview {
                     match &item {
                         Item::Tab(id) => {
@@ -705,6 +706,8 @@ impl NativeRoot {
                                 overview.missions.iter().find(|mission| &mission.id == id)
                             {
                                 pinned = mission.pinned;
+                                clear_stale_unread =
+                                    mission.state == runner_core::companion::MissionState::Running;
                                 ids.extend(
                                     mission.members.iter().map(|member| member.session.clone()),
                                 );
@@ -712,39 +715,63 @@ impl NativeRoot {
                         }
                         Item::Shell(id) => ids.push(id.clone()),
                     }
-                    let statuses = ids
-                        .iter()
-                        .filter_map(|id| overview.sessions.get(id))
-                        .map(|session| &session.status)
-                        .collect::<Vec<_>>();
-                    (
-                        statuses
-                            .iter()
-                            .any(|s| matches!(s.status, Status::Working | Status::Starting)),
-                        statuses.iter().any(|s| s.unread),
-                        attention > 0 || statuses.iter().any(|s| s.status == Status::NeedsYou),
-                        !statuses.is_empty()
-                            && statuses
-                                .iter()
-                                .all(|s| matches!(s.status, Status::Stopped | Status::Error)),
-                    )
-                } else {
-                    (false, false, attention > 0, false)
                 }
+                let sessions = ids
+                    .iter()
+                    .filter_map(|id| {
+                        overview
+                            .and_then(|overview| overview.sessions.get(id))
+                            .map(|session| (id, session))
+                    })
+                    .collect::<Vec<_>>();
+                let live = sessions.iter().any(|(_, session)| {
+                    !matches!(session.status.status, Status::Stopped | Status::Error)
+                });
+                let mut rollup = runner_app::ui::agent_status::StatusRollup {
+                    entries: sessions
+                        .into_iter()
+                        .filter(|(_, session)| {
+                            session.kind != runner_core::companion::SessionKind::Shell
+                        })
+                        .map(|(id, session)| (id.clone(), model::agent_status(&session.status)))
+                        .collect(),
+                };
+                if clear_stale_unread && !live {
+                    for (_, status) in &mut rollup.entries {
+                        status.unread_since = None;
+                    }
+                }
+                if matches!(item, Item::Mission(_))
+                    && attention > 0
+                    && !rollup
+                        .entries
+                        .iter()
+                        .any(|(_, status)| status.observation.needs_you())
+                {
+                    rollup.entries.push((
+                        String::new(),
+                        model::agent_status(&runner_core::companion::SessionStatus {
+                            status: Status::NeedsYou,
+                            reason: Some(runner_core::companion::NeedsYouReason::Answer),
+                            unread: false,
+                        }),
+                    ));
+                }
+                (live, rollup)
             };
         sidebar::sidebar_item_row(
-            key.into(),
+            key.clone().into(),
             &SidebarItemView {
                 title: name.to_owned(),
                 icon: glyph,
-                live: !stopped,
+                live,
                 selected,
                 pinned,
             },
         )
         .debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
         .tab_index(0)
-        .when(stopped, |row| row.text_color(theme::faint()))
+        .when(!live, |row| row.text_color(theme::faint()))
         .on_click(cx.listener({
             let item = item.clone();
             move |root, _, _, cx| root.select_remote_item(item.clone(), cx)
@@ -757,17 +784,7 @@ impl NativeRoot {
         }))
         .child(
             sidebar::sidebar_row_trailing_slot()
-                .children(needs_input.then(|| icon("hand.svg", theme::warning())))
-                .children(
-                    (working && !needs_input)
-                        .then(|| spinner("remote-sidebar-working", 12., theme::muted())),
-                )
-                .children((unread && !working && !needs_input).then(|| {
-                    div()
-                        .size(rems(5. / 16.))
-                        .rounded_full()
-                        .bg(theme::accent())
-                })),
+                .child(rollup.render(SharedString::from(format!("remote-attention-{key}")))),
         )
         .into_any_element()
     }

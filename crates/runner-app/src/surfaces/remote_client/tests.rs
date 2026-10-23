@@ -791,6 +791,209 @@ fn remote_sidebar_node_metadata_preserves_mixed_order_and_updates_placement() {
 }
 
 #[test]
+fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
+    use runner_app::ui::agent_status::{StatusKind, StatusPresentation, StatusRollup};
+    use runner_core::companion::{NeedsYouReason, SessionStatus};
+    for (status, reason, kind) in [
+        (
+            Status::NeedsYou,
+            Some(NeedsYouReason::Approval),
+            StatusKind::Approval,
+        ),
+        (
+            Status::NeedsYou,
+            Some(NeedsYouReason::Answer),
+            StatusKind::Answer,
+        ),
+        (
+            Status::NeedsYou,
+            Some(NeedsYouReason::Unknown),
+            StatusKind::NeedsYou,
+        ),
+        (Status::NeedsYou, None, StatusKind::NeedsYou),
+        (
+            Status::NeedsYou,
+            Some(NeedsYouReason::Unrecognized("future".into())),
+            StatusKind::NeedsYou,
+        ),
+        (
+            Status::Unrecognized("future".into()),
+            None,
+            StatusKind::Idle,
+        ),
+        (Status::Working, None, StatusKind::Working),
+        (Status::Idle, None, StatusKind::Idle),
+        (Status::Starting, None, StatusKind::Starting),
+        (Status::Stopped, None, StatusKind::Stopped),
+        (Status::Error, None, StatusKind::Error),
+    ] {
+        for unread in [false, true] {
+            let wire = SessionStatus {
+                status: status.clone(),
+                reason: reason.clone(),
+                unread,
+            };
+            let mapped = model::agent_status(&wire);
+            let presentation = StatusPresentation::new(&mapped);
+            assert_eq!(presentation.kind, kind);
+            assert!(!presentation.estimated);
+            let back = SessionStatus::from(&mapped);
+            assert_eq!(back.status, wire.status.effective());
+            assert_eq!(back.unread, unread);
+            assert_eq!(
+                back.reason,
+                (status == Status::NeedsYou).then_some(
+                    reason
+                        .clone()
+                        .unwrap_or(NeedsYouReason::Unknown)
+                        .effective()
+                )
+            );
+        }
+    }
+    let mut rollup = StatusRollup {
+        entries: [
+            ("unread", Status::Idle, None, true),
+            ("work", Status::Working, None, false),
+            (
+                "approval",
+                Status::NeedsYou,
+                Some(NeedsYouReason::Approval),
+                false,
+            ),
+            (
+                "answer",
+                Status::NeedsYou,
+                Some(NeedsYouReason::Answer),
+                false,
+            ),
+            ("error", Status::Error, None, false),
+        ]
+        .into_iter()
+        .map(|(id, status, reason, unread)| {
+            (
+                id.into(),
+                model::agent_status(&SessionStatus {
+                    status,
+                    reason,
+                    unread,
+                }),
+            )
+        })
+        .collect(),
+    };
+    assert_eq!(rollup.target(), Some("error"));
+    assert_eq!(
+        rollup.tooltip(),
+        "1 error · 1 approval needed · 1 answer needed · 1 working · 1 unread response"
+    );
+    rollup.entries.pop();
+    assert_eq!(rollup.target(), Some("approval"));
+    rollup.entries.drain(2..);
+    assert_eq!(rollup.target(), Some("work"));
+    rollup.entries.pop();
+    assert_eq!(rollup.target(), Some("unread"));
+}
+
+#[test]
+fn remote_sidebar_reuses_local_status_indicators_and_tracks_pushes() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for mission in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        let mut data = overview();
+        if mission {
+            data.tabs.clear();
+            data.missions[0]
+                .members
+                .push(runner_core::companion::Member {
+                    handle: "coder".into(),
+                    session: "s".into(),
+                    lead: true,
+                });
+        } else {
+            data.missions.clear();
+        }
+        *fake.overview.lock().unwrap() = data.clone();
+        let window = add_window(&mut cx, &store, temp.path(), "shared-sidebar-status");
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.choose_computer(computers()[1].clone(), false, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for (status, reason, unread, glyph) in [
+            ("needsYou", Some("approval"), true, Some("Approval")),
+            ("needsYou", Some("answer"), false, Some("Answer")),
+            ("needsYou", None, false, Some("NeedsYou")),
+            ("needsYou", Some("future"), false, Some("NeedsYou")),
+            ("future", None, false, None),
+            ("working", None, true, Some("Working")),
+            ("idle", None, true, Some("Unread")),
+            ("error", None, true, Some("Error")),
+            ("starting", None, false, None),
+            ("stopped", None, false, None),
+            ("idle", None, false, None),
+        ] {
+            data.sessions.get_mut("s").unwrap().status = serde_json::from_value(
+                serde_json::json!({"status": status, "reason": reason, "unread": unread}),
+            )
+            .unwrap();
+            if status == "working" || reason == Some("answer") {
+                fake.emit(
+                    "remote/session-status",
+                    serde_json::json!({"computer":"host","status":{"session":"s","status":status,"reason":reason,"unread":unread}}),
+                );
+            } else {
+                fake.emit(
+                    "remote/overview",
+                    serde_json::json!({"computer":"host","overview":data}),
+                );
+            }
+            visual.run_until_parked();
+            let row = visual.debug_bounds("REMOTE_SIDEBAR_ROW").unwrap();
+            for (candidate, selector) in [
+                ("Approval", "STATUS_ROLLUP:Approval"),
+                ("Answer", "STATUS_ROLLUP:Answer"),
+                ("NeedsYou", "STATUS_ROLLUP:NeedsYou"),
+                ("Working", "STATUS_ROLLUP:Working"),
+                ("Unread", "STATUS_ROLLUP:Unread"),
+                ("Error", "STATUS_ROLLUP:Error"),
+            ] {
+                let bounds = visual.debug_bounds(selector);
+                assert_eq!(bounds.is_some(), glyph == Some(candidate), "{status}");
+                if let Some(bounds) = bounds {
+                    assert!(bounds.top() >= row.top() && bounds.bottom() <= row.bottom());
+                }
+            }
+            if glyph == Some("Unread") {
+                let dot = visual.debug_bounds("STATUS_ROLLUP_UNREAD_DOT").unwrap();
+                assert_eq!(dot.size, size(px(6.), px(6.)));
+            }
+        }
+        if mission {
+            data.missions[0].asks.push(runner_core::companion::Ask {
+                question: "q".into(),
+                from: "coder".into(),
+                prompt: "Continue?".into(),
+                choices: None,
+            });
+            fake.emit(
+                "remote/overview",
+                serde_json::json!({"computer":"host","overview":data}),
+            );
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("STATUS_ROLLUP:Answer").is_some());
+        }
+        assert!(fake.enrolls.load(Ordering::SeqCst) == 0);
+        assert!(fake.input.lock().unwrap().is_empty());
+        assert!(fake.takes.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
 fn remote_sidebar_groups_pins_projects_and_recents_and_collapses_project_children() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();

@@ -3,10 +3,51 @@ use std::collections::{HashMap, HashSet};
 use futures::{channel::mpsc, future::BoxFuture, FutureExt, StreamExt};
 use gpui::{AppContext, Context, Entity};
 use runner_core::{
-    companion::{Overview, StatusPush},
+    companion::{NeedsYouReason, Overview, SessionStatus, Status, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
     remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
 };
+
+pub(super) fn agent_status(status: &SessionStatus) -> runner_core::protocol::AgentStatus {
+    use runner_core::protocol::{
+        Activity, AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason,
+    };
+    // The overview has flags without timestamps; equal markers retain host pane order in rollups.
+    let marker = i64::MAX;
+    let kind = status.status.effective();
+    AgentStatus {
+        lifecycle: match kind {
+            Status::Starting => Lifecycle::Starting,
+            Status::Stopped => Lifecycle::Stopped,
+            Status::Error => Lifecycle::Error,
+            _ => Lifecycle::Running,
+        },
+        observation: AgentObservation {
+            activity: match kind {
+                Status::Working => Activity::Working,
+                Status::NeedsYou | Status::Idle => Activity::Idle,
+                _ => Activity::Unavailable,
+            },
+            interactions: (kind == Status::NeedsYou)
+                .then(|| HumanInteraction {
+                    id: String::new(),
+                    reason: match status.reason {
+                        Some(NeedsYouReason::Approval) => WaitReason::Approval,
+                        Some(NeedsYouReason::Answer) => WaitReason::Answer,
+                        _ => WaitReason::Unknown,
+                    },
+                    owners: Vec::new(),
+                    since: marker,
+                })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
+        error_since: (kind == Status::Error).then_some(marker),
+        unread_since: status.unread.then_some(marker),
+        ..Default::default()
+    }
+}
 
 pub(crate) fn this_computer(status: &RemoteStatus, show_host_name: bool) -> Computer {
     Computer {

@@ -247,7 +247,7 @@ The reviewed candidate at `40419794` was pushed to PR #1010 against `nightly-rem
 
 ## Problem 5 revision: warn and allow
 
-Human Runner message `01M5MD17NHSYJ2XB6FERGRZJG5` explicitly replaces rejection with a private warning and affirmative confirmation while preserving all six-digit PINs on the wire. English/Simplified Chinese Pencil states `awP6z` / `Xs2de` were drawn and visually checked before implementation; layout warnings were corrected, the file was saved with Cmd+S and design commit `d25a03d` was pushed. The new fake-driven regressions and focused pass are detailed under Problem 5 above. No redesign, protocol change, live app/service check or actual secret-store read is involved. This revision will be reviewed on the working-tree diff, then folded into Problem 5's commit as Jason requested; the remaining presentation reuse work is still separate.
+Human Runner message `01M5MD17NHSYJ2XB6FERGRZJG5` explicitly replaces rejection with a private warning and affirmative confirmation while preserving all six-digit PINs on the wire. English/Simplified Chinese Pencil states `awP6z` / `Xs2de` were drawn and visually checked before implementation; layout warnings were corrected, the file was saved with Cmd+S and design commit `d25a03d` was pushed. The new fake-driven regressions and focused pass are detailed under Problem 5 above. No redesign, protocol change, live app/service check or actual secret-store read is involved. This revision received the clean working-tree review below and was folded into Problem 5's commit as Jason requested; the remaining presentation reuse work is separate.
 
 | Warning revision check | Exit code | Evidence |
 | --- | --- | --- |
@@ -266,3 +266,46 @@ The held-key test compile error was corrected by explicitly setting `prefer_char
 ### Warning revision review verdict
 
 The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the handed-off whole working-tree diff in Runner message `01M5MEKT93NDXV8ND103XGZHKB`, including the app actions/focus/held-key handling, CLI interactive and save boundaries, both host validators, tests, locales and documentation. It independently passed 11 focused checks (exit 0, `target/836-reviewer-weak-pin-warning.log`) and whitespace validation (exit 0, `target/836-reviewer-weak-pin-warning-diff-check.log`), inspected the full workspace and both Clippy passes, and checked Pencil frames `awP6z` / `Xs2de` read only. No native UI, real CLI, pairing or service check ran under the mission restriction. Jason should recheck warning/cancel/accept in both UI languages and interactive CLI, a leading-zero PIN and preservation of existing pairing/terminal access. The previous Problems 6/7 review stands; the remaining presentation reuse and Problems 8–11 are outside this verdict. The warning revision folds into the original Problem 5 commit; its CI must be checked on the new pushed head.
+
+
+## Shared sidebar status presentation
+
+Human Runner messages `01M5M77X1ZT1Q0WV1WFXB0AJGD` and `01M5MCYXH6HFG2C9RK5MHDKB97` request reuse of local sidebar status presentation and explicitly authorize the resulting visual changes. The remote sidebar still reduced status to four booleans and drew its own hand, spinner and five-pixel unread dot, omitting reason/error priority and the local tooltips. This step maps the existing companion status/reason/unread fields to `AgentStatus`, then uses the same `StatusRollup::render` as local rows. No protocol or service change is involved.
+
+The shared renderer now supplies approval, answer, unknown-input, working, unread and error presentation and priority. Empty/stopped rows dim like local rows; shells do not produce agent attention. Running missions without live members suppress stale unread flags as local missions do; pending mission questions remain visible through the shared answer-needed indicator. The overview contains no status times: equal internal markers retain host pane/member order for ties and are used only as flags by sidebar rollups, never as elapsed times.
+
+Pencil was updated before implementation: `pzyfX` is the shared sidebar tree used by all eight existing remote workspace/reconnection frames, retaining PINNED/PROJECTS/RECENTS and showing the local status marks; the stale picker badges in those frames were removed. Visual verification showed no overflow. Replacement warnings referenced the removed fragments; subsequent inspection confirmed the old fragments no longer exist and the final call reports no warnings. The file was explicitly saved and design commit `227fbe3` pushed. The existing local sidebar component remains intact. Pane geometry, terminal surfaces and the Problem 11 header are separate pending work.
+
+Selected checks: a fake-driven GPUI regression switches tab and mission rows through all companion states, future-value fallbacks and each input reason via overview and session-status pushes, verifies shared status indicators and unread geometry, retains pending-question attention, and confirms no enrollment, input or explicit Take control request is sent by the status updates. A data-adapter test checks round-trip status/reason/unread preservation and the local multi-session priority, tooltip and stable tie order. Existing remote sidebar/tree tests and shared status tests guard grouping and the unchanged local renderer; the brief's full workspace, both Clippy, formatting and whitespace gates remain required. Jason's later live recheck is to compare local/remote working, unread, approval/answer/input/error and dimmed stopped rows, including pushed changes and tooltips; the crew runs no live checks.
+
+### Shared sidebar status validation results
+
+| Check | Exit code | Evidence |
+| --- | --- | --- |
+| Initial regression compile | 101 | `target/836-sidebar-status-before.log`: the GPUI selector requires a static string; corrected to static selector cases |
+| Regression before the presentation change | 100 (expected failure) | `target/836-sidebar-status-before-final.log`: remote rows do not render the shared approval indicator |
+| Initial adapter/renderer focused compile | 101 | `target/836-sidebar-status-focused.log`: the test reused non-Copy companion enums; corrected fixture cloning |
+| Corrected focused run before isolating row fixtures | 100 | `target/836-sidebar-status-focused-corrected.log`: 11 passed, 1 failed; the geometry assertion selected the unrelated mission row in the tab fixture |
+| Focused checks with isolated tab/mission fixtures | 0 | `target/836-sidebar-status-focused-final.log`: 39 passed |
+| Final focused checks, including both push types and future status/reason fallback | 0 | `target/836-sidebar-status-focused-compatible.log`: 39 passed |
+| `env -u CLAUDE_CONFIG_DIR cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci` | 0 | `target/836-sidebar-status-workspace.log`: 2,764 passed, 6 skipped, 299.088 seconds |
+| Workspace Clippy, warnings denied | 0 | `target/836-sidebar-status-clippy-final.log` |
+| Workspace Clippy with `--features updater`, warnings denied | 0 | `target/836-sidebar-status-clippy-updater-final.log` |
+| `cargo fmt --all --check` | 0 | `target/836-sidebar-status-fmt-check.log` |
+| `git diff --check` | 0 | `target/836-sidebar-status-diff-check.log` |
+
+The final fixture renders one tested row kind at a time, preserving the containment assertion and adding the exact shared unread-dot geometry assertion. The new adapter uses `effective()` so a future status remains idle and a future needs-you reason remains generic input, as the existing protocol requires. No existing tests were rewritten.
+
+The full workspace run passed with no failures or retries. Its one slow test, the CLI help golden, passed in 67.456 seconds. All sidebar, remote model/control and shared status tests passed. CLI help is unchanged, so `make guide-cli-check` is not applicable. The source is unchanged since the final focused run. This step received the clean working-tree review below and is kept in its own presentation commit.
+
+## PIN warning CI after the authorized fold
+
+After clean review, the warning revision was folded into Problem 5 as `daa7fe8e`, and the later commits replayed on unchanged `origin/nightly-remote` (`b5869c0d`). Conflicts were confined to documentation. The rebased final tree exactly matches the saved reviewed candidate plus its recorded verdict (`564c3519853af82205c922cd6482bad7dad7f4f4`); Problems 6/7 remain separate and intact. The clean branch at `aede834f` was pushed to PR #1010 with the brief's authorized force-with-lease.
+
+`gh pr checks 1010 --watch` exited 0 with no retries for run `39960549218`: macOS passed in 9m49s (2,762 passed, 6 skipped; test summary 225.238 seconds), Windows passed in 18m31s (2,647 passed, 4 skipped; test summary 504.672 seconds). Evidence: `target/836-warning-ci-watch.log`, `target/836-warning-ci-macos.log`, `target/836-warning-ci-windows.log`; both log downloads exited 0. This CI covers the reviewed PIN warning revision at `aede834f`, not the uncommitted sidebar status work above. No merge, live setup operation, branch deletion or release action was performed.
+
+### Shared sidebar status review verdict
+
+The reviewer reported **NO REMAINING MUST-FIX ISSUES** for the complete feature-branch working-tree candidate in Runner message `01M5MG4MS66XCPE3B8QWDJQSEA`. It verified the handed-off diff hash, independently confirmed that the P5 fold preserved the saved final tree, traced local/remote callers and status pushes, and checked the timestamp-less flags against the shared count-only rollup tooltip. It independently passed 78 remote/shared-status/local-sidebar checks (exit 0, `target/836-reviewer-sidebar-status.log`) and whitespace validation (exit 0, `target/836-reviewer-sidebar-status-diff-check.log`), inspected the full workspace and both Clippy passes, and read-only inspected Pencil `pzyfX`. No live checks ran under the brief.
+
+Jason should compare local/remote working, unread, approval/answer/generic-input/error glyphs and hover tooltips, mixed-pane dominant priority and pushed changes, stopped/empty dimming, shell rows without agent attention, and pending-question attention. The adapter's equal marker times remain limited to sidebar count tooltips; future header work must not feed them to elapsed-time formatting. Pane/surface reuse, the Problem 11 header and Problems 8–10 remain outside this verdict.
