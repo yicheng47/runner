@@ -309,3 +309,40 @@ fn credit_is_owed_at_64_kib_and_transport_frames_are_authenticated() {
         assert!(host.next_frame().unwrap().is_none());
     }
 }
+
+#[test]
+fn client_records_replay_the_shared_record_vector() {
+    let vector: Value = serde_json::from_str(include_str!("vectors/channel.json")).unwrap();
+    let (browser, _, _, reply) = pair("012345");
+    let (mut transport, _, _) = browser.finish(&reply, "Chrome on Windows").unwrap();
+    let records = vector["records"].as_array().unwrap();
+    for record in &records[..2] {
+        let plain = unhex(record["plaintext"].as_str().unwrap());
+        assert_eq!(
+            encrypt_record(&mut transport, &plain),
+            unhex(record["frame"].as_str().unwrap())
+        );
+    }
+    let credit = unhex(records[2]["frame"].as_str().unwrap());
+    assert_eq!(
+        decrypt_record(&mut transport, &credit),
+        unhex(records[2]["plaintext"].as_str().unwrap())
+    );
+    let mut client = Records::new(transport);
+    let welcome = client
+        .receive(&unhex(records[3]["frame"].as_str().unwrap()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        welcome,
+        unhex(records[3]["plaintext"].as_str().unwrap())[1..]
+    );
+    client.handled();
+    assert_eq!(
+        client.next_frame().unwrap().unwrap(),
+        unhex(records[4]["frame"].as_str().unwrap())
+    );
+    assert!(client
+        .queue(vec![0; crate::companion::MAX_MESSAGE_SIZE + 1])
+        .is_err());
+}

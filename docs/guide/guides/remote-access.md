@@ -34,6 +34,24 @@ runner remote logout
 
 Enrollment needs both input and output attached to a terminal, and is refused inside Runner agent sessions. Agents can read status, list or revoke paired devices, or disconnect the computer. They cannot enroll it, set or change its PIN, unlock PIN entry or reset its identity through `runner call`. Closing the CLI during account confirmation refuses the claim.
 
+## Reach another computer from the CLI
+
+Sign both computers in to the same account. On the computer you want to reach, allow remote access and set its PIN. On this computer, run:
+
+```sh
+runner remote computers
+runner remote computers --json
+runner remote pair <computer-id>
+runner remote overview <computer-id> --json
+runner remote forget <computer-id>
+```
+
+`computers` lists the account's computers, including this one, with their IDs, online status, last-seen time and whether this computer has paired with each. Use an ID from that list. `pair` prompts for the other computer's PIN without echoing it; it requires your own interactive terminal and is refused inside an agent session. A failed pairing is one attempt, and is never retried automatically. `overview` shows the other computer's projects, tabs, missions and sessions.
+
+Each pairing keeps a separate private key and pins the other computer's identity. Long Unicode computer names use a shortened pairing label of at most 64 UTF-8 bytes; the full account name stays unchanged. Later connections use that key. **Forget** deletes this computer's key for the other computer and closes the channel; it does not revoke the other computer's access to this one. **Revoke** on the host removes an incoming pairing. If the host revokes this computer, the next connection forgets its rejected key and asks you to pair again. An identity mismatch fails without silently pairing again.
+
+Turning off this computer's **Allow remote access** stops incoming access while it can still reach other computers. Signing out keeps paired keys, and **Reset remote access** deletes them. The desktop computer picker and remote panes arrive in a later update; these CLI commands and the daemon client are available now.
+
 ## Pause, retry or sign out
 
 Turn off **Allow remote access** to close the connection while keeping this computer on the account. The web panel shows it offline. Turn the switch on to reconnect with the same key and fingerprint.
@@ -42,7 +60,7 @@ Turn off **Allow remote access** to close the connection while keeping this comp
 
 If the computer was removed in the web panel or the account was deactivated, Runner stops the connection. Account shows the reason even when an old enrollment remains; Remote access returns to the route choice with a link to Account. **Try again** uses the existing credential, which can work after an administrator reactivates the account. **Sign in again** clears the old enrollment and starts fresh. Other stop reasons explain whether to retry, approve a new code or update Runner.
 
-Remote access never stops your agents or sessions. Closing the desktop app leaves the connection with the background daemon; stopping the daemon closes it. Keys and credentials stay in the operating system's secret store on macOS and Windows, with a private local file as the current Linux fallback. Development builds use separate storage from the installed app.
+Remote access never stops your agents or sessions. Closing the desktop app leaves the connection with the background daemon; stopping the daemon closes it. Release builds keep keys and credentials in the macOS Keychain or Windows Credential Manager. macOS development builds use separate files with mode 0600 under the development data directory (`com.wycstudios.runner-dev`): `remote-identity.json`, `remote-client-keys.json`, and one `remote-credential-<hash>.json` per service. Rebuilding the development daemon therefore does not prompt for the login Keychain password. Existing development Keychain secrets are not copied into these files; sign in and pair again when first using this storage. Linux also uses private files. Development storage is separate from the installed app.
 
 ## Who can reach this computer
 
@@ -67,4 +85,4 @@ Choose **Take back**, or press Enter on the card, to return control to this desk
 
 When the remote computer leaves, the terminal keeps its last size. The card changes to **{computer} has left** with **Continue here**. Choose it, or press Enter on the card, to fit the terminal here and continue. If Runner did not see the computer’s name, it says **Another computer has left**.
 
-Several desktop windows can show the card, and you can take control back from any of them. With no remote computer using the terminal, desktop input and resizing work as usual. Instructions for pairing and opening another computer from Runner are added with the client.
+Several desktop windows can show the card, and you can take control back from any of them. With no remote computer using the terminal, desktop input and resizing work as usual. Use the CLI above to pair and read another computer’s overview; opening its terminals in the desktop follows with the computer picker.

@@ -604,13 +604,13 @@ async fn claim_deadline_before_first_welcome_deletes_the_provisional_enrollment(
     handle.shutdown().await;
 }
 
-struct SocketHarness {
+pub(super) struct SocketHarness {
     endpoint: runner_core::app_paths::IpcEndpoint,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
 }
 impl SocketHarness {
-    async fn new(_root: &std::path::Path, core: crate::AppCore) -> Self {
+    pub(super) async fn new(_root: &std::path::Path, core: crate::AppCore) -> Self {
         #[cfg(unix)]
         let endpoint = runner_core::app_paths::IpcEndpoint(_root.join("remote.sock"));
         #[cfg(windows)]
@@ -635,7 +635,10 @@ impl SocketHarness {
             task,
         }
     }
-    async fn client(&self, timeout: std::time::Duration) -> runner_core::protocol::DaemonClient {
+    pub(super) async fn client(
+        &self,
+        timeout: std::time::Duration,
+    ) -> runner_core::protocol::DaemonClient {
         let endpoint = self.endpoint.clone();
         tokio::task::spawn_blocking(move || {
             runner_core::protocol::socket::SocketTransport::connect_with_timeout(
@@ -659,7 +662,7 @@ impl Drop for SocketHarness {
         self.task.abort();
     }
 }
-fn socket_root() -> tempfile::TempDir {
+pub(super) fn socket_root() -> tempfile::TempDir {
     #[cfg(unix)]
     {
         tempfile::tempdir_in("/tmp").unwrap()

@@ -2,11 +2,17 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn enrollment_refused_before_daemon_without_terminals_or_inside_agents() {
-    for action in ["login", "pin", "reset-identity"] {
+    for args in [
+        vec!["login"],
+        vec!["pin"],
+        vec!["reset-identity"],
+        vec!["pair", "2"],
+    ] {
         for agent in [false, true] {
             let mut command = Command::new(env!("CARGO_BIN_EXE_runner-agent-cli"));
             command
-                .args(["remote", action])
+                .arg("remote")
+                .args(&args)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -44,7 +50,7 @@ fn remote_has_clap_help_but_is_absent_from_the_agent_guide() {
 #[test]
 fn pin_and_reset_refuse_an_agent_even_with_a_terminal() {
     use std::os::fd::FromRawFd;
-    for action in ["pin", "reset-identity"] {
+    for args in [vec!["pin"], vec!["reset-identity"], vec!["pair", "2"]] {
         let (mut master, mut slave) = (-1, -1);
         assert_eq!(
             unsafe {
@@ -61,7 +67,8 @@ fn pin_and_reset_refuse_an_agent_even_with_a_terminal() {
         let _master = unsafe { std::fs::File::from_raw_fd(master) };
         let slave = unsafe { std::fs::File::from_raw_fd(slave) };
         let output = Command::new(env!("CARGO_BIN_EXE_runner-agent-cli"))
-            .args(["remote", action])
+            .arg("remote")
+            .args(&args)
             .env("RUNNER_HANDLE", "remote-guard-test")
             .stdin(slave.try_clone().unwrap())
             .stdout(slave)
