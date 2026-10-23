@@ -129,7 +129,7 @@ sequenceDiagram
     Note over C,H: transport keys ready; data frames follow
 ```
 
-`IK`'s first message is encrypted to the host's static key, and it carries the client's static key, which the host looks up in `remote-trust.json`. Two failures share one answer, `unknownDevice`: Revoke removed the client's key from the list, or Reset identity gave the host a new key, so the client's message no longer decrypts. Either way the client forgets its keys for that host and offers to pair again.
+`IK`'s first message is encrypted to the host's static key, and it carries the client's static key, which the host looks up in `remote-trust.json`. Two failures share one answer, `unknownDevice`: Revoke removed the client's key from the list, or Reset identity gave the host a new key, so the client's message no longer decrypts. This rejection is plaintext and unauthenticated, so a relay can forge it. The client keeps its saved keys, reports that this computer was not recognized, and offers explicit Pair again after fingerprint verification. Only Forget or submitting Pair again removes the saved key.
 
 Code: `channel/handshake.rs`, `connect` for the host and `BrowserConnect` for the client.
 

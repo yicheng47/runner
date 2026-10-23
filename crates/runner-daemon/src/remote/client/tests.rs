@@ -548,7 +548,7 @@ async fn follows_overview_and_status_pushes_and_releases_connection_owner() {
 }
 
 #[tokio::test]
-async fn reconnects_with_saved_key_and_forgets_after_host_revoke() {
+async fn reconnects_with_saved_key_and_keeps_it_after_host_revoke_until_explicit_forget() {
     let fixture = Fixture::new().await;
     fixture.pair().await;
     let key = fixture
@@ -594,6 +594,8 @@ async fn reconnects_with_saved_key_and_forgets_after_host_revoke() {
         tokio::task::yield_now().await;
     }
     assert!(fixture.client.overview("2".into()).await.is_err());
+    assert_eq!(fixture.client.keys().await.unwrap().0.len(), 1);
+    fixture.client.forget("2".into()).await.unwrap();
     assert!(fixture.client.keys().await.unwrap().0.is_empty());
 }
 
@@ -814,6 +816,77 @@ async fn stored_pin_mismatch_fails_before_connect_and_debug_redacts_private_keys
 }
 
 struct RefuseRoute(Vec<Computer>, u16);
+
+struct ForgedReject(Vec<Computer>, channel::Reject);
+impl Service for ForgedReject {
+    fn list<'a>(&'a self, _: &'a Context) -> BoxFuture<'a, Result<Vec<Computer>>> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+    fn open<'a>(
+        &'a self,
+        _: &'a Context,
+        _: &'a str,
+    ) -> BoxFuture<'a, std::result::Result<transport::Socket, transport::Failure>> {
+        let reject = self.1.frame();
+        Box::pin(async move {
+            let (client, host) = tokio::io::duplex(4096);
+            let client = WebSocketStream::from_raw_socket(
+                Box::new(client) as Box<dyn transport::Connection>,
+                Role::Client,
+                None,
+            )
+            .await;
+            let mut host = WebSocketStream::from_raw_socket(
+                Box::new(host) as Box<dyn transport::Connection>,
+                Role::Server,
+                None,
+            )
+            .await;
+            tokio::spawn(async move {
+                let _ = host.next().await;
+                let _ = host.send(Message::Binary(reject.into())).await;
+            });
+            Ok(client)
+        })
+    }
+}
+
+#[tokio::test]
+async fn unauthenticated_rejects_preserve_saved_pairing_keys_until_explicit_forget() {
+    let fixture = Fixture::new().await;
+    fixture.pair().await;
+    let before = serde_json::to_value(fixture.client.keys().await.unwrap()).unwrap();
+    for reason in [
+        channel::Reject::UnknownDevice,
+        channel::Reject::BadHandshake,
+        channel::Reject::Busy,
+        channel::Reject::NoPin,
+        channel::Reject::PinLocked,
+        channel::Reject::WrongPin,
+    ] {
+        let client = Client::new(
+            fixture.root.path().into(),
+            fixture.store.clone(),
+            fixture.status.subscribe(),
+            Default::default(),
+            fixture.cancel.child_token(),
+        );
+        let hosts = fixture.relay.hosts.lock().unwrap().clone();
+        assert!(client
+            .0
+            .service
+            .set(Arc::new(ForgedReject(hosts, reason)))
+            .is_ok());
+        let result = client.overview("2".into()).await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains(reason.reason()));
+        assert!(serde_json::to_value(client.keys().await.unwrap()).unwrap() == before);
+        assert!(client.computers().await.unwrap()[0].paired);
+    }
+    fixture.client.forget("2".into()).await.unwrap();
+    assert!(fixture.client.keys().await.unwrap().0.is_empty());
+}
+
 impl Service for RefuseRoute {
     fn list<'a>(&'a self, _: &'a Context) -> BoxFuture<'a, Result<Vec<Computer>>> {
         Box::pin(async { Ok(self.0.clone()) })
