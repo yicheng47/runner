@@ -1251,6 +1251,12 @@ mod tests {
                         );
                         assert_eq!(visual.debug_bounds("ACCOUNT_SIGN_IN").is_some(), off);
                         assert_eq!(visual.debug_bounds("ACCOUNT_DETAILS").is_some(), signed_in);
+                        if signed_in {
+                            let sign_out = visual.debug_bounds("ACCOUNT_SIGN_OUT_SECTION").unwrap();
+                            let pane = visual.debug_bounds("ACCOUNT_SETTINGS").unwrap();
+                            assert_eq!(sign_out.top(), card.bottom() + px(20.));
+                            assert_eq!(pane.bottom(), sign_out.bottom());
+                        }
                         assert_eq!(
                             visual.debug_bounds("ACCOUNT_RETRY").is_some(),
                             matches!(
