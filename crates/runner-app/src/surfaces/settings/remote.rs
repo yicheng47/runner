@@ -268,129 +268,58 @@ impl NativeRoot {
                 body = body.child(account::approval_reminder());
             }
         } else {
-            body = body.child(self.remote_route_choice(&status, cx));
+            body = body.child(self.remote_signed_out(&status, cx));
         }
         body.child(account::footer("remote.footer"))
             .into_any_element()
     }
 
-    fn remote_route_choice(&self, status: &RemoteStatus, cx: &mut Context<Self>) -> AnyElement {
+    fn remote_signed_out(&self, status: &RemoteStatus, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div()
-            .debug_selector(|| "REMOTE_ROUTE_CHOICE".into())
+            .debug_selector(|| "REMOTE_RELAY_SIGNED_OUT".into())
             .flex()
             .flex_col()
             .gap_5()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(theme::text_lead())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(crate::i18n::text("remote.choose_route")),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::text_ui())
-                            .text_color(theme::muted())
-                            .child(crate::i18n::text("remote.choose_route_detail")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
+                account::card()
+                    .p_5()
                     .gap_3()
                     .child(
-                        account::card()
-                            .flex_1()
-                            .min_w_0()
-                            .p_5()
+                        div()
+                            .flex()
+                            .items_center()
                             .gap_3()
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        svg()
-                                            .path("cloud.svg")
-                                            .size(rems(18. / 16.))
-                                            .text_color(theme::muted()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(crate::i18n::text("remote.through_relay")),
-                                    )
-                                    .child(account::badge("remote.private_beta", true)),
+                                svg()
+                                    .path("cloud.svg")
+                                    .size(rems(18. / 16.))
+                                    .text_color(theme::muted()),
                             )
-                            .child(div().text_color(theme::muted()).child(tr(
-                                "remote.relay_choice_detail",
-                                &[("service", &status.origin)],
-                            )))
                             .child(
                                 div()
-                                    .debug_selector(|| "REMOTE_SIGN_IN".into())
-                                    .self_start()
-                                    .flex()
-                                    .child(
-                                        self.remote_button(
-                                            "remote-connect",
-                                            "remote.sign_in",
-                                            Self::remote_connect,
-                                            cx,
-                                        )
-                                        .variant(ButtonVariant::Primary),
-                                    ),
-                            ),
+                                    .flex_1()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(crate::i18n::text("remote.through_relay")),
+                            )
+                            .child(account::badge("remote.private_beta", true)),
                     )
+                    .child(div().text_color(theme::muted()).child(tr(
+                        "remote.relay_choice_detail",
+                        &[("service", &status.origin)],
+                    )))
                     .child(
-                        account::card()
-                            .flex_1()
-                            .min_w_0()
-                            .p_5()
-                            .gap_3()
+                        div()
+                            .debug_selector(|| "REMOTE_SIGN_IN".into())
+                            .self_start()
+                            .flex()
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        svg()
-                                            .path("network.svg")
-                                            .size(rems(18. / 16.))
-                                            .text_color(theme::muted()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(crate::i18n::text("remote.over_tailscale")),
-                                    )
-                                    .child(account::badge("account.later", false)),
-                            )
-                            .child(
-                                div()
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text("remote.tailscale_choice_detail")),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "REMOTE_TAILSCALE_DISABLED".into())
-                                    .flex()
-                                    .child(
-                                        Button::new(
-                                            "remote-tailscale",
-                                            crate::i18n::text("remote.use_tailscale"),
-                                        )
-                                        .size(ButtonSize::Sm)
-                                        .variant(ButtonVariant::Secondary)
-                                        .disabled(true),
-                                    ),
+                                self.remote_button(
+                                    "remote-connect",
+                                    "remote.sign_in",
+                                    Self::remote_connect,
+                                    cx,
+                                )
+                                .variant(ButtonVariant::Primary),
                             ),
                     ),
             );
@@ -1224,13 +1153,10 @@ mod tests {
                             signed_in
                         );
                         assert_eq!(
-                            visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some(),
+                            visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some(),
                             !signed_in && !waiting
                         );
-                        assert_eq!(
-                            visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_some(),
-                            !signed_in && !waiting
-                        );
+                        assert!(visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_none());
                         assert_eq!(visual.debug_bounds("REMOTE_DEVICES").is_some(), signed_in);
                         assert_eq!(
                             visual.debug_bounds("ACCOUNT_APPROVAL_REMINDER").is_some(),
@@ -1281,7 +1207,7 @@ mod tests {
                             visual.debug_bounds("ACCOUNT_CHECK_UPDATES").is_some(),
                             stop_reason == Some(StopReason::UpdateRequired)
                         );
-                        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_none());
+                        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_none());
                         window
                             .update(&mut cx, |root, _, cx| {
                                 root.settings_page.pane = SettingsPane::Remote;
@@ -1471,12 +1397,8 @@ mod tests {
         });
         window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
         cx.run_until_parked();
-        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some());
-        let tailscale = visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").unwrap();
-        let before = requests.calls.lock().unwrap().len();
-        visual.simulate_click(tailscale.center(), Default::default());
-        cx.run_until_parked();
-        assert_eq!(requests.calls.lock().unwrap().len(), before);
+        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some());
+        assert!(visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_none());
         let sign_in = visual.debug_bounds("REMOTE_SIGN_IN").unwrap();
         visual.simulate_click(sign_in.center(), Default::default());
         cx.run_until_parked();
