@@ -96,7 +96,7 @@ impl MissionWorkspace {
         cx.spawn_in(window, async move |weak, cx| {
             let result = load.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                if !this.is_current(&mission_id, generation) || !this.is_active(cx) {
+                if !this.is_current(&mission_id, generation) {
                     return;
                 }
                 match result {
@@ -170,12 +170,14 @@ impl MissionWorkspace {
                         let active = this.is_active(cx);
                         this.sync_mission_subject_ownership(active, window, cx);
                         this.mark_active_session_viewed(window, cx);
-                        if !this.secondary {
+                        if active && !this.secondary {
                             if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
                                 this.error = Some(error.to_string().into());
                             }
                         }
-                        this.focus_active_mission_terminal(window, cx);
+                        if active {
+                            this.focus_active_mission_terminal(window, cx);
+                        }
                         crate::notifications::view_changed(cx);
                     }
                     Err(error) => {
@@ -630,6 +632,8 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.as_ref() else {
             return;
         };
+        let resumed = !self.active;
+        self.active = true;
         let state = runner_core::protocol::window::is_secondary_for(
             &self.core(cx).window_snapshot().unwrap_or_default(),
             &self.window_label,
@@ -637,7 +641,7 @@ impl MissionWorkspace {
         );
         let secondary = state.secondary;
         let primary = state.primary_label;
-        if secondary != self.secondary {
+        if secondary != self.secondary || resumed {
             self.secondary = secondary;
             self.duplicate_dismissed = false;
             self.primary_label = primary;
@@ -650,6 +654,14 @@ impl MissionWorkspace {
             cx.notify();
         } else {
             self.primary_label = primary;
+        }
+        if resumed {
+            if !self.loading && self.mission.is_some() {
+                self.refresh_open_mission(window, cx);
+            }
+            self.resync_mission_events(cx);
+            self.schedule_mission_grid_hint(window, cx);
+            self.focus_active_mission_terminal(window, cx);
         }
     }
 

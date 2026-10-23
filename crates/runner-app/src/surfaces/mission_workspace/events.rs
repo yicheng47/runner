@@ -279,7 +279,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn resync_mission_events(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn resync_mission_events(&mut self, cx: &mut Context<Self>) {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };

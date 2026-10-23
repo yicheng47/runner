@@ -12,7 +12,7 @@ use runner_core::{
 use std::rc::Rc;
 
 pub(crate) mod account;
-mod pin;
+pub(crate) mod pin;
 use pin::PinField;
 
 pub(crate) struct RemotePaneState {
@@ -116,6 +116,7 @@ fn detail(label: &'static str, value: impl Into<SharedString>, mono: bool) -> An
 }
 impl NativeRoot {
     pub(crate) fn enter_remote_settings(&mut self, cx: &mut Context<Self>) {
+        self.refresh_computers(cx);
         self.remote_request(false, |c| c.remote_status(), cx);
         self.settings_page.remote.generation += 1;
         let generation = self.settings_page.remote.generation;
@@ -230,7 +231,7 @@ impl NativeRoot {
         if account::signed_in(&status) {
             body = body
                 .child(self.relay_card(&status, &trust, cx))
-                .child(self.remote_devices(&trust, &status, cx))
+                .child(self.render_computers(&trust, &status, cx))
                 .child(
                     div()
                         .flex()
@@ -746,211 +747,6 @@ impl NativeRoot {
                     .when(index == 0, |row| row.border_t_0())
                     .child(row)
             }))
-            .into_any_element()
-    }
-    fn remote_devices(
-        &self,
-        trust: &RemoteTrust,
-        status: &RemoteStatus,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut table = div()
-            .flex()
-            .flex_col()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
-            .overflow_hidden();
-        if !trust.devices.is_empty() {
-            table = table.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(crate::i18n::text("remote.device")),
-                    )
-                    .child(
-                        div()
-                            .w(rems(210. / 16.))
-                            .child(crate::i18n::text("remote.fingerprint")),
-                    )
-                    .child(
-                        div()
-                            .w(rems(75. / 16.))
-                            .child(crate::i18n::text("remote.paired")),
-                    )
-                    .child(
-                        div()
-                            .w(rems(135. / 16.))
-                            .child(crate::i18n::text("remote.last_seen")),
-                    )
-                    .child(div().w(rems(70. / 16.))),
-            );
-        }
-        for device in &trust.devices {
-            let root = cx.entity();
-            let fingerprint = device.fingerprint.clone();
-            table = table.child(
-                div()
-                    .debug_selector(|| "REMOTE_DEVICE_ROW".into())
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .text_size(theme::text_body())
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(
-                                svg()
-                                    .path("monitor.svg")
-                                    .size(rems(1.))
-                                    .flex_none()
-                                    .text_color(theme::muted()),
-                            )
-                            .child(div().truncate().child(device.name.clone())),
-                    )
-                    .child(
-                        div()
-                            .w(rems(210. / 16.))
-                            .text_size(theme::text_meta())
-                            .font_family(theme::SYSTEM_MONOSPACE_FONT)
-                            .text_color(theme::muted())
-                            .child(device.fingerprint.clone()),
-                    )
-                    .child(
-                        div()
-                            .w(rems(75. / 16.))
-                            .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .child(
-                                device
-                                    .paired_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d")
-                                    .to_string(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .w(rems(135. / 16.))
-                            .text_size(theme::text_meta())
-                            .text_color(if device.connected {
-                                theme::accent()
-                            } else {
-                                theme::muted()
-                            })
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .children(device.connected.then(|| {
-                                div()
-                                    .debug_selector(|| "REMOTE_CONNECTED_NOW".into())
-                                    .size(rems(6. / 16.))
-                                    .rounded_full()
-                                    .bg(theme::accent())
-                            }))
-                            .child(if device.connected {
-                                crate::i18n::text("remote.connected_now").to_string()
-                            } else {
-                                device
-                                    .last_seen_at
-                                    .with_timezone(&chrono::Local)
-                                    .format("%Y-%m-%d %H:%M")
-                                    .to_string()
-                            }),
-                    )
-                    .child(
-                        div().w(rems(70. / 16.)).child(
-                            Button::new(
-                                gpui::SharedString::from(format!(
-                                    "remote-revoke-{}",
-                                    device.fingerprint
-                                )),
-                                crate::i18n::text("remote.revoke"),
-                            )
-                            .size(ButtonSize::Sm)
-                            .variant(ButtonVariant::Outline)
-                            .disabled(self.settings_page.remote.busy)
-                            .on_press(move |_, cx| {
-                                root.update(cx, |r, cx| {
-                                    let fingerprint = fingerprint.clone();
-                                    r.remote_request(
-                                        false,
-                                        move |c| {
-                                            c.remote_revoke_device(fingerprint)?;
-                                            c.remote_status()
-                                        },
-                                        cx,
-                                    );
-                                });
-                            }),
-                        ),
-                    ),
-            );
-        }
-        table = table.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .px_4()
-                .py_3()
-                .when(!trust.devices.is_empty(), |row| {
-                    row.border_t_1().border_color(theme::border())
-                })
-                .text_size(theme::text_ui())
-                .text_color(theme::faint())
-                .child(svg().path("plus.svg").size(rems(15. / 16.)).flex_none())
-                .child(crate::i18n::text(if trust.devices.is_empty() {
-                    "remote.devices_empty"
-                } else {
-                    "remote.devices_hint"
-                })),
-        );
-        div()
-            .debug_selector(|| "REMOTE_DEVICES".into())
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(settings_section_heading(tr(
-                        "remote.computers_heading",
-                        &[("account", account::username(status))],
-                    )))
-                    .when(!trust.devices.is_empty(), |row| {
-                        row.child(
-                            div()
-                                .rounded_full()
-                                .bg(theme::raised())
-                                .px_1()
-                                .text_size(theme::text_micro())
-                                .text_color(theme::muted())
-                                .child(trust.devices.len().to_string()),
-                        )
-                    }),
-            )
-            .child(table)
             .into_any_element()
     }
     fn remote_pin_overlay(&self, cx: &mut Context<Self>) -> AnyElement {

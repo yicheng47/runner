@@ -88,7 +88,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.route == AppRoute::Settings || self.runtime_navigation_history.len() < 2 {
+        if self.remote_window.is_some()
+            || self.route == AppRoute::Settings
+            || self.runtime_navigation_history.len() < 2
+        {
             return;
         }
         let Some(index) = self.runtime_navigation_index else {
@@ -168,6 +171,8 @@ impl NativeRoot {
         if matches!(&self.route, AppRoute::Mission(active) if active == &mission_id) {
             let workspace = self.mission_workspace.read(cx);
             if workspace.loading || workspace.mission.is_some() {
+                self.report_current_subjects(cx);
+                self.sync_subject_ownership(window, cx);
                 return;
             }
         }

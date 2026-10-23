@@ -278,6 +278,7 @@ pub(crate) enum RemoteWarning {
 }
 
 pub(crate) struct AppStore {
+    pub(crate) remote_clients: Entity<crate::surfaces::remote_client::model::ClientState>,
     pub(crate) remote_status: Option<runner_core::remote::RemoteStatus>,
     pub(crate) remote_trust: Option<runner_core::remote::RemoteTrust>,
     pub(crate) remote_warning: Option<RemoteWarning>,
@@ -376,6 +377,9 @@ impl AppStore {
             client: crate::test_support::client(&core),
             app_data_dir: core.app_data_dir.clone(),
         };
+        let remote_clients = cx.new(|cx| {
+            crate::surfaces::remote_client::model::ClientState::new(host.client.clone(), cx)
+        });
         let terminal_updates = cx.new(|_| TerminalUpdates);
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<String>();
         let waker: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |id| {
@@ -627,6 +631,7 @@ impl AppStore {
         })
         .detach();
         let mut store = Self {
+            remote_clients,
             remote_status: None,
             remote_trust: None,
             remote_warning: None,
