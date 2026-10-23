@@ -137,6 +137,9 @@ async fn read(socket: &mut transport::Socket) -> Result<Vec<u8>> {
         match socket.next().await {
             Some(Ok(Message::Binary(bytes))) => {
                 if let Some(reason) = rejection(&bytes) {
+                    if reason == "unknownDevice" {
+                        return Err("Remote channel: unknownDevice. This computer is not recognized. Verify the host fingerprint before choosing Pair again; the saved pairing is kept until you explicitly forget it.".into());
+                    }
                     return Err(format!("Remote channel: {reason}."));
                 }
                 return Ok(bytes.to_vec());
@@ -282,14 +285,6 @@ async fn connect(
     })
     .await
     .map_err(|_| "Remote connect timed out".to_owned())?;
-    if result
-        .as_ref()
-        .is_err_and(|e| e == "Remote channel: unknownDevice.")
-    {
-        client
-            .update_key(computer.fingerprint.clone(), None)
-            .await?;
-    }
     result.map_err(ConnectFailure::from)
 }
 struct Pending {

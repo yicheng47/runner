@@ -425,29 +425,15 @@ impl AgentUpdateDialog {
         let Some(attached) = &self.terminal else {
             return;
         };
-        let keystroke = &event.keystroke;
         let option_is_meta = self.app_store.read(cx).settings.option_as_meta.is_meta(cx);
-        if runner_app::terminal_ime::swallows_option_copy(keystroke, option_is_meta) {
-            cx.stop_propagation();
-            return;
-        }
-        if runner_app::terminal_ime::terminal_key_route(
+        match crate::terminal::input::handle_key(
+            &attached.terminal,
             attached.input.read(cx).is_composing(),
-            keystroke,
+            &event.keystroke,
             option_is_meta,
-        ) != runner_app::terminal_ime::TerminalKeyRoute::Raw
-        {
-            return;
-        }
-        match attached.terminal.send_key(
-            &keystroke.key,
-            keystroke.modifiers.control,
-            keystroke.modifiers.alt,
-            keystroke.modifiers.shift,
-            keystroke.key_char.as_deref(),
+            cx,
         ) {
             Ok(true) => {
-                attached.terminal.scroll_to_bottom();
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -465,23 +451,18 @@ impl AgentUpdateDialog {
         let Some(attached) = &self.terminal else {
             return;
         };
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            if let Err(error) = attached.terminal.paste(&text) {
-                tracing::warn!("agent update terminal paste failed: {error}");
-                *self.input_error.lock().unwrap() = Some(error.to_string());
-                cx.notify();
-            }
+        if let Err(error) =
+            crate::terminal::input::paste_text_from_clipboard(&attached.terminal, cx)
+        {
+            tracing::warn!("agent update terminal paste failed: {error}");
+            *self.input_error.lock().unwrap() = Some(error.to_string());
+            cx.notify();
         }
     }
 
     fn on_terminal_copy(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = self
-            .terminal
-            .as_ref()
-            .and_then(|attached| attached.terminal.selection_text())
-        {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-            cx.stop_propagation();
+        if let Some(attached) = &self.terminal {
+            crate::terminal::input::copy_selection(&attached.terminal, cx);
         }
     }
 

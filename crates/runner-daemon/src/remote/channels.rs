@@ -48,6 +48,7 @@ pub(super) struct Completion {
     result: Authorized,
     saved: bool,
     paired: Option<(remote::PairedDevice, Option<u64>)>,
+    pairing_generation: Option<u64>,
     _permit: Option<OwnedSemaphorePermit>,
 }
 pub(super) enum Decision {
@@ -68,7 +69,7 @@ struct Entry {
     input: mpsc::UnboundedSender<QueuedFrame>,
     budget: Arc<Semaphore>,
     abort: AbortHandle,
-    pair: Option<HostPair>,
+    pair: Option<(HostPair, u64)>,
     fingerprint: Option<String>,
     ready: bool,
     deadline: Instant,
@@ -136,6 +137,30 @@ impl TrustWrites {
             .await
             .map_err(|_| "Trust writer failed")?
     }
+    pub async fn invalidate_pending(
+        self: &Arc<Self>,
+        mut trust: Trust,
+        root: std::path::PathBuf,
+    ) -> Result<Vec<String>, &'static str> {
+        let removed: Vec<_> = self
+            .unconfirmed
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, pending)| !pending.confirmed)
+            .map(|(fingerprint, _)| fingerprint.clone())
+            .collect();
+        trust
+            .devices
+            .retain(|device| !removed.contains(&device.fingerprint));
+        // Also order any older rollback snapshots before the invalidating command can succeed.
+        self.save(trust, root).await?;
+        self.unconfirmed
+            .lock()
+            .unwrap()
+            .retain(|fingerprint, _| !removed.contains(fingerprint));
+        Ok(removed)
+    }
     pub async fn next(&self) -> Completion {
         self.rx
             .lock()
@@ -163,17 +188,19 @@ impl TrustWrites {
                 .any(|d| d.fingerprint == *fingerprint),
             _ => true,
         };
-        let mut current = true;
+        let mut current = completion
+            .pairing_generation
+            .is_none_or(|generation| generation == machine.pairing_generation);
         if let Some((device, Some(token))) = &completion.paired {
             let mut unconfirmed = self.unconfirmed.lock().unwrap();
             let pending = unconfirmed
                 .get_mut(&device.fingerprint)
                 .filter(|p| p.instance == *token);
-            current = pending.is_some();
+            current &= pending.is_some();
             let mut rollback = false;
             let mut finished = false;
             if let Some(pending) = pending {
-                pending.confirmed |= completion.saved && present;
+                pending.confirmed |= current && completion.saved && present;
                 pending.count -= 1;
                 finished = pending.count == 0;
                 rollback = finished && !pending.confirmed;
@@ -474,6 +501,7 @@ impl Channels {
                     result,
                     saved: !needs_save,
                     paired: pairing,
+                    pairing_generation: paired.then_some(machine.pairing_generation),
                     _permit: None,
                 };
                 if needs_save {
@@ -509,7 +537,10 @@ fn authorize(
     if Instant::now() >= entry.deadline {
         return Err(Reject::BadHandshake);
     }
-    if let Some(pair) = entry.pair.take() {
+    if let Some((pair, generation)) = entry.pair.take() {
+        if generation != machine.pairing_generation {
+            return Err(Reject::BadHandshake);
+        }
         if machine.trust.pin_locked {
             return Err(Reject::PinLocked);
         }
@@ -556,7 +587,7 @@ fn authorize(
                     scalar[31] &= 15;
                 }
                 let (pair, reply) = HostPair::start(keys, &pin.0, frame, scalar)?;
-                entry.pair = Some(pair);
+                entry.pair = Some((pair, machine.pairing_generation));
                 Ok((None, Some(reply), String::new()))
             }
             Some(1) => {

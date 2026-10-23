@@ -1,7 +1,70 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use runner_core::companion::{SidebarNode, SidebarNodeKind};
 use runner_core::protocol::node::{NodeRow, NodeType};
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SidebarTree {
+    pub(crate) pinned: Vec<SidebarNode>,
+    pub(crate) projects: Vec<SidebarNode>,
+    leaves: Vec<SidebarNode>,
+}
+
+impl SidebarTree {
+    pub(crate) fn from_local(nodes: &[NodeRow]) -> Self {
+        Self::new(
+            nodes
+                .iter()
+                .map(|node| SidebarNode {
+                    kind: match node.node_type {
+                        NodeType::Project => SidebarNodeKind::Project,
+                        NodeType::Tab => SidebarNodeKind::Tab,
+                        NodeType::Mission => SidebarNodeKind::Mission,
+                    },
+                    id: node.id.clone(),
+                    parent: node.parent_id.clone(),
+                    position: node.position,
+                    pinned_position: node.pinned_position,
+                })
+                .collect(),
+        )
+    }
+
+    pub(crate) fn new(nodes: Vec<SidebarNode>) -> Self {
+        let mut tree = Self {
+            pinned: Vec::new(),
+            projects: Vec::new(),
+            leaves: Vec::new(),
+        };
+        for node in nodes {
+            match node.kind {
+                SidebarNodeKind::Project if node.parent.is_none() => tree.projects.push(node),
+                SidebarNodeKind::Tab | SidebarNodeKind::Mission => {
+                    if node.pinned_position.is_some() {
+                        tree.pinned.push(node);
+                    } else {
+                        tree.leaves.push(node);
+                    }
+                }
+                _ => {}
+            }
+        }
+        tree.pinned.sort_by_key(|node| node.pinned_position);
+        tree.projects.sort_by_key(|node| node.position);
+        tree.leaves.sort_by_key(|node| node.position);
+        tree
+    }
+
+    pub(crate) fn children<'a>(
+        &'a self,
+        parent: Option<&'a str>,
+    ) -> impl Iterator<Item = &'a SidebarNode> {
+        self.leaves
+            .iter()
+            .filter(move |node| node.parent.as_deref() == parent)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum AttentionState {
@@ -421,6 +484,43 @@ mod tests {
             last_viewed_at: None,
             created_at: format!("2026-08-19T00:00:0{position}Z"),
         }
+    }
+
+    #[test]
+    fn local_nodes_and_remote_metadata_use_the_same_sidebar_tree() {
+        let local = vec![
+            row("project", NodeType::Project, None, 0, None),
+            row("tab", NodeType::Tab, Some("project"), 2, None),
+            row("mission", NodeType::Mission, Some("project"), 1, None),
+            row("pinned-tab", NodeType::Tab, Some("project"), 3, Some(1)),
+            row("pinned-mission", NodeType::Mission, None, 0, Some(0)),
+        ];
+        let remote = serde_json::from_value(serde_json::json!([
+            {"kind":"project","id":"project","parent":null,"position":0,"pinnedPosition":null},
+            {"kind":"tab","id":"tab","parent":"project","position":2,"pinnedPosition":null},
+            {"kind":"mission","id":"mission","parent":"project","position":1,"pinnedPosition":null},
+            {"kind":"tab","id":"pinned-tab","parent":"project","position":3,"pinnedPosition":1},
+            {"kind":"mission","id":"pinned-mission","parent":null,"position":0,"pinnedPosition":0}
+        ]))
+        .unwrap();
+        let local = SidebarTree::from_local(&local);
+        assert_eq!(local, SidebarTree::new(remote));
+        assert_eq!(
+            local
+                .pinned
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pinned-mission", "pinned-tab"]
+        );
+        assert_eq!(
+            local
+                .children(Some("project"))
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            ["mission", "tab"]
+        );
+        assert!(local.children(None).next().is_none());
     }
 
     #[test]

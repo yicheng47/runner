@@ -123,10 +123,7 @@ impl Trust {
 }
 
 pub fn validate_pin(pin: &str) -> Result<(), &'static str> {
-    if pin.len() != 6 || !pin.bytes().all(|c| c.is_ascii_digit()) {
-        return Err("The PIN must be exactly six digits.");
-    }
-    Ok(())
+    runner_core::remote::validate_pin_format(pin).map_err(|error| error.message())
 }
 
 #[cfg(test)]
@@ -134,7 +131,7 @@ mod tests {
     use super::*;
     #[test]
     fn pin_validation_keeps_leading_zeroes_and_accepts_only_digits() {
-        for pin in ["000000", "012345"] {
+        for pin in ["001234", "019438", "000000", "123456", "121212", "987654"] {
             assert!(validate_pin(pin).is_ok());
         }
         for pin in [

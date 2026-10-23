@@ -3,10 +3,65 @@ use std::collections::{HashMap, HashSet};
 use futures::{channel::mpsc, future::BoxFuture, FutureExt, StreamExt};
 use gpui::{AppContext, Context, Entity};
 use runner_core::{
-    companion::{Overview, Status, StatusPush},
+    companion::{NeedsYouReason, Overview, SessionStatus, Status, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
-    remote::{Computer, PairedDevice, RemoteTrust},
+    remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
 };
+
+pub(super) fn agent_status(status: &SessionStatus) -> runner_core::protocol::AgentStatus {
+    use runner_core::protocol::{
+        Activity, AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason,
+    };
+    // The overview has flags without timestamps; equal markers retain host pane order in rollups.
+    let marker = i64::MAX;
+    let kind = status.status.effective();
+    AgentStatus {
+        lifecycle: match kind {
+            Status::Starting => Lifecycle::Starting,
+            Status::Stopped => Lifecycle::Stopped,
+            Status::Error => Lifecycle::Error,
+            _ => Lifecycle::Running,
+        },
+        observation: AgentObservation {
+            activity: match kind {
+                Status::Working => Activity::Working,
+                Status::NeedsYou | Status::Idle => Activity::Idle,
+                _ => Activity::Unavailable,
+            },
+            interactions: (kind == Status::NeedsYou)
+                .then(|| HumanInteraction {
+                    id: String::new(),
+                    reason: match status.reason {
+                        Some(NeedsYouReason::Approval) => WaitReason::Approval,
+                        Some(NeedsYouReason::Answer) => WaitReason::Answer,
+                        _ => WaitReason::Unknown,
+                    },
+                    owners: Vec::new(),
+                    since: marker,
+                })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        },
+        error_since: (kind == Status::Error).then_some(marker),
+        unread_since: status.unread.then_some(marker),
+        ..Default::default()
+    }
+}
+
+pub(crate) fn this_computer(status: &RemoteStatus, show_host_name: bool) -> Computer {
+    Computer {
+        id: status.host_id.clone().unwrap_or_default(),
+        name: status
+            .host_name
+            .as_ref()
+            .filter(|_| show_host_name)
+            .cloned()
+            .unwrap_or_else(|| crate::i18n::text("client.this_computer").into()),
+        is_self: true,
+        ..Default::default()
+    }
+}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Connection {
@@ -45,7 +100,6 @@ pub(crate) enum Command {
     Retry(String),
     Forget(String),
     Reconnected,
-    Preview(String),
     Paired(String),
 }
 
@@ -200,12 +254,6 @@ impl ClientState {
                                 .insert(computer.id.clone(), Connection::Revoked);
                         }
                     }
-                    for computer in computers
-                        .iter()
-                        .filter(|c| !c.is_self && c.paired && c.online)
-                    {
-                        self.send(Command::Preview(computer.id.clone()));
-                    }
                     computers.sort_by_key(|computer| !computer.is_self);
                     self.computers = computers;
                 }
@@ -334,7 +382,6 @@ impl ClientState {
 }
 
 enum ComputerCommand {
-    Preview,
     Acquire,
     Release,
     Retry,
@@ -354,9 +401,16 @@ pub(super) async fn run_commands(
     spawn(
         async move {
             while refreshes.next().await.is_some() {
-                let _ = directory_updates.unbounded_send(Update::Computers(
-                    directory_client.remote_computers().map_err(|_| ()),
-                ));
+                let computers = match directory_client.remote_status() {
+                    Ok(status)
+                        if crate::surfaces::settings::remote::account::signed_in(&status) =>
+                    {
+                        directory_client.remote_computers().map_err(|_| ())
+                    }
+                    Ok(_) => Ok(Vec::new()),
+                    Err(_) => Err(()),
+                };
+                let _ = directory_updates.unbounded_send(Update::Computers(computers));
             }
         }
         .boxed(),
@@ -379,7 +433,6 @@ pub(super) async fn run_commands(
             Command::Release(id) => (id, ComputerCommand::Release),
             Command::Retry(id) => (id, ComputerCommand::Retry),
             Command::Forget(id) => (id, ComputerCommand::Forget),
-            Command::Preview(id) => (id, ComputerCommand::Preview),
             Command::Paired(id) => (id, ComputerCommand::Reconnected),
         };
         let worker = workers.entry(computer.clone()).or_insert_with(|| {
@@ -410,11 +463,6 @@ async fn computer_requests(
     let mut follows = 0;
     while let Some(command) = requests.next().await {
         match command {
-            ComputerCommand::Preview => {
-                if let Ok(overview) = client.remote_overview(computer.clone()) {
-                    let _ = updates.unbounded_send(Update::Overview(computer.clone(), overview.0));
-                }
-            }
             ComputerCommand::Acquire => {
                 follows += 1;
                 if follows == 1 {
@@ -459,19 +507,6 @@ fn load(client: &DaemonClient, computer: &str, updates: &mpsc::UnboundedSender<U
             ));
         }
     }
-}
-
-pub(crate) fn needs_you(overview: &Overview) -> usize {
-    overview
-        .sessions
-        .values()
-        .filter(|session| session.status.status == Status::NeedsYou)
-        .count()
-        + overview
-            .missions
-            .iter()
-            .map(|mission| mission.asks.len())
-            .sum::<usize>()
 }
 
 pub(crate) fn device_name(name: &str) -> &str {

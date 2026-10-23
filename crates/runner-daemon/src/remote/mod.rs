@@ -373,6 +373,40 @@ struct Snapshots {
     trust: watch::Sender<RemoteTrust>,
 }
 
+#[derive(Debug)]
+enum ApplyError {
+    Command(String),
+    Persistence(&'static str),
+}
+
+async fn apply_input(
+    machine: &mut Machine,
+    input: Input,
+    clock: &Clock,
+    root: &std::path::Path,
+    trust_writes: &std::sync::OnceLock<Arc<channels::TrustWrites>>,
+) -> Result<Vec<Effect>, ApplyError> {
+    let generation = machine.pairing_generation;
+    // Reset may clear trust before its new identity is durably saved.
+    let previous = machine.trust.clone();
+    let (effects, _) = machine
+        .step(input, clock.now(), &mut rand::random)
+        .map_err(ApplyError::Command)?;
+    if machine.pairing_generation != generation {
+        if let Some(writes) = trust_writes.get() {
+            let removed = writes
+                .invalidate_pending(previous, root.to_path_buf())
+                .await
+                .map_err(ApplyError::Persistence)?;
+            machine
+                .trust
+                .devices
+                .retain(|device| !removed.contains(&device.fingerprint));
+        }
+    }
+    Ok(effects)
+}
+
 async fn run(
     root: PathBuf,
     store: Arc<dyn SecretStore>,
@@ -568,13 +602,19 @@ async fn run(
             Input::Command(Command::RevokeDevice(fingerprint)) => Some(fingerprint.clone()),
             _ => None,
         };
-        let effects = match machine.step(input, clock.now(), &mut rand::random) {
-            Ok((effects, _)) => effects,
-            Err(error) => {
+        let effects = match apply_input(&mut machine, input, &clock, &root, trust_writes).await {
+            Ok(effects) => effects,
+            Err(ApplyError::Command(error)) => {
                 if let Some(reply) = reply {
                     let _ = reply.send(Err(error));
                 }
                 continue;
+            }
+            Err(ApplyError::Persistence(error)) => {
+                if let Some(reply) = reply {
+                    let _ = reply.send(Err(error.into()));
+                }
+                return Err(error);
             }
         };
         let frames = channels::transition(&mut channels, &mut machine, &effects, revoke.as_deref());
@@ -852,9 +892,12 @@ async fn perform(
             }
         };
         if let Some(input) = input {
-            let (effects, _) = machine
-                .step(input, clock.now(), &mut rand::random)
-                .map_err(|_| "Invalid remote transition")?;
+            let effects = apply_input(machine, input, clock, root, trust_writes)
+                .await
+                .map_err(|error| match error {
+                    ApplyError::Command(_) => "Invalid remote transition",
+                    ApplyError::Persistence(error) => error,
+                })?;
             queue.extend(effects);
         }
     }

@@ -1480,29 +1480,15 @@ impl NativeRoot {
         let Some(chat) = self.attached.get(session_id) else {
             return;
         };
-        let keystroke = &event.keystroke;
         let option_is_meta = self.settings(cx).option_as_meta.is_meta(cx);
-        if runner_app::terminal_ime::swallows_option_copy(keystroke, option_is_meta) {
-            cx.stop_propagation();
-            return;
-        }
-        if runner_app::terminal_ime::terminal_key_route(
+        match crate::terminal::input::handle_key(
+            &chat.terminal,
             chat.terminal_input.read(cx).is_composing(),
-            keystroke,
+            &event.keystroke,
             option_is_meta,
-        ) != runner_app::terminal_ime::TerminalKeyRoute::Raw
-        {
-            return;
-        }
-        match chat.terminal.send_key(
-            &keystroke.key,
-            keystroke.modifiers.control,
-            keystroke.modifiers.alt,
-            keystroke.modifiers.shift,
-            keystroke.key_char.as_deref(),
+            cx,
         ) {
             Ok(true) => {
-                chat.terminal.scroll_to_bottom();
                 self.chat_error = None;
                 cx.stop_propagation();
                 cx.notify();
@@ -1523,17 +1509,14 @@ impl NativeRoot {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(text) = self
+        let copied = self
             .attached
             .get(session_id)
-            .and_then(|chat| chat.terminal.selection_text())
-        else {
+            .is_some_and(|chat| crate::terminal::input::copy_selection(&chat.terminal, cx));
+        if !copied {
             #[cfg(windows)]
             cx.propagate();
-            return;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        cx.stop_propagation();
+        }
     }
 
     pub(crate) fn on_paste(
@@ -1554,27 +1537,14 @@ impl NativeRoot {
         }) else {
             return;
         };
-        match paste {
-            runner_app::terminal_paste::TerminalPaste::Image => {
-                let runtime = self
-                    .session_entry(session_id, cx)
-                    .and_then(|entry| Runtime::parse(&entry.agent_runtime));
-                let Some(chat) = self.attached.get(session_id) else {
-                    return;
-                };
-                let input = runner_app::terminal_paste::image_paste_shortcut(runtime);
-                if let Err(error) = chat.terminal.write_user_bytes(input) {
-                    self.chat_error = Some(error.to_string().into());
-                }
-            }
-            runner_app::terminal_paste::TerminalPaste::Text(text) => {
-                let Some(chat) = self.attached.get(session_id) else {
-                    return;
-                };
-                if let Err(error) = chat.terminal.paste(&text) {
-                    self.chat_error = Some(error.to_string().into());
-                }
-            }
+        let runtime = self
+            .session_entry(session_id, cx)
+            .and_then(|entry| Runtime::parse(&entry.agent_runtime));
+        let Some(chat) = self.attached.get(session_id) else {
+            return;
+        };
+        if let Err(error) = crate::terminal::input::paste(&chat.terminal, &paste, runtime) {
+            self.chat_error = Some(error.to_string().into());
         }
     }
 
