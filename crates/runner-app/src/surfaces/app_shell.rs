@@ -819,7 +819,11 @@ impl NativeRoot {
             self.show_toast(error, ToastTone::Error, cx);
         }
 
-        let workspace = self.render_entity_surface(window, cx);
+        let workspace = if self.remote_window.is_some() {
+            self.render_remote_workspace(window, cx)
+        } else {
+            self.render_entity_surface(window, cx)
+        };
         let (sidebar, sidebar_divider) = self.render_app_sidebar(window, cx);
         let sidebar_resize =
             sidebar_divider.map(|divider| self.render_sidebar_resize_handle(divider, cx));
@@ -844,12 +848,12 @@ impl NativeRoot {
             .then_some(self.fork_confirm.as_ref())
             .flatten()
             .map(|_| self.render_fork_confirm(cx));
-        let sidebar_overlays = if self.route != AppRoute::Settings {
+        let sidebar_overlays = if self.route != AppRoute::Settings && self.remote_window.is_none() {
             self.render_sidebar_overlays(cx)
         } else {
             Vec::new()
         };
-        let entity_overlays = if self.route != AppRoute::Settings {
+        let entity_overlays = if self.route != AppRoute::Settings && self.remote_window.is_none() {
             self.render_entity_overlays(window, cx)
         } else {
             Vec::new()
@@ -897,7 +901,14 @@ impl NativeRoot {
         let settings_confirm = self
             .settings_confirm_overlay(cx)
             .map(|overlay| deferred(overlay).with_priority(100));
-        let command_palette = deferred(self.command_palette.clone()).with_priority(50);
+        let computer_pair = self
+            .render_computer_pair(cx)
+            .map(|dialog| deferred(dialog).with_priority(110));
+        let computer_picker = self
+            .render_computer_picker(window, cx)
+            .map(|picker| deferred(picker).with_priority(80));
+        let command_palette = (self.remote_window.is_none())
+            .then(|| deferred(self.command_palette.clone()).with_priority(50));
         let toast_priority = if self.route == AppRoute::Settings && self.remote_pin_dialog_open() {
             101
         } else {
@@ -925,7 +936,9 @@ impl NativeRoot {
             .children(modal)
             .children(mission_modal)
             .children(settings_confirm)
-            .child(command_palette)
+            .children(command_palette)
+            .children(computer_picker)
+            .children(computer_pair)
             .children(toast)
             .children(
                 self.quit_dialog
@@ -1004,18 +1017,22 @@ impl NativeRoot {
                     this.clear_crew_slot_drag(cx);
                 }),
             )
-            .on_action(cx.listener(Self::open_new_tab_modal))
-            .on_action(cx.listener(Self::new_terminal_action))
-            .on_action(cx.listener(Self::new_mission_action))
-            .on_action(cx.listener(Self::split_pane_right))
-            .on_action(cx.listener(Self::split_pane_down))
-            .on_action(cx.listener(Self::focus_previous_chat_pane))
-            .on_action(cx.listener(Self::focus_next_chat_pane))
-            .on_action(cx.listener(Self::stop_focused_session))
-            .on_action(cx.listener(Self::resume_focused_session))
-            .on_action(cx.listener(Self::toggle_terminal_drawer_action))
+            .when(self.remote_window.is_none(), |root| {
+                root.on_action(cx.listener(Self::open_new_tab_modal))
+                    .on_action(cx.listener(Self::new_terminal_action))
+                    .on_action(cx.listener(Self::new_mission_action))
+                    .on_action(cx.listener(Self::split_pane_right))
+                    .on_action(cx.listener(Self::split_pane_down))
+                    .on_action(cx.listener(Self::focus_previous_chat_pane))
+                    .on_action(cx.listener(Self::focus_next_chat_pane))
+                    .on_action(cx.listener(Self::stop_focused_session))
+                    .on_action(cx.listener(Self::resume_focused_session))
+                    .on_action(cx.listener(Self::toggle_terminal_drawer_action))
+            })
             .on_action(cx.listener(Self::toggle_sidebar))
-            .on_action(cx.listener(Self::open_command_palette))
+            .when(self.remote_window.is_none(), |root| {
+                root.on_action(cx.listener(Self::open_command_palette))
+            })
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::navigate_previous_page))
             .on_action(cx.listener(Self::navigate_next_page))
@@ -1023,15 +1040,17 @@ impl NativeRoot {
             .on_action(cx.listener(Self::zoom_out))
             .on_action(cx.listener(Self::zoom_reset))
             .on_action(cx.listener(Self::toggle_fullscreen))
-            .on_action(cx.listener(Self::select_tab_1))
-            .on_action(cx.listener(Self::select_tab_2))
-            .on_action(cx.listener(Self::select_tab_3))
-            .on_action(cx.listener(Self::select_tab_4))
-            .on_action(cx.listener(Self::select_tab_5))
-            .on_action(cx.listener(Self::select_tab_6))
-            .on_action(cx.listener(Self::select_tab_7))
-            .on_action(cx.listener(Self::select_tab_8))
-            .on_action(cx.listener(Self::select_tab_9))
+            .when(self.remote_window.is_none(), |root| {
+                root.on_action(cx.listener(Self::select_tab_1))
+                    .on_action(cx.listener(Self::select_tab_2))
+                    .on_action(cx.listener(Self::select_tab_3))
+                    .on_action(cx.listener(Self::select_tab_4))
+                    .on_action(cx.listener(Self::select_tab_5))
+                    .on_action(cx.listener(Self::select_tab_6))
+                    .on_action(cx.listener(Self::select_tab_7))
+                    .on_action(cx.listener(Self::select_tab_8))
+                    .on_action(cx.listener(Self::select_tab_9))
+            })
             .into_any_element()
     }
 
@@ -1173,6 +1192,7 @@ impl NativeRoot {
         });
         let active_only = self.settings(cx).sidebar_active_only;
         let active_toggle = IconButton::new("sidebar-active-toggle", "list-filter.svg")
+            .disabled(self.remote_window.is_some())
             .size(IconButtonSize::Md)
             .variant(if active_only {
                 runner_app::ui::ButtonVariant::Secondary
@@ -1330,7 +1350,9 @@ impl NativeRoot {
         let brand = self.render_sidebar_brand(update_version, cx);
         let enabled = self.settings(cx).model_runtimes();
         let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
-        let show_usage = !visible_usage_runtimes.is_empty() && !self.sidebar_collapsed;
+        let show_usage = self.remote_window.is_none()
+            && !visible_usage_runtimes.is_empty()
+            && !self.sidebar_collapsed;
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
             let snapshot = self.app_store.read(cx).usage.clone();
@@ -1394,7 +1416,14 @@ impl NativeRoot {
                     .flex()
                     .items_center()
                     .children(usage)
-                    .child(div().flex_1())
+                    .children(
+                        self.remote_window
+                            .as_ref()
+                            .map(|_| self.render_remote_connection(cx)),
+                    )
+                    .when(self.remote_window.is_none(), |footer| {
+                        footer.child(div().flex_1())
+                    })
                     .child(self.render_account_avatar(cx)),
             );
         // The content keeps its full width while the wrapper animates, so the
@@ -1409,7 +1438,12 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .child(self.sidebar.clone())
+            .child(self.render_computer_trigger(cx))
+            .child(if self.remote_window.is_some() {
+                self.render_remote_sidebar(cx)
+            } else {
+                self.sidebar.clone().into_any_element()
+            })
             .child(footer)
             .children(self.render_account_menu(window, cx))
             .children(
@@ -1795,7 +1829,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn page_navigation_state(&self) -> (bool, bool) {
-        let in_settings = self.route == AppRoute::Settings;
+        let in_settings = self.route == AppRoute::Settings || self.remote_window.is_some();
         let can_go_back =
             !in_settings && self.runtime_navigation_index.is_some_and(|index| index > 0);
         let can_go_forward = !in_settings
@@ -2069,6 +2103,9 @@ impl NativeRoot {
     }
 
     fn show_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         if self.route == AppRoute::Settings {
             return;
         }

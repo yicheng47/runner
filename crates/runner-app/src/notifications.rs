@@ -324,8 +324,8 @@ fn visible(cx: &mut App) -> Visible {
         };
         if let Ok(Some(visible)) = window.update(cx, |root, window, cx| {
             window.is_window_active().then(|| Visible {
-                app_active: true,
-                chats: if root.route == AppRoute::Chat {
+                app_active: root.remote_window.is_none(),
+                chats: if root.remote_window.is_none() && root.route == AppRoute::Chat {
                     root.tabs
                         .active()
                         .map(|tab| tab.session_ids())
@@ -334,7 +334,7 @@ fn visible(cx: &mut App) -> Visible {
                     Vec::new()
                 },
                 mission: match &root.route {
-                    AppRoute::Mission(id) => root
+                    AppRoute::Mission(id) if root.remote_window.is_none() => root
                         .mission_workspace
                         .read(cx)
                         .notification_tab(id)
@@ -821,19 +821,22 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
             .iter()
             .copied()
             .filter(|window| {
-                window.read(cx).is_ok_and(|root| match target {
-                    Target::Chat(id) => {
-                        root.route == AppRoute::Chat
-                            && root
-                                .tabs
-                                .active()
-                                .is_some_and(|tab| tab.session_ids().contains(id))
-                    }
-                    Target::Slot { mission, .. }
-                    | Target::Question { mission }
-                    | Target::MissionIdle { mission } => {
-                        root.route == AppRoute::Mission(mission.clone())
-                    }
+                window.read(cx).is_ok_and(|root| {
+                    root.remote_window.is_none()
+                        && match target {
+                            Target::Chat(id) => {
+                                root.route == AppRoute::Chat
+                                    && root
+                                        .tabs
+                                        .active()
+                                        .is_some_and(|tab| tab.session_ids().contains(id))
+                            }
+                            Target::Slot { mission, .. }
+                            | Target::Question { mission }
+                            | Target::MissionIdle { mission } => {
+                                root.route == AppRoute::Mission(mission.clone())
+                            }
+                        }
                 })
             })
             .max_by_key(|window| {
@@ -878,6 +881,11 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
     if let Some(window) = window {
         let _ = window.update(cx, |root, window, cx| {
             window.activate_window();
+            if target.is_some() && root.remote_window.is_some() {
+                root.remote_window = None;
+                root.client_ui.picker_open = false;
+                cx.notify();
+            }
             match target {
                 Some(Target::Chat(id)) => {
                     if !root.open_chat_session(&id, window, cx) {

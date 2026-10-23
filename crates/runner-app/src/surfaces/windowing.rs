@@ -4,6 +4,9 @@ use runner_core::protocol::window::Subject;
 
 impl NativeRoot {
     pub(crate) fn current_subjects(&self) -> Vec<Subject> {
+        if self.remote_window.is_some() {
+            return Vec::new();
+        }
         match &self.route {
             AppRoute::Mission(mission_id) => vec![Subject::Mission(mission_id.clone())],
             AppRoute::Chat => self
@@ -25,7 +28,7 @@ impl NativeRoot {
             self.current_subjects(),
             self.tabs
                 .active()
-                .filter(|_| self.route == AppRoute::Chat)
+                .filter(|_| self.route == AppRoute::Chat && self.remote_window.is_none())
                 .and_then(PaneLayout::focused_session_id),
         ) {
             self.error = Some(error.to_string().into());
@@ -52,7 +55,7 @@ impl NativeRoot {
         }
         crate::notifications::view_changed(cx);
         self.sync_subject_ownership(window, cx);
-        if matches!(self.route, AppRoute::Mission(_)) {
+        if self.remote_window.is_none() && matches!(self.route, AppRoute::Mission(_)) {
             self.mission_workspace.update(cx, |workspace, cx| {
                 workspace.mark_active_session_viewed(window, cx);
             });
@@ -118,6 +121,9 @@ impl NativeRoot {
         if self.closing {
             return;
         }
+        if self.remote_window.is_some() {
+            return;
+        }
         self.sync_chat_subject_ownership(window, cx);
         self.sync_mission_subject_ownership(window, cx);
     }
@@ -138,7 +144,7 @@ impl NativeRoot {
         let active_ids = self
             .tabs
             .active()
-            .filter(|_| self.route == AppRoute::Chat)
+            .filter(|_| self.route == AppRoute::Chat && self.remote_window.is_none())
             .map(PaneLayout::session_ids)
             .unwrap_or_default();
         let entries = self.core(cx).window_snapshot().unwrap_or_default();
@@ -228,6 +234,7 @@ impl NativeRoot {
         self.save_main_window_state(window, cx);
         self.save_settings(cx);
         self.attached.clear();
+        self.remote_window = None;
         self.mission_workspace
             .update(cx, |workspace, workspace_cx| {
                 workspace.release_window(workspace_cx)

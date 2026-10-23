@@ -86,6 +86,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         if self.route != AppRoute::Chat {
             self.report_current_subjects(cx);
             return;

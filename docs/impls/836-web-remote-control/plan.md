@@ -337,6 +337,46 @@ The crew shapes the history; a likely split, each commit building and passing it
 
 A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7b-client-core` on `feat/836-m7b-client-core`, with its brief as [`../briefs/836-m7b-client-core.md`](../briefs/836-m7b-client-core.md), run by a codex coder and reviewer; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. Live checks wait for Jason. No database migration, no new crate.
 
+### m7c — the client app
+
+m7b merged on 2026-10-23 as [#1001](https://github.com/yicheng47/runner/pull/1001). m7c is the app's side of Runner as a client, on m7b's client protocol as it is: the computers list in Remote access, the PIN dialog, the computer picker, and a window that becomes another computer's Runner with its terminals in the desktop's terminal view. Steps 1.7, 2.1 to 2.7, 3.1 to 3.5, 4.1 to 4.3, 5.1 and 5.2 of `836-web-remote-control.pen`; steps 2.8 to 2.10 and 3.6 to 3.10 are the host side m6 built.
+
+#### Settled for m7c
+
+- **Who can open this computer** (*proposed*). Since each client pairs with its own key per host, a host's device fingerprint never equals the client's identity fingerprint. The access column's ↙ matches a paired device to an account computer by the device's name, which is that computer's service name (cut to 64 bytes, as m7b sends it). The match only labels the row; trust stays the device list's. A paired device that matches no computer or more than one computer on the account is still listed in its own row, after the computers, with Revoke; an ambiguous name attributes incoming access to neither computer.
+- **A window's computer is not restored** (*proposed*). Choosing a computer changes only that window; after a restart every window opens on this computer again.
+- **Opening a remote terminal takes control**, as the spec's Terminal size says for any client; leaving keeps the size. The host taking it back shows step 3.5's card with Take control.
+- **No new client-protocol request.** Everything here uses m7b's `remote_*` requests, `attach_remote` and the `remote/*` events. A missing piece is raised through Runner, not added.
+
+#### Commits
+
+The crew shapes the history; a likely split, each commit building and passing its tests:
+
+1. **The computers list.** Remote access's device table becomes step 1.7's list: every computer on the account from `remote_computers`, this one first and marked, its status (online, offline with when it was last seen, connected to this computer from m6's Connected now) and, last, its access (↙ Can open this computer, ↗ This computer can open it, ⇄ Both ways, or Not paired with Pair), with the legend above it; ⋯ holds Revoke and Forget. Unmatched paired devices follow. Paused and reconnecting (5.1, 5.2) keep their layout.
+2. **The PIN dialog.** Pair opens steps 2.2 to 2.7: entry, checking, wrong PIN, PIN entry locked, no PIN on that computer, and pair again after its identity changed; one `remote_pair` per submit, never retried.
+3. **The computer picker.** The sidebar's top row becomes step 2.1's picker: this computer, then the others with their status and what needs the person there, offline and unpaired ones listed; the window button and ⇧-click open a new window; ⋯ forgets; an unpaired computer opens the PIN dialog.
+4. **Another computer's Runner.** Choosing a computer turns the window into its Runner (3.1, 3.2): the sidebar from `remote_overview` and `remote_follow`, tinted picker with a badge counting what needs the person on this computer, New chat, role and crew dimmed, and the footer's connection row (relay · encrypted, reconnecting, can't reach, revoked: 4.1 to 4.3). Choosing this computer again returns.
+5. **Remote terminals.** A remote tab's panes attach with `attach_remote` into the desktop's terminal view, with input and resize through the remote address, connecting (3.3), live (3.4) and taken back (3.5).
+6. **The guide.** `docs/guide/guides/remote-access.md` gains the computers list, pairing, the picker and working on another computer.
+
+#### Checks
+
+- **The app's tests**: the list's rows and access labels from computers and devices, including an unmatched device and this computer; each PIN dialog state from its refusal, with one request per submit; the picker's rows, badge and its new-window path; the remote sidebar from an overview and its pushes, with New chat, role and crew dimmed; the connection row's states from `remote/connection`; a remote pane attaching, sending input and resize to the remote address, and the card when control is taken back; returning to this computer releasing follows and attachments.
+- **Gates**: the required workspace gates, each logged with its exit code read directly.
+- **Live, pending for Jason**: two Runners against a local `runner_server` and then the hosted service, macOS and Windows: pair from the list and from the picker, a wrong PIN, open the other computer, open a terminal, type and resize, the host taking it back, a dropped route, Revoke, and m6's card, notification and Connected now on the host.
+
+#### Easy to get wrong
+
+- No `runnerd`, client-protocol or companion change; m7b's surface is used as it is.
+- A remote window never shows local sessions, and a local window never shows remote ones; local tabs and panes are untouched while a window shows another computer.
+- Input to a remote pane goes only through its remote address, and nothing typed while reconnecting is replayed.
+- Every string in `en.toml` and `zh-hans.toml`; the PIN never in a log, event or `Debug`.
+- The sidebar is shared by macOS and Windows; both keep their layout.
+
+#### Landing
+
+A worktree cut from `origin/nightly-remote`, `.worktrees/feat-836-m7c-client-app` on `feat/836-m7c-client-app`, with its brief as [`../briefs/836-m7c-client-app.md`](../briefs/836-m7c-client-app.md), run by a codex coder and reviewer, with Claude Code watching the mission and reviewing the PR for Jason; a pull request against `nightly-remote`, driven green on macOS and Windows, which Jason merges. No database migration, no new crate.
+
 ## Phase 4 — Tailscale
 
 Planned when its development starts. Its open questions are on [#954](https://github.com/yicheng47/runner/issues/954); the pairing and trust model are Phase 2's, unchanged. Since 2026-10-21 its client is m7's: one Runner reaches another directly over the tailnet, with no service involved, so Phase 4 adds the host's listener and the client's direct route.

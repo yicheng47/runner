@@ -284,6 +284,10 @@ fn close_target(
 
 #[cfg(not(test))]
 fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    if this.remote_window.is_some() {
+        this.return_to_this_computer(window, cx);
+        return;
+    }
     let drawer_focused = this.route == AppRoute::Chat
         && this.tabs.active().is_some_and(PaneLayout::drawer_open)
         && this.drawer_focus.contains_focused(window, cx);
@@ -516,6 +520,9 @@ impl SidebarVisibilityTransition {
 
 struct NativeRoot {
     composition: Entity<surfaces::render_cache::ShellComposition>,
+    client_ui: surfaces::remote_client::ClientUi,
+    remote_window: Option<surfaces::remote_client::RemoteWindow>,
+    _remote_subscription: Subscription,
     render_regions: HashMap<String, Entity<surfaces::render_cache::CachedRegion<Self>>>,
     window_label: String,
     log_dir: PathBuf,
@@ -912,7 +919,12 @@ impl NativeRoot {
         let updater = global_updater(cx);
         let root_entity = cx.entity().downgrade();
         let composition = cx.new(|_| surfaces::render_cache::ShellComposition::new(root_entity));
+        let clients = app_store.read(cx).remote_clients.clone();
+        let remote_subscription = cx.observe(&clients, |root, _, cx| root.sync_remote_state(cx));
         let mut root = Self {
+            client_ui: surfaces::remote_client::ClientUi::new(cx),
+            remote_window: None,
+            _remote_subscription: remote_subscription,
             composition,
             render_regions: HashMap::new(),
             window_label: window_label.clone(),
@@ -1863,7 +1875,6 @@ fn handle_reopen(cx: &mut App) {
     cx.activate(true);
 }
 
-#[cfg(not(test))]
 fn open_new_runner_window(initial_route: Option<String>, cx: &mut App) -> Result<String> {
     let label = if !window_label_is_open(cx, "main") {
         "main".into()
