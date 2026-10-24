@@ -139,14 +139,16 @@ pub enum KeyCapture {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalEvent {
+    CodexAttention(bool),
     Activity(crate::session::runtime::SessionActivityState),
     Title(crate::session::runtime::SessionActivityState),
     Ready(crate::session::runtime::SessionActivityState),
 }
 impl TerminalEvent {
-    pub(crate) fn state(self) -> crate::session::runtime::SessionActivityState {
+    pub(crate) fn state(self) -> Option<crate::session::runtime::SessionActivityState> {
         match self {
-            Self::Activity(state) | Self::Title(state) | Self::Ready(state) => state,
+            Self::CodexAttention(_) => None,
+            Self::Activity(state) | Self::Title(state) | Self::Ready(state) => Some(state),
         }
     }
 }
@@ -158,6 +160,13 @@ pub struct TerminalInput {
 }
 pub trait TerminalAdapter: Send {
     fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent>;
+    fn take_codex_attention(&mut self) -> Option<bool> {
+        None
+    }
+    // Called after on_output; adapters may release deferred byte evidence here.
+    fn output_activity_bytes(&self, bytes: &[u8]) -> usize {
+        bytes.len()
+    }
     fn on_input(&mut self, bytes: &[u8]) -> TerminalInput;
     fn held_activity(&self) -> Option<crate::session::runtime::SessionActivityState>;
     fn hooks_unavailable(&mut self);

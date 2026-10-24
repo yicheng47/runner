@@ -381,10 +381,11 @@ impl OutputStream {
                     }
                 }
                 RuntimeOutput::TerminalEvent(event) => {
+                    let Some(state) = event.state() else { continue };
                     return Ok(TestOutput::StatusTransition {
-                        state: event.state(),
+                        state,
                         source: StatusSource::Forwarder,
-                    })
+                    });
                 }
                 RuntimeOutput::Stream(bytes) => return Ok(TestOutput::Stream(bytes)),
                 RuntimeOutput::ConversationStart(_) => return Ok(TestOutput::ConversationStart),

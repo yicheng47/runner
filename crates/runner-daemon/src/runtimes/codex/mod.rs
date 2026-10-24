@@ -1,6 +1,7 @@
 pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
 pub(crate) mod models;
+mod program_status;
 pub(crate) mod skills;
 mod terminal;
 pub(crate) mod usage;

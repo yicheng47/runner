@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::runtime::SessionActivityState;
 use super::status::{
-    Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource, TurnOutcome, WorkDetail,
+    Activity, AgentObservation, AgentStatus, HumanInteraction, Lifecycle, ObservationSource,
+    TurnOutcome, WaitReason, WorkDetail,
 };
 
 pub const CTRL_C_INTERRUPT: u8 = 1;
@@ -22,6 +23,8 @@ pub enum StatusSource {
     Resume,
     #[serde(rename = "forwarder")]
     Forwarder,
+    #[serde(rename = "codex-attention")]
+    CodexAttention,
     #[serde(rename = "input-submit")]
     InputSubmit,
     #[serde(rename = "input-interrupt")]
@@ -49,6 +52,7 @@ impl StatusSource {
             Self::Fork => "fork",
             Self::Resume => "resume",
             Self::Forwarder => "forwarder",
+            Self::CodexAttention => "codex-attention",
             Self::InputSubmit => "input-submit",
             Self::InputInterrupt => "input-interrupt",
             Self::InputEscape => "input-escape",
@@ -106,6 +110,10 @@ pub(crate) struct PersistKey {
 }
 
 pub(crate) enum SessionEvent {
+    CodexAttention {
+        blocked: bool,
+        live: bool,
+    },
     #[cfg(test)]
     TestPending(bool),
     #[cfg(test)]
@@ -202,6 +210,8 @@ pub(crate) struct SessionModel {
     compaction_failed_since: Option<Option<i64>>,
     key: Option<PersistKey>,
     agent: agent::AgentModel,
+    codex_attention: Option<HumanInteraction>,
+    next_codex_attention: u64,
 }
 
 impl SessionModel {
@@ -232,6 +242,9 @@ impl SessionModel {
     #[cfg(test)]
     pub fn local_input_pending(&self) -> bool {
         self.local_input_pending
+    }
+    pub fn codex_attention_active(&self) -> bool {
+        self.codex_attention.is_some()
     }
     pub fn status(&self) -> &AgentStatus {
         &self.status
@@ -322,6 +335,37 @@ impl SessionModel {
     pub fn apply(&mut self, event: SessionEvent, now: Now) -> Effects {
         let mut effects = Effects::default();
         match event {
+            SessionEvent::CodexAttention { blocked, live } => {
+                if !live || blocked == self.codex_attention.is_some() {
+                    return effects;
+                }
+                let mut observation = self.status.observation.clone();
+                if let Some(wait) = self.codex_attention.take() {
+                    observation.interactions.retain(|entry| entry.id != wait.id);
+                }
+                if !blocked && observation.source != ObservationSource::Hook {
+                    observation.activity = match self.baseline_activity {
+                        Some(SessionActivityState::Busy) => Activity::Working,
+                        Some(SessionActivityState::Idle) => Activity::Idle,
+                        None => Activity::Unavailable,
+                    };
+                }
+                if blocked {
+                    self.next_codex_attention += 1;
+                    self.codex_attention = Some(HumanInteraction {
+                        id: format!("codex-native:{}", self.next_codex_attention),
+                        reason: WaitReason::Unknown,
+                        owners: Vec::new(),
+                        since: now.wall_millis,
+                    });
+                }
+                let completion_armed = self.completion_armed;
+                effects = self.publish_snapshot(observation, live, now);
+                self.completion_armed = completion_armed;
+                effects.publication = effects
+                    .publication
+                    .map(|(state, _)| (state, StatusSource::CodexAttention));
+            }
             #[cfg(test)]
             SessionEvent::TestPending(pending) => self.local_input_pending = pending,
             #[cfg(test)]
@@ -341,6 +385,7 @@ impl SessionModel {
                 };
                 self.compaction_failed_since = None;
                 self.agent = Default::default();
+                self.codex_attention = None;
                 self.baseline_activity = None;
                 self.hook_status_armed = false;
                 self.provisional_idle = false;
@@ -350,6 +395,7 @@ impl SessionModel {
                 if stopped {
                     self.status.lifecycle = Lifecycle::Stopped;
                 }
+                self.codex_attention = None;
                 self.status.observation.interactions.clear();
                 self.activity = None;
                 self.activity_revision = self.activity_revision.wrapping_add(1);
@@ -514,6 +560,7 @@ impl SessionModel {
                 self.status.error_since = crashed.then_some(now.wall_millis);
                 self.status.failed_since = None;
                 self.compaction_failed_since = None;
+                self.codex_attention = None;
                 self.status.observation.interactions.clear();
             }
             SessionEvent::ConversationChanged(report) => effects.persist_key = Some(report),
@@ -531,6 +578,15 @@ impl SessionModel {
         now: Now,
     ) -> Effects {
         let mut effects = Effects::default();
+        if let Some(wait) = &self.codex_attention {
+            if !observation
+                .interactions
+                .iter()
+                .any(|entry| entry.id == wait.id)
+            {
+                observation.interactions.push(wait.clone());
+            }
+        }
         if observation.source != ObservationSource::Hook {
             observation.detail = None;
         }
@@ -629,6 +685,11 @@ impl SessionModel {
     ) -> bool {
         if source == StatusSource::Forwarder {
             self.baseline_activity = Some(state);
+        }
+        // Native attention outlives byte activity and local cancellation; only
+        // a subsequent Codex status report or process lifecycle can release it.
+        if self.codex_attention.is_some() && source == StatusSource::Forwarder {
+            return false;
         }
         let old_status = self.status.clone();
         if source == StatusSource::Hook {

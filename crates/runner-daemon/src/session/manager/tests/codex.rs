@@ -790,3 +790,540 @@ fn codex_windows_batch_pending_prompt_is_recorded_before_argv_suppression() {
     assert_eq!(spec.pending_turn, Some(true));
     assert!(!spec.args.iter().any(|arg| arg == "automatic prompt"));
 }
+
+#[test]
+fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
+    use crate::runtimes::TerminalEvent;
+    use crate::session::state::agent::AgentEvent;
+    #[derive(Default)]
+    struct DeliveryEvents(Mutex<Vec<router::SessionDeliveryEvent>>);
+    impl router::SessionDeliveryListener for DeliveryEvents {
+        fn session_delivery_event(&self, _: &str, event: router::SessionDeliveryEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+    for mission in [false, true] {
+        let manager = mgr_with_fake(None, fake_runtime());
+        let id = "native-codex";
+        install_test_session_handle(&manager, id);
+        let root = tempfile::tempdir().unwrap();
+        let event_log = Arc::new(EventLog::open(root.path()).unwrap());
+        if mission {
+            manager
+                .session_state(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .mission_status_sink = Some(ForwarderEmitCtx {
+                crew_id: Some("crew".into()),
+                mission_id: "mission".into(),
+                handle: "codex".into(),
+                event_log: event_log.clone(),
+            });
+        }
+        let delivered = Arc::new(DeliveryEvents::default());
+        let listener: Arc<dyn router::SessionDeliveryListener> = delivered.clone();
+        manager.register_delivery_listener(id, Arc::downgrade(&listener));
+        let events = capture();
+        manager.publish_agent_event(
+            id,
+            AgentEvent::Batch {
+                runtime: Runtime::Codex,
+                events: vec![AgentEvent::TurnStarted],
+            },
+            events.as_ref(),
+        );
+        let publish = |event| {
+            if mission {
+                manager.publish_mission_terminal_event(id, event, events.as_ref());
+            } else {
+                manager.publish_direct_terminal_event(id, event, events.as_ref());
+            }
+        };
+        let mut terminal = crate::runtimes::adapter(Runtime::Codex)
+            .terminal_adapter(Some(false))
+            .unwrap();
+        terminal.accept_event(&AgentEvent::TurnStarted);
+        terminal.on_output(b"\x1b]7501;state=blocked:app=codex\x1b\\");
+        let blocked = TerminalEvent::CodexAttention(terminal.take_codex_attention().unwrap());
+        assert_eq!(blocked, TerminalEvent::CodexAttention(true));
+        publish(blocked);
+        let wait = manager.agent_status(id).observation.interactions[0].clone();
+        let count = events.status.lock().unwrap().len();
+        publish(blocked);
+        assert_eq!(events.status.lock().unwrap().len(), count);
+        assert_eq!(
+            manager.reserve_delivery(id).unwrap(),
+            router::DeliveryReservation::HumanInteraction
+        );
+        manager.mark_status_viewed(&[id.into()]);
+        assert!(manager.status_snapshot()[id].observation.needs_you());
+        let state = manager.session_state(id).unwrap();
+        state.lock().unwrap().model.apply(
+            SessionEvent::TestPending(true),
+            crate::session::clock::state_now(),
+        );
+        manager.publish_agent_event(
+            id,
+            AgentEvent::Batch {
+                runtime: Runtime::Codex,
+                events: vec![AgentEvent::Working {
+                    detail: Some(crate::session::status::WorkDetail::UsingTools),
+                }],
+            },
+            events.as_ref(),
+        );
+        assert_eq!(
+            manager.agent_status(id).observation.interactions,
+            vec![wait]
+        );
+        for report in [
+            b"\x1b]7501;state=working:app=codex\x07".as_slice(),
+            b"\x1b]7501;state=idle:app=codex\x07",
+            b"\x1b]7501;state=clear\x1b\\",
+        ] {
+            terminal.on_output(report);
+            publish(TerminalEvent::CodexAttention(
+                terminal.take_codex_attention().unwrap(),
+            ));
+            assert!(!manager.agent_status(id).observation.needs_you());
+            assert_eq!(
+                manager.agent_status(id).observation.activity,
+                Activity::Working
+            );
+            assert_eq!(manager.agent_status(id).observation.outcome, None);
+            assert_eq!(manager.agent_status(id).unread_since, None);
+            assert_eq!(
+                manager.reserve_delivery(id).unwrap(),
+                router::DeliveryReservation::LocalInputPending
+            );
+            publish(blocked);
+        }
+        publish(TerminalEvent::CodexAttention(false));
+        assert!(delivered
+            .0
+            .lock()
+            .unwrap()
+            .contains(&router::SessionDeliveryEvent::ReadinessChanged));
+        state.lock().unwrap().model.apply(
+            SessionEvent::TestPending(false),
+            crate::session::clock::state_now(),
+        );
+        assert!(matches!(
+            manager.reserve_delivery(id).unwrap(),
+            router::DeliveryReservation::Ready(_)
+        ));
+        if mission {
+            let rows = event_log.read_from(0).unwrap();
+            let statuses = events.status.lock().unwrap();
+            assert_eq!(rows.len(), statuses.len());
+            for (row, status) in rows.iter().zip(statuses.iter()) {
+                assert_eq!(
+                    row.event.payload["status"],
+                    serde_json::to_value(&status.status).unwrap()
+                );
+            }
+            assert!(rows
+                .iter()
+                .any(
+                    |row| row.event.payload["status"]["observation"]["interactions"][0]["reason"]
+                        == "unknown"
+                ));
+        }
+    }
+}
+
+#[test]
+fn codex_native_clear_never_runs_completion_callback_even_when_armed() {
+    let core = crate::test_support::test_core();
+    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('native-attention', 'running', 'codex')", []).unwrap();
+    install_test_session_handle(&core.sessions, "native-attention");
+    let events = core.session_events();
+    core.sessions.publish_direct_activity(
+        "native-attention",
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+        &events,
+    );
+    let state = core.sessions.session_state("native-attention").unwrap();
+    state.lock().unwrap().model.apply(
+        SessionEvent::ArmCompletion,
+        crate::session::clock::state_now(),
+    );
+    for blocked in [true, true, false] {
+        core.sessions.publish_direct_terminal_event(
+            "native-attention",
+            crate::runtimes::TerminalEvent::CodexAttention(blocked),
+            &events,
+        );
+    }
+    let status = core.sessions.agent_status("native-attention");
+    assert_eq!(status.unread_since, None);
+    assert_eq!(status.observation.outcome, None);
+    assert!(
+        state.lock().unwrap().model.completion_armed(),
+        "native attention must not consume hook completion"
+    );
+    assert!(!crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        &["native-attention".into()]
+    )
+    .unwrap());
+}
+
+#[test]
+fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missions() {
+    use crate::runtimes::TerminalEvent;
+    use crate::session::state::agent::AgentEvent as A;
+    for mission in [false, true] {
+        let fake = fake_runtime();
+        let manager = mgr_with_fake(None, fake.clone());
+        let id = "native-forwarder";
+        let (runtime, output) = fake
+            .spawn(SpawnSpec {
+                session_id: id.into(),
+                ..Default::default()
+            })
+            .unwrap();
+        install_test_session_handle(&manager, id);
+        let root = tempfile::tempdir().unwrap();
+        let log = Arc::new(EventLog::open(root.path()).unwrap());
+        let sink = mission.then(|| ForwarderEmitCtx {
+            crew_id: Some("crew".into()),
+            mission_id: "mission".into(),
+            handle: "codex".into(),
+            event_log: log.clone(),
+        });
+        {
+            let state = manager.session_state(id).unwrap();
+            let mut state = state.lock().unwrap();
+            state.handle.as_mut().unwrap().stop = output.stop_flag();
+            state.mission_status_sink = sink.clone();
+            assert!(state.subscribers.is_empty());
+        }
+        let batch = |event| RuntimeOutput::AgentEvent {
+            event: A::Batch {
+                runtime: Runtime::Codex,
+                events: vec![event],
+            },
+            feedback: None,
+        };
+        {
+            let spawns = fake.spawns.lock().unwrap();
+            let tx = spawns[0].tx.as_ref().unwrap();
+            for item in [
+                batch(A::TurnStarted),
+                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
+                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
+                batch(A::Working {
+                    detail: Some(crate::session::status::WorkDetail::UsingTools),
+                }),
+                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(false)),
+                batch(A::TurnEnded {
+                    outcome: TurnOutcome::Interrupted,
+                }),
+                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
+                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(false)),
+            ] {
+                tx.send(item).unwrap();
+            }
+        }
+        fake.close_spawn(0);
+        let events = capture();
+        manager
+            .start_forwarder_thread(
+                id.into(),
+                String::new(),
+                mission.then(|| "mission".into()),
+                runtime,
+                output,
+                pool_with_schema(),
+                events.clone(),
+                role("fake", &[]),
+                false,
+                false,
+                sink,
+                root.path().to_path_buf(),
+            )
+            .join()
+            .unwrap();
+        let statuses = events.status.lock().unwrap();
+        assert_eq!(statuses.len(), 7);
+        assert!(statuses[1].status.observation.needs_you());
+        assert_eq!(
+            statuses[1].status.observation.interactions,
+            statuses[2].status.observation.interactions
+        );
+        assert_eq!(statuses[3].state, SessionActivityState::Busy);
+        assert!(!statuses[3].status.observation.needs_you());
+        assert_eq!(statuses[3].status.observation.outcome, None);
+        assert_eq!(
+            statuses[6].status.observation.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert!(statuses
+            .iter()
+            .all(|status| status.status.unread_since.is_none()));
+        if mission {
+            let rows = log.read_from(0).unwrap();
+            assert_eq!(rows.len(), statuses.len());
+            for (row, status) in rows.iter().zip(statuses.iter()) {
+                assert_eq!(
+                    row.event.payload["status"],
+                    serde_json::to_value(&status.status).unwrap()
+                );
+                assert_eq!(
+                    row.event.payload["state"],
+                    serde_json::to_value(status.state).unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn codex_native_attention_ignores_reports_from_an_older_launch() {
+    let manager = mgr_with_fake(None, fake_runtime());
+    let id = "native-generation";
+    install_test_session_handle(&manager, id);
+    let events = capture();
+    let older = Arc::new(AtomicBool::new(false));
+    for blocked in [true, false] {
+        manager.publish_model_event_for_launch(
+            id,
+            SessionEvent::CodexAttention {
+                blocked,
+                live: true,
+            },
+            Some(&older),
+            events.as_ref(),
+        );
+        assert!(events.status.lock().unwrap().is_empty());
+    }
+    manager.publish_direct_terminal_event(
+        id,
+        crate::runtimes::TerminalEvent::CodexAttention(true),
+        events.as_ref(),
+    );
+    manager.publish_model_event_for_launch(
+        id,
+        SessionEvent::CodexAttention {
+            blocked: false,
+            live: true,
+        },
+        Some(&older),
+        events.as_ref(),
+    );
+    assert!(manager.agent_status(id).observation.needs_you());
+    manager.session_state(id).unwrap().lock().unwrap().killed = true;
+    manager.publish_direct_terminal_event(
+        id,
+        crate::runtimes::TerminalEvent::CodexAttention(false),
+        events.as_ref(),
+    );
+    assert!(manager.agent_status(id).observation.needs_you());
+}
+
+#[test]
+fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings() {
+    use crate::runtimes::TerminalEvent;
+    use crate::session::state::agent::AgentEvent as A;
+    for clear_first in [false, true] {
+        for outcome in [
+            TurnOutcome::Completed,
+            TurnOutcome::Failed,
+            TurnOutcome::Interrupted,
+        ] {
+            let core = crate::test_support::test_core();
+            core.db.get().unwrap().execute_batch("
+                INSERT INTO sessions(id, status, agent_runtime) VALUES ('native-completion', 'running', 'codex');
+                CREATE TABLE completion_writes (session_id TEXT);
+                CREATE TRIGGER completion_insert AFTER INSERT ON session_attention WHEN NEW.unread_since IS NOT NULL BEGIN INSERT INTO completion_writes VALUES (NEW.session_id); END;
+                CREATE TRIGGER completion_update AFTER UPDATE ON session_attention WHEN NEW.unread_since IS NOT NULL BEGIN INSERT INTO completion_writes VALUES (NEW.session_id); END;
+            ").unwrap();
+            let id = "native-completion";
+            install_test_session_handle(&core.sessions, id);
+            let events = core.session_events();
+            let hook = |event| {
+                core.sessions.publish_agent_event(
+                    id,
+                    A::Batch {
+                        runtime: Runtime::Codex,
+                        events: vec![event],
+                    },
+                    &events,
+                );
+            };
+            let native = |blocked| {
+                core.sessions.publish_direct_terminal_event(
+                    id,
+                    TerminalEvent::CodexAttention(blocked),
+                    &events,
+                )
+            };
+            let writes = || {
+                core.db.get().unwrap().query_row("SELECT count(*) FROM completion_writes WHERE session_id = 'native-completion'", [], |row| row.get::<_, i64>(0)).unwrap()
+            };
+            hook(A::TurnStarted);
+            native(true);
+            native(true);
+            if clear_first {
+                native(false);
+                native(false);
+                assert_eq!(writes(), 0, "native clear alone is not a completion");
+            }
+            hook(A::TurnEnded { outcome });
+            assert_eq!(writes(), i64::from(outcome == TurnOutcome::Completed));
+            assert_eq!(
+                core.sessions.agent_status(id).observation.needs_you(),
+                !clear_first
+            );
+            let unread = core.sessions.agent_status(id).unread_since;
+            assert_eq!(unread.is_some(), outcome == TurnOutcome::Completed);
+            native(false);
+            native(false);
+            hook(A::TurnEnded { outcome });
+            hook(A::ToolEnded {
+                owner: None,
+                count: 0,
+                interrupted: false,
+                transcript: false,
+            });
+            native(true);
+            native(false);
+            let status = core.sessions.agent_status(id);
+            assert_eq!(status.unread_since, unread);
+            assert_eq!(status.observation.outcome, Some(outcome));
+            assert!(!status.observation.needs_you());
+            assert_eq!(
+                writes(),
+                i64::from(outcome == TurnOutcome::Completed),
+                "duplicates/late reports cannot record another response"
+            );
+            assert_eq!(
+                crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()])
+                    .unwrap(),
+                outcome == TurnOutcome::Completed
+            );
+            assert!(!core.sessions.take_completion_armed(&[id.into()]));
+        }
+    }
+}
+
+#[test]
+fn codex_native_only_output_does_not_fabricate_completion_but_mixed_output_keeps_activity() {
+    use crate::session::pty_runtime::IdleDetector;
+    for split_bytes in [false, true] {
+        let core = crate::test_support::test_core();
+        let id = "native-byte-evidence";
+        core.db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+                [id],
+            )
+            .unwrap();
+        install_test_session_handle(&core.sessions, id);
+        let events = core.session_events();
+        let start = Instant::now();
+        let mut detector = IdleDetector::with_adapter_at(
+            Duration::from_secs(2),
+            crate::runtimes::adapter(Runtime::Codex).terminal_adapter(Some(false)),
+            start,
+        );
+        detector.hooks_unavailable();
+        let publish = |event| {
+            core.sessions
+                .publish_direct_terminal_event(id, event, &events)
+        };
+        publish(
+            detector
+                .tick_event_at(start + Duration::from_secs(3))
+                .unwrap(),
+        );
+        let state = core.sessions.session_state(id).unwrap();
+        state.lock().unwrap().model.apply(
+            SessionEvent::ArmCompletion,
+            crate::session::clock::state_now(),
+        );
+        for (index, control) in [
+            b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
+            b"\x1b]7501;state=blocked:app=codex\x07",
+            b"\x1b]7501;state=clear\x1b\\",
+            b"\x1b]7501;state=working:app=codex\x07",
+            b"\x1b]7501;state=idle:app=codex\x1b\\",
+            b"\x1b]7501;state=clear\x07",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let time = start + Duration::from_secs(4 + index as u64 * 4);
+            let chunk_size = if split_bytes { 1 } else { control.len() };
+            for chunk in control.chunks(chunk_size) {
+                let transition = detector.on_output_event_at(chunk, false, time);
+                for event in detector
+                    .take_codex_attention()
+                    .into_iter()
+                    .chain(transition)
+                {
+                    publish(event);
+                }
+            }
+            if let Some(event) = detector.tick_event_at(time + Duration::from_secs(3)) {
+                publish(event);
+            }
+            let status = core.sessions.agent_status(id);
+            assert_eq!(status.unread_since, None);
+            assert_eq!(status.observation.outcome, None);
+            assert!(state.lock().unwrap().model.completion_armed());
+            assert!(!crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                &[id.into()]
+            )
+            .unwrap());
+            let rows: i64 = core
+                .db
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM session_attention WHERE session_id = ?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                rows, 0,
+                "native-only controls must not invoke completion bookkeeping"
+            );
+        }
+        let mixed = b"\x1b]7501;state=working:app=codex\x07ordinary response";
+        let time = start + Duration::from_secs(40);
+        let chunk_size = if split_bytes { 1 } else { mixed.len() };
+        for chunk in mixed.chunks(chunk_size) {
+            let transition = detector.on_output_event_at(chunk, false, time);
+            for event in detector
+                .take_codex_attention()
+                .into_iter()
+                .chain(transition)
+            {
+                publish(event);
+            }
+        }
+        assert_eq!(
+            core.sessions.agent_status(id).observation.activity,
+            Activity::Working
+        );
+        publish(
+            detector
+                .tick_event_at(time + Duration::from_secs(3))
+                .unwrap(),
+        );
+        assert!(core.sessions.agent_status(id).unread_since.is_some());
+        assert!(
+            crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()])
+                .unwrap()
+        );
+        assert!(!state.lock().unwrap().model.completion_armed());
+    }
+}

@@ -37,13 +37,15 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 | Windows | Yes | Yes | Unverified | Unverified | Yes | Unverified | Unverified |
 | Fork a chat | Yes | Yes | No | Yes | No | No | Yes |
 | Working/idle from agent hooks | Yes | Yes | macOS only | Yes | Yes | Terminal activity | macOS/Linux integration |
-| Needs-input reporting | No | Approvals and questions | No | Extension reports only | Approvals and questions | No | Approvals on macOS/Linux |
+| Needs-input reporting | Generic native Needs you (0.163.0) | Approvals and questions | No | Extension reports only | Approvals and questions | No | Approvals on macOS/Linux |
 | Models discovered from the CLI | Yes | Yes | Yes | Yes | No | Yes | Yes |
 | Update through Settings → Agents | Yes | Yes | No | Yes | Yes | No | No |
 | Usage indicator | Yes | Yes | Yes | No | No | No | No |
 | Skills | Catalog and switch | Catalog and switch | Catalog | Catalog | Catalog and switch | Catalog | Catalog |
 | Runner skill installed | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Mission access | Bypass | Bypass | Bypass | Trusted workspace | Bypass | Bypass | Bypass |
+
+**Codex input attention** uses the native OSC 7501 reports verified in Codex CLI 0.163.0. A `blocked` report shows generic **Needs you** in the existing session, sidebar, header and background-notification surfaces. Codex does not identify whether the prompt is an approval or a question. Native `working`, `idle` or `clear` resolves this attention; typing alone does not. Hooks still report work, completion, interruption and conversation identity. This also holds crew delivery while a reported native wait is open, and resolving it preserves an independent draft. Older or customized Codex sessions without usable native reports retain their existing status behavior and have no claimed dialog-delivery protection. Native app validation of this signal remains pending on macOS and Windows.
 
 **OpenCode v2** supports chats, roles, crews, exact session identities, dynamic models and model variants, hook status, skills catalogs, MCP settings and the Runner skill. It has no chat fork, usage indicator, global skill toggle or update control. Backend/native-data checks cover replies, coordination and stop/resume; complete GUI and Windows checks remain unverified. Mission access uses its automatic permission mode.
 

@@ -780,17 +780,19 @@ impl IdleDetector {
         if !bytes.is_empty() {
             self.first_output.get_or_insert(now);
         }
-        if let Some(event) = self
-            .adapter
-            .as_mut()
-            .and_then(|adapter| adapter.on_output(bytes))
-        {
+        let (event, activity_bytes) = if let Some(adapter) = self.adapter.as_mut() {
+            let event = adapter.on_output(bytes);
+            (event, adapter.output_activity_bytes(bytes))
+        } else {
+            (None, bytes.len())
+        };
+        if let Some(event) = event {
             if matches!(event, TerminalEvent::Ready(_)) {
                 self.last_byte = now;
                 return self.tick_event_at(now);
             }
-            let state = event.state();
-            if !bytes.is_empty() {
+            let state = event.state()?;
+            if activity_bytes > 0 {
                 self.last_byte = now;
             }
             if self.current != state {
@@ -800,20 +802,26 @@ impl IdleDetector {
             return None;
         }
         if quiet {
-            self.on_bytes_quiet_at(bytes.len(), now);
+            self.on_bytes_quiet_at(activity_bytes, now);
             None
         } else {
-            self.on_bytes_at(bytes.len(), now)
+            self.on_bytes_at(activity_bytes, now)
                 .map(TerminalEvent::Activity)
         }
     }
+    pub(crate) fn take_codex_attention(&mut self) -> Option<crate::runtimes::TerminalEvent> {
+        self.adapter
+            .as_mut()?
+            .take_codex_attention()
+            .map(crate::runtimes::TerminalEvent::CodexAttention)
+    }
     #[cfg(test)]
     fn on_output_state(&mut self, bytes: &[u8], quiet: bool) -> Option<SessionActivityState> {
-        self.on_output(bytes, quiet).map(|event| event.state())
+        self.on_output(bytes, quiet).and_then(|event| event.state())
     }
     #[cfg(test)]
     fn tick_state(&mut self) -> Option<SessionActivityState> {
-        self.tick().map(|event| event.state())
+        self.tick().and_then(|event| event.state())
     }
     #[cfg(test)]
     fn on_output_at(
@@ -823,7 +831,7 @@ impl IdleDetector {
         now: Instant,
     ) -> Option<SessionActivityState> {
         self.on_output_event_at(bytes, quiet, now)
-            .map(|event| event.state())
+            .and_then(|event| event.state())
     }
     fn on_input(&mut self, bytes: &[u8]) {
         self.on_input_at(bytes, Instant::now());
@@ -924,7 +932,7 @@ impl IdleDetector {
     }
     #[cfg(test)]
     fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
-        self.tick_event_at(now).map(|event| event.state())
+        self.tick_event_at(now).and_then(|event| event.state())
     }
 }
 
@@ -1084,7 +1092,7 @@ fn reader_thread(
     };
 
     let mut buf = vec![0u8; READ_BUF];
-    loop {
+    'read_output: loop {
         #[cfg(not(windows))]
         if stop.load(Ordering::Acquire) {
             break;
@@ -1097,13 +1105,14 @@ fn reader_thread(
                     .lock()
                     .expect("last_resize poisoned")
                     .is_some_and(|t| t.elapsed() < RESIZE_GRACE);
-                let transition = {
+                let (transition, attention) = {
                     let mut detector = detector.lock().expect("idle detector poisoned");
-                    detector.on_output(&buf[..n], in_resize_grace)
+                    let transition = detector.on_output(&buf[..n], in_resize_grace);
+                    (transition, detector.take_codex_attention())
                 };
-                if let Some(state) = transition {
-                    if tx.send(RuntimeOutput::TerminalEvent(state)).is_err() && !cfg!(windows) {
-                        break;
+                for event in attention.into_iter().chain(transition) {
+                    if tx.send(RuntimeOutput::TerminalEvent(event)).is_err() && !cfg!(windows) {
+                        break 'read_output;
                     }
                 }
                 if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() && !cfg!(windows) {
@@ -1809,6 +1818,92 @@ mod tests {
             runtime: crate::model::Runtime::Codex,
             events: vec![event],
         })
+    }
+
+    #[test]
+    fn codex_native_attention_bypasses_activity_dedup_and_survives_hook_takeover() {
+        use crate::runtimes::TerminalEvent;
+        use crate::session::state::agent::AgentEvent;
+        for hooks in [false, true] {
+            let mut detector = codex_detector(Duration::from_secs(2), false);
+            let start = Instant::now();
+            if hooks {
+                detector.accept_event(&AgentEvent::TurnStarted);
+            } else {
+                detector.hooks_unavailable();
+            }
+            for (report, blocked) in [
+                (b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(), true),
+                (b"\x1b]7501;state=blocked:app=codex\x07", true),
+                (b"\x1b]7501;state=working:app=codex\x07", false),
+                (b"\x1b]7501;state=idle:app=codex\x07", false),
+                (b"\x1b]7501;state=clear\x1b\\", false),
+            ] {
+                detector.on_output_event_at(report, true, start);
+                assert_eq!(
+                    detector.take_codex_attention(),
+                    Some(TerminalEvent::CodexAttention(blocked))
+                );
+                assert_eq!(detector.current, SessionActivityState::Busy);
+            }
+        }
+    }
+
+    #[test]
+    fn codex_native_attention_preserves_nonquiet_activity_and_readiness_in_the_same_chunk() {
+        use crate::runtimes::TerminalEvent as T;
+        let start = Instant::now();
+        for payload in [
+            b"\x1b]7501;state=working:app=codex\x1b\\ordinary response".as_slice(),
+            b"ordinary response\x1b]7501;state=idle:app=codex\x07",
+        ] {
+            let mut detector = codex_detector(Duration::from_secs(2), false);
+            detector.hooks_unavailable();
+            assert_eq!(
+                detector.tick_event_at(start + Duration::from_secs(3)),
+                Some(T::Activity(SessionActivityState::Idle))
+            );
+            assert_eq!(
+                detector.on_output_event_at(payload, false, start + Duration::from_secs(4)),
+                Some(T::Activity(SessionActivityState::Busy))
+            );
+            assert_eq!(
+                detector.take_codex_attention(),
+                Some(T::CodexAttention(false))
+            );
+            assert_eq!(detector.current, SessionActivityState::Busy);
+        }
+        let mut detector = codex_detector(Duration::from_secs(2), false);
+        detector.hooks_unavailable();
+        assert_eq!(
+            detector.on_output_event_at(
+                b"\x1b[?2004h\x1b]7501;state=blocked:app=codex\x07",
+                false,
+                start
+            ),
+            Some(T::Ready(SessionActivityState::Idle))
+        );
+        assert_eq!(
+            detector.take_codex_attention(),
+            Some(T::CodexAttention(true))
+        );
+        let mut detector = codex_detector(Duration::from_secs(2), false);
+        detector.hooks_unavailable();
+        detector.on_output_event_at(&osc_title("⠋ project"), false, start);
+        detector.on_output_event_at(&osc_title("⠙ project"), false, start);
+        let combined = [
+            osc_title("project"),
+            b"\x1b]7501;state=blocked:app=codex\x07".to_vec(),
+        ]
+        .concat();
+        assert_eq!(
+            detector.on_output_event_at(&combined, false, start),
+            Some(T::Title(SessionActivityState::Idle))
+        );
+        assert_eq!(
+            detector.take_codex_attention(),
+            Some(T::CodexAttention(true))
+        );
     }
 
     #[test]

@@ -672,3 +672,197 @@ fn status_sources_keep_their_wire_strings() {
         );
     }
 }
+
+#[test]
+fn codex_native_attention_is_independent_of_hooks_and_local_input() {
+    use agent::AgentEvent as A;
+    let mut model = SessionModel::default();
+    let time = now();
+    let hook = |event| SessionEvent::Agent {
+        event: A::Batch {
+            runtime: crate::model::Runtime::Codex,
+            events: vec![event],
+        },
+        live: true,
+    };
+    model.apply(SessionEvent::Attached, time);
+    model.apply(hook(A::TurnStarted), time);
+    let original = model.status().observation.clone();
+    let opened = model.apply(
+        SessionEvent::CodexAttention {
+            blocked: true,
+            live: true,
+        },
+        time,
+    );
+    assert!(opened.publication.is_some());
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Unknown);
+    let later = Now {
+        wall_millis: time.wall_millis + 90_000,
+        ..time
+    };
+    let duplicate = model.apply(
+        SessionEvent::CodexAttention {
+            blocked: true,
+            live: true,
+        },
+        later,
+    );
+    assert!(duplicate.publication.is_none());
+    assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+    for event in [
+        A::Working {
+            detail: Some(WorkDetail::UsingTools),
+        },
+        A::ToolStarted {
+            count: 1,
+            question: None,
+        },
+        A::CompactionStarted,
+        A::CompactionEnded,
+        A::TurnEnded {
+            outcome: TurnOutcome::Completed,
+        },
+        A::TurnStarted,
+        A::TurnEnded {
+            outcome: TurnOutcome::Failed,
+        },
+        A::TurnStarted,
+        A::LocalCancel {
+            kind: ESCAPE_INTERRUPT,
+        },
+        A::ToolEnded {
+            owner: None,
+            count: 0,
+            interrupted: false,
+            transcript: false,
+        },
+    ] {
+        model.apply(hook(event), later);
+        assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+        assert_eq!(model.activity(), Some(SessionActivityState::Busy));
+    }
+    model.apply(
+        SessionEvent::Input {
+            class: Some(LocalInputClass::ClearPending),
+            submitted: true,
+        },
+        later,
+    );
+    assert!(model.status().observation.needs_you());
+    let before_clear = model.status().observation.clone();
+    let completion = model.completion_armed();
+    model.apply(
+        SessionEvent::CodexAttention {
+            blocked: false,
+            live: true,
+        },
+        later,
+    );
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(model.status().observation.activity, before_clear.activity);
+    assert_eq!(model.status().observation.outcome, before_clear.outcome);
+    assert_eq!(model.completion_armed(), completion);
+    assert_eq!(model.status().unread_since, None);
+    model.apply(
+        SessionEvent::CodexAttention {
+            blocked: true,
+            live: true,
+        },
+        later,
+    );
+    assert_ne!(model.status().observation.interactions[0].id, wait.id);
+    assert_eq!(original.activity, Activity::Working);
+}
+
+#[test]
+fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
+    for terminal in [
+        SessionEvent::Exited {
+            code: Some(0),
+            crashed: false,
+        },
+        SessionEvent::Detached { stopped: true },
+        SessionEvent::Attached,
+    ] {
+        let mut model = SessionModel::default();
+        let time = now();
+        model.apply(
+            SessionEvent::Transition {
+                state: SessionActivityState::Idle,
+                source: StatusSource::Forwarder,
+                live: true,
+            },
+            time,
+        );
+        model.apply(
+            SessionEvent::Input {
+                class: Some(LocalInputClass::SetPending),
+                submitted: false,
+            },
+            time,
+        );
+        model.apply(
+            SessionEvent::CodexAttention {
+                blocked: true,
+                live: false,
+            },
+            time,
+        );
+        assert!(
+            !model.status().observation.needs_you(),
+            "stale launch report"
+        );
+        model.apply(
+            SessionEvent::CodexAttention {
+                blocked: true,
+                live: true,
+            },
+            time,
+        );
+        let wait = model.status().observation.interactions.clone();
+        model.apply(SessionEvent::BridgeFailed { live: true }, time);
+        model.apply(
+            SessionEvent::Transition {
+                state: SessionActivityState::Idle,
+                source: StatusSource::Forwarder,
+                live: true,
+            },
+            time,
+        );
+        assert_eq!(model.status().observation.interactions, wait);
+        assert_eq!(model.activity(), Some(SessionActivityState::Busy));
+        model.apply(
+            SessionEvent::CodexAttention {
+                blocked: false,
+                live: false,
+            },
+            time,
+        );
+        assert!(model.status().observation.needs_you());
+        model.apply(
+            SessionEvent::CodexAttention {
+                blocked: false,
+                live: true,
+            },
+            time,
+        );
+        assert!(model.local_input_pending());
+        assert!(model
+            .draft_hold(time.monotonic + Duration::from_secs(60))
+            .is_some());
+        assert_eq!(model.status().observation.outcome, None);
+        assert!(!model.completion_armed());
+        assert_eq!(model.status().unread_since, None);
+        model.apply(
+            SessionEvent::CodexAttention {
+                blocked: true,
+                live: true,
+            },
+            time,
+        );
+        model.apply(terminal, time);
+        assert!(!model.status().observation.needs_you());
+    }
+}

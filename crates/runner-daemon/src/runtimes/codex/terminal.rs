@@ -6,6 +6,8 @@ pub(crate) struct CodexTerminal {
     startup: Option<CodexStartup>,
     title: CodexTitleHint,
     hook_owned: bool,
+    program_status: super::program_status::ProgramStatusParser,
+    attention: Option<bool>,
 }
 
 impl CodexTerminal {
@@ -21,18 +23,24 @@ impl CodexTerminal {
             }),
             title: Default::default(),
             hook_owned: false,
+            program_status: Default::default(),
+            attention: None,
         }
     }
 }
 
 impl TerminalAdapter for CodexTerminal {
     fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent> {
+        self.attention = self.program_status.observe(bytes);
         let title_activity = (!self.hook_owned)
             .then(|| self.title.observe(bytes))
             .flatten();
         if let Some(startup) = self.startup.as_mut() {
             startup.ready |= startup.readiness.observe(bytes)[0];
-            if !startup.submitted_input && (startup.pending_turn || startup.ready) {
+            if self.program_status.activity_bytes() > 0
+                && !startup.submitted_input
+                && (startup.pending_turn || startup.ready)
+            {
                 let state = if startup.pending_turn {
                     SessionActivityState::Busy
                 } else {
@@ -42,7 +50,15 @@ impl TerminalAdapter for CodexTerminal {
                 return Some(TerminalEvent::Ready(state));
             }
         }
-        title_activity.map(TerminalEvent::Title)
+        title_activity
+            .filter(|_| self.program_status.activity_bytes() > 0)
+            .map(TerminalEvent::Title)
+    }
+    fn output_activity_bytes(&self, _bytes: &[u8]) -> usize {
+        self.program_status.activity_bytes()
+    }
+    fn take_codex_attention(&mut self) -> Option<bool> {
+        self.attention.take()
     }
     fn on_input(&mut self, bytes: &[u8]) -> TerminalInput {
         let mut input = TerminalInput::default();

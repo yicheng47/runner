@@ -116,13 +116,28 @@ impl SessionManager {
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
+                if let Ok(RuntimeOutput::TerminalEvent(
+                    crate::runtimes::TerminalEvent::CodexAttention(blocked),
+                )) = &next
+                {
+                    manager_t.publish_model_event_for_launch(
+                        &session_id,
+                        SessionEvent::CodexAttention {
+                            blocked: *blocked,
+                            live: true,
+                        },
+                        Some(&stop),
+                        events.as_ref(),
+                    );
+                    continue;
+                }
                 let terminal = match &next {
                     Ok(RuntimeOutput::TerminalEvent(event)) => Some(*event),
                     _ => None,
                 };
                 let next = next.map(|output| match output {
                     RuntimeOutput::TerminalEvent(event) => RuntimeOutput::StatusTransition {
-                        state: event.state(),
+                        state: event.state().expect("attention handled above"),
                         source: crate::session::state::StatusSource::Forwarder,
                     },
                     other => other,

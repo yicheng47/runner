@@ -376,15 +376,22 @@ impl SessionEvents for CoreSessionEvents {
         self.events.emit("session/updated", ev);
     }
     fn status(&self, ev: &SessionActivityEvent) {
-        if ev.state == SessionActivityState::Idle
+        if ev.source != StatusSource::CodexAttention
             && ev.status.observation.outcome != Some(TurnOutcome::Interrupted)
             && ev.status.observation.outcome != Some(TurnOutcome::Failed)
         {
             if let Some(sessions) = self.sessions.upgrade() {
-                let completion_eligible = matches!(
-                    (ev.status.observation.activity, ev.status.observation.source),
-                    (Activity::Idle, ObservationSource::Baseline) | (Activity::Ready, _)
-                );
+                let native_hook_completion = ev.source == StatusSource::Hook
+                    && ev.status.observation.outcome == Some(TurnOutcome::Completed)
+                    && sessions
+                        .session_state(&ev.session_id)
+                        .is_some_and(|state| state.lock().unwrap().model.codex_attention_active());
+                let completion_eligible = (ev.state == SessionActivityState::Idle
+                    || native_hook_completion)
+                    && matches!(
+                        (ev.status.observation.activity, ev.status.observation.source),
+                        (Activity::Idle, ObservationSource::Baseline) | (Activity::Ready, _)
+                    );
                 if completion_eligible {
                     if let Err(error) = crate::ops::node::record_session_completion(
                         &self.db,
@@ -1458,6 +1465,9 @@ impl SessionManager {
         let mut session = session.lock().unwrap();
         let live = session.handle.is_some() && !session.killed;
         let event = match event {
+            TerminalEvent::CodexAttention(blocked) => {
+                SessionEvent::CodexAttention { blocked, live }
+            }
             TerminalEvent::Activity(state) => SessionEvent::Transition {
                 state,
                 source: StatusSource::Forwarder,
@@ -1486,12 +1496,24 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
+        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
+            self.publish_model_event_for_launch(
+                session_id,
+                SessionEvent::CodexAttention {
+                    blocked,
+                    live: true,
+                },
+                None,
+                events,
+            );
+            return;
+        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state(),
+            state: event.state().expect("attention handled above"),
             source: StatusSource::Forwarder,
             status: self.agent_status(session_id),
         });
@@ -1504,6 +1526,18 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
+        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
+            self.publish_model_event_for_launch(
+                session_id,
+                SessionEvent::CodexAttention {
+                    blocked,
+                    live: true,
+                },
+                None,
+                events,
+            );
+            return;
+        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
@@ -1517,14 +1551,16 @@ impl SessionManager {
         };
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state(),
+            state: event.state().expect("attention handled above"),
             source: StatusSource::Forwarder,
             status: status.clone(),
         });
         if let Some(sink) = sink {
-            if let Err(error) =
-                sink.append_session_status(event.state(), StatusSource::Forwarder, &status)
-            {
+            if let Err(error) = sink.append_session_status(
+                event.state().expect("attention handled above"),
+                StatusSource::Forwarder,
+                &status,
+            ) {
                 log::warn!("append spawn session_status failed for {session_id}: {error}");
             }
         }
@@ -1754,9 +1790,9 @@ impl SessionManager {
             }
             let is_live = session.handle.is_some() && !session.killed;
             match &mut event {
-                SessionEvent::Agent { live, .. } | SessionEvent::BridgeFailed { live } => {
-                    *live = is_live
-                }
+                SessionEvent::Agent { live, .. }
+                | SessionEvent::BridgeFailed { live }
+                | SessionEvent::CodexAttention { live, .. } => *live = is_live,
                 _ => {}
             }
             let turn_started = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));
