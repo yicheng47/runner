@@ -22,7 +22,8 @@ pub(crate) struct RemotePaneState {
     error: Option<String>,
     pub(crate) confirm: bool,
     reset_identity: bool,
-    disable_access: bool,
+    enable_local_only: bool,
+    local_only_error: Option<String>,
     pin: Option<PinDialog>,
     pub(crate) focus: gpui::FocusHandle,
     generation: u64,
@@ -44,7 +45,8 @@ impl RemotePaneState {
             error: None,
             confirm: false,
             reset_identity: false,
-            disable_access: false,
+            enable_local_only: false,
+            local_only_error: None,
             pin: None,
             focus: cx.focus_handle(),
             generation: 0,
@@ -121,6 +123,15 @@ impl NativeRoot {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
+        if !self
+            .app_store
+            .read(cx)
+            .remote_status
+            .as_ref()
+            .is_some_and(account::signed_in)
+        {
+            self.client_ui.picker_open = false;
+        }
         if self.app_store.read(cx).remote_access_enabled() {
             return;
         }
@@ -128,15 +139,21 @@ impl NativeRoot {
             || self.client_ui.pair.is_some()
             || self.account_menu.state.open
             || self.remote_overlay_open()
-            || self.settings_page.pane == SettingsPane::Account;
+            || matches!(
+                self.settings_page.pane,
+                SettingsPane::Account | SettingsPane::Remote
+            );
         self.client_ui.picker_open = false;
         if self.client_ui.pair.take().is_some() {
             self.client_ui.pair_generation += 1;
         }
         self.account_menu.state.close();
         self.dismiss_remote_dialog();
-        if self.settings_page.pane == SettingsPane::Account {
-            self.settings_page.pane = SettingsPane::Remote;
+        if matches!(
+            self.settings_page.pane,
+            SettingsPane::Account | SettingsPane::Remote
+        ) {
+            self.settings_page.pane = SettingsPane::General;
         }
         if self.remote_window.is_some() {
             self.return_to_this_computer(window, cx);
@@ -146,17 +163,17 @@ impl NativeRoot {
         }
     }
 
-    fn set_remote_access_enabled(&self, enabled: bool, cx: &mut Context<Self>) {
+    fn set_local_only(&self, enabled: bool, cx: &mut Context<Self>) {
         self.update_app_settings(cx, true, |settings| {
-            if settings.remote_access_enabled == enabled {
+            if settings.local_only == enabled {
                 return false;
             }
-            settings.remote_access_enabled = enabled;
+            settings.local_only = enabled;
             true
         });
     }
 
-    fn change_remote_access(
+    fn change_local_only(
         &mut self,
         enabled: bool,
         window: &mut gpui::Window,
@@ -165,28 +182,71 @@ impl NativeRoot {
         if self.settings_page.remote.busy {
             return;
         }
+        self.settings_page.remote.local_only_error = None;
         let status = self
             .app_store
             .read(cx)
             .remote_status
             .clone()
             .unwrap_or_default();
-        if !enabled && account::signed_in(&status) {
+        if enabled && account::signed_in(&status) {
             self.confirm_sign_out(cx);
-            self.settings_page.remote.disable_access = true;
+            self.settings_page.remote.enable_local_only = true;
             self.settings_page.remote.focus.focus(window, cx);
         } else {
-            self.set_remote_access_enabled(enabled, cx);
-            if !enabled
+            self.set_local_only(enabled, cx);
+            if enabled
                 && matches!(
                     status.state,
                     RemoteState::Enrolling { .. } | RemoteState::Confirming { .. }
                 )
             {
+                self.settings_page.remote.enable_local_only = true;
                 self.remote_request(false, |c| c.remote_enroll_cancel(), cx);
             }
         }
         cx.notify();
+    }
+
+    pub(crate) fn render_local_only_setting(&self, cx: &Context<Self>) -> AnyElement {
+        let root = cx.entity();
+        let toggle = Toggle::new(
+            "settings-local-only",
+            !self.app_store.read(cx).remote_access_enabled(),
+        )
+        .disabled(self.settings_page.remote.busy)
+        .on_change(move |enabled, window, cx| {
+            root.update(cx, |root, cx| root.change_local_only(enabled, window, cx));
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(settings_section_heading(crate::i18n::text(
+                "ui.remote_access",
+            )))
+            .child(SettingsCard::new(vec![SettingsRow::new(
+                crate::i18n::text("remote.local_only"),
+                div()
+                    .debug_selector(|| "SETTINGS_LOCAL_ONLY_TOGGLE".into())
+                    .child(toggle),
+            )
+            .subtitle(crate::i18n::text("remote.local_only_detail"))
+            .into_any_element()]))
+            .children(
+                self.settings_page
+                    .remote
+                    .local_only_error
+                    .as_ref()
+                    .map(|error| {
+                        div()
+                            .debug_selector(|| "SETTINGS_LOCAL_ONLY_ERROR".into())
+                            .text_size(theme::text_meta())
+                            .text_color(theme::danger())
+                            .child(error.clone())
+                    }),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn enter_remote_settings(&mut self, cx: &mut Context<Self>) {
@@ -230,6 +290,7 @@ impl NativeRoot {
         if self.settings_page.remote.busy {
             return;
         }
+        let enable_local_only = std::mem::take(&mut self.settings_page.remote.enable_local_only);
         self.settings_page.remote.busy = true;
         self.settings_page.remote.opening = open_browser;
         self.settings_page.remote.request_generation += 1;
@@ -246,6 +307,9 @@ impl NativeRoot {
                 root.settings_page.remote.busy = false;
                 match result {
                     Ok(status) => {
+                        if enable_local_only && !account::signed_in(&status) {
+                            root.set_local_only(true, cx);
+                        }
                         if open_browser {
                             if let RemoteState::Enrolling {
                                 verification_uri_complete,
@@ -256,7 +320,13 @@ impl NativeRoot {
                             }
                         }
                     }
-                    Err(error) => root.settings_page.remote.error = Some(error.message),
+                    Err(error) => {
+                        if enable_local_only {
+                            root.settings_page.remote.local_only_error =
+                                Some(error.message.clone());
+                        }
+                        root.settings_page.remote.error = Some(error.message);
+                    }
                 }
                 cx.notify();
             });
@@ -298,69 +368,11 @@ impl NativeRoot {
         let store = self.app_store.read(cx);
         let status = store.remote_status.clone().unwrap_or_default();
         let trust = store.remote_trust.clone().unwrap_or_default();
-        let enabled = store.remote_access_enabled();
-        let root = cx.entity();
-        let toggle = Toggle::new("remote-access-enabled", enabled)
-            .disabled(self.settings_page.remote.busy)
-            .on_change(move |enabled, window, cx| {
-                root.update(cx, |root, cx| {
-                    root.change_remote_access(enabled, window, cx)
-                });
-            });
         let mut body = div()
             .flex()
             .flex_col()
             .gap_5()
-            .child(PaneHeader::new(crate::i18n::text("ui.remote_access"), ""))
-            .child(
-                account::card()
-                    .debug_selector(|| "REMOTE_ACCESS_SWITCH_ROW".into())
-                    .p_5()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_5()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(crate::i18n::text("ui.remote_access"))
-                                            .child(account::badge("remote.private_beta", true)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(theme::text_meta())
-                                            .text_color(theme::muted())
-                                            .child(crate::i18n::text("remote.feature_detail")),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "REMOTE_ACCESS_SWITCH".into())
-                                    .child(toggle),
-                            ),
-                    ),
-            );
-        if !enabled {
-            return body
-                .child(
-                    div()
-                        .debug_selector(|| "REMOTE_ACCESS_OFF_DETAIL".into())
-                        .text_size(theme::text_body())
-                        .text_color(theme::muted())
-                        .child(crate::i18n::text("remote.feature_off_detail")),
-                )
-                .into_any_element();
-        }
+            .child(PaneHeader::new(crate::i18n::text("ui.remote_access"), ""));
         if account::signed_in(&status) {
             body = body
                 .child(self.relay_card(&status, &trust, cx))
@@ -659,7 +671,7 @@ impl NativeRoot {
         self.settings_page.remote.pin = None;
         self.settings_page.remote.confirm = false;
         self.settings_page.remote.reset_identity = false;
-        self.settings_page.remote.disable_access = false;
+        self.settings_page.remote.enable_local_only = false;
     }
     pub(crate) fn remote_overlay_open(&self) -> bool {
         self.settings_page.remote.confirm || self.settings_page.remote.pin.is_some()
@@ -1086,12 +1098,32 @@ impl NativeRoot {
             )
             .into_any_element()
     }
+    fn confirm_remote_action(&mut self, cx: &mut Context<Self>) {
+        if self.settings_page.remote.busy || !self.settings_page.remote.confirm {
+            return;
+        }
+        let reset = self.settings_page.remote.reset_identity;
+        self.settings_page.remote.confirm = false;
+        self.settings_page.remote.reset_identity = false;
+        self.remote_request(
+            false,
+            move |client| {
+                if reset {
+                    client.remote_reset_identity()?;
+                } else {
+                    client.remote_logout()?;
+                }
+                client.remote_status()
+            },
+            cx,
+        );
+    }
+
     pub(crate) fn remote_confirm_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.settings_page.remote.pin.is_some() {
             return self.remote_pin_overlay(cx);
         }
         let reset = self.settings_page.remote.reset_identity;
-        let disable_access = self.settings_page.remote.disable_access;
         let root = cx.entity();
         let cancel = root.clone();
         let status = self
@@ -1140,30 +1172,13 @@ impl NativeRoot {
             }),
             self.settings_page.remote.busy,
             Rc::new(move |_, cx| {
-                root.update(cx, |r, cx| {
-                    r.settings_page.remote.confirm = false;
-                    r.settings_page.remote.reset_identity = false;
-                    r.settings_page.remote.disable_access = false;
-                    r.set_remote_access_enabled(!disable_access, cx);
-                    r.remote_request(
-                        false,
-                        move |c| {
-                            if reset {
-                                c.remote_reset_identity()?;
-                            } else {
-                                c.remote_logout()?;
-                            }
-                            c.remote_status()
-                        },
-                        cx,
-                    );
-                })
+                root.update(cx, |root, cx| root.confirm_remote_action(cx));
             }),
             Rc::new(move |_, cx| {
                 cancel.update(cx, |r, cx| {
                     r.settings_page.remote.confirm = false;
                     r.settings_page.remote.reset_identity = false;
-                    r.settings_page.remote.disable_access = false;
+                    r.settings_page.remote.enable_local_only = false;
                     cx.notify();
                 })
             }),
@@ -1197,9 +1212,7 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                store.update(&mut cx, |store, _| {
-                    store.settings.remote_access_enabled = true
-                });
+                store.update(&mut cx, |store, _| store.settings.local_only = false);
                 let window = cx.add_window(|window, cx| {
                     let mut root = NativeRoot::new(
                         "remote-snapshots".into(),
@@ -1465,12 +1478,12 @@ mod tests {
             root.route = crate::AppRoute::Chat;
             root
         });
-        cx.simulate_window_resize(window.into(), size(px(1200.), px(900.)));
+        cx.simulate_window_resize(window.into(), size(px(1440.), px(1100.)));
         window
     }
 
     #[test]
-    fn remote_switch_defaults_off_and_persists_without_sign_in_across_windows() {
+    fn local_only_defaults_off_and_persists_without_enrollment_across_windows() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for locale in [Locale::English, Locale::SimplifiedChinese] {
             with_locale(locale, || {
@@ -1478,241 +1491,196 @@ mod tests {
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
                 let requests = std::sync::Arc::new(RemoteRequests::default());
-                let window = switch_window(&mut cx, &store, temp.path(), "switch");
-                let peer = switch_window(&mut cx, &store, temp.path(), "switch-peer");
+                let window = switch_window(&mut cx, &store, temp.path(), "local-only");
+                let peer = switch_window(&mut cx, &store, temp.path(), "local-only-peer");
                 store.update(&mut cx, |store, _| {
                     store.client = DaemonClient::new(requests.clone())
                 });
-
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.enter_settings_pane(SettingsPane::General, window, cx)
+                    })
+                    .unwrap();
+                cx.simulate_window_resize(window.into(), size(px(1440.), px(1100.)));
                 cx.run_until_parked();
                 let mut visual = VisualTestContext::from_window(window.into(), &cx);
                 let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
-                assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
-                assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_none());
-                let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
-                visual.simulate_click(gear.center(), Default::default());
-                cx.run_until_parked();
-                assert!(visual.debug_bounds("ACCOUNT_MENU").is_none());
-                assert!(visual.debug_bounds("SETTINGS_NAV_account").is_none());
+                visual.update(|window, _| window.activate_window());
+                assert!(!store.read_with(&visual, |store, _| store.settings.local_only));
+                assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+                assert!(peer_visual
+                    .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                    .is_none());
+                assert!(visual.debug_bounds("SETTINGS_NAV_account").is_some());
                 assert!(visual.debug_bounds("SETTINGS_NAV_remote").is_some());
-                window
-                    .update(&mut cx, |root, window, cx| {
-                        root.enter_settings_pane(SettingsPane::Account, window, cx);
-                        assert_eq!(root.settings_page.pane, SettingsPane::Remote);
-                    })
-                    .unwrap();
-                cx.run_until_parked();
-                assert!(visual.debug_bounds("REMOTE_ACCESS_SWITCH_ROW").is_some());
-                assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_some());
-                assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_none());
                 for enabled in [true, false] {
-                    let toggle = visual.debug_bounds("REMOTE_ACCESS_SWITCH").unwrap();
+                    visual.update(|window, _| window.activate_window());
+                    visual.run_until_parked();
+                    let toggle = visual.debug_bounds("SETTINGS_LOCAL_ONLY_TOGGLE").unwrap();
+                    assert!(
+                        toggle.right() <= px(1440.) && toggle.bottom() <= px(1100.),
+                        "toggle outside viewport: {toggle:?}"
+                    );
+                    window
+                        .read_with(&visual, |root, _| assert!(!root.settings_page.remote.busy))
+                        .unwrap();
                     visual.simulate_click(toggle.center(), Default::default());
-                    cx.run_until_parked();
+                    visual.run_until_parked();
                     assert_eq!(
-                        store.read_with(&cx, |store, _| store.settings.remote_access_enabled),
+                        store.read_with(&visual, |store, _| store.settings.local_only),
                         enabled
                     );
                     assert_eq!(
                         crate::app_settings::AppSettings::load(&temp.path().join("settings.json"))
                             .unwrap()
-                            .remote_access_enabled,
+                            .local_only,
                         enabled
                     );
                     assert_eq!(
-                        visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none(),
+                        visual.debug_bounds("SETTINGS_NAV_account").is_none(),
                         enabled
                     );
                     assert_eq!(
-                        visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some(),
+                        visual.debug_bounds("SETTINGS_NAV_remote").is_none(),
                         enabled
                     );
                     assert_eq!(
-                        visual.debug_bounds("SETTINGS_NAV_account").is_some(),
+                        peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some(),
                         enabled
                     );
                     assert_eq!(
-                        peer_visual
-                            .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                            .is_some(),
+                        peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_none(),
                         enabled
                     );
-                    assert_eq!(
-                        peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some(),
-                        enabled
-                    );
-                    assert_eq!(
-                        peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_none(),
-                        enabled
-                    );
-                    assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+                    assert!(peer_visual
+                        .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                        .is_none());
                     assert!(requests.calls.lock().unwrap().is_empty());
+                    for pane in [SettingsPane::Account, SettingsPane::Remote] {
+                        window
+                            .update(&mut visual, |root, window, cx| {
+                                root.enter_settings_pane(pane, window, cx);
+                                assert_eq!(
+                                    root.settings_page.pane,
+                                    if enabled { SettingsPane::General } else { pane }
+                                );
+                            })
+                            .unwrap();
+                        visual.run_until_parked();
+                        assert!(visual.debug_bounds("REMOTE_ACCESS_SWITCH").is_none());
+                        assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
+                    }
+                    window
+                        .update(&mut visual, |root, window, cx| {
+                            root.enter_settings_pane(SettingsPane::General, window, cx)
+                        })
+                        .unwrap();
+                    visual.run_until_parked();
                 }
             });
         }
     }
 
     #[test]
-    fn remote_switch_signed_in_requires_confirmation_and_failed_logout_stays_visible() {
+    fn local_only_waits_for_successful_sign_out_and_keeps_failure_off() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for fail in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let mut cx = TestAppContext::single();
-            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-            cx.run_until_parked();
-            let requests = std::sync::Arc::new(RemoteRequests::default());
-            *requests.status.lock().unwrap() = RemoteStatus {
-                state: RemoteState::Paused,
-                ..Default::default()
-            };
-            requests
-                .fail_logout
-                .store(fail, std::sync::atomic::Ordering::SeqCst);
-            let now = chrono::Utc::now();
-            let trust = RemoteTrust {
-                fingerprint: Some("fixture-identity".into()),
-                pin_set: true,
-                devices: vec![runner_core::remote::PairedDevice {
-                    fingerprint: "fixture-pair".into(),
-                    name: "Laptop".into(),
-                    public_key: "fixture-public-key".into(),
-                    paired_at: now,
-                    last_seen_at: now,
-                    connected: false,
-                }],
-                ..Default::default()
-            };
-            store.update(&mut cx, |store, _| {
-                store.remote_status = Some(requests.status.lock().unwrap().clone());
-                store.remote_trust = Some(trust.clone());
-                store.settings.remote_access_enabled = fail;
-            });
-            let window = switch_window(&mut cx, &store, temp.path(), "signed-in-switch");
-            let peer = switch_window(&mut cx, &store, temp.path(), "signed-in-peer");
-            store.update(&mut cx, |store, _| {
-                store.client = DaemonClient::new(requests.clone())
-            });
-            window
-                .update(&mut cx, |root, window, cx| {
-                    root.enter_settings_pane(SettingsPane::Remote, window, cx)
-                })
-                .unwrap();
-            cx.run_until_parked();
-            let mut visual = VisualTestContext::from_window(window.into(), &cx);
-            let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
-            assert!(peer_visual
-                .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                .is_some());
-            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
-            let toggle = visual.debug_bounds("REMOTE_ACCESS_SWITCH").unwrap();
-            visual.simulate_click(toggle.center(), Default::default());
-            cx.run_until_parked();
-            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
-            assert!(requests.calls.lock().unwrap().is_empty());
-            cx.simulate_keystrokes(window.into(), "escape");
-            cx.run_until_parked();
-            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
-            assert!(requests.calls.lock().unwrap().is_empty());
-            assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
-            visual.simulate_click(toggle.center(), Default::default());
-            cx.run_until_parked();
-            cx.simulate_keystrokes(window.into(), "enter");
-            cx.run_until_parked();
-            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
-            if fail {
-                assert!(store.read_with(&cx, |store, _| store.remote_access_enabled()));
-                assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
-                assert!(peer_visual
-                    .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                    .is_some());
-                window
-                    .read_with(&cx, |root, _| {
-                        assert_eq!(
-                            root.settings_page.remote.error.as_deref(),
-                            Some("test sign-out failed")
-                        )
-                    })
-                    .unwrap();
+            for status_before_result in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                cx.run_until_parked();
+                let requests = std::sync::Arc::new(RemoteRequests::default());
+                *requests.status.lock().unwrap() = RemoteStatus {
+                    state: RemoteState::Paused,
+                    ..Default::default()
+                };
                 requests
                     .fail_logout
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-                visual.simulate_click(toggle.center(), Default::default());
+                    .store(fail, std::sync::atomic::Ordering::SeqCst);
+                let trust = RemoteTrust {
+                    fingerprint: Some("fixture-identity".into()),
+                    pin_set: true,
+                    ..Default::default()
+                };
+                store.update(&mut cx, |store, _| {
+                    store.settings.local_only = false;
+                    store.remote_status = Some(requests.status.lock().unwrap().clone());
+                    store.remote_trust = Some(trust.clone());
+                });
+                let window = switch_window(&mut cx, &store, temp.path(), "local-only-signout");
+                let peer = switch_window(&mut cx, &store, temp.path(), "local-only-signout-peer");
+                store.update(&mut cx, |store, _| {
+                    store.client = DaemonClient::new(requests.clone())
+                });
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.enter_settings_pane(SettingsPane::General, window, cx)
+                    })
+                    .unwrap();
                 cx.run_until_parked();
-                cx.simulate_keystrokes(window.into(), "enter");
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.change_local_only(true, window, cx)
+                    })
+                    .unwrap();
                 cx.run_until_parked();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
+                visual.update(|window, _| window.activate_window());
+                assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+                assert!(!store.read_with(&visual, |store, _| store.settings.local_only));
+                visual.simulate_keystrokes("escape");
+                visual.run_until_parked();
+                assert!(requests.calls.lock().unwrap().is_empty());
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        root.change_local_only(true, window, cx)
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                window
+                    .update(&mut visual, |root, _, cx| {
+                        root.confirm_remote_action(cx);
+                        assert!(!root.app_store.read(cx).settings.local_only);
+                        assert!(root.settings_page.remote.busy);
+                        if status_before_result {
+                            root.app_store.update(cx, |store, cx| {
+                                store.remote_status = Some(RemoteStatus::default());
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
+                assert_eq!(
+                    store.read_with(&visual, |store, _| store.settings.local_only),
+                    !fail
+                );
+                if fail {
+                    assert!(visual.debug_bounds("SETTINGS_LOCAL_ONLY_ERROR").is_some());
+                    assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+                } else {
+                    store.update(&mut visual, |store, cx| {
+                        store.remote_status = Some(RemoteStatus::default());
+                        store.revisions.shell_settings += 1;
+                        cx.notify();
+                    });
+                    visual.run_until_parked();
+                    assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_none());
+                    assert!(peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+                }
+                assert_eq!(
+                    store.read_with(&visual, |store, _| store.remote_trust.clone()),
+                    Some(trust)
+                );
             }
-            store.update(&mut cx, |store, cx| {
-                store.remote_status = Some(requests.status.lock().unwrap().clone());
-                store.revisions.shell_settings += 1;
-                cx.notify();
-            });
-            cx.run_until_parked();
-            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_some());
-            assert!(visual.debug_bounds("SETTINGS_NAV_account").is_none());
-            assert!(peer_visual
-                .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                .is_none());
-            assert!(peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
-            assert_eq!(
-                store.read_with(&cx, |store, _| store.remote_trust.clone()),
-                Some(trust)
-            );
-            assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
-
-            *requests.status.lock().unwrap() = RemoteStatus {
-                state: RemoteState::Paused,
-                ..Default::default()
-            };
-            requests.calls.lock().unwrap().clear();
-            store.update(&mut cx, |store, cx| {
-                store.remote_status = Some(requests.status.lock().unwrap().clone());
-                store.revisions.shell_settings += 1;
-                cx.notify();
-            });
-            window
-                .update(&mut cx, |root, window, cx| {
-                    root.enter_settings_pane(SettingsPane::Account, window, cx);
-                    root.confirm_sign_out(cx);
-                    root.settings_page.remote.focus.focus(window, cx);
-                })
-                .unwrap();
-            cx.run_until_parked();
-            assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
-            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
-            cx.simulate_keystrokes(window.into(), "enter");
-            cx.run_until_parked();
-            store.update(&mut cx, |store, cx| {
-                store.remote_status = Some(requests.status.lock().unwrap().clone());
-                store.revisions.shell_settings += 1;
-                cx.notify();
-            });
-            cx.run_until_parked();
-            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
-            assert!(store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
-            assert!(
-                crate::app_settings::AppSettings::load(&temp.path().join("settings.json"))
-                    .unwrap()
-                    .remote_access_enabled
-            );
-            assert!(visual.debug_bounds("ACCOUNT_SIGN_IN").is_some());
-            assert!(visual.debug_bounds("SETTINGS_NAV_account").is_some());
-            assert!(peer_visual
-                .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                .is_some());
-            assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
-            window
-                .update(&mut cx, |root, window, cx| {
-                    root.enter_settings_pane(SettingsPane::Remote, window, cx)
-                })
-                .unwrap();
-            cx.run_until_parked();
-            assert!(visual.debug_bounds("REMOTE_ACCESS_SWITCH").is_some());
-            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
         }
     }
 
     #[test]
-    fn remote_switch_cancels_pending_enrollment_when_turned_off() {
+    fn local_only_cancels_pending_enrollment() {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
@@ -1728,78 +1696,123 @@ mod tests {
             ..Default::default()
         };
         store.update(&mut cx, |store, _| {
-            store.settings.remote_access_enabled = true;
             store.remote_status = Some(requests.status.lock().unwrap().clone());
         });
-        let window = switch_window(&mut cx, &store, temp.path(), "cancel-enrollment-switch");
+        let window = switch_window(&mut cx, &store, temp.path(), "local-only-cancel");
         store.update(&mut cx, |store, _| {
             store.client = DaemonClient::new(requests.clone())
         });
         window
             .update(&mut cx, |root, window, cx| {
-                root.change_remote_access(false, window, cx)
+                root.change_local_only(true, window, cx)
             })
             .unwrap();
         cx.run_until_parked();
         assert_eq!(*requests.calls.lock().unwrap(), ["cancel"]);
-        assert!(!store.read_with(&cx, |store, _| store.remote_access_enabled()));
+        assert!(store.read_with(&cx, |store, _| store.settings.local_only));
     }
 
     #[test]
-    fn reset_keeps_remote_access_on_for_legacy_or_cli_signed_in_settings() {
+    fn sign_out_and_reset_preserve_local_only_including_signed_in_override() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-        cx.run_until_parked();
-        let requests = std::sync::Arc::new(RemoteRequests::default());
-        *requests.status.lock().unwrap() = RemoteStatus {
-            state: RemoteState::Paused,
-            ..Default::default()
-        };
-        store.update(&mut cx, |store, _| {
-            store.remote_status = Some(requests.status.lock().unwrap().clone())
-        });
-        let window = switch_window(&mut cx, &store, temp.path(), "legacy-reset");
-        store.update(&mut cx, |store, _| {
-            store.client = DaemonClient::new(requests.clone())
-        });
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.enter_settings_pane(SettingsPane::Remote, window, cx);
-            })
-            .unwrap();
-        cx.run_until_parked();
-        assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
-        assert!(store.read_with(&cx, |store, _| store.remote_access_enabled()));
-        window
-            .update(&mut cx, |root, window, cx| {
-                root.settings_page.remote.confirm = true;
-                root.settings_page.remote.reset_identity = true;
-                root.settings_page.remote.focus.focus(window, cx);
-                cx.notify();
-            })
-            .unwrap();
-        cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "enter");
-        cx.run_until_parked();
-        store.update(&mut cx, |store, cx| {
-            store.remote_status = Some(requests.status.lock().unwrap().clone());
-            cx.notify();
-        });
-        cx.run_until_parked();
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        assert_eq!(*requests.calls.lock().unwrap(), ["reset"]);
-        assert!(store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
-        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some());
-        assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
-        assert!(visual.debug_bounds("SETTINGS_NAV_account").is_some());
+        for local_only in [false, true] {
+            for reset in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                cx.run_until_parked();
+                let requests = std::sync::Arc::new(RemoteRequests::default());
+                *requests.status.lock().unwrap() = RemoteStatus {
+                    state: RemoteState::Paused,
+                    ..Default::default()
+                };
+                store.update(&mut cx, |store, _| {
+                    store.settings.local_only = local_only;
+                    store.remote_status = Some(requests.status.lock().unwrap().clone());
+                });
+                let window = switch_window(&mut cx, &store, temp.path(), "local-only-preserved");
+                let peer = switch_window(&mut cx, &store, temp.path(), "local-only-preserved-peer");
+                store.update(&mut cx, |store, _| {
+                    store.client = DaemonClient::new(requests.clone())
+                });
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.enter_settings_pane(
+                            if reset {
+                                SettingsPane::Remote
+                            } else {
+                                SettingsPane::Account
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
+                visual.update(|window, _| window.activate_window());
+                assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+                assert!(peer_visual
+                    .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                    .is_some());
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        root.confirm_sign_out(cx);
+                        root.settings_page.remote.reset_identity = reset;
+                        root.settings_page.remote.focus.focus(window, cx);
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                visual.simulate_keystrokes("enter");
+                visual.run_until_parked();
+                store.update(&mut visual, |store, cx| {
+                    store.remote_status = Some(requests.status.lock().unwrap().clone());
+                    store.revisions.shell_settings += 1;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert_eq!(
+                    *requests.calls.lock().unwrap(),
+                    [if reset { "reset" } else { "sign out" }]
+                );
+                assert_eq!(
+                    store.read_with(&visual, |store, _| store.settings.local_only),
+                    local_only
+                );
+                assert!(peer_visual
+                    .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                    .is_none());
+                assert_eq!(
+                    peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some(),
+                    local_only
+                );
+                assert_eq!(
+                    peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_none(),
+                    local_only
+                );
+                window
+                    .read_with(&visual, |root, _| {
+                        assert_eq!(
+                            root.settings_page.pane,
+                            if local_only {
+                                SettingsPane::General
+                            } else if reset {
+                                SettingsPane::Remote
+                            } else {
+                                SettingsPane::Account
+                            }
+                        )
+                    })
+                    .unwrap();
+            }
+        }
     }
 
     #[test]
-    fn turning_remote_access_off_dismisses_other_windows_pin_and_reset_dialogs() {
+    fn local_only_dismisses_other_windows_pin_and_reset_dialogs() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
-        for dialog in ["set pin", "change pin", "reset"] {
+        for reset in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let mut cx = TestAppContext::single();
             let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
@@ -1810,51 +1823,35 @@ mod tests {
                 ..Default::default()
             };
             store.update(&mut cx, |store, _| {
-                store.settings.remote_access_enabled = true;
-                store.remote_status = Some(requests.status.lock().unwrap().clone());
-                store.remote_trust = Some(RemoteTrust {
-                    pin_set: dialog == "change pin",
-                    ..Default::default()
-                });
+                store.remote_status = Some(requests.status.lock().unwrap().clone())
             });
-            let first = switch_window(&mut cx, &store, temp.path(), "disable-access");
-            let second = switch_window(&mut cx, &store, temp.path(), "stale-dialog");
+            let first = switch_window(&mut cx, &store, temp.path(), "local-only-first");
+            let second = switch_window(&mut cx, &store, temp.path(), "local-only-second");
             store.update(&mut cx, |store, _| {
                 store.client = DaemonClient::new(requests.clone())
             });
-            for window in [first, second] {
-                window
-                    .update(&mut cx, |root, window, cx| {
-                        root.enter_settings_pane(SettingsPane::Remote, window, cx)
-                    })
-                    .unwrap();
-            }
+            second
+                .update(&mut cx, |root, window, cx| {
+                    root.enter_settings_pane(SettingsPane::Remote, window, cx)
+                })
+                .unwrap();
             cx.run_until_parked();
             second
                 .update(&mut cx, |root, window, cx| {
-                    if dialog == "reset" {
+                    if reset {
                         root.settings_page.remote.confirm = true;
                         root.settings_page.remote.reset_identity = true;
                         root.settings_page.remote.focus.focus(window, cx);
                     } else {
                         root.remote_open_pin(cx);
-                        root.settings_page.remote.pin.as_ref().unwrap().fields[0]
-                            .read(cx)
-                            .focus
-                            .clone()
-                            .focus(window, cx);
                     }
                     cx.notify();
                 })
                 .unwrap();
             cx.run_until_parked();
-            if dialog != "reset" {
-                cx.simulate_keystrokes(second.into(), "0 2 8 4 7 9 enter 0 2 8 4 7 9");
-                cx.run_until_parked();
-            }
-            let mut visual = VisualTestContext::from_window(second.into(), &cx);
-            assert!(visual
-                .debug_bounds(if dialog == "reset" {
+            let mut peer = VisualTestContext::from_window(second.into(), &cx);
+            assert!(peer
+                .debug_bounds(if reset {
                     "CONFIRM_DIALOG_PANEL"
                 } else {
                     "REMOTE_PIN_DIALOG"
@@ -1862,26 +1859,27 @@ mod tests {
                 .is_some());
             first
                 .update(&mut cx, |root, window, cx| {
-                    root.change_remote_access(false, window, cx)
+                    root.enter_settings_pane(SettingsPane::General, window, cx);
+                    root.change_local_only(true, window, cx)
                 })
                 .unwrap();
             cx.run_until_parked();
-            cx.simulate_keystrokes(first.into(), "enter");
+            first
+                .update(&mut cx, |root, _, cx| root.confirm_remote_action(cx))
+                .unwrap();
             cx.run_until_parked();
-            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
             store.update(&mut cx, |store, cx| {
                 store.remote_status = Some(requests.status.lock().unwrap().clone());
                 store.revisions.shell_settings += 1;
                 cx.notify();
             });
             cx.run_until_parked();
-            assert!(visual.debug_bounds("REMOTE_PIN_DIALOG").is_none());
-            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+            assert!(peer.debug_bounds("REMOTE_PIN_DIALOG").is_none());
+            assert!(peer.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
             second
-                .update(&mut cx, |root, window, _| {
+                .read_with(&cx, |root, _| {
                     assert!(!root.remote_overlay_open());
-                    assert!(!root.settings_page.remote.reset_identity);
-                    assert!(root.root_focus.is_focused(window));
+                    assert_eq!(root.settings_page.pane, SettingsPane::General);
                 })
                 .unwrap();
             cx.simulate_keystrokes(second.into(), "enter");
@@ -1896,9 +1894,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-        store.update(&mut cx, |store, _| {
-            store.settings.remote_access_enabled = true
-        });
+        store.update(&mut cx, |store, _| store.settings.local_only = false);
         let window = cx.add_window(|window, cx| {
             NativeRoot::new(
                 "account-actions".into(),
@@ -2058,9 +2054,7 @@ mod tests {
                     let temp = tempfile::tempdir().unwrap();
                     let mut cx = TestAppContext::single();
                     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                    store.update(&mut cx, |store, _| {
-                        store.settings.remote_access_enabled = true
-                    });
+                    store.update(&mut cx, |store, _| store.settings.local_only = false);
                     let window = cx.add_window(|window, cx| {
                         let mut root = NativeRoot::new(
                             "weak-pin-warning".into(),
@@ -2168,9 +2162,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let mut cx = TestAppContext::single();
             let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-            store.update(&mut cx, |store, _| {
-                store.settings.remote_access_enabled = true
-            });
+            store.update(&mut cx, |store, _| store.settings.local_only = false);
             let window = cx.add_window(|window, cx| {
                 let mut root = NativeRoot::new(
                     "pin-steps".into(),
@@ -2339,9 +2331,7 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                store.update(&mut cx, |store, _| {
-                    store.settings.remote_access_enabled = true
-                });
+                store.update(&mut cx, |store, _| store.settings.local_only = false);
                 let window = cx.add_window(|window, cx| {
                     let mut root = NativeRoot::new(
                         "trust-snapshots".into(),

@@ -493,7 +493,7 @@ pub(crate) fn fixture(
     });
     let clients = cx.new(|cx| model::ClientState::new(fake.client(), cx));
     store.update(cx, |store, _| {
-        store.settings.remote_access_enabled = true;
+        store.settings.local_only = false;
         store.client = fake.client();
         store.remote_clients = clients.clone();
     });
@@ -1392,7 +1392,7 @@ fn disabling_remote_access_returns_every_window_to_this_computer() {
         store.remote_status = Some(RemoteStatus::default());
         store.update_settings(
             |settings| {
-                settings.remote_access_enabled = false;
+                settings.local_only = true;
                 true
             },
             false,
@@ -1739,10 +1739,7 @@ fn signed_in_picker_shows_attention_dots_and_never_counts() {
 }
 
 #[test]
-fn signed_out_picker_omits_attention_and_opens_account_without_listing_or_enrolling() {
-    use runner_core::protocol::status::{
-        AgentObservation, AgentStatus, HumanInteraction, WaitReason,
-    };
+fn signed_out_has_no_picker_even_with_cached_directory_and_opens_account_from_avatar() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
@@ -1753,102 +1750,45 @@ fn signed_out_picker_omits_attention_and_opens_account_without_listing_or_enroll
                     reason: StopReason::Removed,
                 }),
             ] {
-                for activation in ["click", "enter", "space"] {
-                    let temp = tempfile::tempdir().unwrap();
-                    let mut cx = TestAppContext::single();
-                    let (store, fake, clients) = fixture(&mut cx, temp.path());
-                    let status = RemoteStatus {
-                        state: remote_state.clone().unwrap_or_default(),
-                        host_id: Some("old-host".into()),
-                        host_name: Some("Old computer name".into()),
-                        account: Some(RemoteAccount {
-                            username: "old-account".into(),
-                            display_name: "Old account".into(),
-                        }),
-                        ..Default::default()
-                    };
-                    *fake.status.lock().unwrap() = status.clone();
-                    fake.fail_directory.store(true, Ordering::SeqCst);
-                    store.update(&mut cx, |store, _| {
-                        store.remote_status = remote_state.as_ref().map(|_| status.clone());
-                    });
-                    let calls = fake.directory_calls.load(Ordering::SeqCst);
-                    let window = add_window(&mut cx, &store, temp.path(), "signed-out-picker");
-                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
-                    visual.run_until_parked();
-                    store.update(&mut visual, |store, cx| {
-                        store.session_statuses.insert(
-                            "local-attention".into(),
-                            AgentStatus {
-                                observation: AgentObservation {
-                                    interactions: vec![HumanInteraction {
-                                        id: "local-approval".into(),
-                                        reason: WaitReason::Approval,
-                                        owners: Vec::new(),
-                                        since: 1,
-                                    }],
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            },
-                        );
-                        cx.notify();
-                    });
-                    visual.run_until_parked();
-                    window
-                        .update(&mut visual, |root, _, cx| {
-                            root.route = AppRoute::Chat;
-                            cx.notify();
-                        })
-                        .unwrap();
-                    visual.run_until_parked();
-                    let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
-                    visual.simulate_click(trigger.center(), Default::default());
-                    visual.run_until_parked();
-                    clients.update(&mut visual, |clients, cx| {
-                        clients.directory_error = true;
-                        clients.action_failed = true;
-                        cx.notify();
-                    });
-                    visual.run_until_parked();
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_some());
-                    let name = visual.debug_bounds("COMPUTER_PICKER_NAME").unwrap();
-                    assert!(name.size.width > px(0.) && name.size.height > px(0.));
-                    assert!(visual
-                        .debug_bounds("COMPUTER_PICKER_TRIGGER_BADGE")
-                        .is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_DETAIL").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ERROR").is_none());
-                    assert!(visual
-                        .debug_bounds("COMPUTER_PICKER_ACTION_ERROR")
-                        .is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_HINT").is_none());
-                    let sign_in = visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").unwrap();
-                    if activation == "click" {
-                        visual.simulate_click(sign_in.center(), Default::default());
-                    } else {
-                        visual.simulate_keystrokes(&format!("tab tab {activation}"));
-                    }
-                    visual.run_until_parked();
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
-                    assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
-                    window
-                        .read_with(&visual, |root, _| {
-                            assert!(
-                                root.settings_page.pane
-                                    == crate::surfaces::settings_page::SettingsPane::Account
-                            );
-                        })
-                        .unwrap();
-                    assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                    fake.emit("daemon/reconnected", serde_json::json!({}));
-                    visual.run_until_parked();
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                }
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                let (store, fake, clients) = fixture(&mut cx, temp.path());
+                let status = RemoteStatus {
+                    state: remote_state.clone().unwrap_or_default(),
+                    host_id: Some("old-host".into()),
+                    account: Some(RemoteAccount {
+                        username: "old-account".into(),
+                        display_name: "Old account".into(),
+                    }),
+                    ..Default::default()
+                };
+                *fake.status.lock().unwrap() = status.clone();
+                store.update(&mut cx, |store, _| {
+                    store.remote_status = remote_state.as_ref().map(|_| status.clone())
+                });
+                let calls = fake.directory_calls.load(Ordering::SeqCst);
+                let window = add_window(&mut cx, &store, temp.path(), "signed-out-no-picker");
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                visual.run_until_parked();
+                clients.update(&mut visual, |clients, cx| {
+                    clients.directory_error = true;
+                    clients.action_failed = true;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").is_none());
+                assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                let avatar = visual.debug_bounds("SIDEBAR_ACCOUNT").unwrap();
+                visual.simulate_click(avatar.center(), Default::default());
+                visual.run_until_parked();
+                let sign_in = visual.debug_bounds("ACCOUNT_MENU_ITEM_1").unwrap();
+                visual.simulate_click(sign_in.center(), Default::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
+                assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
             }
         });
     }
@@ -1925,6 +1865,11 @@ fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal(
             })
             .unwrap();
         visual.run_until_parked();
+        if !signed {
+            assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+            continue;
+        }
         let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
         visual.simulate_click(trigger.center(), Default::default());
         visual.run_until_parked();

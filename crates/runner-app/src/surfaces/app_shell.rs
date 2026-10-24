@@ -1464,9 +1464,16 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .when(self.app_store.read(cx).remote_access_enabled(), |sidebar| {
-                sidebar.child(self.render_computer_trigger(cx))
-            })
+            .when(
+                self.app_store.read(cx).remote_access_enabled()
+                    && self
+                        .app_store
+                        .read(cx)
+                        .remote_status
+                        .as_ref()
+                        .is_some_and(crate::surfaces::settings::remote::account::signed_in),
+                |sidebar| sidebar.child(self.render_computer_trigger(cx)),
+            )
             .child(self.front_page_sidebar())
             .child(footer)
             .children(self.render_account_menu(window, cx))
@@ -3023,9 +3030,7 @@ mod tests {
                     let temp = tempfile::tempdir().unwrap();
                     let mut cx = TestAppContext::single();
                     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                    store.update(&mut cx, |store, _| {
-                        store.settings.remote_access_enabled = true
-                    });
+                    store.update(&mut cx, |store, _| store.settings.local_only = false);
                     store.update(&mut cx, |store, _| {
                         store.settings.app_theme = if variant.is_light() {
                             theme::ThemeIntent::Light
@@ -3116,9 +3121,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-        store.update(&mut cx, |store, _| {
-            store.settings.remote_access_enabled = true
-        });
+        store.update(&mut cx, |store, _| store.settings.local_only = false);
         let host = cx.add_window(|window, cx| {
             let mut root = NativeRoot::new(
                 "sidebar-footer-actions".into(),
