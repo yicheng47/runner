@@ -626,15 +626,5 @@ pub(super) fn default_session_label_parts(
     handle: Option<&str>,
     display_name: &str,
 ) -> String {
-    if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
-        return std::path::Path::new(command)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("shell")
-            .to_owned();
-    }
-    handle
-        .map(|handle| format!("@{handle}"))
-        .unwrap_or_else(|| display_name.to_owned())
+    runner_core::protocol::session_title::default_label(runtime, command, handle, display_name)
 }

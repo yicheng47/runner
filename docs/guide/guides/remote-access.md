@@ -74,6 +74,8 @@ A remote window shows only that computer’s projects, tabs, missions and termin
 
 Stopped chats show the paused card with Resume and Archive; exited shells show Restart and Close. Opening a stopped session leaves it stopped.
 
+Role-backed chats keep their `@handle` until you rename the session or tab. Runtime-only chats can use the agent’s conversation title. Update the host for matching labels; older hosts keep their existing labels.
+
 Use the same chat header, splits, pane controls, terminal drawer and sidebar menus to start, stop, resume, fork, rename or archive chats; organize tabs and projects with pin, move and reorder. Persisted changes appear when the host confirms them, and its desktop sees the same changes. A host that lacks an action hides its controls; its existing terminals remain available.
 
 In New chat and Start mission, **Working directory → Browse** opens the other computer’s folders. Choose a project or recent folder, or **Browse folders** to visit its home, enter subfolders and go to Parent. **Use folder** fills the field. Escape or clicking outside keeps the previous value. You can type a host path, including a Windows drive or network path; an invalid path keeps its text and shows an error below the field. A blank field uses the host’s default. **New project** uses the same folder menu. A failed listing offers **Retry**. Start mission offers the host’s existing crews with roles; creating or editing a crew stays on the host. Enter a title and optional goal, then choose Start mission. A failed start keeps your fields for another attempt. The mission opens once the host’s overview includes it.

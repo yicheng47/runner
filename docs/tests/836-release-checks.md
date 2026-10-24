@@ -38,6 +38,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 - [ ] An accent dot, with no count, lights on the host's row and the trigger when a host session waits for approval or input or a host mission has a question, and clears once answered. Unread output alone does not light it; offline, unpaired and locked computers have none. ([m9](836-m9-front-page.md#jasons-pending-live-checks))
 - [ ] Open the host in the same window, with Shift-click and with the window button. Returning to this computer keeps its tabs, panes and mission selection, its terminals take input and its feed has caught up; after a restart every window opens on this computer. ([m7c 2](836-m7c-client-app.md#live-checks-pending-for-jason))
 - [ ] The remote sidebar has PINNED, PROJECTS and RECENTS, project indentation and collapse, provider, split and mission icons, no blank titles, and follows the host's order and title changes; the local sidebar's state is unchanged on return. ([live fixes 3](836-remote-live-fixes.md#problem-3-blank-remote-sidebar-tab-labels))
+- [ ] With the host on this build, two pi role chats show their `@handles` and a renamed chat keeps its name in pinned, project, recent, Active and headers; an older host keeps its runtime-name fallback.
 - [ ] Remote rows match local ones for working, unread, approval, answer, input, error and dimmed stopped, including tooltips and pushed changes. ([live fixes, sidebar status](836-remote-live-fixes.md#shared-sidebar-status-presentation))
 
 ## 4. Terminals — both directions

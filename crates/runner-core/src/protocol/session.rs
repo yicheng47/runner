@@ -89,29 +89,14 @@ pub struct DirectSessionEntry {
 
 impl DirectSessionEntry {
     pub fn preferred_title(&self, live: Option<&str>) -> Option<String> {
-        self.title.clone().or_else(|| {
-            if Runtime::parse(&self.agent_runtime).is_some_and(Runtime::is_shell) {
-                return live
-                    .filter(|title| !title.trim().is_empty())
-                    .map(str::to_owned);
-            }
-            // A role-backed chat is an identity, not a topic. Most runtimes
-            // inject the role's system prompt as the first turn, while pi uses
-            // its native system-prompt channel. Either way, the agent-derived
-            // topic must not replace the role identity.
-            // #587 already keeps the handle on mission surfaces for this
-            // reason: identity is the thing you address, so it may not
-            // move under you. A name the user typed still wins above.
-            if self.handle.is_some() {
-                return None;
-            }
-            live.and_then(|title| super::session_title::provider_title(title, self.cwd.as_deref()))
-                .or_else(|| {
-                    self.live_title.as_deref().and_then(|title| {
-                        super::session_title::provider_title(title, self.cwd.as_deref())
-                    })
-                })
-        })
+        super::session_title::preferred_title(
+            self.title.as_deref(),
+            live,
+            self.live_title.as_deref(),
+            &self.agent_runtime,
+            self.handle.as_deref(),
+            self.cwd.as_deref(),
+        )
     }
 }
 

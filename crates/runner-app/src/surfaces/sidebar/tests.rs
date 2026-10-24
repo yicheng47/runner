@@ -536,6 +536,117 @@ fn tab_titles_use_live_words_before_the_session_snapshot_refreshes() {
 }
 
 #[test]
+fn remote_role_labels_stay_consistent_in_pinned_project_active_rows_and_headers() {
+    use crate::surfaces::remote_client::tests::{add_window, choose_host, fixture};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [
+        crate::i18n::Locale::English,
+        crate::i18n::Locale::SimplifiedChinese,
+    ] {
+        runner_app::i18n::testing::with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, _) = fixture(&mut cx, temp.path());
+            let mut data: runner_core::companion::Overview = serde_json::from_value(serde_json::json!({
+                "projects":[{"id":"project","name":"Host project"}],
+                "tabs":[
+                    {"id":"pinned","project":"project","name":"","pinned":true,"panes":{"session":"one"},"shells":[]},
+                    {"id":"project-tab","project":"project","name":"","pinned":false,"panes":{"session":"two"},"shells":[]},
+                    {"id":"recent","project":null,"name":"","pinned":false,"panes":{"session":"three"},"shells":[]}
+                ],
+                "missions":[],
+                "sessions":{
+                    "one":{"kind":"chat","title":"@planner","runtime":"pi","status":"working","unread":false},
+                    "two":{"kind":"chat","title":"@coder","runtime":"pi","status":"working","unread":false},
+                    "three":{"kind":"chat","title":"Fix the parser","runtime":"pi","status":"working","unread":false}
+                }
+            })).unwrap();
+            fake.set_overview(data.clone());
+            let window = add_window(&mut cx, &store, temp.path(), "remote-role-labels");
+            window.update(&mut cx, choose_host).unwrap();
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            for (session_title, tab_name, expected) in [
+                ("@planner", "", ["@planner", "@coder", "Fix the parser"]),
+                (
+                    "User session name",
+                    "User tab name",
+                    ["User session name", "User tab name", "Fix the parser"],
+                ),
+                ("", "", ["pi", "@coder", "Fix the parser"]),
+            ] {
+                data.sessions.get_mut("one").unwrap().title = session_title.into();
+                data.tabs[1].name = tab_name.into();
+                fake.emit(
+                    "remote/overview",
+                    serde_json::json!({"computer":"host","overview":data}),
+                );
+                visual.run_until_parked();
+                for title in expected {
+                    assert!(
+                        visual
+                            .debug_bounds(Box::leak(
+                                format!("SIDEBAR_ITEM_TITLE:{title}").into_boxed_str()
+                            ))
+                            .is_some(),
+                        "{title}"
+                    );
+                }
+                assert!(visual
+                    .debug_bounds(Box::leak(
+                        format!("WORKSPACE_HEADER_TITLE:{}", expected[0]).into_boxed_str()
+                    ))
+                    .is_some());
+                window
+                    .read_with(&visual, |root, cx| {
+                        let remote = root.remote_window.as_ref().unwrap();
+                        let sidebar = remote.sidebar.read(cx);
+                        let mut titles = sidebar
+                            .resolved_active_rows(cx)
+                            .iter()
+                            .map(|row| row.title_and_icon(|_| None).0)
+                            .collect::<Vec<_>>();
+                        titles.sort();
+                        let mut wanted = expected.map(str::to_owned);
+                        wanted.sort();
+                        assert_eq!(titles, wanted);
+                        assert_eq!(
+                            root.tab_label(root.front_page_layout().unwrap(), cx),
+                            expected[0]
+                        );
+                    })
+                    .unwrap();
+                window
+                    .update(&mut visual, |root, _, cx| {
+                        root.remote_window
+                            .as_ref()
+                            .unwrap()
+                            .sidebar
+                            .update(cx, |sidebar, cx| sidebar.toggle_active_only(cx));
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                for id in ["pinned", "project-tab", "recent"] {
+                    assert!(visual
+                        .debug_bounds(Box::leak(format!("ACTIVE_TITLE {id}").into_boxed_str()))
+                        .is_some());
+                }
+                window
+                    .update(&mut visual, |root, _, cx| {
+                        root.remote_window
+                            .as_ref()
+                            .unwrap()
+                            .sidebar
+                            .update(cx, |sidebar, cx| sidebar.toggle_active_only(cx));
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+            }
+        });
+    }
+}
+
+#[test]
 fn split_tab_titles_follow_layout_order_and_manual_names_instead_of_focus() {
     let first = direct_session("first", "codex", SessionStatus::Running);
     let second = direct_session("second", "claude-code", SessionStatus::Running);
