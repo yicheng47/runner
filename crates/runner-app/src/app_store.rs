@@ -229,6 +229,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         std::mem::discriminant(&settings.light_app_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_app_theme).hash(&mut hasher);
         settings.app_zoom.to_bits().hash(&mut hasher);
+        settings.remote_access_enabled.hash(&mut hasher);
         std::mem::discriminant(&settings.light_terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
@@ -332,7 +333,16 @@ pub(crate) struct AppStore {
 }
 
 impl AppStore {
+    pub(crate) fn remote_access_enabled(&self) -> bool {
+        self.settings.remote_access_enabled
+            || self
+                .remote_status
+                .as_ref()
+                .is_some_and(crate::surfaces::settings::remote::account::signed_in)
+    }
+
     fn apply_remote_update(&mut self, update: RemoteUpdate, live: bool) {
+        let was_enabled = self.remote_access_enabled();
         let warning = match update {
             RemoteUpdate::Paired(_) => return,
             RemoteUpdate::Status(status) => {
@@ -356,6 +366,9 @@ impl AppStore {
                 warning
             }
         };
+        if self.remote_access_enabled() != was_enabled {
+            self.revisions.shell_settings = self.revisions.shell_settings.wrapping_add(1);
+        }
         if let Some(warning) = warning {
             self.remote_warning = Some(warning);
             self.revisions.remote_notice = self.revisions.remote_notice.wrapping_add(1);
@@ -1096,6 +1109,50 @@ pub(crate) fn global_app_store(cx: &App) -> Entity<AppStore> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remote_status_keeps_signed_in_surfaces_visible_and_wakes_every_window() {
+        use runner_core::remote::{RemoteState, RemoteStatus, StopReason};
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = super::test_lifecycle_store(&mut cx, temp.path());
+        cx.run_until_parked();
+        store.update(&mut cx, |store, _| {
+            assert!(!store.settings.remote_access_enabled);
+            for state in [
+                RemoteState::Connecting { attempt: 0 },
+                RemoteState::Connected {
+                    since: chrono::Utc::now(),
+                },
+                RemoteState::Reconnecting {
+                    attempt: 1,
+                    next_retry_at: chrono::Utc::now(),
+                },
+                RemoteState::Paused,
+                RemoteState::Stopped {
+                    reason: StopReason::Removed,
+                },
+                RemoteState::Off,
+            ] {
+                let previous = store.remote_access_enabled();
+                let revision = store.revisions.shell_settings;
+                let status = RemoteStatus {
+                    state,
+                    host_id: Some("old-host".into()),
+                    account: Some(Default::default()),
+                    ..Default::default()
+                };
+                let enabled = crate::surfaces::settings::remote::account::signed_in(&status);
+                store.apply_remote_update(super::RemoteUpdate::Status(status), false);
+                assert_eq!(store.remote_access_enabled(), enabled);
+                assert_eq!(
+                    store.revisions.shell_settings,
+                    revision + u64::from(previous != enabled)
+                );
+                assert!(!store.settings.remote_access_enabled);
+            }
+        });
+    }
 
     #[test]
     fn restored_pin_lock_is_silent_on_startup_and_reconnect_but_later_locks_notify() {

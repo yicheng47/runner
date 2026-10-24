@@ -121,22 +121,6 @@ pub(super) fn approval_reminder() -> AnyElement {
         .into_any_element()
 }
 
-fn relay_use_detail(status: &RemoteStatus) -> String {
-    if matches!(status.state, RemoteState::Connected { .. }) {
-        tr(
-            "account.relay_on",
-            &[
-                ("account", username(status)),
-                ("computer", status.host_name.as_deref().unwrap_or_default()),
-            ],
-        )
-    } else if signed_in(status) {
-        crate::i18n::text("account.relay_configured").into()
-    } else {
-        tr("account.relay_detail", &[("service", &status.origin)])
-    }
-}
-
 impl NativeRoot {
     pub(crate) fn render_account_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let store = self.app_store.read(cx);
@@ -144,6 +128,7 @@ impl NativeRoot {
         let trust = store.remote_trust.clone().unwrap_or_default();
         let signed_in = signed_in(&status);
         let mut body = div()
+            .debug_selector(|| "ACCOUNT_SETTINGS".into())
             .flex()
             .flex_col()
             .gap_5()
@@ -155,42 +140,10 @@ impl NativeRoot {
         if matches!(status.state, RemoteState::Enrolling { .. }) {
             body = body.child(approval_reminder());
         }
-        body = body.child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(settings_section_heading(crate::i18n::text("account.uses")))
-                .child(SettingsCard::new(vec![
-                    SettingsRow::new(
-                        crate::i18n::text("account.relay"),
-                        if signed_in {
-                            self.settings_link(
-                                SettingsPane::Remote,
-                                "account-remote",
-                                "ui.remote_access",
-                                cx,
-                            )
-                            .into_any_element()
-                        } else {
-                            badge("account.needs_sign_in", false)
-                        },
-                    )
-                    .label_icon("cloud.svg", theme::muted())
-                    .subtitle(relay_use_detail(&status))
-                    .into_any_element(),
-                    SettingsRow::new(
-                        crate::i18n::text("account.sync"),
-                        badge("account.later", false),
-                    )
-                    .label_icon("refresh-cw.svg", theme::muted())
-                    .subtitle(crate::i18n::text("account.sync_detail"))
-                    .into_any_element(),
-                ])),
-        );
         if signed_in {
             body = body.child(
                 div()
+                    .debug_selector(|| "ACCOUNT_SIGN_OUT_SECTION".into())
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -217,11 +170,12 @@ impl NativeRoot {
                     .into_any_element()])),
             );
         }
-        body.child(footer("account.footer")).into_any_element()
+        body.into_any_element()
     }
 
     pub(crate) fn confirm_sign_out(&mut self, cx: &mut Context<Self>) {
         self.settings_page.remote.reset_identity = false;
+        self.settings_page.remote.disable_access = false;
         self.settings_page.remote.confirm = true;
         cx.notify();
     }
@@ -676,7 +630,6 @@ pub(super) fn fingerprint(status: &RemoteStatus, trust: &RemoteTrust) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_app::i18n::{testing::with_locale, Locale};
 
     #[test]
     fn signed_out_avatar_svg_has_its_own_paint_color() {
@@ -689,49 +642,6 @@ mod tests {
             for size in [26., 32., 44.] {
                 assert_eq!(avatar_icon(size).style().text.color, Some(theme::muted()));
             }
-        }
-    }
-
-    #[test]
-    fn relay_use_copy_claims_availability_only_while_connected() {
-        for (locale, configured, connected) in [
-            (
-                Locale::English,
-                "This computer uses Runner’s relay. Manage its availability in Remote access.",
-                "On. Your other computers on @jason’s account can open Mac Studio.",
-            ),
-            (
-                Locale::SimplifiedChinese,
-                "这台电脑使用 Runner 中继。可在“远程访问”中管理其可用状态。",
-                "已启用。@jason 账号下的其他电脑可以访问 Mac Studio。",
-            ),
-        ] {
-            with_locale(locale, || {
-                let mut status = RemoteStatus {
-                    account: Some(runner_core::remote::RemoteAccount {
-                        username: "jason".into(),
-                        display_name: "Jason".into(),
-                    }),
-                    host_name: Some("Mac Studio".into()),
-                    ..Default::default()
-                };
-                for state in [
-                    RemoteState::Paused,
-                    RemoteState::Connecting { attempt: 0 },
-                    RemoteState::Reconnecting {
-                        attempt: 1,
-                        next_retry_at: chrono::Utc::now(),
-                    },
-                ] {
-                    status.state = state;
-                    assert!(signed_in(&status));
-                    assert_eq!(relay_use_detail(&status), configured);
-                }
-                status.state = RemoteState::Connected {
-                    since: chrono::Utc::now(),
-                };
-                assert_eq!(relay_use_detail(&status), connected);
-            });
         }
     }
 }

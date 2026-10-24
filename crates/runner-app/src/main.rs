@@ -1027,8 +1027,10 @@ impl NativeRoot {
                 }
                 cx.notify();
             }),
-            _store_subscription: cx
-                .observe(&app_store, |this, _, cx| this.handle_app_store_update(cx)),
+            _store_subscription: cx.observe_in(&app_store, window, |this, _, window, cx| {
+                this.sync_remote_access_visibility(window, cx);
+                this.handle_app_store_update(cx);
+            }),
         };
         root._appearance_subscription = Some(cx.observe_window_appearance(window, |_, _, cx| {
             cx.notify();

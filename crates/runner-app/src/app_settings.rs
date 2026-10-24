@@ -289,6 +289,7 @@ pub struct MissionNotifications {
 pub struct AppSettings {
     pub language: runner_app::i18n::Language,
     pub notifications: NotificationSettings,
+    pub remote_access_enabled: bool,
     pub app_theme: ThemeIntent,
     pub window_material: runner_app::appearance::WindowMaterial,
     pub light_app_theme: LightTheme,
@@ -341,6 +342,7 @@ impl Default for AppSettings {
         Self {
             language: runner_app::i18n::Language::System,
             notifications: NotificationSettings::default(),
+            remote_access_enabled: false,
             app_theme: ThemeIntent::Auto,
             window_material: Default::default(),
             light_app_theme: LightTheme::RunnerLight,

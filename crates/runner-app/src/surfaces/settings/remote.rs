@@ -22,6 +22,7 @@ pub(crate) struct RemotePaneState {
     error: Option<String>,
     pub(crate) confirm: bool,
     reset_identity: bool,
+    disable_access: bool,
     pin: Option<PinDialog>,
     pub(crate) focus: gpui::FocusHandle,
     generation: u64,
@@ -43,6 +44,7 @@ impl RemotePaneState {
             error: None,
             confirm: false,
             reset_identity: false,
+            disable_access: false,
             pin: None,
             focus: cx.focus_handle(),
             generation: 0,
@@ -114,6 +116,79 @@ fn detail(label: &'static str, value: impl Into<SharedString>, mono: bool) -> An
     content.into_any_element()
 }
 impl NativeRoot {
+    pub(crate) fn sync_remote_access_visibility(
+        &mut self,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.app_store.read(cx).remote_access_enabled() {
+            return;
+        }
+        let changed = self.client_ui.picker_open
+            || self.client_ui.pair.is_some()
+            || self.account_menu.state.open
+            || self.remote_overlay_open()
+            || self.settings_page.pane == SettingsPane::Account;
+        self.client_ui.picker_open = false;
+        if self.client_ui.pair.take().is_some() {
+            self.client_ui.pair_generation += 1;
+        }
+        self.account_menu.state.close();
+        self.dismiss_remote_dialog();
+        if self.settings_page.pane == SettingsPane::Account {
+            self.settings_page.pane = SettingsPane::Remote;
+        }
+        if self.remote_window.is_some() {
+            self.return_to_this_computer(window, cx);
+        } else if changed {
+            self.root_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn set_remote_access_enabled(&self, enabled: bool, cx: &mut Context<Self>) {
+        self.update_app_settings(cx, true, |settings| {
+            if settings.remote_access_enabled == enabled {
+                return false;
+            }
+            settings.remote_access_enabled = enabled;
+            true
+        });
+    }
+
+    fn change_remote_access(
+        &mut self,
+        enabled: bool,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_page.remote.busy {
+            return;
+        }
+        let status = self
+            .app_store
+            .read(cx)
+            .remote_status
+            .clone()
+            .unwrap_or_default();
+        if !enabled && account::signed_in(&status) {
+            self.confirm_sign_out(cx);
+            self.settings_page.remote.disable_access = true;
+            self.settings_page.remote.focus.focus(window, cx);
+        } else {
+            self.set_remote_access_enabled(enabled, cx);
+            if !enabled
+                && matches!(
+                    status.state,
+                    RemoteState::Enrolling { .. } | RemoteState::Confirming { .. }
+                )
+            {
+                self.remote_request(false, |c| c.remote_enroll_cancel(), cx);
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn enter_remote_settings(&mut self, cx: &mut Context<Self>) {
         self.refresh_computers(cx);
         self.remote_request(false, |c| c.remote_status(), cx);
@@ -223,10 +298,69 @@ impl NativeRoot {
         let store = self.app_store.read(cx);
         let status = store.remote_status.clone().unwrap_or_default();
         let trust = store.remote_trust.clone().unwrap_or_default();
-        let mut body = div().flex().flex_col().gap_5().child(PaneHeader::new(
-            crate::i18n::text("ui.remote_access"),
-            crate::i18n::text("remote.subtitle"),
-        ));
+        let enabled = store.remote_access_enabled();
+        let root = cx.entity();
+        let toggle = Toggle::new("remote-access-enabled", enabled)
+            .disabled(self.settings_page.remote.busy)
+            .on_change(move |enabled, window, cx| {
+                root.update(cx, |root, cx| {
+                    root.change_remote_access(enabled, window, cx)
+                });
+            });
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .child(PaneHeader::new(crate::i18n::text("ui.remote_access"), ""))
+            .child(
+                account::card()
+                    .debug_selector(|| "REMOTE_ACCESS_SWITCH_ROW".into())
+                    .p_5()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_5()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(crate::i18n::text("ui.remote_access"))
+                                            .child(account::badge("remote.private_beta", true)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(theme::text_meta())
+                                            .text_color(theme::muted())
+                                            .child(crate::i18n::text("remote.feature_detail")),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "REMOTE_ACCESS_SWITCH".into())
+                                    .child(toggle),
+                            ),
+                    ),
+            );
+        if !enabled {
+            return body
+                .child(
+                    div()
+                        .debug_selector(|| "REMOTE_ACCESS_OFF_DETAIL".into())
+                        .text_size(theme::text_body())
+                        .text_color(theme::muted())
+                        .child(crate::i18n::text("remote.feature_off_detail")),
+                )
+                .into_any_element();
+        }
         if account::signed_in(&status) {
             body = body
                 .child(self.relay_card(&status, &trust, cx))
@@ -268,129 +402,58 @@ impl NativeRoot {
                 body = body.child(account::approval_reminder());
             }
         } else {
-            body = body.child(self.remote_route_choice(&status, cx));
+            body = body.child(self.remote_signed_out(&status, cx));
         }
         body.child(account::footer("remote.footer"))
             .into_any_element()
     }
 
-    fn remote_route_choice(&self, status: &RemoteStatus, cx: &mut Context<Self>) -> AnyElement {
+    fn remote_signed_out(&self, status: &RemoteStatus, cx: &mut Context<Self>) -> AnyElement {
         let mut content = div()
-            .debug_selector(|| "REMOTE_ROUTE_CHOICE".into())
+            .debug_selector(|| "REMOTE_RELAY_SIGNED_OUT".into())
             .flex()
             .flex_col()
             .gap_5()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(theme::text_lead())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(crate::i18n::text("remote.choose_route")),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme::text_ui())
-                            .text_color(theme::muted())
-                            .child(crate::i18n::text("remote.choose_route_detail")),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_start()
+                account::card()
+                    .p_5()
                     .gap_3()
                     .child(
-                        account::card()
-                            .flex_1()
-                            .min_w_0()
-                            .p_5()
+                        div()
+                            .flex()
+                            .items_center()
                             .gap_3()
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        svg()
-                                            .path("cloud.svg")
-                                            .size(rems(18. / 16.))
-                                            .text_color(theme::muted()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(crate::i18n::text("remote.through_relay")),
-                                    )
-                                    .child(account::badge("remote.private_beta", true)),
+                                svg()
+                                    .path("cloud.svg")
+                                    .size(rems(18. / 16.))
+                                    .text_color(theme::muted()),
                             )
-                            .child(div().text_color(theme::muted()).child(tr(
-                                "remote.relay_choice_detail",
-                                &[("service", &status.origin)],
-                            )))
                             .child(
                                 div()
-                                    .debug_selector(|| "REMOTE_SIGN_IN".into())
-                                    .self_start()
-                                    .flex()
-                                    .child(
-                                        self.remote_button(
-                                            "remote-connect",
-                                            "remote.sign_in",
-                                            Self::remote_connect,
-                                            cx,
-                                        )
-                                        .variant(ButtonVariant::Primary),
-                                    ),
-                            ),
+                                    .flex_1()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(crate::i18n::text("remote.through_relay")),
+                            )
+                            .child(account::badge("remote.private_beta", true)),
                     )
+                    .child(div().text_color(theme::muted()).child(tr(
+                        "remote.relay_choice_detail",
+                        &[("service", &status.origin)],
+                    )))
                     .child(
-                        account::card()
-                            .flex_1()
-                            .min_w_0()
-                            .p_5()
-                            .gap_3()
+                        div()
+                            .debug_selector(|| "REMOTE_SIGN_IN".into())
+                            .self_start()
+                            .flex()
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        svg()
-                                            .path("network.svg")
-                                            .size(rems(18. / 16.))
-                                            .text_color(theme::muted()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(crate::i18n::text("remote.over_tailscale")),
-                                    )
-                                    .child(account::badge("account.later", false)),
-                            )
-                            .child(
-                                div()
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text("remote.tailscale_choice_detail")),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "REMOTE_TAILSCALE_DISABLED".into())
-                                    .flex()
-                                    .child(
-                                        Button::new(
-                                            "remote-tailscale",
-                                            crate::i18n::text("remote.use_tailscale"),
-                                        )
-                                        .size(ButtonSize::Sm)
-                                        .variant(ButtonVariant::Secondary)
-                                        .disabled(true),
-                                    ),
+                                self.remote_button(
+                                    "remote-connect",
+                                    "remote.sign_in",
+                                    Self::remote_connect,
+                                    cx,
+                                )
+                                .variant(ButtonVariant::Primary),
                             ),
                     ),
             );
@@ -596,6 +659,7 @@ impl NativeRoot {
         self.settings_page.remote.pin = None;
         self.settings_page.remote.confirm = false;
         self.settings_page.remote.reset_identity = false;
+        self.settings_page.remote.disable_access = false;
     }
     pub(crate) fn remote_overlay_open(&self) -> bool {
         self.settings_page.remote.confirm || self.settings_page.remote.pin.is_some()
@@ -1027,6 +1091,7 @@ impl NativeRoot {
             return self.remote_pin_overlay(cx);
         }
         let reset = self.settings_page.remote.reset_identity;
+        let disable_access = self.settings_page.remote.disable_access;
         let root = cx.entity();
         let cancel = root.clone();
         let status = self
@@ -1078,6 +1143,8 @@ impl NativeRoot {
                 root.update(cx, |r, cx| {
                     r.settings_page.remote.confirm = false;
                     r.settings_page.remote.reset_identity = false;
+                    r.settings_page.remote.disable_access = false;
+                    r.set_remote_access_enabled(!disable_access, cx);
                     r.remote_request(
                         false,
                         move |c| {
@@ -1096,6 +1163,7 @@ impl NativeRoot {
                 cancel.update(cx, |r, cx| {
                     r.settings_page.remote.confirm = false;
                     r.settings_page.remote.reset_identity = false;
+                    r.settings_page.remote.disable_access = false;
                     cx.notify();
                 })
             }),
@@ -1129,6 +1197,9 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                store.update(&mut cx, |store, _| {
+                    store.settings.remote_access_enabled = true
+                });
                 let window = cx.add_window(|window, cx| {
                     let mut root = NativeRoot::new(
                         "remote-snapshots".into(),
@@ -1224,13 +1295,10 @@ mod tests {
                             signed_in
                         );
                         assert_eq!(
-                            visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some(),
+                            visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some(),
                             !signed_in && !waiting
                         );
-                        assert_eq!(
-                            visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_some(),
-                            !signed_in && !waiting
-                        );
+                        assert!(visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_none());
                         assert_eq!(visual.debug_bounds("REMOTE_DEVICES").is_some(), signed_in);
                         assert_eq!(
                             visual.debug_bounds("ACCOUNT_APPROVAL_REMINDER").is_some(),
@@ -1251,6 +1319,12 @@ mod tests {
                         );
                         assert_eq!(visual.debug_bounds("ACCOUNT_SIGN_IN").is_some(), off);
                         assert_eq!(visual.debug_bounds("ACCOUNT_DETAILS").is_some(), signed_in);
+                        if signed_in {
+                            let sign_out = visual.debug_bounds("ACCOUNT_SIGN_OUT_SECTION").unwrap();
+                            let pane = visual.debug_bounds("ACCOUNT_SETTINGS").unwrap();
+                            assert_eq!(sign_out.top(), card.bottom() + px(20.));
+                            assert_eq!(pane.bottom(), sign_out.bottom());
+                        }
                         assert_eq!(
                             visual.debug_bounds("ACCOUNT_RETRY").is_some(),
                             matches!(
@@ -1275,7 +1349,7 @@ mod tests {
                             visual.debug_bounds("ACCOUNT_CHECK_UPDATES").is_some(),
                             stop_reason == Some(StopReason::UpdateRequired)
                         );
-                        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_none());
+                        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_none());
                         window
                             .update(&mut cx, |root, _, cx| {
                                 root.settings_page.pane = SettingsPane::Remote;
@@ -1287,9 +1361,11 @@ mod tests {
             });
         }
     }
+    #[derive(Default)]
     struct RemoteRequests {
         calls: std::sync::Mutex<Vec<&'static str>>,
         status: std::sync::Mutex<RemoteStatus>,
+        fail_logout: std::sync::atomic::AtomicBool,
     }
     impl runner_core::protocol::Transport for RemoteRequests {
         fn call(
@@ -1336,8 +1412,20 @@ mod tests {
                     };
                     Response::remote_set_paused(Ok(status.clone()))
                 }
+                Request::remote_set_pin { .. } => {
+                    calls.push("set pin");
+                    Response::remote_set_pin(Ok(RemoteTrust {
+                        pin_set: true,
+                        ..Default::default()
+                    }))
+                }
                 Request::remote_logout {} => {
                     calls.push("sign out");
+                    if self.fail_logout.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(runner_core::protocol::ClientError::msg(
+                            "test sign-out failed",
+                        ));
+                    }
                     *status = RemoteStatus::default();
                     Response::remote_logout(Ok(runner_core::remote::RemoteLogout::Removed))
                 }
@@ -1358,12 +1446,459 @@ mod tests {
         }
     }
 
+    fn switch_window(
+        cx: &mut TestAppContext,
+        store: &gpui::Entity<crate::app_store::AppStore>,
+        path: &std::path::Path,
+        name: &str,
+    ) -> gpui::WindowHandle<NativeRoot> {
+        let window = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                name.into(),
+                path.join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.route = crate::AppRoute::Chat;
+            root
+        });
+        cx.simulate_window_resize(window.into(), size(px(1200.), px(900.)));
+        window
+    }
+
+    #[test]
+    fn remote_switch_defaults_off_and_persists_without_sign_in_across_windows() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for locale in [Locale::English, Locale::SimplifiedChinese] {
+            with_locale(locale, || {
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                let requests = std::sync::Arc::new(RemoteRequests::default());
+                let window = switch_window(&mut cx, &store, temp.path(), "switch");
+                let peer = switch_window(&mut cx, &store, temp.path(), "switch-peer");
+                store.update(&mut cx, |store, _| {
+                    store.client = DaemonClient::new(requests.clone())
+                });
+
+                cx.run_until_parked();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
+                assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+                assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_none());
+                let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+                visual.simulate_click(gear.center(), Default::default());
+                cx.run_until_parked();
+                assert!(visual.debug_bounds("ACCOUNT_MENU").is_none());
+                assert!(visual.debug_bounds("SETTINGS_NAV_account").is_none());
+                assert!(visual.debug_bounds("SETTINGS_NAV_remote").is_some());
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.enter_settings_pane(SettingsPane::Account, window, cx);
+                        assert_eq!(root.settings_page.pane, SettingsPane::Remote);
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                assert!(visual.debug_bounds("REMOTE_ACCESS_SWITCH_ROW").is_some());
+                assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_some());
+                assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_none());
+                for enabled in [true, false] {
+                    let toggle = visual.debug_bounds("REMOTE_ACCESS_SWITCH").unwrap();
+                    visual.simulate_click(toggle.center(), Default::default());
+                    cx.run_until_parked();
+                    assert_eq!(
+                        store.read_with(&cx, |store, _| store.settings.remote_access_enabled),
+                        enabled
+                    );
+                    assert_eq!(
+                        crate::app_settings::AppSettings::load(&temp.path().join("settings.json"))
+                            .unwrap()
+                            .remote_access_enabled,
+                        enabled
+                    );
+                    assert_eq!(
+                        visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none(),
+                        enabled
+                    );
+                    assert_eq!(
+                        visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some(),
+                        enabled
+                    );
+                    assert_eq!(
+                        visual.debug_bounds("SETTINGS_NAV_account").is_some(),
+                        enabled
+                    );
+                    assert_eq!(
+                        peer_visual
+                            .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                            .is_some(),
+                        enabled
+                    );
+                    assert_eq!(
+                        peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some(),
+                        enabled
+                    );
+                    assert_eq!(
+                        peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_none(),
+                        enabled
+                    );
+                    assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+                    assert!(requests.calls.lock().unwrap().is_empty());
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn remote_switch_signed_in_requires_confirmation_and_failed_logout_stays_visible() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for fail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            cx.run_until_parked();
+            let requests = std::sync::Arc::new(RemoteRequests::default());
+            *requests.status.lock().unwrap() = RemoteStatus {
+                state: RemoteState::Paused,
+                ..Default::default()
+            };
+            requests
+                .fail_logout
+                .store(fail, std::sync::atomic::Ordering::SeqCst);
+            let now = chrono::Utc::now();
+            let trust = RemoteTrust {
+                fingerprint: Some("fixture-identity".into()),
+                pin_set: true,
+                devices: vec![runner_core::remote::PairedDevice {
+                    fingerprint: "fixture-pair".into(),
+                    name: "Laptop".into(),
+                    public_key: "fixture-public-key".into(),
+                    paired_at: now,
+                    last_seen_at: now,
+                    connected: false,
+                }],
+                ..Default::default()
+            };
+            store.update(&mut cx, |store, _| {
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.remote_trust = Some(trust.clone());
+                store.settings.remote_access_enabled = fail;
+            });
+            let window = switch_window(&mut cx, &store, temp.path(), "signed-in-switch");
+            let peer = switch_window(&mut cx, &store, temp.path(), "signed-in-peer");
+            store.update(&mut cx, |store, _| {
+                store.client = DaemonClient::new(requests.clone())
+            });
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.enter_settings_pane(SettingsPane::Remote, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
+            assert!(peer_visual
+                .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                .is_some());
+            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
+            let toggle = visual.debug_bounds("REMOTE_ACCESS_SWITCH").unwrap();
+            visual.simulate_click(toggle.center(), Default::default());
+            cx.run_until_parked();
+            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+            assert!(requests.calls.lock().unwrap().is_empty());
+            cx.simulate_keystrokes(window.into(), "escape");
+            cx.run_until_parked();
+            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+            assert!(requests.calls.lock().unwrap().is_empty());
+            assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+            visual.simulate_click(toggle.center(), Default::default());
+            cx.run_until_parked();
+            cx.simulate_keystrokes(window.into(), "enter");
+            cx.run_until_parked();
+            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
+            if fail {
+                assert!(store.read_with(&cx, |store, _| store.remote_access_enabled()));
+                assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
+                assert!(peer_visual
+                    .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                    .is_some());
+                window
+                    .read_with(&cx, |root, _| {
+                        assert_eq!(
+                            root.settings_page.remote.error.as_deref(),
+                            Some("test sign-out failed")
+                        )
+                    })
+                    .unwrap();
+                requests
+                    .fail_logout
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                visual.simulate_click(toggle.center(), Default::default());
+                cx.run_until_parked();
+                cx.simulate_keystrokes(window.into(), "enter");
+                cx.run_until_parked();
+            }
+            store.update(&mut cx, |store, cx| {
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.revisions.shell_settings += 1;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_some());
+            assert!(visual.debug_bounds("SETTINGS_NAV_account").is_none());
+            assert!(peer_visual
+                .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                .is_none());
+            assert!(peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+            assert_eq!(
+                store.read_with(&cx, |store, _| store.remote_trust.clone()),
+                Some(trust)
+            );
+            assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
+
+            *requests.status.lock().unwrap() = RemoteStatus {
+                state: RemoteState::Paused,
+                ..Default::default()
+            };
+            requests.calls.lock().unwrap().clear();
+            store.update(&mut cx, |store, cx| {
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.revisions.shell_settings += 1;
+                cx.notify();
+            });
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.enter_settings_pane(SettingsPane::Account, window, cx);
+                    root.confirm_sign_out(cx);
+                    root.settings_page.remote.focus.focus(window, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
+            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+            cx.simulate_keystrokes(window.into(), "enter");
+            cx.run_until_parked();
+            store.update(&mut cx, |store, cx| {
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.revisions.shell_settings += 1;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
+            assert!(store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
+            assert!(
+                crate::app_settings::AppSettings::load(&temp.path().join("settings.json"))
+                    .unwrap()
+                    .remote_access_enabled
+            );
+            assert!(visual.debug_bounds("ACCOUNT_SIGN_IN").is_some());
+            assert!(visual.debug_bounds("SETTINGS_NAV_account").is_some());
+            assert!(peer_visual
+                .debug_bounds("COMPUTER_PICKER_TRIGGER")
+                .is_some());
+            assert!(peer_visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.enter_settings_pane(SettingsPane::Remote, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert!(visual.debug_bounds("REMOTE_ACCESS_SWITCH").is_some());
+            assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
+        }
+    }
+
+    #[test]
+    fn remote_switch_cancels_pending_enrollment_when_turned_off() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        cx.run_until_parked();
+        let requests = std::sync::Arc::new(RemoteRequests::default());
+        *requests.status.lock().unwrap() = RemoteStatus {
+            state: RemoteState::Enrolling {
+                user_code: "fixture-code".into(),
+                verification_uri: "https://runner.example/add".into(),
+                verification_uri_complete: "https://runner.example/add".into(),
+                expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+            },
+            ..Default::default()
+        };
+        store.update(&mut cx, |store, _| {
+            store.settings.remote_access_enabled = true;
+            store.remote_status = Some(requests.status.lock().unwrap().clone());
+        });
+        let window = switch_window(&mut cx, &store, temp.path(), "cancel-enrollment-switch");
+        store.update(&mut cx, |store, _| {
+            store.client = DaemonClient::new(requests.clone())
+        });
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.change_remote_access(false, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(*requests.calls.lock().unwrap(), ["cancel"]);
+        assert!(!store.read_with(&cx, |store, _| store.remote_access_enabled()));
+    }
+
+    #[test]
+    fn reset_keeps_remote_access_on_for_legacy_or_cli_signed_in_settings() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        cx.run_until_parked();
+        let requests = std::sync::Arc::new(RemoteRequests::default());
+        *requests.status.lock().unwrap() = RemoteStatus {
+            state: RemoteState::Paused,
+            ..Default::default()
+        };
+        store.update(&mut cx, |store, _| {
+            store.remote_status = Some(requests.status.lock().unwrap().clone())
+        });
+        let window = switch_window(&mut cx, &store, temp.path(), "legacy-reset");
+        store.update(&mut cx, |store, _| {
+            store.client = DaemonClient::new(requests.clone())
+        });
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.enter_settings_pane(SettingsPane::Remote, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(!store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
+        assert!(store.read_with(&cx, |store, _| store.remote_access_enabled()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.settings_page.remote.confirm = true;
+                root.settings_page.remote.reset_identity = true;
+                root.settings_page.remote.focus.focus(window, cx);
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        store.update(&mut cx, |store, cx| {
+            store.remote_status = Some(requests.status.lock().unwrap().clone());
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert_eq!(*requests.calls.lock().unwrap(), ["reset"]);
+        assert!(store.read_with(&cx, |store, _| store.settings.remote_access_enabled));
+        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some());
+        assert!(visual.debug_bounds("REMOTE_ACCESS_OFF_DETAIL").is_none());
+        assert!(visual.debug_bounds("SETTINGS_NAV_account").is_some());
+    }
+
+    #[test]
+    fn turning_remote_access_off_dismisses_other_windows_pin_and_reset_dialogs() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for dialog in ["set pin", "change pin", "reset"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            cx.run_until_parked();
+            let requests = std::sync::Arc::new(RemoteRequests::default());
+            *requests.status.lock().unwrap() = RemoteStatus {
+                state: RemoteState::Paused,
+                ..Default::default()
+            };
+            store.update(&mut cx, |store, _| {
+                store.settings.remote_access_enabled = true;
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.remote_trust = Some(RemoteTrust {
+                    pin_set: dialog == "change pin",
+                    ..Default::default()
+                });
+            });
+            let first = switch_window(&mut cx, &store, temp.path(), "disable-access");
+            let second = switch_window(&mut cx, &store, temp.path(), "stale-dialog");
+            store.update(&mut cx, |store, _| {
+                store.client = DaemonClient::new(requests.clone())
+            });
+            for window in [first, second] {
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        root.enter_settings_pane(SettingsPane::Remote, window, cx)
+                    })
+                    .unwrap();
+            }
+            cx.run_until_parked();
+            second
+                .update(&mut cx, |root, window, cx| {
+                    if dialog == "reset" {
+                        root.settings_page.remote.confirm = true;
+                        root.settings_page.remote.reset_identity = true;
+                        root.settings_page.remote.focus.focus(window, cx);
+                    } else {
+                        root.remote_open_pin(cx);
+                        root.settings_page.remote.pin.as_ref().unwrap().fields[0]
+                            .read(cx)
+                            .focus
+                            .clone()
+                            .focus(window, cx);
+                    }
+                    cx.notify();
+                })
+                .unwrap();
+            cx.run_until_parked();
+            if dialog != "reset" {
+                cx.simulate_keystrokes(second.into(), "0 2 8 4 7 9 enter 0 2 8 4 7 9");
+                cx.run_until_parked();
+            }
+            let mut visual = VisualTestContext::from_window(second.into(), &cx);
+            assert!(visual
+                .debug_bounds(if dialog == "reset" {
+                    "CONFIRM_DIALOG_PANEL"
+                } else {
+                    "REMOTE_PIN_DIALOG"
+                })
+                .is_some());
+            first
+                .update(&mut cx, |root, window, cx| {
+                    root.change_remote_access(false, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            cx.simulate_keystrokes(first.into(), "enter");
+            cx.run_until_parked();
+            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
+            store.update(&mut cx, |store, cx| {
+                store.remote_status = Some(requests.status.lock().unwrap().clone());
+                store.revisions.shell_settings += 1;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            assert!(visual.debug_bounds("REMOTE_PIN_DIALOG").is_none());
+            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+            second
+                .update(&mut cx, |root, window, _| {
+                    assert!(!root.remote_overlay_open());
+                    assert!(!root.settings_page.remote.reset_identity);
+                    assert!(root.root_focus.is_focused(window));
+                })
+                .unwrap();
+            cx.simulate_keystrokes(second.into(), "enter");
+            cx.run_until_parked();
+            assert_eq!(*requests.calls.lock().unwrap(), ["sign out"]);
+        }
+    }
+
     #[test]
     fn account_actions_reuse_requests_and_sign_out_and_reset_require_confirmation() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            store.settings.remote_access_enabled = true
+        });
         let window = cx.add_window(|window, cx| {
             NativeRoot::new(
                 "account-actions".into(),
@@ -1379,6 +1914,7 @@ mod tests {
         let requests = std::sync::Arc::new(RemoteRequests {
             calls: Default::default(),
             status: Default::default(),
+            fail_logout: Default::default(),
         });
         store.update(&mut cx, |store, _| {
             store.client = DaemonClient::new(requests.clone())
@@ -1465,12 +2001,8 @@ mod tests {
         });
         window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
         cx.run_until_parked();
-        assert!(visual.debug_bounds("REMOTE_ROUTE_CHOICE").is_some());
-        let tailscale = visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").unwrap();
-        let before = requests.calls.lock().unwrap().len();
-        visual.simulate_click(tailscale.center(), Default::default());
-        cx.run_until_parked();
-        assert_eq!(requests.calls.lock().unwrap().len(), before);
+        assert!(visual.debug_bounds("REMOTE_RELAY_SIGNED_OUT").is_some());
+        assert!(visual.debug_bounds("REMOTE_TAILSCALE_DISABLED").is_none());
         let sign_in = visual.debug_bounds("REMOTE_SIGN_IN").unwrap();
         visual.simulate_click(sign_in.center(), Default::default());
         cx.run_until_parked();
@@ -1526,6 +2058,9 @@ mod tests {
                     let temp = tempfile::tempdir().unwrap();
                     let mut cx = TestAppContext::single();
                     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                    store.update(&mut cx, |store, _| {
+                        store.settings.remote_access_enabled = true
+                    });
                     let window = cx.add_window(|window, cx| {
                         let mut root = NativeRoot::new(
                             "weak-pin-warning".into(),
@@ -1633,6 +2168,9 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let mut cx = TestAppContext::single();
             let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            store.update(&mut cx, |store, _| {
+                store.settings.remote_access_enabled = true
+            });
             let window = cx.add_window(|window, cx| {
                 let mut root = NativeRoot::new(
                     "pin-steps".into(),
@@ -1801,6 +2339,9 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                store.update(&mut cx, |store, _| {
+                    store.settings.remote_access_enabled = true
+                });
                 let window = cx.add_window(|window, cx| {
                     let mut root = NativeRoot::new(
                         "trust-snapshots".into(),

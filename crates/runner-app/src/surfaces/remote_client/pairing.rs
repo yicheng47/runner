@@ -240,6 +240,9 @@ impl NativeRoot {
         cx.notify();
     }
     pub(crate) fn render_computer_pair(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.app_store.read(cx).remote_access_enabled() {
+            return None;
+        }
         let dialog = self.client_ui.pair.as_ref()?;
         let name = &dialog.computer.name;
         let blocked = matches!(dialog.state, PairState::Locked | PairState::NoPin);

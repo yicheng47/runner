@@ -359,6 +359,7 @@ fn fixture(
     });
     let clients = cx.new(|cx| model::ClientState::new(fake.client(), cx));
     store.update(cx, |store, _| {
+        store.settings.remote_access_enabled = true;
         store.client = fake.client();
         store.remote_clients = clients.clone();
     });
@@ -1224,6 +1225,58 @@ fn remote_sidebar_uses_session_titles_for_unnamed_tabs_and_tracks_overview_updat
 }
 
 #[test]
+fn disabling_remote_access_returns_every_window_to_this_computer() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let first = add_window(&mut cx, &store, temp.path(), "remote-disable-first");
+    let second = add_window(&mut cx, &store, temp.path(), "remote-disable-second");
+    for window in [first, second] {
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.visit_computer(computers()[1].clone(), window, cx)
+            })
+            .unwrap();
+    }
+    cx.run_until_parked();
+    for window in [first, second] {
+        window
+            .read_with(&cx, |root, _| assert!(root.remote_window.is_some()))
+            .unwrap();
+    }
+    *fake.status.lock().unwrap() = RemoteStatus::default();
+    store.update(&mut cx, |store, cx| {
+        store.remote_status = Some(RemoteStatus::default());
+        store.update_settings(
+            |settings| {
+                settings.remote_access_enabled = false;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    for window in [first, second] {
+        window
+            .read_with(&cx, |root, _| {
+                assert!(root.remote_window.is_none());
+                assert!(!root.client_ui.picker_open);
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+    }
+    assert!(fake
+        .follows
+        .lock()
+        .unwrap()
+        .contains(&("host".into(), false)));
+}
+
+#[test]
 fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
@@ -1326,6 +1379,58 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                 fake.follows.lock().unwrap().last(),
                 Some(&("host".into(), false))
             );
+        });
+    }
+}
+
+#[test]
+fn picker_status_precedes_unpaired_detail_from_directory() {
+    for (locale, online, offline) in [
+        (
+            Locale::English,
+            "Online · Not paired",
+            "Offline · seen 1 hour ago · Not paired",
+        ),
+        (
+            Locale::SimplifiedChinese,
+            "在线 · 未配对",
+            "离线 · 最后在线 1 小时前 · 未配对",
+        ),
+    ] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (_store, fake, clients) = fixture(&mut cx, temp.path());
+            let remote = computers().into_iter().find(|c| !c.is_self).unwrap();
+            *fake.computers.lock().unwrap() = vec![
+                Computer {
+                    id: "unpaired-online".into(),
+                    online: true,
+                    paired: false,
+                    ..remote.clone()
+                },
+                Computer {
+                    id: "unpaired-offline".into(),
+                    online: false,
+                    paired: false,
+                    last_seen_at: Some(
+                        (chrono::Utc::now() - chrono::Duration::minutes(90)).to_rfc3339(),
+                    ),
+                    ..remote
+                },
+            ];
+            let before = fake.directory_calls.load(Ordering::SeqCst);
+            clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+            cx.run_until_parked();
+            assert_eq!(fake.directory_calls.load(Ordering::SeqCst), before + 1);
+            let details = clients.read_with(&cx, |clients, _| {
+                clients
+                    .computers
+                    .iter()
+                    .map(picker::computer_detail)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(details, [online, offline]);
         });
     }
 }

@@ -2,22 +2,28 @@
 
 Connect this computer to your account so Runner on your other computers can reach its chats and missions. Remote access is a private beta, invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code. Sessions are encrypted end to end; the service relays them.
 
+## Turn on Remote access
+
+Open **Settings → Remote access** and turn on **Remote access**. It is off by default during the private beta. Turning it on adds Account in Settings, the sidebar’s computer picker, and pairing; it does not start sign-in. While off, Runner shows the plain Settings gear in its footer and keeps Remote access in Settings so you can find it. The choice is saved and applies to every window.
+
+A computer that is already signed in, including through `runner remote login`, always shows Remote access as on. Signing out from Account or the avatar menu keeps the Remote access switch on. Turning the switch off while signed in asks for Sign out confirmation first. Cancel keeps everything visible; confirm signs this computer out and hides the remote surfaces once it is signed out. Its identity, PIN and paired computers stay. A failed sign-out keeps remote surfaces visible and shows the error. Windows viewing another computer return to this computer when Remote access becomes off. PIN and Reset dialogs in other windows close too.
+
 ## Sign in from Runner
 
-1. Open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
+1. Turn on **Settings → Remote access → Remote access**, then open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
 2. Runner shows a short code, a fingerprint and the time left, and opens the approval page in your browser. You can also copy the link or open the short link on another device and enter the code.
 3. Sign in, check that the page shows the same fingerprint as Runner, name this computer and approve it.
 4. Account shows your account, service, this computer and its fingerprint. If you started from Remote access, that pane shows the relay page once approval completes.
 
-The round avatar in the sidebar footer shows your account’s initial when signed in and a person icon otherwise. Its menu opens Account, Settings and **Sign out…**. Signed out, it offers Settings and **Sign in…**, which opens Account, where you can start approval. Account also shows what the account is used for: remote access through the relay, with syncing roles and crews planned for later.
+While Remote access is on, the round avatar in the sidebar footer shows your account’s initial when signed in and a person icon otherwise. Its menu opens Account, Settings and **Sign out…**. Signed out, it offers Settings and **Sign in…**, which opens Account, where you can start approval. Account shows its status card and **Sign out on this computer** when signed in.
 
 If Runner cannot reach the service, it tries for up to 30 seconds, then returns to Not signed in with an error. Check the service address and your network, then choose **Sign in** again.
 
-## Choose a route
+## Through Runner’s relay
 
-Remote access shows two choices while signed out: **Through Runner’s relay**, using your Runner account in the private beta, and **Over Tailscale**, marked **Later** with its button disabled until Phase 4. Tailscale will connect computers directly on the same tailnet without an account or Runner’s service.
+With its switch on, Remote access opens directly on the relay’s sign-in state while signed out. Runner’s relay is the only route in this release; Tailscale is planned separately.
 
-Signing in chooses the relay. The relay page shows the connection, **Allow remote access**, the PIN and paired computers. Its Route section identifies the relay and links to Account. A computer uses one route at a time; to use the other route later, choose **Reset remote access**. Reset makes a new identity, unpairs every computer, clears the PIN, signs out and returns to choosing a route. Nothing carries over.
+The relay page shows the connection, **Allow remote access**, the PIN and paired computers. Its Route section identifies the relay and links to Account. **Reset remote access** makes a new identity, unpairs every computer, clears the PIN, signs out and returns to relay sign-in with Remote access still on.
 
 ## Connect from a terminal
 
@@ -56,9 +62,9 @@ Turning off this computer's **Allow remote access** stops incoming access while 
 
 Sign both computers in to the same account. On the computer you want to reach, enable **Allow remote access** and set a PIN. On this computer, choose **Pair** beside it in **Settings → Remote access**, or select it in the sidebar’s computer picker. Enter the other computer’s six-digit PIN. Each submit makes one attempt; Runner never retries a PIN automatically. A wrong PIN lets you try again. If entry is locked or no PIN is set, follow the dialog’s instructions on the other computer first. Check a changed fingerprint in that computer’s Settings before pairing again. If the listed identity changes while the dialog is open, Runner clears the PIN and shows the new fingerprint for you to verify.
 
-The picker lists this computer and the account’s other computers, including offline and unpaired ones. The trigger and computer rows omit attention counters at this stage. Click a computer to switch this window; hold Shift while clicking, or use its window button, to open another window. Choose this computer to return to your local tabs and panes. A local mission keeps its layout and selection; its terminals resume and its feed catches up when you return. Each window chooses independently, and every window opens on this computer after restarting Runner. Your local notification settings continue to apply while a remote window is active; clicking a local chat or mission alert returns a window to this computer and opens that item.
+The picker lists this computer and the account’s other computers, including offline and unpaired ones. Each remote row shows online or offline status first, including when it was last seen when available; an unpaired computer adds **Not paired**, such as **Online · Not paired**. The trigger and computer rows omit attention counters at this stage. Click a computer to switch this window; hold Shift while clicking, or use its window button, to open another window. Choose this computer to return to your local tabs and panes. A local mission keeps its layout and selection; its terminals resume and its feed catches up when you return. Each window chooses independently, and every window opens on this computer after restarting Runner. Your local notification settings continue to apply while a remote window is active; clicking a local chat or mission alert returns a window to this computer and opens that item.
 
-While signed out, the picker shows **This computer** and **Sign in to see your computers…**. That action opens Settings → Account; start approval there when ready. Tab and Shift-Tab move through the picker’s controls; moving past either end closes it. Escape closes it while a control inside is focused. Signed out is a normal state: the picker does not fetch account computers, show old remote rows or display a refresh warning.
+With Remote access on and this computer signed out, the picker shows **This computer** and **Sign in to see your computers…**. That action opens Settings → Account; start approval there when ready. Tab and Shift-Tab move through the picker’s controls; moving past either end closes it. Escape closes it while a control inside is focused. Signed out is a normal state: the picker does not fetch account computers, show old remote rows or display a refresh warning.
 
 If the computer list cannot refresh while signed in, the picker shows a warning below its available rows. Check Account and your connection, then reopen the picker to try again.
 
@@ -74,7 +80,7 @@ Turn off **Allow remote access** to close the connection while keeping this comp
 
 **Sign out on this computer** in Account, **Sign out…** in the avatar menu, or `runner remote logout`, deletes this computer's enrollment credential first and asks the service to remove it once. If the service cannot be reached, Runner reports that the computer is still listed offline; remove that entry in the web panel. Runner asks for confirmation before signing out in the app. Restarting Runner does not reconnect a signed-out computer. Signing in again needs a new code and keeps the same identity key and fingerprint, PIN and paired devices.
 
-If the computer was removed in the web panel or the account was deactivated, Runner stops the connection. Account shows the reason even when an old enrollment remains; Remote access returns to the route choice with a link to Account. **Try again** uses the existing credential, which can work after an administrator reactivates the account. **Sign in again** clears the old enrollment and starts fresh. Other stop reasons explain whether to retry, approve a new code or update Runner.
+If the computer was removed in the web panel or the account was deactivated, Runner stops the connection. Account shows the reason even when an old enrollment remains; Remote access returns to relay sign-in with a link to Account. **Try again** uses the existing credential, which can work after an administrator reactivates the account. **Sign in again** clears the old enrollment and starts fresh. Other stop reasons explain whether to retry, approve a new code or update Runner.
 
 Remote access never stops your agents or sessions. Closing the desktop app leaves the connection with the background daemon; stopping the daemon closes it. Release builds keep keys and credentials in the macOS Keychain or Windows Credential Manager. macOS development builds use separate files with mode 0600 under the development data directory (`com.wycstudios.runner-dev`): `remote-identity.json`, `remote-client-keys.json`, and one `remote-credential-<hash>.json` per service. Rebuilding the development daemon therefore does not prompt for the login Keychain password. Existing development Keychain secrets are not copied into these files; sign in and pair again when first using this storage. Linux also uses private files. Development storage is separate from the installed app.
 
@@ -90,7 +96,7 @@ Five failed pairing confirmations in a row lock PIN entry. A wrong PIN and a dam
 
 Runner shows **{computer} paired** as a system notification when another computer pairs. Clicking it opens **Settings → Remote access**. If system notifications are unavailable or off, an in-app toast says that the computer can now reach this one and offers **Open Remote access**. A reconnection does not raise another pairing notification.
 
-If you suspect this computer’s identity key has leaked, choose **Reset remote access**, or run `runner remote reset-identity` in your own interactive terminal. Confirming disconnects the computer from the account, creates a new key and fingerprint, clears the PIN and all paired devices, and unlocks PIN entry. The pane returns to the route choice, and signing in again needs a new code. Your agents and sessions keep running.
+If you suspect this computer’s identity key has leaked, choose **Reset remote access**, or run `runner remote reset-identity` in your own interactive terminal. Confirming disconnects the computer from the account, creates a new key and fingerprint, clears the PIN and all paired devices, and unlocks PIN entry. The pane returns to relay sign-in, and signing in again needs a new code. Your agents and sessions keep running.
 
 
 ## Take a terminal back
