@@ -6,6 +6,9 @@ pub(crate) struct CodexTerminal {
     startup: Option<CodexStartup>,
     title: CodexTitleHint,
     hook_owned: bool,
+    // Outlives the startup state so a SessionStart that reaches a recovered bridge
+    // late cannot end the turn submitted during the output fallback.
+    fallback_turn: bool,
 }
 
 impl CodexTerminal {
@@ -21,6 +24,7 @@ impl CodexTerminal {
             }),
             title: Default::default(),
             hook_owned: false,
+            fallback_turn: false,
         }
     }
 }
@@ -67,6 +71,7 @@ impl TerminalAdapter for CodexTerminal {
                 input.announce = true;
                 if (startup.pending_turn || startup.submitted_input) && !startup.hooks_available {
                     self.startup = None;
+                    self.fallback_turn = true;
                     input.state = Some(SessionActivityState::Busy);
                     input.refresh = true;
                 }
@@ -105,6 +110,7 @@ impl TerminalAdapter for CodexTerminal {
             startup.hooks_available = false;
             if startup.pending_turn || startup.submitted_input {
                 self.startup = None;
+                self.fallback_turn = true;
             }
         }
     }
@@ -115,12 +121,14 @@ impl TerminalAdapter for CodexTerminal {
             self.hook_owned = false;
             self.title.reset();
             self.startup = None;
+            self.fallback_turn = false;
             return true;
         }
-        if self
-            .startup
-            .as_ref()
-            .is_some_and(|startup| startup.pending_turn || startup.submitted_input)
+        if (self.fallback_turn
+            || self
+                .startup
+                .as_ref()
+                .is_some_and(|startup| startup.pending_turn || startup.submitted_input))
             && event.startup_ready()
         {
             return false;
@@ -128,6 +136,7 @@ impl TerminalAdapter for CodexTerminal {
         self.hook_owned = true;
         self.title.reset();
         self.startup = None;
+        self.fallback_turn = false;
         true
     }
 }

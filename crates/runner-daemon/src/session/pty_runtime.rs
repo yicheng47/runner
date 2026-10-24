@@ -1002,27 +1002,32 @@ fn idle_monitor_thread(
                     }
                 },
             );
-            let result = result.and_then(|()| {
-                let expired = detector
-                    .lock()
-                    .expect("idle detector poisoned")
-                    .hook_startup_timed_out_at(Instant::now());
-                if expired {
-                    Err(crate::error::Error::msg(format!(
-                        "hook bridge produced no status within {HOOK_STARTUP_TIMEOUT:?} of terminal output; using output fallback"
-                    )))
-                } else {
-                    Ok(())
+            let failed = match result {
+                Ok(()) => {
+                    let mut detector = detector.lock().expect("idle detector poisoned");
+                    let expired = detector.hook_startup_timed_out_at(Instant::now());
+                    // A resumed agent at rest reports nothing until its next turn, so keep
+                    // draining: its first report hands status back to the hooks.
+                    if expired {
+                        log::warn!(
+                            "read agent status: hook bridge produced no status within {HOOK_STARTUP_TIMEOUT:?} of terminal output; using output fallback until it reports"
+                        );
+                        detector.hooks_unavailable();
+                    }
+                    expired
                 }
-            });
-            if let Err(error) = result {
-                log::warn!("read agent status: {error}");
-                detector
-                    .lock()
-                    .expect("idle detector poisoned")
-                    .hooks_unavailable();
+                Err(error) => {
+                    log::warn!("read agent status: {error}");
+                    detector
+                        .lock()
+                        .expect("idle detector poisoned")
+                        .hooks_unavailable();
+                    hook_status = None;
+                    true
+                }
+            };
+            if failed {
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
-                hook_status = None;
             }
         }
         let transition = {
@@ -1538,6 +1543,104 @@ mod tests {
         let detector = detector.lock().unwrap();
         assert!(!detector.awaiting_first_hook);
         assert!(detector.adapter.as_ref().unwrap().held_activity().is_none());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn resumed_codex_reports_after_startup_timeout_restore_hook_status() {
+        let routes = Arc::new(super::super::hook_queue::HookRoutes::default());
+        let receiver = routes.register(
+            crate::model::Runtime::Codex,
+            "resumed-bridge".into(),
+            "launch".into(),
+        );
+        let spec = SpawnSpec {
+            agent_runtime: Some(crate::model::Runtime::Codex),
+            session_id: "resumed-bridge".into(),
+            mission: true,
+            pending_turn: Some(false),
+            ..Default::default()
+        };
+        let watcher = crate::runtimes::adapter(crate::model::Runtime::Codex)
+            .status_hooks()
+            .unwrap()
+            .start_receiver(&spec, receiver)
+            .unwrap();
+        let start = Instant::now() - HOOK_STARTUP_TIMEOUT;
+        let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
+        detector.awaiting_first_hook = true;
+        detector.on_output_event_at(b"resumed history", false, start);
+        let detector = Arc::new(Mutex::new(detector));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let monitor = thread::spawn({
+            let detector = detector.clone();
+            let stop = stop.clone();
+            move || {
+                idle_monitor_thread(
+                    detector,
+                    tx,
+                    stop,
+                    Arc::new(AtomicBool::new(false)),
+                    Some(watcher),
+                )
+            }
+        });
+        let failed = rx.recv_timeout(Duration::from_secs(5));
+        {
+            let mut detector = detector.lock().unwrap();
+            detector.on_input(b"next task");
+            detector.on_input(b"\r");
+        }
+        for (event, payload) in [
+            (
+                "SessionStart",
+                serde_json::json!({"session_id": "thread", "source": "resume", "transcript_path": null}),
+            ),
+            (
+                "UserPromptSubmit",
+                serde_json::json!({"session_id": "thread", "turn_id": "turn", "transcript_path": null}),
+            ),
+        ] {
+            routes
+                .admit(runner_core::protocol::hook::HookReport {
+                    bridge_unavailable: false,
+                    version: runner_core::protocol::hook::VERSION,
+                    runtime: crate::model::Runtime::Codex,
+                    session_id: "resumed-bridge".into(),
+                    generation: "launch".into(),
+                    event: event.into(),
+                    payload,
+                    caller_thread_id: Some("thread".into()),
+                })
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let restored = loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(RuntimeOutput::AgentEvent { event, .. }) => break Some(event),
+                Ok(_) => {}
+                Err(_) => break None,
+            }
+        };
+        stop.store(true, Ordering::Release);
+        monitor.join().unwrap();
+        assert!(
+            matches!(failed, Ok(RuntimeOutput::StatusBridgeFailed)),
+            "{failed:?}"
+        );
+        // The late SessionStart is dropped so it cannot end the submitted turn.
+        assert!(
+            matches!(
+                &restored,
+                Some(super::super::state::agent::AgentEvent::Batch { events, .. })
+                    if matches!(
+                        events.as_slice(),
+                        [super::super::state::agent::AgentEvent::TurnStarted]
+                    )
+            ),
+            "{restored:?}"
+        );
     }
 
     #[test]
