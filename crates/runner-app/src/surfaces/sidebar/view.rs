@@ -99,7 +99,7 @@ impl Sidebar {
         );
         if !active_only {
             let rows = self.resolved_sidebar_rows(cx);
-            let tree = SidebarTree::from_local(&self.app_store.read(cx).nodes);
+            let tree = SidebarTree::from_local(&self.source_nodes(cx));
             let resolve = |id: &str| rows.iter().find(|row| row.node().id == id).cloned();
             let pinned = tree
                 .pinned
@@ -115,9 +115,7 @@ impl Sidebar {
                 .projects
                 .iter()
                 .filter_map(|project| {
-                    self.app_store
-                        .read(cx)
-                        .nodes
+                    self.source_nodes(cx)
                         .iter()
                         .find(|node| node.id == project.id)
                         .cloned()
@@ -148,7 +146,7 @@ impl Sidebar {
                                 .gap(rems(2. / 16.))
                                 .children(pinned.into_iter().map(|row| {
                                     let project_id =
-                                        node_project_id(&self.app_store.read(cx).nodes, row.node());
+                                        node_project_id(&self.source_nodes(cx), row.node());
                                     let shortcut_index =
                                         tab_index_by_node.get(&row.node().id).copied();
                                     self.render_sidebar_row(
@@ -229,9 +227,7 @@ impl Sidebar {
                                     .into_iter()
                                     .filter_map(|node| {
                                         let project = self
-                                            .app_store
-                                            .read(cx)
-                                            .projects
+                                            .source_projects(cx)
                                             .iter()
                                             .find(|project| {
                                                 node.ref_id.as_deref() == Some(project.id.as_str())
@@ -365,62 +361,69 @@ impl Sidebar {
             let active_rows = self.resolved_active_rows(cx);
             scroll = scroll.child(self.render_active_groups(active_rows, cx));
         }
-        let workspace_rows = WORKSPACE_ENTRIES.map(|entry| {
-            let active = entry.selected(&route);
-            match entry {
-                WorkspaceEntry::NewTab => {
-                    let shell = self.shell.clone();
-                    let shortcut = keymap::effective_binding(
-                        "new-chat",
-                        &self.app_store.read(cx).settings.keymap_overrides,
-                    )
-                    .map(|combo| keymap::format_combo(&combo));
-                    workspace_new_chat_row(shortcut, true, move |window, cx| {
-                        if let Some(shell) = shell.upgrade() {
-                            shell.update(cx, |shell, shell_cx| {
-                                let scope =
-                                    ProjectScope::or_root(shell.active_project_id(shell_cx));
-                                shell.open_sidebar_chat_modal(scope, window, shell_cx)
-                            });
-                        }
-                    })
+        let workspace_rows = WORKSPACE_ENTRIES
+            .into_iter()
+            .filter(|entry| {
+                !self.front_page.is_remote()
+                    || (matches!(entry, WorkspaceEntry::NewTab)
+                        && self.front_page.supports(&["catalog", "startChat"]))
+            })
+            .map(|entry| {
+                let active = entry.selected(&route);
+                match entry {
+                    WorkspaceEntry::NewTab => {
+                        let shell = self.shell.clone();
+                        let shortcut = keymap::effective_binding(
+                            "new-chat",
+                            &self.app_store.read(cx).settings.keymap_overrides,
+                        )
+                        .map(|combo| keymap::format_combo(&combo));
+                        workspace_new_chat_row(shortcut, true, move |window, cx| {
+                            if let Some(shell) = shell.upgrade() {
+                                shell.update(cx, |shell, shell_cx| {
+                                    let scope =
+                                        ProjectScope::or_root(shell.active_project_id(shell_cx));
+                                    shell.open_sidebar_chat_modal(scope, window, shell_cx)
+                                });
+                            }
+                        })
+                    }
+                    WorkspaceEntry::Role => workspace_row(
+                        "workspace-role",
+                        "user.svg",
+                        crate::i18n::text("noun.role"),
+                        active,
+                        true,
+                        {
+                            let shell = self.shell.clone();
+                            move |window, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, shell_cx| {
+                                        shell.open_roles(window, shell_cx)
+                                    });
+                                }
+                            }
+                        },
+                    ),
+                    WorkspaceEntry::Crew => workspace_row(
+                        "workspace-crew",
+                        "users.svg",
+                        crate::i18n::text("noun.crew"),
+                        active,
+                        true,
+                        {
+                            let shell = self.shell.clone();
+                            move |window, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, shell_cx| {
+                                        shell.open_crews(window, shell_cx)
+                                    });
+                                }
+                            }
+                        },
+                    ),
                 }
-                WorkspaceEntry::Role => workspace_row(
-                    "workspace-role",
-                    "user.svg",
-                    crate::i18n::text("noun.role"),
-                    active,
-                    true,
-                    {
-                        let shell = self.shell.clone();
-                        move |window, cx| {
-                            if let Some(shell) = shell.upgrade() {
-                                shell.update(cx, |shell, shell_cx| {
-                                    shell.open_roles(window, shell_cx)
-                                });
-                            }
-                        }
-                    },
-                ),
-                WorkspaceEntry::Crew => workspace_row(
-                    "workspace-crew",
-                    "users.svg",
-                    crate::i18n::text("noun.crew"),
-                    active,
-                    true,
-                    {
-                        let shell = self.shell.clone();
-                        move |window, cx| {
-                            if let Some(shell) = shell.upgrade() {
-                                shell.update(cx, |shell, shell_cx| {
-                                    shell.open_crews(window, shell_cx)
-                                });
-                            }
-                        }
-                    },
-                ),
-            }
-        });
+            });
         sidebar_contents(
             workspace_rows,
             sidebar_scroll_frame()
@@ -446,6 +449,15 @@ impl Sidebar {
         F: Fn(&mut Sidebar, &mut Context<Sidebar>) + 'static,
         G: Fn(&mut Window, &mut App) + 'static,
     {
+        let project_section = label == crate::i18n::text("heading.projects");
+        let can_add = !self.front_page.is_remote()
+            || if project_section {
+                self.front_page.supports(&["folders", "createProject"])
+            } else {
+                self.front_page.supports(&["catalog", "startChat"])
+                    || self.front_page.supports(&["startShell", "layout"])
+            };
+        let root = cx.weak_entity();
         sidebar_section_header(
             format!("toggle-{label}").into(),
             label,
@@ -455,12 +467,39 @@ impl Sidebar {
                 .items_center()
                 .gap(rems(6. / 16.))
                 .children(attention)
-                .child(
-                    IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
-                        .size(IconButtonSize::Sm)
-                        .tooltip(plus_title)
-                        .on_press(on_plus),
-                )
+                .children(can_add.then(|| {
+                    let button =
+                        IconButton::new(SharedString::from(format!("add-{label}")), "plus.svg")
+                            .size(IconButtonSize::Sm)
+                            .tooltip(plus_title)
+                            .on_press(on_plus)
+                            .into_any_element();
+                    if self.front_page.is_remote() && project_section {
+                        div()
+                            .debug_selector(|| "SIDEBAR_NEW_PROJECT".into())
+                            .relative()
+                            .flex_none()
+                            .child(button)
+                            .child(
+                                gpui::canvas(
+                                    move |bounds, _, cx| {
+                                        let root = root.clone();
+                                        cx.defer(move |cx| {
+                                            let _ = root.update(cx, |sidebar, _| {
+                                                sidebar.project_anchor = Some(bounds)
+                                            });
+                                        });
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .into_any_element()
+                    } else {
+                        button
+                    }
+                }))
                 .into_any_element(),
             cx.listener(move |this, _, _, cx| on_toggle(this, cx)),
         )

@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use runner_core::companion::{SidebarNode, SidebarNodeKind};
-use runner_core::protocol::node::{NodeRow, NodeType};
+#[cfg(test)]
+use runner_core::protocol::node::NodeRow;
+use runner_core::protocol::node::NodeType;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SidebarTree {
@@ -12,21 +14,27 @@ pub(crate) struct SidebarTree {
 }
 
 impl SidebarTree {
-    pub(crate) fn from_local(nodes: &[NodeRow]) -> Self {
+    pub(crate) fn from_local(
+        nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
+    ) -> Self {
         Self::new(
             nodes
                 .iter()
-                .map(|node| SidebarNode {
-                    kind: match node.node_type {
-                        NodeType::Project => SidebarNodeKind::Project,
-                        NodeType::Tab => SidebarNodeKind::Tab,
-                        NodeType::Mission => SidebarNodeKind::Mission,
+                .cloned()
+                .map(Into::into)
+                .map(
+                    |node: crate::surfaces::front_page::model::SidebarNodeDisplay| SidebarNode {
+                        kind: match node.node_type {
+                            NodeType::Project => SidebarNodeKind::Project,
+                            NodeType::Tab => SidebarNodeKind::Tab,
+                            NodeType::Mission => SidebarNodeKind::Mission,
+                        },
+                        id: node.id.clone(),
+                        parent: node.parent_id.clone(),
+                        position: node.position,
+                        pinned_position: node.pinned_position,
                     },
-                    id: node.id.clone(),
-                    parent: node.parent_id.clone(),
-                    position: node.position,
-                    pinned_position: node.pinned_position,
-                })
+                )
                 .collect(),
         )
     }
@@ -234,11 +242,16 @@ pub(crate) fn take_drag_state(
 }
 
 pub(crate) fn can_drop_in_scope(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     dragged_id: &str,
     parent_id: Option<&str>,
 ) -> bool {
-    let Some(dragged) = node(nodes, dragged_id) else {
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
+    let Some(dragged) = node(&nodes, dragged_id) else {
         return false;
     };
     if dragged.pinned_position.is_some() || dragged.node_type == NodeType::Project {
@@ -247,14 +260,14 @@ pub(crate) fn can_drop_in_scope(
     let Some(parent_id) = parent_id else {
         return true;
     };
-    node(nodes, parent_id).is_some_and(|parent| {
+    node(&nodes, parent_id).is_some_and(|parent| {
         parent.node_type == NodeType::Project
             && matches!(dragged.node_type, NodeType::Tab | NodeType::Mission)
     })
 }
 
 pub(crate) fn list_drop_target(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     kind: DropKind,
     parent_id: Option<&str>,
     visible_ids: &[String],
@@ -262,11 +275,16 @@ pub(crate) fn list_drop_target(
     hovered_id: &str,
     after: bool,
 ) -> Option<DropTarget> {
-    let dragged = node(nodes, dragged_id)?;
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
+    let dragged = node(&nodes, dragged_id)?;
     match kind {
         DropKind::Pinned if dragged.pinned_position.is_none() => return None,
         DropKind::Project if dragged.node_type != NodeType::Project => return None,
-        DropKind::Leaf if !can_drop_in_scope(nodes, dragged_id, parent_id) => return None,
+        DropKind::Leaf if !can_drop_in_scope(&nodes, dragged_id, parent_id) => return None,
         _ => {}
     }
     let hovered = visible_ids.iter().position(|id| id == hovered_id)?;
@@ -283,12 +301,17 @@ pub(crate) fn list_drop_target(
 }
 
 pub(crate) fn container_drop_target(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     visible_child_ids: &[String],
     dragged_id: &str,
     container_id: &str,
 ) -> Option<DropTarget> {
-    if !can_drop_in_scope(nodes, dragged_id, Some(container_id)) {
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
+    if !can_drop_in_scope(&nodes, dragged_id, Some(container_id)) {
         return None;
     }
     Some(DropTarget {
@@ -317,11 +340,16 @@ pub(crate) fn ordered_visible_node_ids_after_drop(
 }
 
 pub(crate) fn complete_unpinned_scope_order(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     parent_id: Option<&str>,
     dragged_id: &str,
     ordered_visible_ids: &[String],
 ) -> Vec<String> {
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
     let pinned = nodes
         .iter()
         .filter(|node| node.pinned_position.is_some())
@@ -363,11 +391,16 @@ pub(crate) fn complete_unpinned_scope_order(
 }
 
 pub(crate) fn ordered_pinned_node_ids_after_drop(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     visible_pinned_ids: &[String],
     dragged_id: &str,
     requested_index: usize,
 ) -> Vec<String> {
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
     let mut pinned = nodes
         .iter()
         .filter_map(|node| {
@@ -409,10 +442,15 @@ pub(crate) fn ordered_pinned_node_ids_after_drop(
 }
 
 pub(crate) fn ordered_root_node_ids_after_project_drop(
-    nodes: &[NodeRow],
+    nodes: &[impl Clone + Into<crate::surfaces::front_page::model::SidebarNodeDisplay>],
     dragged_id: &str,
     requested_index: usize,
 ) -> Vec<String> {
+    let nodes = nodes
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<crate::surfaces::front_page::model::SidebarNodeDisplay>>();
     let root = nodes
         .iter()
         .filter(|node| node.parent_id.is_none() && node.pinned_position.is_none())
@@ -436,7 +474,10 @@ pub(crate) fn ordered_root_node_ids_after_project_drop(
         .collect()
 }
 
-fn node<'a>(nodes: &'a [NodeRow], id: &str) -> Option<&'a NodeRow> {
+fn node<'a>(
+    nodes: &'a [crate::surfaces::front_page::model::SidebarNodeDisplay],
+    id: &str,
+) -> Option<&'a crate::surfaces::front_page::model::SidebarNodeDisplay> {
     nodes.iter().find(|node| node.id == id)
 }
 

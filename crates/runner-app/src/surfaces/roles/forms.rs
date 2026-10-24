@@ -156,6 +156,10 @@ impl NativeRoot {
     }
 
     pub(crate) fn open_create_role(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         if self.role_surfaces.create.is_some() {
             self.enter_entity_route(AppRoute::NewRole, window, cx);
             return;
@@ -382,6 +386,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         let (mut runtimes, agents_checking, agents_error) =
             crate::surfaces::start_chat::load_selectable_runtimes(self.core(cx), self.settings(cx));
         let resolution = resolve_role_edit(&role);

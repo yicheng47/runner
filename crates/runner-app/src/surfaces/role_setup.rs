@@ -51,7 +51,7 @@ impl NativeRoot {
     pub(super) fn render_role_setup(
         &self,
         modal: &StartChatModal,
-        role: &Role,
+        role: &RoleChoice,
         layout: CardLayout,
         cx: &mut Context<Self>,
     ) -> AnyElement {

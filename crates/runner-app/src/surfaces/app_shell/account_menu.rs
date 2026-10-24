@@ -54,6 +54,10 @@ fn items(status: &RemoteStatus) -> Vec<MenuItem> {
 
 impl NativeRoot {
     fn toggle_account_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            self.account_menu.state.close();
+            return;
+        }
         if self.account_menu.state.open {
             self.close_account_menu(window, cx);
         } else {
@@ -80,6 +84,10 @@ impl NativeRoot {
     }
 
     fn activate_account_menu(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            self.account_menu.state.close();
+            return;
+        }
         let status = self
             .app_store
             .read(cx)
@@ -102,6 +110,9 @@ impl NativeRoot {
     }
 
     pub(super) fn render_account_avatar(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.remote_window.is_some() {
+            return div().into_any_element();
+        }
         let zoom = self.settings(cx).app_zoom;
         if !self.app_store.read(cx).remote_access_enabled() {
             return div()
@@ -177,8 +188,8 @@ impl NativeRoot {
                     })
                     .size(px(28. * zoom))
                     .rounded_full()
-                    .border_1()
-                    .border_color(theme::chrome_selected_border())
+                    .border_2()
+                    .border_color(theme::faint())
                     .flex()
                     .items_center()
                     .justify_center()
@@ -211,7 +222,10 @@ impl NativeRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.account_menu.state.open || !self.app_store.read(cx).remote_access_enabled() {
+        if self.remote_window.is_some()
+            || !self.account_menu.state.open
+            || !self.app_store.read(cx).remote_access_enabled()
+        {
             return None;
         }
         let anchor = self.account_menu.anchor?;
@@ -515,5 +529,49 @@ mod tests {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod remote_isolation_tests {
+    use crate::surfaces::remote_client::tests::{
+        add_window, choose_host, enable_front_page, fixture,
+    };
+    use gpui::{TestAppContext, VisualTestContext};
+
+    #[test]
+    fn remote_sidebar_hides_account_and_refuses_stale_account_actions() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "remote-footer");
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_some());
+        window
+            .update(&mut visual, |root, window, cx| {
+                choose_host(root, window, cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SIDEBAR_ACCOUNT").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_none());
+        let before = fake.local_call_count();
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.toggle_account_menu(window, cx);
+                for index in 0..3 {
+                    root.activate_account_menu(index, window, cx);
+                }
+                root.confirm_sign_out(cx);
+                assert!(!root.account_menu.state.open);
+                assert!(!root.settings_page.remote.confirm);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("ACCOUNT_MENU").is_none());
+        assert_eq!(fake.local_call_count(), before);
     }
 }

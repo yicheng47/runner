@@ -394,8 +394,8 @@ pub(super) fn chat_tab_row_active(
 
 pub(super) fn sidebar_tab_target<'a>(
     layout: &PaneLayout,
-    members: &'a [DirectSessionEntry],
-) -> &'a DirectSessionEntry {
+    members: &'a [SessionDisplay],
+) -> &'a SessionDisplay {
     let focused = layout
         .focused_session_id()
         .or_else(|| members.first().map(|member| member.session_id.as_str()))
@@ -408,8 +408,13 @@ pub(super) fn sidebar_tab_target<'a>(
 
 pub(super) fn sidebar_fork_menu_target(
     layout: &PaneLayout,
-    members: &[DirectSessionEntry],
+    members: &[impl Clone + Into<SessionDisplay>],
 ) -> Option<SidebarForkMenuTarget> {
+    let members = members
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect::<Vec<SessionDisplay>>();
     if layout.root.leaves().len() != 1 {
         return None;
     }
@@ -433,14 +438,13 @@ pub(super) fn sidebar_fork_menu_target(
     })
 }
 
-pub(crate) fn project_row_label(label: String) -> AnyElement {
+pub(crate) fn project_row_label(label: String) -> gpui::Div {
     div()
         .min_w(px(0.))
         .flex_1()
         .truncate()
         .font_weight(FontWeight::MEDIUM)
         .child(label)
-        .into_any_element()
 }
 
 pub(crate) fn project_children() -> gpui::Div {
@@ -573,7 +577,7 @@ pub(crate) fn direct_chat_display_status(
 
 pub(super) fn tab_label_live(
     layout: &PaneLayout,
-    sessions: &[DirectSessionEntry],
+    sessions: &[SessionDisplay],
     live_title: impl Fn(&str) -> Option<String>,
 ) -> String {
     tab_label_source(layout, sessions, live_title)
@@ -583,7 +587,7 @@ pub(super) fn tab_label_live(
 
 pub(super) fn tab_label_source(
     layout: &PaneLayout,
-    sessions: &[DirectSessionEntry],
+    sessions: &[SessionDisplay],
     live_title: impl Fn(&str) -> Option<String>,
 ) -> crate::i18n::Text {
     if let Some(name) = &layout.name {
@@ -593,7 +597,7 @@ pub(super) fn tab_label_source(
         .session_ids()
         .iter()
         .find_map(|id| sessions.iter().find(|entry| entry.session_id == *id))
-        .map(|entry| session_label_live(entry, live_title(&entry.session_id).as_deref()).into())
+        .map(|entry| entry.label(live_title(&entry.session_id).as_deref()).into())
         .unwrap_or_else(|| crate::i18n::message("ui.empty_tab"))
 }
 

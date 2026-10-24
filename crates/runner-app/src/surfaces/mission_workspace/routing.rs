@@ -6,6 +6,15 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn set_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            if let AppRoute::Mission(id) = route {
+                self.select_remote_item(
+                    crate::surfaces::remote_client::RemoteItem::Mission(id),
+                    cx,
+                );
+            }
+            return;
+        }
         let route_changed = self.route != route;
         let leaving_mission =
             matches!(self.route, AppRoute::Mission(_)) && !matches!(route, AppRoute::Mission(_));
@@ -51,6 +60,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn record_current_runtime_location(&mut self) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let location = match &self.route {
             AppRoute::Chat => self.active_focused_session_id().map(RuntimeLocation::Chat),
             AppRoute::Mission(mission_id) => Some(RuntimeLocation::Mission(mission_id.clone())),
@@ -168,6 +180,14 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            self.select_remote_item(
+                crate::surfaces::remote_client::RemoteItem::Mission(mission_id),
+                cx,
+            );
+            return;
+        }
+
         if matches!(&self.route, AppRoute::Mission(active) if active == &mission_id) {
             let workspace = self.mission_workspace.read(cx);
             if workspace.loading || workspace.mission.is_some() {

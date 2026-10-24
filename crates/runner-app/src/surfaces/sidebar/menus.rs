@@ -3,8 +3,6 @@ use runner_core::protocol::model::Runtime;
 
 use super::*;
 use crate::*;
-use runner_core::protocol::mission::MissionSummary;
-use runner_core::protocol::node::NodeRow;
 
 /// Where a sidebar menu opens: at the pointer, as a right-click menu does,
 /// or under the row button that opened it.
@@ -34,6 +32,14 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let entries = entries
+            .into_iter()
+            .filter(|(_, action)| self.menu_action_supported(action, cx))
+            .collect::<Vec<_>>();
+        if entries.is_empty() {
+            return;
+        }
+
         let (position, anchor) = match origin {
             MenuOrigin::Pointer(position) => (position, None),
             MenuOrigin::Button(anchor) => (anchor.bottom_left(), Some(anchor)),
@@ -101,7 +107,7 @@ impl Sidebar {
         &mut self,
         node: NodeRow,
         layout: PaneLayout,
-        members: Vec<DirectSessionEntry>,
+        members: Vec<SessionDisplay>,
         position: gpui::Point<gpui::Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -164,12 +170,28 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let entries = mission_menu_entries(
+        let mut entries = mission_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
             &summary.mission.id,
             summary.mission.title,
         );
+        if self.front_page.is_remote() {
+            entries.insert(
+                0,
+                if summary.mission.running {
+                    (
+                        UiMenuItem::new(crate::i18n::message("ui.stop")).icon("square.svg"),
+                        SidebarMenuAction::StopMission(summary.mission.id.clone()),
+                    )
+                } else {
+                    (
+                        UiMenuItem::new(crate::i18n::message("ui.resume")).icon("play.svg"),
+                        SidebarMenuAction::ResumeMission(summary.mission.id.clone()),
+                    )
+                },
+            );
+        }
         self.open_sidebar_context_menu(position, entries, window, cx);
     }
 
@@ -190,7 +212,7 @@ impl Sidebar {
 
     pub(super) fn open_project_menu(
         &mut self,
-        project: runner_core::protocol::project::ProjectRow,
+        project: crate::surfaces::front_page::model::ProjectDisplay,
         origin: MenuOrigin,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -205,6 +227,90 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.menu_action_supported(&action, cx) {
+            return;
+        }
+        if self.front_page.is_remote() {
+            match &action {
+                SidebarMenuAction::TogglePin { node_id, pinned } => {
+                    let Some(node) = self
+                        .source_nodes(cx)
+                        .into_iter()
+                        .find(|node| &node.id == node_id)
+                    else {
+                        return;
+                    };
+                    if let Some(shell) = self.shell.upgrade() {
+                        let pinned = !pinned;
+                        shell.update(cx, |root, cx| {
+                            root.remote_action(
+                                format!("pin:{}", node.id),
+                                &["pin"],
+                                move |client| {
+                                    client.pin(&node, pinned)?;
+                                    Ok(Default::default())
+                                },
+                                cx,
+                            )
+                        });
+                    }
+                    return;
+                }
+                SidebarMenuAction::DeleteProject(id) => {
+                    if let Some(shell) = self.shell.upgrade() {
+                        let id = id.clone();
+                        shell.update(cx, |root, cx| {
+                            if let Some(remote) = root.remote_window.as_mut() {
+                                remote.delete_project = Some(id);
+                                remote.delete_project_force = false;
+                                remote.delete_project_error = None;
+                                cx.notify();
+                            }
+                        });
+                    }
+                    return;
+                }
+                SidebarMenuAction::ArchiveMission(id)
+                | SidebarMenuAction::StopMission(id)
+                | SidebarMenuAction::ResumeMission(id) => {
+                    let id = id.clone();
+                    let action = action.clone();
+                    if let Some(shell) = self.shell.upgrade() {
+                        shell.update(cx, |root, cx| {
+                            let feature = match action {
+                                SidebarMenuAction::StopMission(_) => "stopMission",
+                                SidebarMenuAction::ResumeMission(_) => "resumeMission",
+                                _ => "archive",
+                            };
+                            root.remote_action(
+                                format!("mission:{id}"),
+                                &[feature],
+                                move |client| {
+                                    match action {
+                                        SidebarMenuAction::StopMission(_) => {
+                                            client.stop_mission(id)?
+                                        }
+                                        SidebarMenuAction::ResumeMission(_) => client
+                                            .resume_mission(id, (INITIAL_COLS, INITIAL_ROWS))?,
+                                        _ => client.archive(
+                                            runner_core::companion::ActionTarget {
+                                                kind: runner_core::companion::ActionKind::Mission,
+                                                id,
+                                            },
+                                        )?,
+                                    }
+                                    Ok(Default::default())
+                                },
+                                cx,
+                            );
+                        });
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match action {
             SidebarMenuAction::NewChat(scope) => {
                 self.set_active_project(scope.project_id().map(str::to_owned), cx);
@@ -268,12 +374,16 @@ impl Sidebar {
                             .upgrade()
                             .and_then(|shell| {
                                 let shell = shell.read(cx);
-                                shell
-                                    .tabs
-                                    .tabs()
-                                    .iter()
-                                    .find(|layout| layout.id == *node_id)
-                                    .map(|layout| shell.tab_label_source(layout, cx))
+                                let layout = if let Some(remote) = &shell.remote_window {
+                                    remote.layouts.get(node_id)
+                                } else {
+                                    shell
+                                        .tabs
+                                        .tabs()
+                                        .iter()
+                                        .find(|layout| layout.id == *node_id)
+                                };
+                                layout.map(|layout| shell.tab_label_source(layout, cx))
                             })
                             .unwrap_or_else(|| crate::i18n::message("ui.chat_tab"));
                         (original.clone(), placeholder)
@@ -360,6 +470,7 @@ impl Sidebar {
                 })
                 .detach();
             }
+            SidebarMenuAction::StopMission(_) | SidebarMenuAction::ResumeMission(_) => {}
             SidebarMenuAction::DeleteProject(project_id) => {
                 if let Some(shell) = self.shell.upgrade() {
                     shell.update(cx, |shell, shell_cx| {

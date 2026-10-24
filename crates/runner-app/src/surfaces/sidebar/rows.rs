@@ -2,7 +2,7 @@ use super::*;
 use crate::surfaces::sidebar_logic::AttentionState;
 use crate::*;
 use runner_app::ui::TextField;
-use runner_core::protocol::model::{MissionStatus, Runtime};
+use runner_core::protocol::model::Runtime;
 use runner_core::protocol::node::NodeType;
 
 impl Sidebar {
@@ -80,6 +80,9 @@ impl Sidebar {
     }
 
     pub(super) fn resolved_sidebar_rows(&self, cx: &App) -> Vec<SidebarRow> {
+        if self.front_page.is_remote() {
+            return self.remote_rows(cx);
+        }
         let Some(shell) = self.shell.upgrade() else {
             return Vec::new();
         };
@@ -92,6 +95,9 @@ impl Sidebar {
         tabs: &TabSet,
         cx: &App,
     ) -> Vec<SidebarRow> {
+        if self.front_page.is_remote() {
+            return self.remote_rows(cx);
+        }
         let layouts = tabs
             .tabs()
             .iter()
@@ -121,11 +127,15 @@ impl Sidebar {
                     let members = layout
                         .session_ids()
                         .into_iter()
-                        .filter_map(|id| sessions.get(id.as_str()).map(|row| (*row).clone()))
+                        .filter_map(|id| sessions.get(id.as_str()).copied())
                         .collect::<Vec<_>>();
                     if members.is_empty() {
                         return None;
                     }
+                    let members = members
+                        .into_iter()
+                        .map(SessionDisplay::local)
+                        .collect::<Vec<_>>();
                     let rollup = self.tab_status_rollup(&members, cx);
                     let attention = status_attention(rollup.priority_value()).max(
                         if members
@@ -138,7 +148,7 @@ impl Sidebar {
                         },
                     );
                     Some(SidebarRow::Tab {
-                        node: node.clone(),
+                        node: node.clone().into(),
                         layout: (*layout).clone(),
                         members,
                         attention,
@@ -146,7 +156,7 @@ impl Sidebar {
                 }
                 NodeType::Mission => {
                     let summary = missions.get(node.ref_id.as_deref()?)?;
-                    let rollup = self.mission_status_rollup(summary);
+                    let rollup = self.mission_status_rollup(*summary);
                     let attention = status_attention(rollup.priority_value()).max(
                         if self.archiving_missions.contains(&summary.mission.id) {
                             AttentionState::Working
@@ -155,8 +165,8 @@ impl Sidebar {
                         },
                     );
                     Some(SidebarRow::Mission {
-                        node: node.clone(),
-                        summary: (*summary).clone(),
+                        node: node.clone().into(),
+                        summary: (*summary).clone().into(),
                         attention,
                     })
                 }
@@ -167,23 +177,20 @@ impl Sidebar {
 
     pub(super) fn tab_status_rollup(
         &self,
-        members: &[DirectSessionEntry],
+        members: &[SessionDisplay],
         cx: &App,
     ) -> runner_app::ui::agent_status::StatusRollup {
         use runner_core::protocol::status::{AgentStatus, Lifecycle};
-        let store = self.app_store.read(cx);
         let entries = members
             .iter()
             .filter(|member| !Runtime::parse(&member.agent_runtime).is_some_and(Runtime::is_shell))
             .map(|member| {
-                let mut status = store
-                    .session_statuses
-                    .get(&member.session_id)
-                    .cloned()
-                    .unwrap_or(AgentStatus {
-                        lifecycle: Lifecycle::Running,
-                        ..Default::default()
-                    });
+                let mut status =
+                    self.session_status(&member.session_id, cx)
+                        .unwrap_or(AgentStatus {
+                            lifecycle: Lifecycle::Running,
+                            ..Default::default()
+                        });
                 match member.status {
                     SessionStatus::Running => {}
                     SessionStatus::Stopped => status.lifecycle = Lifecycle::Stopped,
@@ -200,10 +207,11 @@ impl Sidebar {
 
     pub(super) fn mission_status_rollup(
         &self,
-        summary: &runner_core::protocol::mission::MissionSummary,
+        summary: &(impl Clone + Into<MissionSummary>),
     ) -> runner_app::ui::agent_status::StatusRollup {
+        let summary: MissionSummary = summary.clone().into();
         let mut entries = summary.session_statuses.clone();
-        if summary.mission.status == MissionStatus::Running && !summary.any_session_live {
+        if summary.mission.running && !summary.any_session_live {
             for (_, status) in &mut entries {
                 status.unread_since = None;
             }
@@ -336,7 +344,7 @@ impl Sidebar {
             .into_any_element()
         } else {
             if pane_tooltip {
-                rollup.render_pane(id.clone())
+                rollup.render_pane_with_elapsed(id.clone(), !self.front_page.is_remote())
             } else {
                 rollup.render(id.clone())
             }
@@ -388,7 +396,7 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let text_size = if self.app_store.read(cx).settings.sidebar_active_only {
+        let text_size = if self.settings(cx).sidebar_active_only {
             theme::text_ui()
         } else {
             theme::text_body()
@@ -406,12 +414,88 @@ impl Sidebar {
             Some(cx.on_focus_out(&focus, window, |this, _, window, cx| {
                 this.submit_sidebar_rename(window, cx);
             }));
-        self.rename = Some(SidebarRename { target, input });
+        self.rename = Some(SidebarRename {
+            pending: false,
+            target,
+            input,
+        });
         focus.focus(window, cx);
         cx.notify();
     }
 
     pub(super) fn submit_sidebar_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.front_page.is_remote() {
+            let Some(rename) = self.rename.as_ref() else {
+                return;
+            };
+            if rename.pending
+                || rename.input.read(cx).is_composing()
+                || !self.front_page.supports(&["rename"])
+            {
+                return;
+            }
+            let input = rename.input.clone();
+            let name = input.read(cx).text().trim().to_owned();
+            let target = match &rename.target {
+                SidebarRenameTarget::Tab {
+                    node_id,
+                    session_id,
+                    ..
+                } => runner_core::companion::ActionTarget {
+                    kind: if session_id.is_some() {
+                        runner_core::companion::ActionKind::Session
+                    } else {
+                        runner_core::companion::ActionKind::Tab
+                    },
+                    id: session_id.clone().unwrap_or_else(|| node_id.clone()),
+                },
+                SidebarRenameTarget::Mission { mission_id, .. } => {
+                    runner_core::companion::ActionTarget {
+                        kind: runner_core::companion::ActionKind::Mission,
+                        id: mission_id.clone(),
+                    }
+                }
+                SidebarRenameTarget::Project { project_id, .. } => {
+                    runner_core::companion::ActionTarget {
+                        kind: runner_core::companion::ActionKind::Project,
+                        id: project_id.clone(),
+                    }
+                }
+            };
+            self.rename.as_mut().unwrap().pending = true;
+            let client = self.front_page.clone();
+            let guard = client.clone();
+            let work = cx.background_spawn(async move { client.rename(target, name) });
+            cx.spawn_in(window, async move |weak, cx| {
+                let result = work.await;
+                let _ = weak.update_in(cx, |sidebar, window, cx| {
+                    if !guard.valid()
+                        || sidebar.front_page.target != guard.target
+                        || !sidebar
+                            .rename
+                            .as_ref()
+                            .is_some_and(|rename| rename.input == input)
+                    {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => {
+                            sidebar.rename = None;
+                            sidebar._rename_focus_subscription = None;
+                            sidebar.focus_shell_terminal(window, cx);
+                        }
+                        Err(error) => {
+                            sidebar.rename.as_mut().unwrap().pending = false;
+                            sidebar.report_error(error.to_string(), cx);
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+
         let Some(rename) = self.rename.take() else {
             return;
         };
@@ -470,7 +554,7 @@ impl Sidebar {
     }
 }
 
-fn status_attention(priority: u8) -> AttentionState {
+pub(super) fn status_attention(priority: u8) -> AttentionState {
     match priority {
         5 => AttentionState::Error,
         4 => AttentionState::NeedsYou,

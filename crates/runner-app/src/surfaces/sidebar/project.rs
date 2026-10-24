@@ -11,6 +11,11 @@ use runner_app::ui::{
 
 impl NativeRoot {
     pub(super) fn open_project_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            self.open_remote_project_picker(window, cx);
+            return;
+        }
+
         let cwd = self.settings(cx).default_working_dir.trim().to_owned();
         let name = project_name_from_path(&cwd);
         let cwd_input = cx.new(|input_cx| {
@@ -153,6 +158,11 @@ impl NativeRoot {
     }
 
     fn confirm_delete_project(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            self.delete_remote_project(cx);
+            return;
+        }
+
         let Some(project_id) = self.project_delete_confirm.clone() else {
             return;
         };
@@ -203,30 +213,52 @@ impl NativeRoot {
 impl NativeRoot {
     pub(crate) fn render_sidebar_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut overlays = Vec::new();
-        if let Some(menu) = &self.sidebar.read(cx).context_menu {
+        if let Some(menu) = &self.front_page_sidebar().read(cx).context_menu {
             overlays.push(menu.clone().into_any_element());
         }
         if self.project_modal.is_some() {
             overlays.push(self.render_project_modal(cx));
         }
-        if let Some(project_id) = &self.project_delete_confirm {
-            if let Some(project) = self
-                .app_store
-                .read(cx)
-                .projects
-                .iter()
-                .find(|project| project.id == *project_id)
-                .cloned()
-            {
-                let confirm_root = cx.entity();
-                let cancel_root = confirm_root.clone();
-                overlays.push(
+        if let Some(picker) = self
+            .remote_window
+            .as_ref()
+            .and_then(|remote| remote.project_picker.clone())
+        {
+            overlays.push(picker.into_any_element());
+        }
+        let deletion = if let Some(remote) = &self.remote_window {
+            remote.delete_project.as_ref().and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .remote_clients
+                    .read(cx)
+                    .overviews
+                    .get(&remote.computer.id)?
+                    .projects
+                    .iter()
+                    .find(|project| &project.id == id)
+                    .map(|project| (project.name.clone(), remote.delete_project_busy))
+            })
+        } else {
+            self.project_delete_confirm.as_ref().and_then(|id| {
+                self.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .find(|project| &project.id == id)
+                    .map(|project| (project.name.clone(), self.project_delete_busy))
+            })
+        };
+        if let Some((project_name, busy)) = deletion {
+            let confirm_root = cx.entity();
+            let cancel_root = confirm_root.clone();
+            overlays.push(
                     ConfirmDialog::new(
-                        crate::i18n::tf("format.delete_project", &[("project", (project.name).to_string())]),
-                        crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f"),
+                        crate::i18n::tf("format.delete_project", &[("project", project_name.to_string())]),
+                        self.remote_window.as_ref().and_then(|remote| remote.delete_project_error.as_ref()).map(|error| format!("{}\n{}", crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f"), error)).unwrap_or_else(|| crate::i18n::text("ui.deleting_this_project_archives_every_chat_and_mission_inside_it_running_ones_are_stopped_f").to_owned()),
                         crate::i18n::text("ui.delete_project"),
                         crate::i18n::text("ui.archiving"),
-                        self.project_delete_busy,
+                        busy,
                         Rc::new(move |window, cx| {
                             confirm_root.update(cx, |this, cx| {
                                 this.confirm_delete_project(window, cx)
@@ -234,16 +266,13 @@ impl NativeRoot {
                         }),
                         Rc::new(move |_, cx| {
                             cancel_root.update(cx, |this, cx| {
-                                if !this.project_delete_busy {
-                                    this.project_delete_confirm = None;
-                                    cx.notify();
-                                }
+                                if let Some(remote) = this.remote_window.as_mut() { if !remote.delete_project_busy { remote.delete_project = None; cx.notify(); } }
+                                else if !this.project_delete_busy { this.project_delete_confirm = None; cx.notify(); }
                             });
                         }),
                     )
                     .into_any_element(),
                 );
-            }
         }
         overlays
     }
@@ -388,5 +417,122 @@ impl NativeRoot {
         })
         .footer(footer)
         .into_any_element()
+    }
+}
+
+impl NativeRoot {
+    fn open_remote_project_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let client = self.front_page_client(cx);
+        if !client.supports(&["folders", "createProject"]) {
+            return;
+        }
+        let Some(anchor) = self.front_page_sidebar().read(cx).project_anchor else {
+            return;
+        };
+        let remote = self.remote_window.as_ref().unwrap();
+        let name = remote.computer.name.clone();
+        let platform = remote.computer.info.platform.clone();
+        let input = cx.new(|cx| TextField::new(cx.focus_handle(), "", "", false));
+        let picker = cx.new(|cx| {
+            crate::surfaces::front_page::folder_picker::FolderPicker::new(
+                client.clone(),
+                name,
+                platform,
+                input.clone(),
+                Vec::new(),
+                cx,
+            )
+        });
+        let epoch = self.client_ui.epoch;
+        let subscription = cx.observe(&input, move |root, input, cx| {
+            if root.client_ui.epoch != epoch
+                || !client.valid()
+                || root.front_page_client(cx).target != client.target
+            {
+                return;
+            }
+            let path = input.read(cx).text().to_owned();
+            if path.is_empty() {
+                return;
+            }
+            let name = path
+                .rsplit(['/', '\\'])
+                .find(|part| !part.is_empty())
+                .unwrap_or(&path)
+                .to_owned();
+            if let Some(remote) = root.remote_window.as_mut() {
+                remote.project_picker = None;
+                remote.project_picker_subscription = None;
+            }
+            root.remote_action(
+                "createProject".into(),
+                &["createProject"],
+                move |client| {
+                    client.create_project(name, path)?;
+                    Ok(Default::default())
+                },
+                cx,
+            );
+        });
+        let remote = self.remote_window.as_mut().unwrap();
+        remote.project_picker = Some(picker.clone());
+        remote.project_picker_subscription = Some(subscription);
+        let popup_width = px(320. * self.settings(cx).app_zoom);
+        picker.update(cx, |picker, cx| {
+            picker.set_anchor(anchor, cx);
+            picker.set_popup_width(popup_width);
+            picker.return_focus(window.focused(cx));
+            picker.browse(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn delete_remote_project(&mut self, cx: &mut Context<Self>) {
+        let client = self.front_page_client(cx);
+        if !client.supports(&["deleteProject"]) {
+            return;
+        }
+        let Some(remote) = self.remote_window.as_mut() else {
+            return;
+        };
+        let Some(project) = remote.delete_project.clone() else {
+            return;
+        };
+        if remote.delete_project_busy {
+            return;
+        }
+        let force = remote.delete_project_force;
+        remote.delete_project_busy = true;
+        remote.delete_project_error = None;
+        let epoch = self.client_ui.epoch;
+        let guard = client.clone();
+        let id = project.clone();
+        let work = cx.background_spawn(async move { client.delete_project(project, force) });
+        cx.spawn(async move |weak, cx| {
+            let result = work.await;
+            let _ = weak.update(cx, |root, cx| {
+                if root.client_ui.epoch != epoch || !guard.valid() {
+                    return;
+                }
+                let Some(remote) = root.remote_window.as_mut().filter(|remote| {
+                    remote.front_page.target == guard.target
+                        && remote.delete_project.as_ref() == Some(&id)
+                }) else {
+                    return;
+                };
+                remote.delete_project_busy = false;
+                match result {
+                    Ok(()) => remote.delete_project = None,
+                    Err(error) => {
+                        remote.delete_project_force =
+                            error.message.to_ascii_lowercase().contains("running");
+                        remote.delete_project_error = Some(error.to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 }

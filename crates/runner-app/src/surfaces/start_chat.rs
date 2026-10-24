@@ -9,13 +9,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::surfaces::front_page::model::{RoleChoice, RuntimeChoice};
 use anyhow::bail;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, Context, Div, FontWeight, KeyDownEvent, PathPromptOptions,
     ScrollHandle, Window,
 };
-use runner_core::protocol::model::{CodexSpeed, Role};
+use runner_core::protocol::model::CodexSpeed;
+#[cfg(test)]
+use runner_core::protocol::model::Role;
 use runner_core::protocol::project::ProjectScope;
 use runner_core::protocol::runtime::{
     filter_selectable_runtime_catalog, RuntimeCatalogEntry, RuntimeCatalogOption,
@@ -93,11 +96,18 @@ enum StartChatSelection {
 
 pub(crate) struct StartChatModal {
     mission_role: Option<add_role::MissionRoleForm>,
+    front_page: crate::surfaces::front_page::FrontPageClient,
+    folder_picker: Option<Entity<crate::surfaces::front_page::folder_picker::FolderPicker>>,
+    remote_started: Option<String>,
+    remote_renamed: bool,
+    host_account: Option<String>,
+    _folder_subscription: Option<Subscription>,
+    _cwd_blur: Option<Subscription>,
     target: ChatTarget,
     scope: ProjectScope,
     mode: ChatMode,
-    roles: Vec<Role>,
-    runtimes: Vec<RuntimeCatalogEntry>,
+    roles: Vec<RoleChoice>,
+    runtimes: Vec<RuntimeChoice>,
     /// The agents Direct chats last started on, most recent first.
     recent_runtimes: Vec<String>,
     role_id: Option<String>,
@@ -136,6 +146,17 @@ pub(crate) struct StartChatModal {
 }
 
 impl StartChatModal {
+    #[cfg(test)]
+    pub(crate) fn test_folder_picker(
+        &self,
+    ) -> Option<Entity<crate::surfaces::front_page::folder_picker::FolderPicker>> {
+        self.folder_picker.clone()
+    }
+    #[cfg(test)]
+    pub(crate) fn test_inputs(&self) -> (Entity<TextField>, Entity<TextField>) {
+        (self.title.clone(), self.cwd.clone())
+    }
+
     fn mode_focus(&self) -> FocusHandle {
         match self.mode {
             ChatMode::Role => self.role_mode_focus.clone(),
@@ -153,19 +174,19 @@ impl StartChatModal {
         }
     }
 
-    fn selected_role(&self) -> Option<&Role> {
+    fn selected_role(&self) -> Option<&RoleChoice> {
         self.role_id
             .as_deref()
             .and_then(|role_id| self.roles.iter().find(|role| role.id == role_id))
     }
 
-    fn selected_runtime(&self) -> Option<&RuntimeCatalogEntry> {
+    fn selected_runtime(&self) -> Option<&RuntimeChoice> {
         self.runtime_name
             .as_deref()
             .and_then(|name| self.runtime_entry(name))
     }
 
-    fn runtime_entry(&self, name: &str) -> Option<&RuntimeCatalogEntry> {
+    fn runtime_entry(&self, name: &str) -> Option<&RuntimeChoice> {
         self.runtimes
             .iter()
             .find(|runtime| runtime.name.key() == name)
@@ -184,11 +205,22 @@ impl StartChatModal {
         self.role_runtime_override.is_none()
     }
 
-    fn active_runtime(&self) -> Option<&RuntimeCatalogEntry> {
+    fn active_runtime(&self) -> Option<&RuntimeChoice> {
         match self.mode {
             ChatMode::Role => self.role_agent().and_then(|name| self.runtime_entry(name)),
             ChatMode::Runtime => self.selected_runtime(),
         }
+    }
+
+    fn runtime_has_speed(&self, key: &str) -> bool {
+        self.runtimes
+            .iter()
+            .find(|runtime| runtime.name.key() == key)
+            .map(|runtime| runtime.speed)
+            .unwrap_or_else(|| {
+                !self.front_page.is_remote()
+                    && crate::runtime_ui::catalog_capabilities(&[], key).codex_speed
+            })
     }
 
     fn codex_speed_visible(&self) -> bool {
@@ -196,9 +228,7 @@ impl StartChatModal {
             ChatMode::Role => self.role_agent(),
             ChatMode::Runtime => self.runtime_name.as_deref(),
         };
-        key.is_some_and(|key| {
-            crate::runtime_ui::catalog_capabilities(&self.runtimes, key).codex_speed
-        })
+        key.is_some_and(|key| self.runtime_has_speed(key))
     }
 
     fn effective_speed(&self) -> Option<CodexSpeed> {
@@ -228,9 +258,7 @@ impl StartChatModal {
     /// Codex agent, else Inherit.
     fn baseline_speed(&self) -> String {
         match inheriting_role(self)
-            .filter(|role| {
-                crate::runtime_ui::catalog_capabilities(&self.runtimes, &role.runtime).codex_speed
-            })
+            .filter(|role| self.runtime_has_speed(&role.runtime))
             .and_then(|role| role.codex_speed)
         {
             Some(CodexSpeed::Standard) => "standard",
@@ -276,6 +304,11 @@ impl StartChatModal {
 
     fn can_submit(&self) -> bool {
         !self.submitting
+            && self.front_page.supports(&["startChat"])
+            && (!self.front_page.is_remote()
+                || self
+                    .active_runtime()
+                    .is_some_and(|runtime| runtime.available))
             && match self.mode {
                 ChatMode::Role => self.selected_role().is_some(),
                 ChatMode::Runtime => self.selected_runtime().is_some(),
@@ -351,6 +384,27 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            if let Some(layout) = self.front_page_layout().cloned() {
+                if let Some(pane) = new_terminal_empty_pane(&layout) {
+                    let size = self.estimated_terminal_size(&layout, &pane, window, cx);
+                    self.remote_start_shell(
+                        layout,
+                        Some(pane),
+                        (size.0.max(20), size.1.max(8)),
+                        cx,
+                    );
+                    return;
+                }
+            }
+            self.new_terminal_tab(
+                ProjectScope::or_root(self.active_project_id(cx)),
+                window,
+                cx,
+            );
+            return;
+        }
+
         if self.create_modal_open() {
             return;
         }
@@ -373,6 +427,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         if self.create_modal_open() {
             return;
         }
@@ -455,6 +513,18 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            let mut draft = PaneLayout::single(None, &[]);
+            draft.id = runner_core::event_log::UlidGen::new()
+                .next()
+                .expect("new tab ULID");
+            draft.parent_id = scope.project_id().map(str::to_owned);
+            let pane = draft.focused_pane_id.clone();
+            let size = self.estimated_terminal_size(&draft, &pane, window, cx);
+            self.remote_start_shell(draft, Some(pane), (size.0.max(20), size.1.max(8)), cx);
+            return;
+        }
+
         let project_cwd = scope.project_id().and_then(|project_id| {
             self.app_store
                 .read(cx)
@@ -517,6 +587,31 @@ impl NativeRoot {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            if !self.front_page_is_chat() {
+                return;
+            }
+            let Some(layout) = self.front_page_layout().cloned() else {
+                return;
+            };
+            if self.active_tab_is_terminal(cx) {
+                if let Some(pane) = new_terminal_empty_pane(&layout) {
+                    let size = self.estimated_terminal_size(&layout, &pane, window, cx);
+                    self.remote_start_shell(
+                        layout,
+                        Some(pane),
+                        (size.0.max(20), size.1.max(8)),
+                        cx,
+                    );
+                } else {
+                    self.split_pane(&layout.focused_pane_id, SplitOrientation::Row, window, cx);
+                }
+            } else {
+                self.add_terminal_drawer_shell(window, cx);
+            }
+            return;
+        }
+
         let mission_drawer_available = matches!(self.route, AppRoute::Mission(_))
             && self.mission_workspace.read(cx).drawer_available(cx);
         let target = new_terminal_target(
@@ -555,6 +650,24 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            let Some(layout) = self.front_page_layout() else {
+                return;
+            };
+            if layout.drawer_open() {
+                self.hide_terminal_drawer(window, cx);
+            } else if layout.drawer_shells().is_empty() {
+                self.add_terminal_drawer_shell(window, cx);
+            } else {
+                if let Some(layout) = self.front_page_layout_mut() {
+                    layout.set_drawer_open(true);
+                }
+                self.attach_remote_panes(cx);
+                cx.notify();
+            }
+            return;
+        }
+
         if matches!(self.route, AppRoute::Mission(_)) {
             self.mission_workspace
                 .update(cx, |workspace, workspace_cx| {
@@ -581,6 +694,15 @@ impl NativeRoot {
     }
 
     pub(crate) fn hide_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            if let Some(layout) = self.front_page_layout_mut() {
+                layout.set_drawer_open(false);
+            }
+            self.attach_remote_panes(cx);
+            cx.notify();
+            return;
+        }
+
         if let Some(layout) = self.tabs.active_mut() {
             layout.set_drawer_open(false);
         }
@@ -593,6 +715,16 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            if let Some(layout) = self.front_page_layout_mut() {
+                layout.activate_drawer_shell(session_id);
+            }
+            self.attach_remote_panes(cx);
+            self.focus_remote_terminal(session_id, window, cx);
+            cx.notify();
+            return;
+        }
+
         if !self
             .tabs
             .active_mut()
@@ -622,6 +754,14 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            if let Some(layout) = self.front_page_layout().cloned() {
+                let size = self.estimated_drawer_terminal_size(&layout, window, cx);
+                self.remote_start_shell(layout, None, (size.0.max(20), size.1.max(8)), cx);
+            }
+            return;
+        }
+
         let Some(original) = self.tabs.active().cloned() else {
             self.chat_error = Some(crate::i18n::message(
                 "ui.open_a_chat_tab_before_creating_a_terminal",
@@ -808,6 +948,31 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            let target = self
+                .front_page_layout()
+                .and_then(|layout| {
+                    layout
+                        .root
+                        .leaves()
+                        .into_iter()
+                        .find(|leaf| leaf.id == layout.focused_pane_id && leaf.session_id.is_none())
+                        .map(|leaf| ChatTarget::Pane {
+                            tab_id: layout.id.clone(),
+                            pane_id: leaf.id.clone(),
+                        })
+                })
+                .unwrap_or(ChatTarget::NewTab);
+            let project = match &target {
+                ChatTarget::Pane { .. } => self
+                    .front_page_layout()
+                    .and_then(|layout| layout.parent_id.clone()),
+                ChatTarget::NewTab => self.active_project_id(cx),
+            };
+            self.open_remote_start_chat(target, ProjectScope::or_root(project), window, cx);
+            return;
+        }
+
         if self.create_modal_open() {
             return;
         }
@@ -836,6 +1001,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            self.open_remote_start_chat(ChatTarget::NewTab, scope, window, cx);
+            return;
+        }
+
         if self.create_modal_open() {
             return;
         }
@@ -858,6 +1028,18 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            if let Some(layout) = self.front_page_layout() {
+                let target = ChatTarget::Pane {
+                    tab_id: layout.id.clone(),
+                    pane_id: pane_id.into(),
+                };
+                let scope = ProjectScope::or_root(layout.parent_id.clone());
+                self.open_remote_start_chat(target, scope, window, cx);
+            }
+            return;
+        }
+
         let Some(tab_id) = self.tabs.active_tab_id().map(str::to_owned) else {
             return;
         };
@@ -884,6 +1066,85 @@ impl NativeRoot {
         );
     }
 
+    fn open_remote_start_chat(
+        &mut self,
+        target: ChatTarget,
+        scope: ProjectScope,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_modal_open() {
+            return;
+        }
+        let client = self.front_page_client(cx);
+        let required = if matches!(target, ChatTarget::Pane { .. }) {
+            vec!["catalog", "startChat", "layout"]
+        } else {
+            vec!["catalog", "startChat"]
+        };
+        if !client.supports(&required) {
+            return;
+        }
+        let remote = self.remote_window.as_mut().unwrap();
+        if !remote.actions_pending.insert("catalog".into()) {
+            return;
+        }
+        remote.form_generation += 1;
+        let generation = remote.form_generation;
+        let epoch = self.client_ui.epoch;
+        let guard = client.clone();
+        let work = cx.background_spawn(async move { client.catalog() });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = work.await;
+            let _ = weak.update_in(cx, |root, window, cx| {
+                if root.client_ui.epoch != epoch || !guard.valid() {
+                    return;
+                }
+                let Some(remote) = root.remote_window.as_mut() else {
+                    return;
+                };
+                remote.actions_pending.remove("catalog");
+                if remote.form_generation != generation {
+                    cx.notify();
+                    return;
+                }
+                match result {
+                    Ok(catalog) => {
+                        remote.catalog = Some(catalog.clone());
+                        let roles = catalog.roles.clone().into_iter().map(Into::into).collect();
+                        let runtimes = catalog
+                            .runtimes
+                            .iter()
+                            .filter_map(RuntimeChoice::remote)
+                            .collect();
+                        root.build_start_chat_modal(
+                            target,
+                            None,
+                            roles,
+                            runtimes,
+                            Vec::new(),
+                            scope,
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            false,
+                            None,
+                            None,
+                            guard,
+                            Some(catalog),
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(error) => remote.action_error = Some(error.to_string()),
+                }
+                root.sync_remote_state(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn open_start_chat_modal(
         &mut self,
         target: ChatTarget,
@@ -902,38 +1163,72 @@ impl NativeRoot {
 
         let (runtimes, agents_checking, agents_error) =
             load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let runtimes = runtimes
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<RuntimeChoice>>();
         let recent_runtimes = read_recent_runtimes(&self.app_store.read(cx).app_data_dir);
+        let roles = self
+            .app_store
+            .read(cx)
+            .roles
+            .clone()
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<RoleChoice>>();
+        let (scope, project_cwd) = project_start_scope(project.as_ref());
+        let default_runtime = self.settings(cx).default_runtime.clone();
+        let default_working_dir = self.settings(cx).default_working_dir.clone();
+        let front_page = self.front_page_client(cx);
+        self.build_start_chat_modal(
+            target,
+            default_role_id,
+            roles,
+            runtimes,
+            recent_runtimes,
+            scope,
+            project_cwd,
+            default_runtime,
+            default_working_dir,
+            agents_checking,
+            agents_error,
+            error,
+            front_page,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_start_chat_modal(
+        &mut self,
+        target: ChatTarget,
+        default_role_id: Option<String>,
+        roles: Vec<RoleChoice>,
+        runtimes: Vec<RuntimeChoice>,
+        recent_runtimes: Vec<String>,
+        scope: ProjectScope,
+        project_cwd: String,
+        default_runtime: String,
+        default_working_dir: String,
+        agents_checking: bool,
+        agents_error: Option<String>,
+        mut error: Option<String>,
+        front_page: crate::surfaces::front_page::FrontPageClient,
+        host_catalog: Option<runner_core::companion::Catalog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mode = ChatMode::Runtime;
         let role_id = default_role_id
-            .filter(|role_id| {
-                self.app_store
-                    .read(cx)
-                    .roles
-                    .iter()
-                    .any(|role| role.id == *role_id)
-            })
-            .or_else(|| {
-                self.app_store
-                    .read(cx)
-                    .roles
-                    .first()
-                    .map(|role| role.id.clone())
-            });
-        let runtime_name = initial_direct_runtime(
-            &runtimes,
-            &recent_runtimes,
-            &self.settings(cx).default_runtime,
-        );
+            .filter(|role_id| roles.iter().any(|role| role.id == *role_id))
+            .or_else(|| roles.first().map(|role| role.id.clone()));
+        let runtime_name = initial_direct_runtime(&runtimes, &recent_runtimes, &default_runtime);
         let title = match mode {
             ChatMode::Role => role_id
                 .as_deref()
-                .and_then(|role_id| {
-                    self.app_store
-                        .read(cx)
-                        .roles
-                        .iter()
-                        .find(|role| role.id == role_id)
-                })
+                .and_then(|role_id| roles.iter().find(|role| role.id == role_id))
                 .map(|role| default_title_for_role(&role.handle))
                 .unwrap_or_default(),
             ChatMode::Runtime => runtime_name
@@ -942,24 +1237,28 @@ impl NativeRoot {
                 .map(|runtime| default_title_for_runtime(&runtime.display_name))
                 .unwrap_or_default(),
         };
-        let cwd_placeholder = cwd_placeholder(
-            mode,
-            role_id.as_deref().and_then(|role_id| {
-                self.app_store
-                    .read(cx)
-                    .roles
-                    .iter()
-                    .find(|role| role.id == role_id)
-            }),
-            &self.settings(cx).default_working_dir,
-        );
+        let cwd_placeholder = if front_page.is_remote() {
+            crate::i18n::text("ui.blank_starts_in_your_default_directory").to_owned()
+        } else {
+            cwd_placeholder(
+                mode,
+                role_id
+                    .as_deref()
+                    .and_then(|role_id| roles.iter().find(|role| role.id == role_id)),
+                &default_working_dir,
+            )
+        };
         let title_input = cx.new(|input_cx| {
             TextField::new(input_cx.focus_handle(), "", title, false).text_size(theme::text_body())
         });
-        let (scope, project_cwd) = project_start_scope(project.as_ref());
         let cwd_input = cx.new(|input_cx| {
-            working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder)
-                .text_size(theme::text_ui())
+            if front_page.is_remote() {
+                TextField::new(input_cx.focus_handle(), project_cwd, cwd_placeholder, true)
+                    .text_size(theme::text_ui())
+            } else {
+                working_dir_text_field(input_cx.focus_handle(), project_cwd, cwd_placeholder)
+                    .text_size(theme::text_ui())
+            }
         });
         let model_input = cx.new(|input_cx| {
             TextField::new(
@@ -972,7 +1271,6 @@ impl NativeRoot {
         });
         let root = cx.entity();
         let role_handler = selection_handler(&root, StartChatSelection::Role);
-        let roles = self.app_store.read(cx).roles.clone();
         let selected_role = role_id
             .as_deref()
             .and_then(|id| roles.iter().find(|role| role.id == id));
@@ -1068,10 +1366,23 @@ impl NativeRoot {
         self.sidebar_preview_open = false;
         self.start_chat_modal = Some(StartChatModal {
             mission_role: None,
+            front_page,
+            folder_picker: None,
+            remote_started: None,
+            remote_renamed: false,
+            host_account: host_catalog.as_ref().and_then(|catalog| {
+                catalog
+                    .accounts
+                    .iter()
+                    .find(|account| account.id == catalog.active_account)
+                    .map(|account| account.name.clone())
+            }),
+            _folder_subscription: None,
+            _cwd_blur: None,
             target,
             scope,
             mode,
-            roles: self.app_store.read(cx).roles.clone(),
+            roles,
             runtimes,
             recent_runtimes,
             role_id,
@@ -1103,6 +1414,34 @@ impl NativeRoot {
             error: error.take().map(Into::into),
             _model_subscription: model_subscription,
         });
+        if let Some(catalog) = host_catalog {
+            let client = self.front_page_client(cx);
+            let remote = self.remote_window.as_ref().unwrap();
+            let computer = remote.computer.name.clone();
+            let platform = remote.computer.info.platform.clone();
+            let input = self.start_chat_modal.as_ref().unwrap().cwd.clone();
+            let picker = cx.new(|picker_cx| {
+                crate::surfaces::front_page::folder_picker::FolderPicker::new(
+                    client,
+                    computer,
+                    platform,
+                    input.clone(),
+                    crate::surfaces::front_page::folder_picker::choices(&catalog),
+                    picker_cx,
+                )
+            });
+            let subscription = cx.observe(&picker, |_, _, cx| cx.notify());
+            let blur_picker = picker.clone();
+            let blur = cx.on_focus_out(
+                &input.read(cx).focus_handle(),
+                window,
+                move |_, _, _, cx| blur_picker.update(cx, |picker, cx| picker.validate(cx)),
+            );
+            let modal = self.start_chat_modal.as_mut().unwrap();
+            modal.folder_picker = Some(picker);
+            modal._folder_subscription = Some(subscription);
+            modal._cwd_blur = Some(blur);
+        }
         if let Some(modal) = self.start_chat_modal.as_mut() {
             restore_baseline(modal, cx);
         }
@@ -1116,6 +1455,9 @@ impl NativeRoot {
     }
 
     fn refresh_start_chat_models(&self, cx: &Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         if let Some(runtime) = self
             .start_chat_modal
             .as_ref()
@@ -1127,8 +1469,15 @@ impl NativeRoot {
     }
 
     pub(crate) fn refresh_start_chat_runtimes(&mut self, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let (runtimes, agents_checking, agents_error) =
             load_selectable_runtimes(self.core(cx), self.settings(cx));
+        let runtimes = runtimes
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<RuntimeChoice>>();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
@@ -1193,6 +1542,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_start_chat_default_runtime(&mut self, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let default_runtime = self.settings(cx).default_runtime.clone();
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
@@ -1260,7 +1612,11 @@ impl NativeRoot {
                 .unwrap_or_default(),
         };
         update_auto_title(&modal.title, derived, cx);
-        let placeholder = cwd_placeholder(mode, modal.selected_role(), &default_working_dir);
+        let placeholder = if modal.front_page.is_remote() {
+            crate::i18n::text("ui.blank_starts_in_your_default_directory").to_owned()
+        } else {
+            cwd_placeholder(mode, modal.selected_role(), &default_working_dir)
+        };
         modal.cwd.update(cx, |input, input_cx| {
             input.set_placeholder(placeholder, input_cx)
         });
@@ -1292,8 +1648,11 @@ impl NativeRoot {
                     .map(|role| default_title_for_role(&role.handle))
                     .unwrap_or_default();
                 update_auto_title(&modal.title, derived, cx);
-                let placeholder =
-                    cwd_placeholder(modal.mode, modal.selected_role(), &default_working_dir);
+                let placeholder = if modal.front_page.is_remote() {
+                    crate::i18n::text("ui.blank_starts_in_your_default_directory").to_owned()
+                } else {
+                    cwd_placeholder(modal.mode, modal.selected_role(), &default_working_dir)
+                };
                 modal.cwd.update(cx, |input, input_cx| {
                     input.set_placeholder(placeholder, input_cx)
                 });
@@ -1335,6 +1694,10 @@ impl NativeRoot {
     }
 
     fn browse_start_chat_cwd(&mut self, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         if self
             .start_chat_modal
             .as_ref()
@@ -1408,7 +1771,197 @@ impl NativeRoot {
         }
     }
 
+    fn submit_remote_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(modal) = self.start_chat_modal.as_ref() else {
+            return;
+        };
+        if !modal.can_submit() || modal.is_composing(cx) {
+            return;
+        }
+        let client = modal.front_page.clone();
+        if client.target != self.front_page_client(cx).target || !client.valid() {
+            return;
+        }
+        let target = modal.target.clone();
+        let title = user_chat_title(modal.title.read(cx));
+        let mut required = vec!["startChat"];
+        if title.is_some() {
+            required.push("rename");
+        }
+        let draft = match &target {
+            ChatTarget::Pane { tab_id, pane_id } => {
+                required.push("layout");
+                let Some(layout) = self.front_page_layout().filter(|layout| {
+                    &layout.id == tab_id
+                        && layout.root.leaves().iter().any(|leaf| &leaf.id == pane_id)
+                }) else {
+                    return;
+                };
+                if self.remote_window.as_ref().is_some_and(|remote| {
+                    remote.layout_hints.contains_key(tab_id)
+                        || remote.actions_pending.contains("archive-sessions")
+                        || remote.actions_pending.contains(&format!("layout:{tab_id}"))
+                }) {
+                    return;
+                }
+                Some((layout.clone(), pane_id.clone()))
+            }
+            ChatTarget::NewTab => None,
+        };
+        if !client.supports(&required) {
+            return;
+        }
+        let size = match &draft {
+            Some((layout, pane)) => self.estimated_terminal_size(layout, pane, window, cx),
+            None => self.estimated_terminal_size(&PaneLayout::single(None, &[]), "p1", window, cx),
+        };
+        let input = crate::surfaces::front_page::client::ChatStart {
+            role: (modal.mode == ChatMode::Role)
+                .then(|| modal.role_id.clone())
+                .flatten(),
+            runtime: if modal.mode == ChatMode::Runtime {
+                modal.runtime_name.clone()
+            } else {
+                modal.role_runtime_override.clone()
+            },
+            model: modal.model_override(cx),
+            effort: modal.effort_override(),
+            speed: modal.speed_override().map(|speed| {
+                if speed == CodexSpeed::Fast {
+                    "fast".into()
+                } else {
+                    "standard".into()
+                }
+            }),
+            project: modal.scope.project_id().map(str::to_owned),
+            cwd: (!modal.cwd.read(cx).text().is_empty())
+                .then(|| modal.cwd.read(cx).text().to_owned()),
+            size: (size.0.max(20), size.1.max(8)),
+        };
+        let mut started = modal.remote_started.clone();
+        let mut renamed = modal.remote_renamed;
+        let form_id = modal.cwd.clone();
+        let before = self.remote_window.as_ref().unwrap().layouts.clone();
+        let navigation_generation = self.remote_window.as_ref().unwrap().navigation_generation;
+        let epoch = self.client_ui.epoch;
+        let guard = client.clone();
+        let modal = self.start_chat_modal.as_mut().unwrap();
+        modal.submitting = true;
+        modal.error = None;
+        set_start_chat_controls_disabled(modal, true, cx);
+        if let Some((layout, _)) = &draft {
+            self.remote_window
+                .as_mut()
+                .unwrap()
+                .actions_pending
+                .insert(format!("layout:{}", layout.id));
+        }
+        let layout_key = draft
+            .as_ref()
+            .map(|(layout, _)| format!("layout:{}", layout.id));
+        let work = cx.background_spawn(async move {
+            let result = (|| {
+                let session = match &started {
+                    Some(id) => id.clone(),
+                    None => {
+                        let id = client.start_chat(input)?;
+                        started = Some(id.clone());
+                        id
+                    }
+                };
+                if !renamed {
+                    if let Some(title) = title {
+                        client.rename(
+                            runner_core::companion::ActionTarget {
+                                kind: runner_core::companion::ActionKind::Session,
+                                id: session.clone(),
+                            },
+                            title,
+                        )?;
+                    }
+                    renamed = true;
+                }
+                let layout = if let Some((mut layout, pane)) = draft {
+                    layout.assign_session(&pane, &session).map_err(|error| {
+                        runner_core::protocol::ClientError::msg(error.to_string())
+                    })?;
+                    client.layout(&layout, layout.parent_id.clone())?;
+                    Some(layout)
+                } else {
+                    None
+                };
+                Ok::<_, runner_core::protocol::ClientError>((session, layout))
+            })();
+            (started, renamed, result)
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let (started, renamed, result) = work.await;
+            let _ = weak.update_in(cx, |root, _, cx| {
+                if root.client_ui.epoch != epoch
+                    || !guard.valid()
+                    || root.front_page_client(cx).target != guard.target
+                {
+                    return;
+                }
+                if let Some(key) = &layout_key {
+                    root.remote_window
+                        .as_mut()
+                        .unwrap()
+                        .actions_pending
+                        .remove(key);
+                }
+                let Some(modal) = root
+                    .start_chat_modal
+                    .as_mut()
+                    .filter(|modal| modal.cwd == form_id)
+                else {
+                    cx.notify();
+                    return;
+                };
+                modal.remote_started = started;
+                modal.remote_renamed = renamed;
+                match result {
+                    Ok((session, layout)) => {
+                        root.start_chat_modal = None;
+                        root.apply_remote_completion(
+                            crate::surfaces::front_page::actions::Completion {
+                                session: Some(session),
+                                layout,
+                                ..Default::default()
+                            },
+                            &before,
+                            navigation_generation,
+                            cx,
+                        );
+                        root.sync_remote_state(cx);
+                    }
+                    Err(error) => {
+                        modal.submitting = false;
+                        modal.error = Some(error.to_string().into());
+                        set_start_chat_controls_disabled(modal, modal.remote_started.is_some(), cx);
+                        let title_saved = modal.remote_started.is_some() && modal.remote_renamed;
+                        modal
+                            .title
+                            .update(cx, |field, cx| field.set_disabled(title_saved, cx));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn submit_start_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .start_chat_modal
+            .as_ref()
+            .is_some_and(|modal| modal.front_page.is_remote())
+        {
+            self.submit_remote_chat(window, cx);
+            return;
+        }
+
         let Some(modal) = self.start_chat_modal.as_ref() else {
             return;
         };
@@ -1657,11 +2210,30 @@ impl NativeRoot {
                         cx,
                     )),
             )
+            .children(
+                modal
+                    .host_account
+                    .as_ref()
+                    .filter(|_| {
+                        modal
+                            .active_runtime()
+                            .is_some_and(|runtime| runtime.name.key() == "claude-code")
+                    })
+                    .map(|name| {
+                        div()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(crate::i18n::tf(
+                                "client.host_account",
+                                &[("account", name.clone())],
+                            ))
+                    }),
+            )
             .child(match mode {
                 ChatMode::Role => role_fields,
                 ChatMode::Runtime => direct_fields,
             })
-            .child(
+            .children(modal.front_page.supports(&["rename"]).then(|| {
                 Field::new(
                     "start-chat-title-field",
                     crate::i18n::text("ui.chat_name"),
@@ -1669,24 +2241,58 @@ impl NativeRoot {
                 )
                 .focus_target(modal.title.read(cx).focus_handle())
                 .emphasized(true)
-                .tag(crate::i18n::text("word.optional")),
-            )
+                .tag(crate::i18n::text("word.optional"))
+            }))
             .child(
                 Field::new(
                     "start-chat-working-dir-field",
                     crate::i18n::text("ui.working_directory"),
-                    WorkingDirField::new(
-                        modal.cwd.clone(),
-                        submitting,
-                        Rc::new(move |_, cx| {
-                            browse_root.update(cx, |this, cx| this.browse_start_chat_cwd(cx));
-                        }),
-                    )
-                    .browse_focus(modal.browse_focus.clone()),
+                    div()
+                        .relative()
+                        .child(
+                            WorkingDirField::new(
+                                modal.cwd.clone(),
+                                submitting,
+                                Rc::new(move |window, cx| {
+                                    browse_root.update(cx, |this, cx| {
+                                        if let Some(picker) = this
+                                            .start_chat_modal
+                                            .as_ref()
+                                            .and_then(|modal| modal.folder_picker.clone())
+                                        {
+                                            picker
+                                                .update(cx, |picker, cx| picker.toggle(window, cx));
+                                        } else {
+                                            this.browse_start_chat_cwd(cx);
+                                        }
+                                    });
+                                }),
+                            )
+                            .browse_focus(modal.browse_focus.clone())
+                            .show_browse(
+                                !modal.front_page.is_remote()
+                                    || modal.front_page.supports(&["folders"]),
+                            ),
+                        )
+                        .children(
+                            modal.folder_picker.clone().map(
+                                crate::surfaces::front_page::folder_picker::FolderPicker::anchor,
+                            ),
+                        ),
                 )
                 .focus_target(modal.cwd.read(cx).focus_handle())
                 .emphasized(true)
-                .subtitle(working_dir_hint(mode, modal.selected_role())),
+                .map(|field| {
+                    if let Some(error) = modal
+                        .folder_picker
+                        .as_ref()
+                        .and_then(|picker| picker.read(cx).path_error.clone())
+                    {
+                        field.error(error)
+                    } else {
+                        field.subtitle(working_dir_hint(mode, modal.selected_role()))
+                    }
+                }),
             );
 
         let close_root = root.clone();
@@ -1787,6 +2393,7 @@ impl NativeRoot {
                 this.switch_start_chat_mode(ChatMode::Role, window, cx);
             }))
             .child(modal_element)
+            .children(modal.folder_picker.clone())
             .into_any_element()
     }
 
@@ -1835,7 +2442,9 @@ impl NativeRoot {
                 .as_ref()
                 .and_then(|modal| modal.active_runtime())
             {
-                self.request_model_catalog(runtime.name.key(), cx);
+                if self.remote_window.is_none() {
+                    self.request_model_catalog(runtime.name.key(), cx);
+                }
             }
         }
         cx.notify();
@@ -1901,31 +2510,36 @@ impl NativeRoot {
                             .when(modal.agents_checking, |message| {
                                 message.child(crate::i18n::text("ui.detecting_agents"))
                             })
-                            .when(!modal.agents_checking, |message| {
-                                let root = settings_root.clone();
-                                message
-                                    .child(crate::i18n::text("ui.no_enabled_agents_launch_hint"))
-                                    .child(
-                                        div()
-                                            .id("start-chat-open-agent-settings")
-                                            .cursor_pointer()
-                                            .text_color(theme::warning())
-                                            .hover(|link| link.text_color(theme::text()))
-                                            .child(crate::i18n::text(
-                                                "ui.configure_one_in_settings_agents",
-                                            ))
-                                            .on_click(move |_, window, cx| {
-                                                root.update(cx, |this, cx| {
-                                                    this.start_chat_modal = None;
-                                                    this.enter_settings_route(
-                                                        Some("agents"),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }),
-                                    )
-                            }),
+                            .when(
+                                !modal.agents_checking && !modal.front_page.is_remote(),
+                                |message| {
+                                    let root = settings_root.clone();
+                                    message
+                                        .child(crate::i18n::text(
+                                            "ui.no_enabled_agents_launch_hint",
+                                        ))
+                                        .child(
+                                            div()
+                                                .id("start-chat-open-agent-settings")
+                                                .cursor_pointer()
+                                                .text_color(theme::warning())
+                                                .hover(|link| link.text_color(theme::text()))
+                                                .child(crate::i18n::text(
+                                                    "ui.configure_one_in_settings_agents",
+                                                ))
+                                                .on_click(move |_, window, cx| {
+                                                    root.update(cx, |this, cx| {
+                                                        this.start_chat_modal = None;
+                                                        this.enter_settings_route(
+                                                            Some("agents"),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    });
+                                                }),
+                                        )
+                                },
+                            ),
                     )
                 })
                 .children(
@@ -2081,7 +2695,7 @@ fn selection_handler(root: &Entity<NativeRoot>, selection: StartChatSelection) -
     })
 }
 
-fn role_options(roles: &[Role]) -> Vec<SelectOption> {
+fn role_options(roles: &[RoleChoice]) -> Vec<SelectOption> {
     roles
         .iter()
         .map(|role| {
@@ -2108,15 +2722,18 @@ fn runtime_leading(runtime: &str) -> SelectLeading {
 
 /// The agents a picker offers: the name, the command in monospace under it,
 /// and the provider's mark.
-fn runtime_options<'a>(
-    runtimes: impl IntoIterator<Item = &'a RuntimeCatalogEntry>,
-) -> Vec<SelectOption> {
+fn runtime_options<'a>(runtimes: impl IntoIterator<Item = &'a RuntimeChoice>) -> Vec<SelectOption> {
     runtimes
         .into_iter()
         .map(|runtime| {
-            SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
-                .description(runtime.command.clone())
-                .leading(runtime_leading(runtime.name.key()))
+            let mut option =
+                SelectOption::new(runtime.name.to_string(), runtime.display_name.clone())
+                    .leading(runtime_leading(runtime.name.key()))
+                    .disabled(!runtime.available);
+            if let Some(command) = &runtime.command {
+                option = option.description(command.clone());
+            }
+            option
         })
         .collect()
 }
@@ -2124,8 +2741,8 @@ fn runtime_options<'a>(
 /// The agents a role chat can run on: every selectable one, plus the role's
 /// own when it is not. The role's own is the untouched choice.
 fn role_runtime_options(
-    runtimes: &[RuntimeCatalogEntry],
-    role: Option<&Role>,
+    runtimes: &[RuntimeChoice],
+    role: Option<&RoleChoice>,
 ) -> Vec<SelectOption> {
     let mut options = runtime_options(runtimes)
         .into_iter()
@@ -2194,7 +2811,7 @@ fn trimmed(value: Option<&str>) -> Option<&str> {
 
 /// What a blank Model reads: the role's explicit model while the chat runs on
 /// the role's own agent, else `default` because no model reaches the launch.
-fn model_placeholder(role: Option<&Role>) -> i18n::Text {
+fn model_placeholder(role: Option<&RoleChoice>) -> i18n::Text {
     role.and_then(|role| trimmed(role.model.as_deref()))
         .map(i18n::Text::from)
         .unwrap_or_else(|| i18n::message("word.default"))
@@ -2202,7 +2819,7 @@ fn model_placeholder(role: Option<&Role>) -> i18n::Text {
 
 /// The role whose model, effort and speed the controls start from: only the
 /// role the chat runs on the agent of.
-fn inheriting_role(modal: &StartChatModal) -> Option<&Role> {
+fn inheriting_role(modal: &StartChatModal) -> Option<&RoleChoice> {
     (modal.mode == ChatMode::Role && modal.on_own_agent())
         .then(|| modal.selected_role())
         .flatten()
@@ -2223,8 +2840,8 @@ fn launch_model(modal: &StartChatModal, cx: &App) -> Option<String> {
 /// gives Antigravity `--effort` only together with `--model`, and only for a
 /// pair its catalog lists, so its effort waits for a model that reaches the
 /// launch.
-fn effort_needs_launch_model(runtime: &RuntimeCatalogEntry) -> bool {
-    runtime.capabilities.effort_needs_launch_model
+fn effort_needs_launch_model(runtime: &RuntimeChoice) -> bool {
+    runtime.effort_needs_launch_model
 }
 
 fn sync_role_runtime_select(modal: &StartChatModal, cx: &mut Context<NativeRoot>) {
@@ -2288,9 +2905,7 @@ fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<NativeRoot>) 
         modal.speed = "inherit".into();
     }
     let baseline = modal.baseline_speed();
-    let role = inheriting_role(modal).filter(|role| {
-        crate::runtime_ui::catalog_capabilities(&modal.runtimes, &role.runtime).codex_speed
-    });
+    let role = inheriting_role(modal).filter(|role| modal.runtime_has_speed(&role.runtime));
     let options = speed_options(
         role.map(|_| baseline.as_str()),
         role.is_some_and(|role| role.codex_speed.is_some()),
@@ -2437,9 +3052,13 @@ fn start_chat_focus_order(modal: &StartChatModal, cx: &App) -> Vec<FocusHandle> 
             controls(&mut order);
         }
     }
-    order.push(modal.title.read(cx).focus_handle());
+    if modal.front_page.supports(&["rename"]) {
+        order.push(modal.title.read(cx).focus_handle());
+    }
     order.push(modal.cwd.read(cx).focus_handle());
-    order.push(modal.browse_focus.clone());
+    if modal.front_page.supports(&["folders"]) {
+        order.push(modal.browse_focus.clone());
+    }
     order.push(modal.cancel_focus.clone());
     if modal.can_submit() {
         order.push(modal.submit_focus.clone());
@@ -2662,7 +3281,7 @@ fn agent_note(
 }
 
 /// Where a blank Working directory starts.
-fn working_dir_hint(mode: ChatMode, role: Option<&Role>) -> &'static str {
+fn working_dir_hint(mode: ChatMode, role: Option<&RoleChoice>) -> &'static str {
     match mode {
         ChatMode::Role
             if role.is_some_and(|role| trimmed(role.working_dir.as_deref()).is_some()) =>
@@ -2695,7 +3314,7 @@ pub(crate) fn load_selectable_runtimes(
     }
 }
 
-fn runtime_display_name(runtimes: &[RuntimeCatalogEntry], name: &str) -> String {
+fn runtime_display_name(runtimes: &[RuntimeChoice], name: &str) -> String {
     runtimes
         .iter()
         .find(|runtime| runtime.name.key() == name)
@@ -2730,7 +3349,7 @@ fn update_auto_title(title: &Entity<TextField>, derived: String, cx: &mut gpui::
     });
 }
 
-fn cwd_placeholder(mode: ChatMode, role: Option<&Role>, default_path: &str) -> String {
+fn cwd_placeholder(mode: ChatMode, role: Option<&RoleChoice>, default_path: &str) -> String {
     match mode {
         ChatMode::Role => working_dir_placeholder(
             role.and_then(|role| role.working_dir.as_deref()),
@@ -2810,9 +3429,9 @@ fn build_start_request(
 /// Direct's agents, the most recently started first; the ones never started
 /// follow in catalog order.
 fn direct_runtime_order<'a>(
-    runtimes: &'a [RuntimeCatalogEntry],
+    runtimes: &'a [RuntimeChoice],
     recent: &[String],
-) -> Vec<&'a RuntimeCatalogEntry> {
+) -> Vec<&'a RuntimeChoice> {
     let mut ordered = runtimes.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|runtime| {
         recent
@@ -2826,7 +3445,7 @@ fn direct_runtime_order<'a>(
 /// The agent Direct opens on: the most recently started one, otherwise the
 /// default from Settings, otherwise the first.
 fn initial_direct_runtime(
-    runtimes: &[RuntimeCatalogEntry],
+    runtimes: &[RuntimeChoice],
     recent: &[String],
     default_runtime: &str,
 ) -> Option<String> {
@@ -3017,8 +3636,8 @@ pub(super) mod tests {
         mode: ChatMode,
         cx: &mut Context<NativeRoot>,
     ) {
-        modal.roles = roles;
-        modal.runtimes = runtimes;
+        modal.roles = roles.into_iter().map(Into::into).collect();
+        modal.runtimes = runtimes.into_iter().map(Into::into).collect();
         modal.role_id = modal.roles.first().map(|role| role.id.clone());
         modal.runtime_name = modal
             .runtimes
@@ -4785,15 +5404,15 @@ pub(super) mod tests {
         with_dir.working_dir = Some("/repo".into());
         let without = test_role("none", "claude-code");
         assert_eq!(
-            working_dir_hint(ChatMode::Role, Some(&with_dir)),
+            working_dir_hint(ChatMode::Role, Some(&with_dir.clone().into())),
             "Blank starts in the role's directory."
         );
         assert_eq!(
-            working_dir_hint(ChatMode::Role, Some(&without)),
+            working_dir_hint(ChatMode::Role, Some(&without.clone().into())),
             "Blank starts in your default directory."
         );
         assert_eq!(
-            working_dir_hint(ChatMode::Runtime, Some(&with_dir)),
+            working_dir_hint(ChatMode::Runtime, Some(&with_dir.clone().into())),
             "Blank starts in your default directory."
         );
     }
@@ -5070,7 +5689,8 @@ pub(super) mod tests {
 
     #[test]
     fn direct_lists_recently_started_agents_first_then_the_catalog_order() {
-        let runtimes = ["claude-code", "codex", "pi", "trae"].map(|name| runtime(name, &[]));
+        let runtimes = ["claude-code", "codex", "pi", "trae"]
+            .map(|name| RuntimeChoice::from(runtime(name, &[])));
         let recent = ["pi", "gone", "codex"].map(String::from);
         assert_eq!(
             runtime_options(direct_runtime_order(&runtimes, &recent))
@@ -5090,7 +5710,8 @@ pub(super) mod tests {
 
     #[test]
     fn direct_opens_on_the_most_recent_agent_then_the_settings_default() {
-        let runtimes = ["claude-code", "codex", "pi", "trae"].map(|name| runtime(name, &[]));
+        let runtimes = ["claude-code", "codex", "pi", "trae"]
+            .map(|name| RuntimeChoice::from(runtime(name, &[])));
         let recent = ["gone", "pi", "codex"].map(String::from);
         assert_eq!(
             initial_direct_runtime(&runtimes, &recent, "trae").as_deref(),

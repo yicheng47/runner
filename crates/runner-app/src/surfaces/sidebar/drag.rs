@@ -58,8 +58,15 @@ impl Sidebar {
         marker: String,
         cx: &mut Context<Self>,
     ) {
+        if !self.front_page.supports(&[if kind == DropKind::Pinned {
+            "reorderPinned"
+        } else {
+            "move"
+        }]) {
+            return;
+        }
         let drop_target = list_drop_target(
-            &self.app_store.read(cx).nodes,
+            &self.source_nodes(cx),
             kind,
             parent_id,
             visible_ids,
@@ -95,8 +102,11 @@ impl Sidebar {
         visible_ids: &[String],
         cx: &mut Context<Self>,
     ) {
+        if !self.front_page.supports(&["move"]) {
+            return;
+        }
         let drop_target = container_drop_target(
-            &self.app_store.read(cx).nodes,
+            &self.source_nodes(cx),
             visible_ids,
             dragged_id,
             project_node_id,
@@ -162,6 +172,11 @@ impl Sidebar {
             drop_target = ?target,
             "commit sidebar drop"
         );
+        if self.front_page.is_remote() {
+            self.remote_commit_drop(dragged_id, &target, cx);
+            self.clear_sidebar_drag("drop", cx);
+            return;
+        }
         let rows = self.resolved_sidebar_rows(cx);
         let result = match target.kind {
             DropKind::Pinned => {
@@ -171,7 +186,7 @@ impl Sidebar {
                     .map(|row| row.node().id.clone())
                     .collect::<Vec<_>>();
                 let order = ordered_pinned_node_ids_after_drop(
-                    &self.app_store.read(cx).nodes,
+                    &self.source_nodes(cx),
                     &visible,
                     dragged_id,
                     target.index,
@@ -180,7 +195,7 @@ impl Sidebar {
             }
             DropKind::Project => {
                 let order = ordered_root_node_ids_after_project_drop(
-                    &self.app_store.read(cx).nodes,
+                    &self.source_nodes(cx),
                     dragged_id,
                     target.index,
                 );
@@ -195,7 +210,7 @@ impl Sidebar {
                 let visible =
                     ordered_visible_node_ids_after_drop(&visible, dragged_id, target.index);
                 let order = complete_unpinned_scope_order(
-                    &self.app_store.read(cx).nodes,
+                    &self.source_nodes(cx),
                     target.parent_id.as_deref(),
                     dragged_id,
                     &visible,

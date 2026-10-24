@@ -934,6 +934,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         let pane =
             if pane == SettingsPane::Account && !self.app_store.read(cx).remote_access_enabled() {
                 SettingsPane::Remote
@@ -1077,6 +1081,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         self.enter_settings_pane(SettingsPane::from_route(pane), window, cx);
     }
 
@@ -1177,6 +1185,9 @@ impl NativeRoot {
         activity: CommandInstallActivity,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
         if self.settings_page.command_install_activity.is_some() {
             return;
         }

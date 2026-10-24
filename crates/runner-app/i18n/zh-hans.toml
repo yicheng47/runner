@@ -1335,7 +1335,6 @@
 "client.fingerprint" = "{computer} 的指纹：{fingerprint}"
 "client.fingerprint_changed" = "{computer} 的指纹已变为 {fingerprint}。请先在对方的设置中核对。"
 "client.list_hint" = "要让另一台电脑访问本机，请在对方的侧边栏选择本机并输入本机的 PIN。在这里配对则允许本机访问对方。"
-"client.picker_hint" = "点击以切换当前窗口；按住 ⇧ 点击或点击窗口按钮在新窗口打开；点击 ⋯ 撤销访问或忘记电脑。"
 "client.picker_sign_in" = "登录以查看你的电脑…"
 "client.open_window" = "在新窗口中打开"
 "client.unpaired_picker" = "{status} · 未配对"
@@ -1367,3 +1366,15 @@
 "client.forgotten_title" = "本机已忘记 {computer}"
 "client.forgotten_detail" = "本机已移除保存的访问密钥。输入 {computer} 的 PIN 配对后即可再次打开。"
 "client.take_control_failed" = "无法获取控制权。请检查连接后再次点击获取控制权。"
+
+"client.folders_on" = "{computer} 上的文件夹"
+"client.folder_choices" = "项目和最近"
+"client.folder_parent" = "上一级"
+"client.folder_loading" = "正在加载文件夹…"
+"client.folder_failed" = "{computer} 无法列出此文件夹。"
+"client.folder_empty" = "没有子文件夹。你可以使用此文件夹。"
+"client.folder_use" = "使用文件夹"
+"client.folder_browse" = "浏览文件夹…"
+"client.folder_invalid" = "{computer} 无法打开此文件夹。请检查路径后重试。"
+
+"client.host_account" = "主机 Claude 账号：{account}"

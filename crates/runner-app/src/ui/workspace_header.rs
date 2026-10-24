@@ -74,6 +74,10 @@ impl WorkspaceHeader {
                             .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text())
+                            .debug_selector({
+                                let title = self.title.clone();
+                                move || format!("WORKSPACE_HEADER_TITLE:{title}")
+                            })
                             .child(self.title),
                     )
                     .children(self.title_actions),

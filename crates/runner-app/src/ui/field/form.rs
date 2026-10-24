@@ -239,6 +239,7 @@ pub struct BrowseField {
     browse_label: SharedString,
     browse_focus: Option<FocusHandle>,
     on_browse: PressHandler,
+    show_browse: bool,
 }
 
 impl BrowseField {
@@ -250,7 +251,13 @@ impl BrowseField {
             browse_label: crate::i18n::text("ui.browse").into(),
             browse_focus: None,
             on_browse,
+            show_browse: true,
         }
+    }
+
+    pub fn show_browse(mut self, show: bool) -> Self {
+        self.show_browse = show;
+        self
     }
 
     pub fn browse_id(mut self, browse_id: impl Into<ElementId>) -> Self {
@@ -277,14 +284,14 @@ impl RenderOnce for BrowseField {
             .items_center()
             .gap(rems(8. / 16.))
             .child(div().flex_1().min_w(px(0.)).child(self.input))
-            .child(
+            .children(self.show_browse.then(|| {
                 Button::new(self.browse_id, self.browse_label)
                     .when_some(self.browse_focus, |button, focus| {
                         button.focus_handle(focus)
                     })
                     .disabled(self.disabled)
-                    .on_press(move |window, cx| browse(window, cx)),
-            )
+                    .on_press(move |window, cx| browse(window, cx))
+            }))
     }
 }
 

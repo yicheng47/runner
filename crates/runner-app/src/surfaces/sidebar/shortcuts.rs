@@ -8,7 +8,7 @@ use crate::surfaces::sidebar_logic::{
     SHORTCUT_PILL_REVEAL_DELAY,
 };
 use crate::*;
-use runner_core::protocol::node::{NodeRow, NodeType};
+use runner_core::protocol::node::NodeType;
 
 impl Sidebar {
     fn shortcut_row_walk(
@@ -16,19 +16,18 @@ impl Sidebar {
         rows: &[(NodeRow, SidebarShortcutRow)],
         cx: &App,
     ) -> Vec<crate::surfaces::sidebar_logic::VisibleSidebarRow> {
-        let store = self.app_store.read(cx);
         let mut pinned = rows
             .iter()
             .filter(|(node, _)| node.pinned_position.is_some())
             .collect::<Vec<_>>();
         pinned.sort_by_key(|(node, _)| node.pinned_position);
-        let project_ids = store
-            .projects
+        let source_projects = self.source_projects(cx);
+        let source_nodes = self.source_nodes(cx);
+        let project_ids = source_projects
             .iter()
             .map(|project| project.id.as_str())
             .collect::<HashSet<_>>();
-        let projects = store
-            .nodes
+        let projects = source_nodes
             .iter()
             .filter(|node| {
                 node.parent_id.is_none()
@@ -42,8 +41,8 @@ impl Sidebar {
                     .filter(|project_id| project_ids.contains(project_id))?;
                 Some(SidebarShortcutProject {
                     node_id: node.id.clone(),
-                    expanded: !store
-                        .settings
+                    expanded: !self
+                        .settings(cx)
                         .sidebar_collapsed_projects
                         .contains(project_id),
                     children: rows
@@ -64,9 +63,9 @@ impl Sidebar {
             .collect();
         visible_sidebar_walk(
             pinned.into_iter().map(|(_, row)| row.clone()).collect(),
-            store.settings.sidebar_projects_open,
+            self.settings(cx).sidebar_projects_open,
             projects,
-            store.settings.sidebar_chats_open,
+            self.settings(cx).sidebar_chats_open,
             recent,
         )
     }
@@ -79,7 +78,7 @@ impl Sidebar {
                 .filter(|row| !collapsed.contains(row.group().key()))
                 .map(|row| {
                     crate::surfaces::sidebar_logic::VisibleSidebarRow::Activatable(
-                        row.shortcut_row(&self.app_store.read(cx).nodes),
+                        row.shortcut_row(&self.source_nodes(cx)),
                     )
                 })
                 .collect()
@@ -87,12 +86,7 @@ impl Sidebar {
             let rows = self
                 .resolved_sidebar_rows_for_tabs(tabs, cx)
                 .iter()
-                .map(|row| {
-                    (
-                        row.node().clone(),
-                        row.shortcut_row(&self.app_store.read(cx).nodes),
-                    )
-                })
+                .map(|row| (row.node().clone(), row.shortcut_row(&self.source_nodes(cx))))
                 .collect::<Vec<_>>();
             self.shortcut_row_walk(&rows, cx)
         };

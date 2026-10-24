@@ -96,6 +96,13 @@ pub(crate) fn archive_all_confirmation_body(
                 ArchiveSessionOperation::CloseTerminal => (chats, terminals + 1),
             },
         );
+    archive_confirmation_counts(chats, terminals)
+}
+
+pub(crate) fn archive_confirmation_counts(
+    chats: usize,
+    terminals: usize,
+) -> Option<crate::i18n::Text> {
     if terminals == 0 {
         return None;
     }
@@ -122,6 +129,13 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(remote) = &self.remote_window {
+            let layouts = remote.layouts.values().cloned().collect::<Vec<_>>();
+            let session_ids = archive_targets_for_chats(session_ids, &layouts);
+            self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
+            return;
+        }
+
         let chat_count = session_ids.len();
         let session_ids = archive_targets_for_chats(session_ids, self.tabs.tabs());
         if session_ids.len() > chat_count {
@@ -138,6 +152,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            self.remote_archive_sessions(session_ids, cx);
+            return;
+        }
+
         let active = self.active_focused_session_id();
         self.prepare_tab_close(&session_ids, cx);
         let error_target = match source {
@@ -242,6 +261,11 @@ impl NativeRoot {
         }
         let pane_closes =
             take_pending_pane_closes(&mut self.pending_pane_closes, &attempted, &removed);
+        if self.remote_window.is_some() {
+            self.clear_pending_tab_close(&attempted);
+            cx.notify();
+            return;
+        }
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
             self.reload_tabs(cx)?;

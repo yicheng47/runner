@@ -1335,7 +1335,6 @@
 "client.fingerprint" = "{computer}’s fingerprint: {fingerprint}"
 "client.fingerprint_changed" = "{computer}’s fingerprint changed to {fingerprint}. Check it in {computer}’s Settings first."
 "client.list_hint" = "To let a computer open this one, pick this computer in its sidebar and enter this computer’s PIN. Pair here to open that computer from this one."
-"client.picker_hint" = "Click to switch this window, ⇧-click or the window button for another window, ⋯ to revoke or forget a computer."
 "client.picker_sign_in" = "Sign in to see your computers…"
 "client.open_window" = "Open in another window"
 "client.unpaired_picker" = "{status} · Not paired"
@@ -1367,3 +1366,15 @@
 "client.forgotten_title" = "This computer forgot {computer}"
 "client.forgotten_detail" = "Its saved access key was removed here. Pair with {computer}’s PIN to open it again."
 "client.take_control_failed" = "Could not take control. Check the connection and try Take control again."
+
+"client.folders_on" = "Folders on {computer}"
+"client.folder_choices" = "Projects and recent"
+"client.folder_parent" = "Parent"
+"client.folder_loading" = "Loading folders…"
+"client.folder_failed" = "{computer} couldn’t list this folder."
+"client.folder_empty" = "No folders inside. You can use this one."
+"client.folder_use" = "Use folder"
+"client.folder_browse" = "Browse folders…"
+"client.folder_invalid" = "{computer} can’t open this folder. Check the path and try again."
+
+"client.host_account" = "Host Claude account: {account}"

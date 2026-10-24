@@ -178,6 +178,10 @@ impl NativeRoot {
         session_id: &str,
         cx: &App,
     ) -> runner_core::protocol::window::SecondaryState {
+        if self.remote_window.is_some() {
+            return Default::default();
+        }
+
         runner_core::protocol::window::is_secondary_for(
             &self.app_store.read(cx).window_entries.clone(),
             &self.window_label,
@@ -189,6 +193,10 @@ impl NativeRoot {
         &self,
         session_id: &str,
     ) -> runner_core::protocol::window::SecondaryState {
+        if self.remote_window.is_some() {
+            return Default::default();
+        }
+
         let primary_label = self.chat_secondaries.get(session_id).cloned();
         runner_core::protocol::window::SecondaryState {
             secondary: primary_label.is_some(),
