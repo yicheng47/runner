@@ -1,0 +1,77 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "roles": [
+      {
+        "id": "role-a",
+        "name": "Coder",
+        "handle": "coder",
+        "runtime": "codex",
+        "model": null,
+        "effort": null,
+        "speed": null
+      }
+    ],
+    "runtimes": [
+      {
+        "name": "codex",
+        "label": "Codex",
+        "available": true,
+        "nativeFork": true,
+        "defaultModel": null,
+        "defaultEffort": null,
+        "models": [
+          {
+            "value": "gpt-5",
+            "label": "GPT-5",
+            "supportedEfforts": [
+              "low"
+            ]
+          }
+        ],
+        "efforts": [
+          {
+            "value": "low",
+            "label": "Low",
+            "supportedEfforts": null
+          }
+        ],
+        "speeds": [
+          "standard",
+          "fast"
+        ]
+      }
+    ],
+    "accounts": [
+      {
+        "id": "native",
+        "name": "Default"
+      }
+    ],
+    "activeAccount": "native",
+    "crews": [
+      {
+        "id": "crew-a",
+        "name": "Duo",
+        "slots": [
+          {
+            "handle": "coder",
+            "role": "role-a",
+            "lead": true
+          }
+        ]
+      }
+    ],
+    "projects": [
+      {
+        "id": "project-a",
+        "name": "Runner",
+        "path": "C:\\work\\runner"
+      }
+    ],
+    "recentFolders": [
+      "C:\\work\\runner"
+    ]
+  }
+}

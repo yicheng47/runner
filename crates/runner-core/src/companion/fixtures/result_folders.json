@@ -1,0 +1,11 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "path": "C:\\work",
+    "parent": "C:\\",
+    "folders": [
+      "runner"
+    ]
+  }
+}

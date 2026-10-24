@@ -158,7 +158,7 @@ async fn overview_matches_the_golden_and_unserved_requests_remain_unknown() {
     for (i, fixture) in [
         include_str!("../../../runner-core/src/companion/fixtures/feed_request.json"),
         include_str!("../../../runner-core/src/companion/fixtures/follow.json"),
-        include_str!("../../../runner-core/src/companion/fixtures/unfollow.json"),
+        r#"{"type":"settings","id":1}"#,
         include_str!("../../../runner-core/src/companion/fixtures/answer.json"),
         include_str!("../../../runner-core/src/companion/fixtures/post.json"),
     ]
@@ -656,5 +656,16 @@ async fn snapshot_continuation_survives_chunking_attach_and_resync() {
         let resized = next(&mut adapter).await;
         assert_eq!(resized["type"], "resized");
         assert_eq!(resized["seq"], previous);
+    }
+}
+
+#[test]
+fn every_action_and_served_feed_request_is_advertised() {
+    for name in ActionRequest::NAMES
+        .iter()
+        .copied()
+        .chain(["feed", "follow", "unfollow", "answer", "post"])
+    {
+        assert!(FEATURES.contains(&name), "{name}");
     }
 }

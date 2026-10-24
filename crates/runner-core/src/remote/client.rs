@@ -104,3 +104,14 @@ fn client_debug_keeps_snapshot_output_and_overview_bodies_private() {
         .unwrap()
         .contains("body-canary"));
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RemoteResult {
+    pub result: serde_json::Value,
+    pub features: Vec<String>,
+}
+impl std::fmt::Debug for RemoteResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RemoteResult([redacted])")
+    }
+}

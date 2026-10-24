@@ -23,6 +23,7 @@ pub(super) struct Handle {
     pub tx: mpsc::Sender<Command>,
     pub cancel: CancellationToken,
     pub ready: Arc<AtomicBool>,
+    pub features: Arc<std::sync::Mutex<Vec<String>>>,
     generation: Arc<AtomicU64>,
     next: Arc<AtomicU64>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
@@ -68,7 +69,7 @@ pub(super) fn spawn(
     client: Client,
     computer: Computer,
     context: Context,
-    initial: Option<(transport::Socket, Records)>,
+    initial: Option<(transport::Socket, Records, c::Welcome)>,
 ) -> Handle {
     let (tx, rx) = mpsc::channel(32);
     let handle = Handle {
@@ -77,6 +78,7 @@ pub(super) fn spawn(
         tx,
         cancel: client.0.cancel.child_token(),
         ready: Arc::new(AtomicBool::new(false)),
+        features: Default::default(),
         generation: Arc::new(AtomicU64::new(0)),
         next: Arc::new(AtomicU64::new(1)),
         failure: Default::default(),
@@ -121,6 +123,17 @@ async fn send(socket: &mut transport::Socket, bytes: Vec<u8>) -> Result<()> {
     .map_err(|_| "Remote route write timed out")?
     .map_err(|_| "Remote route closed".into())
 }
+fn request_error(error: &c::ErrorMessage) -> &'static str {
+    match error.message.as_str() {
+        "The project has running chats or missions." => {
+            "The project has running chats or missions."
+        }
+        "Choose an accessible folder on the host." => "Choose an accessible folder on the host.",
+        "That question is no longer pending." => "That question is no longer pending.",
+        "The host does not serve that request." => "The host does not serve that request.",
+        _ => "The remote computer refused the request.",
+    }
+}
 fn close_error(code: u16) -> String {
     let reason = match code {
         4401 => "unauthenticated",
@@ -164,7 +177,7 @@ async fn flush(socket: &mut transport::Socket, records: &mut Records) -> Result<
     }
     Ok(())
 }
-async fn welcome(socket: &mut transport::Socket, records: &mut Records) -> Result<()> {
+async fn welcome(socket: &mut transport::Socket, records: &mut Records) -> Result<c::Welcome> {
     records
         .queue(
             serde_json::to_vec(&c::ClientMessage::Hello(c::Hello {
@@ -187,7 +200,7 @@ async fn welcome(socket: &mut transport::Socket, records: &mut Records) -> Resul
                 c::HostMessage::Welcome(w) if w.version == 1 => {
                     records.handled();
                     flush(socket, records).await?;
-                    return Ok(());
+                    return Ok(w);
                 }
                 c::HostMessage::Error(_) => {
                     return Err(
@@ -205,7 +218,7 @@ pub(super) async fn pair(
     key: &remote::HostKey,
     pin: &Secret,
     name: &str,
-) -> Result<(transport::Socket, Records, Vec<u8>)> {
+) -> Result<(transport::Socket, Records, Vec<u8>, c::Welcome)> {
     tokio::time::timeout(Duration::from_secs(20), async {
         let (pair, first) = BrowserPair::start(keys(key), &pin.0, rand::random(), rand::random())
             .map_err(bad_handshake)?;
@@ -215,8 +228,8 @@ pub(super) async fn pair(
             .map_err(bad_handshake)?;
         send(&mut socket, finish).await?;
         let mut records = Records::new(transport);
-        welcome(&mut socket, &mut records).await?;
-        Ok((socket, records, public))
+        let welcome = welcome(&mut socket, &mut records).await?;
+        Ok((socket, records, public, welcome))
     })
     .await
     .map_err(|_| "Pairing timed out; enter the PIN again to retry.".to_owned())?
@@ -247,7 +260,7 @@ async fn connect(
     client: &Client,
     computer: &Computer,
     context: &Context,
-) -> std::result::Result<(transport::Socket, Records), ConnectFailure> {
+) -> std::result::Result<(transport::Socket, Records, c::Welcome), ConnectFailure> {
     let keys = client.keys().await?;
     let key = keys
         .0
@@ -280,14 +293,15 @@ async fn connect(
                 .accept(&read(&mut socket).await?)
                 .map_err(bad_handshake)?,
         );
-        welcome(&mut socket, &mut records).await?;
-        Ok::<_, String>((socket, records))
+        let welcome = welcome(&mut socket, &mut records).await?;
+        Ok::<_, String>((socket, records, welcome))
     })
     .await
     .map_err(|_| "Remote connect timed out".to_owned())?;
     result.map_err(ConnectFailure::from)
 }
 struct Pending {
+    subscription: Option<(String, bool)>,
     reply: oneshot::Sender<Result<serde_json::Value>>,
     deadline: Instant,
 }
@@ -313,19 +327,21 @@ impl Session {
         message: c::ClientMessage,
         reply: oneshot::Sender<Result<serde_json::Value>>,
     ) {
-        let id = match &message {
-            c::ClientMessage::Overview(r) => r.id,
-            c::ClientMessage::TakeControl(r) | c::ClientMessage::Viewport(r) => r.id,
-            _ => {
-                let _ = reply.send(Err("Unsupported remote request".into()));
-                return;
-            }
+        let Some(id) = message.id() else {
+            let _ = reply.send(Err("Unsupported remote request".into()));
+            return;
+        };
+        let subscription = match &message {
+            c::ClientMessage::Follow(request) => Some((request.mission.clone(), true)),
+            c::ClientMessage::Unfollow(request) => Some((request.mission.clone(), false)),
+            _ => None,
         };
         match self.queue(message) {
             Ok(()) => {
                 self.pending.insert(
                     id,
                     Pending {
+                        subscription,
                         reply,
                         deadline: Instant::now() + Duration::from_secs(30),
                     },
@@ -352,9 +368,10 @@ async fn run(
     context: Context,
     handle: Handle,
     mut commands: mpsc::Receiver<Command>,
-    mut initial: Option<(transport::Socket, Records)>,
+    mut initial: Option<(transport::Socket, Records, c::Welcome)>,
 ) {
     let mut followers = HashSet::new();
+    let mut feeds = HashSet::new();
     let mut terminals = terminal::Terminals::default();
     let mut status = client.0.status.clone();
     let mut attempt = 0u32;
@@ -378,7 +395,7 @@ async fn run(
             _ = handle.cancel.cancelled() => break,
             result = connecting => result,
         };
-        let (socket, records) = match result {
+        let (socket, records, welcome) = match result {
             Ok(connection) => connection,
             Err(error) => {
                 *handle.failure.lock().unwrap() = Some(error.message.clone());
@@ -422,6 +439,7 @@ async fn run(
                 continue;
             }
         };
+        *handle.features.lock().unwrap() = welcome.features;
         handle.generation.fetch_add(1, Ordering::AcqRel);
         handle.ready.store(true, Ordering::Release);
         client.0.events.emit(
@@ -457,7 +475,7 @@ async fn run(
                         let current = status.borrow_and_update();
                         if changed.is_err() || !signed_in(&current) || current.origin != context.origin || current.host_id.as_ref() != Some(&context.host_id) { return Err("Remote account changed".into()); }
                     }
-                    _ = tokio::time::sleep_until(last_use + Duration::from_secs(60)), if followers.is_empty() && terminals.is_empty() && session.pending.is_empty() => { handle.cancel.cancel(); return Ok(()); }
+                    _ = tokio::time::sleep_until(last_use + Duration::from_secs(60)), if followers.is_empty() && feeds.is_empty() && terminals.is_empty() && session.pending.is_empty() => { handle.cancel.cancel(); return Ok(()); }
                     _ = tokio::time::sleep_until(deadline), if !session.pending.is_empty() => {
                         if session.pending.values().any(|p| p.deadline <= Instant::now()) { return Err("Remote request timed out".into()); }
                     }
@@ -484,15 +502,19 @@ async fn run(
                             let message: c::HostMessage = serde_json::from_slice(&bytes).map_err(|_| "Invalid companion message")?;
                             match message {
                                 c::HostMessage::Result(result) => {
-                                    if let Some(pending) = session.pending.remove(&result.id) { last_use = Instant::now(); let _ = pending.reply.send(Ok(result.result)); }
+                                    if let Some(pending) = session.pending.remove(&result.id) {
+                                        if let Some((mission,follow))=pending.subscription { if follow { feeds.insert(mission); } else { feeds.remove(&mission); } }
+                                        last_use = Instant::now(); let _ = pending.reply.send(Ok(result.result));
+                                    }
                                     else if !followers.is_empty() { if let Ok(overview) = serde_json::from_value::<c::Overview>(result.result) { client.0.events.emit("remote/overview", &serde_json::json!({"computer":computer.id,"overview":overview})); } }
                                 }
                                 c::HostMessage::Error(error) => {
                                     if let Some(id) = error.id {
-                                        if let Some(pending) = session.pending.remove(&id) { let _ = pending.reply.send(Err("The remote computer refused the request.".into())); }
+                                        if let Some(pending) = session.pending.remove(&id) { let _ = pending.reply.send(Err(request_error(&error).into())); }
                                         terminals.refused(id);
                                     } else { return Err("The remote computer refused the channel.".into()); }
                                 }
+                                c::HostMessage::FeedAppended(feed) => { client.0.events.emit("remote/feed", &serde_json::json!({"computer":computer.id,"feed":feed})); }
                                 c::HostMessage::Overview(overview) => { if !followers.is_empty() { client.0.events.emit("remote/overview", &serde_json::json!({"computer":computer.id,"overview":overview})); } }
                                 c::HostMessage::Status(status) => { if !followers.is_empty() { client.0.events.emit("remote/session-status", &serde_json::json!({"computer":computer.id,"status":status})); } }
                                 message => terminals.message(message, &handle)?,
@@ -519,6 +541,7 @@ async fn run(
             }
         }
         drop(session);
+        feeds.clear();
         // Commands already queued against the old route must fail, particularly input.
         while let Ok(command) = commands.try_recv() {
             match command {

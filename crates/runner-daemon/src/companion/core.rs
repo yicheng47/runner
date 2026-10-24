@@ -19,6 +19,42 @@ pub struct Attachment {
 }
 
 pub trait Core: Send + Sync {
+    fn action(&self, _: ActionRequest) -> Result<serde_json::Value> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
+    fn feed(&self, _: FeedRequest) -> Result<FeedPage> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
+    fn feed_cursor(&self, _: &str) -> Result<u64> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
+    fn feed_since(&self, _: &str, _: u64) -> Result<super::feed::Updates> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
+    fn answer(&self, _: AnswerRequest) -> Result<()> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
+    fn post(&self, _: PostRequest) -> Result<()> {
+        Err(Failure(
+            ErrorCode::UnknownRequest,
+            "The host does not serve that request.",
+        ))
+    }
     fn overview(&self) -> Result<Overview>;
     fn subscribe(&self) -> Result<broadcast::Receiver<AppEvent>>;
     fn attach(self: Arc<Self>, session: &str, history: usize) -> Result<Attachment>;
@@ -44,7 +80,7 @@ pub enum Control {
 
 pub struct DaemonCore(pub Weak<AppCore>);
 impl DaemonCore {
-    fn core(&self) -> Result<std::sync::Arc<AppCore>> {
+    pub(super) fn core(&self) -> Result<std::sync::Arc<AppCore>> {
         self.0
             .upgrade()
             .ok_or(Failure(ErrorCode::Failed, "The host has stopped."))
@@ -66,13 +102,31 @@ impl DaemonCore {
         Ok(core)
     }
 }
-fn failed(_: impl std::fmt::Display) -> Failure {
+pub(super) fn failed(_: impl std::fmt::Display) -> Failure {
     Failure(
         ErrorCode::Failed,
         "The host could not complete the request.",
     )
 }
 impl Core for DaemonCore {
+    fn action(&self, request: ActionRequest) -> Result<serde_json::Value> {
+        DaemonCore::action(self, request)
+    }
+    fn feed(&self, request: FeedRequest) -> Result<FeedPage> {
+        self.feed_page(request)
+    }
+    fn feed_cursor(&self, mission: &str) -> Result<u64> {
+        DaemonCore::feed_cursor(self, mission)
+    }
+    fn feed_since(&self, mission: &str, cursor: u64) -> Result<super::feed::Updates> {
+        self.updates(mission, cursor)
+    }
+    fn answer(&self, request: AnswerRequest) -> Result<()> {
+        self.answer_question(request)
+    }
+    fn post(&self, request: PostRequest) -> Result<()> {
+        self.post_message(request)
+    }
     fn overview(&self) -> Result<Overview> {
         overview(self.core()?.as_ref()).map_err(failed)
     }

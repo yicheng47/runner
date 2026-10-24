@@ -543,6 +543,10 @@ mod remote_tests {
     fn generic_call_has_no_remote_requests() {
         let client = DaemonClient::new(std::sync::Arc::new(NoCalls));
         for name in [
+            "remote_request",
+            "remote_overview",
+            "remote_follow",
+            "remote_take_control",
             "remote_status",
             "remote_enroll_start",
             "remote_enroll_confirm",
@@ -555,7 +559,10 @@ mod remote_tests {
             "remote_unlock_pin",
             "remote_revoke_device",
             "remote_reset_identity",
-        ] {
+        ]
+        .into_iter()
+        .chain(runner_core::companion::ActionRequest::NAMES.iter().copied())
+        {
             assert!(
                 matches!(call_daemon(&client, name, json!({})), Err(ClientError::Refused(message)) if message == "tool not found")
             );

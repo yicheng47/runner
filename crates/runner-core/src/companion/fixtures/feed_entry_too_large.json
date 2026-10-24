@@ -1,0 +1,17 @@
+{
+  "type": "feedAppended",
+  "mission": "mission-a",
+  "entries": [
+    {
+      "id": "event-a",
+      "ts": "2026-10-23T00:00:00Z",
+      "from": "system",
+      "to": [],
+      "kind": "signal",
+      "signal": "feedEntryTooLarge",
+      "payload": {
+        "message": "This feed entry is too large to send. View it on the host."
+      }
+    }
+  ]
+}

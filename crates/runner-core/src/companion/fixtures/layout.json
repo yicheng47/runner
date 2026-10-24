@@ -1,0 +1,15 @@
+{
+  "type": "layout",
+  "id": 42,
+  "target": {
+    "kind": "tab",
+    "id": "tab-a"
+  },
+  "project": null,
+  "name": "Review",
+  "panes": {
+    "id": "p1",
+    "session": "session-a"
+  },
+  "shells": []
+}

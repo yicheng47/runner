@@ -1,0 +1,8 @@
+{
+  "type": "archive",
+  "id": 42,
+  "target": {
+    "kind": "tab",
+    "id": "tab-a"
+  }
+}

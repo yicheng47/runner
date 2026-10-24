@@ -1,0 +1,16 @@
+{
+  "type": "startChat",
+  "id": 42,
+  "role": "role-a",
+  "runtime": "codex",
+  "model": "gpt-5",
+  "effort": "low",
+  "speed": "fast",
+  "project": null,
+  "cwd": "C:\\work\\runner",
+  "cols": 120,
+  "rows": 40,
+  "futureField": {
+    "value": true
+  }
+}
