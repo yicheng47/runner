@@ -12,6 +12,17 @@ use crate::*;
 
 impl MissionWorkspace {
     pub(super) fn mission_composer_roster(&self) -> Vec<ComposerRosterEntry> {
+        if self.remote.is_some() {
+            return self
+                .members()
+                .into_iter()
+                .map(|member| ComposerRosterEntry {
+                    handle: member.handle,
+                    role: String::new(),
+                    runtime: member.runtime,
+                })
+                .collect();
+        }
         self.roster
             .iter()
             .map(|member| ComposerRosterEntry {
@@ -87,7 +98,11 @@ impl MissionWorkspace {
                         .truncate()
                         .text_size(theme::text_meta())
                         .text_color(theme::muted())
-                        .child(format!("{} · {}", entry.role, entry.runtime)),
+                        .child(if entry.role.is_empty() {
+                            entry.runtime
+                        } else {
+                            format!("{} · {}", entry.role, entry.runtime)
+                        }),
                 )
                 .children((index == active_index).then(|| {
                     div()
@@ -136,8 +151,16 @@ impl MissionWorkspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let roster = self.mission_composer_roster();
-        let placeholder = mission_composer_placeholder(&self.roster);
-        let disabled = self.roster.is_empty() || self.composer_posting;
+        let placeholder = if self.remote.is_some() {
+            if self.members().iter().any(|member| member.lead) {
+                crate::i18n::text("ui.message_the_crew_handle_to_address_one_session")
+            } else {
+                crate::i18n::text("ui.message_everyone_handle_to_address_one")
+            }
+        } else {
+            mission_composer_placeholder(&self.roster)
+        };
+        let disabled = self.mission_composer_roster().is_empty() || self.composer_posting;
         self.composer_input.update(cx, |input, cx| {
             input.set_placeholder(placeholder, cx);
             input.set_disabled(disabled, cx);
@@ -340,7 +363,10 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.roster.is_empty() || self.composer_posting || self.secondary_state(cx).secondary {
+        if self.mission_composer_roster().is_empty()
+            || self.composer_posting
+            || self.secondary_state(cx).secondary
+        {
             return;
         }
         self.composer.targets.retain(|target| target != handle);
@@ -372,10 +398,17 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            self.remote_post(post, window, cx);
+            return;
+        }
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
-        if self.roster.is_empty() || self.composer_posting || self.secondary_state(cx).secondary {
+        if self.mission_composer_roster().is_empty()
+            || self.composer_posting
+            || self.secondary_state(cx).secondary
+        {
             return;
         }
         let handles = self

@@ -54,6 +54,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 
 - [ ] New chat, Direct and Role, offers the host's agents, roles, models, effort, speed and Claude account, and starts on the host. (WS-CREATE-01/02/03, [m9](836-m9-front-page.md#jasons-pending-live-checks))
 - [ ] Working directory → Browse: Projects and Recent, Browse folders… through home, a subfolder and Parent; an empty folder can be used; a failed listing offers Retry; Escape or an outside click keeps the field. A typed host path is accepted or shows its error under the field; a blank field uses the host's default. New project uses the same menu. ([m9](836-m9-front-page.md#jasons-pending-live-checks), frames `k3GCC`–`m1P4o`)
+- [ ] Open a stopped/crashed remote chat or shell: only its paused/exited card appears, without a terminal-open failure or connection spinner. Resume/Restart attaches after the host pushes running status; a real attachment failure on a running chat remains visible and retryable.
 - [ ] Stop, resume, restart a shell, fork, rename and archive a chat; the host's desktop shows each change at once. ([m9](836-m9-front-page.md#jasons-pending-live-checks))
 
 ## 6. Tabs, panes, drawer and sidebar on the other computer
@@ -61,7 +62,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 - [ ] New tab; split, fill, resize and close panes; close a tab. (WS-PANE-01/02/03/04)
 - [ ] Add and close drawer shells. (WS-DRAWER-01/02)
 - [ ] Pin and unpin, move between projects, reorder and rename; create, rename and delete a project, including the running-member confirmation. (WS-SIDEBAR-01)
-- [ ] Search, the Active filter and the command palette show only the host's chats and missions; Settings, Roles, Crews and Archived are not reachable from the remote window. ([m9](836-m9-front-page.md#pr-1-selected-checks))
+- [ ] Search, the Active filter and the command palette show only the host's chats and missions; Settings, role/crew management and Archived are not reachable from the remote window. Role and Crew show only the host’s read-only catalog: search, paging, Refresh/error recovery and chat/mission forms preselect the clicked item without exposing create/edit/delete. ([m9](836-m9-front-page.md#pr-1-selected-checks))
 
 ## 7. Missions on the other computer — PR 2
 

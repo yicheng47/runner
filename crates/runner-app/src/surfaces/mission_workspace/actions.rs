@@ -11,11 +11,53 @@ use crate::*;
 
 impl MissionWorkspace {
     pub(super) fn configure_mission_action_menu(&mut self, cx: &mut Context<Self>) {
-        let Some(mission) = self.mission.as_ref() else {
+        let Some(mission) = self.mission_view() else {
             return;
         };
         let busy = self.lifecycle_busy() || self.secondary;
-        let pinned = mission.pinned_at.is_some();
+        let pinned = mission.pinned;
+        if self.remote.is_some() {
+            let pinned = self.mission_view().is_some_and(|mission| mission.pinned);
+            let mut actions = Vec::new();
+            let mut items = Vec::new();
+            for (feature, action, label, icon, destructive) in [
+                (
+                    "pin",
+                    MissionMenuAction::Pin,
+                    if pinned { "ui.unpin" } else { "ui.pin" },
+                    if pinned { "pin-off.svg" } else { "pin.svg" },
+                    false,
+                ),
+                (
+                    "rename",
+                    MissionMenuAction::Rename,
+                    "ui.rename",
+                    "square-pen.svg",
+                    false,
+                ),
+                (
+                    "archive",
+                    MissionMenuAction::Archive,
+                    "ui.archive",
+                    "archive.svg",
+                    true,
+                ),
+            ] {
+                if self.remote_supports(&[feature]) {
+                    actions.push(action);
+                    items.push(
+                        UiMenuItem::new(crate::i18n::message(label))
+                            .icon(icon)
+                            .destructive(destructive)
+                            .disabled(busy),
+                    );
+                }
+            }
+            self.menu_actions = actions;
+            self.action_menu
+                .update(cx, |menu, cx| menu.set_items(items, cx));
+            return;
+        }
         self.menu_actions = vec![
             MissionMenuAction::Pin,
             MissionMenuAction::Rename,
@@ -64,6 +106,21 @@ impl MissionWorkspace {
     }
 
     fn toggle_mission_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            if let Some(mission) = self.mission_view() {
+                self.remote_action(
+                    "pin",
+                    "pin".into(),
+                    move |client| {
+                        client
+                            .mission_pin(mission.id, !mission.pinned)
+                            .map(|_| Vec::new())
+                    },
+                    cx,
+                );
+            }
+            return;
+        }
         let Some(mission) = self.mission.clone() else {
             return;
         };
@@ -104,6 +161,13 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.remote_supports(&[match action {
+            SessionControlKind::Stop => "stop",
+            SessionControlKind::Restart => "restart",
+            _ => "resume",
+        }]) {
+            return;
+        }
         if action == SessionControlKind::Restart {
             self.open_restart_confirm(session_id, window, cx);
         } else {
@@ -121,7 +185,7 @@ impl MissionWorkspace {
             || self.resuming
             || self.archiving
             || !mission_slot_actions_available(
-                self.mission.as_ref().map(|mission| mission.status),
+                self.mission_view().map(|mission| mission.status),
                 self.archived(),
                 self.secondary_state(cx).secondary,
             )
@@ -137,15 +201,14 @@ impl MissionWorkspace {
 
     pub(super) fn render_restart_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
         let session_id = self.restart_confirm.clone().unwrap_or_default();
-        let target = self
-            .sessions
+        let members = self.members();
+        let target = members
             .iter()
             .find(|session| session.session.id == session_id);
         let handle = target
             .map(|session| session.handle.clone())
             .unwrap_or_default();
-        let lead_handle = self
-            .sessions
+        let lead_handle = members
             .iter()
             .find(|session| session.lead)
             .map(|session| session.handle.as_str());
@@ -186,6 +249,9 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            return;
+        }
         if self
             .sessions
             .iter()
@@ -201,7 +267,7 @@ impl MissionWorkspace {
     pub(super) fn render_remove_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
         let session_id = self.remove_confirm.clone().unwrap_or_default();
         let handle = self
-            .sessions
+            .members()
             .iter()
             .find(|session| session.session.id == session_id)
             .map(|session| session.handle.clone())
@@ -231,13 +297,16 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            return;
+        }
         if self.stopping
             || self.resuming
             || self.archiving
             || self.slot_actions.contains(session_id)
             || self.transitions.contains_key(session_id)
             || !mission_slot_actions_available(
-                self.mission.as_ref().map(|mission| mission.status),
+                self.mission_view().map(|mission| mission.status),
                 self.archived(),
                 self.secondary_state(cx).secondary,
             )
@@ -285,11 +354,16 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            let size = self.current_mission_terminal_size(window, cx);
+            self.remote_slot_action(session_id, action, size, cx);
+            return;
+        }
         if self.stopping
             || self.resuming
             || self.archiving
             || !mission_slot_actions_available(
-                self.mission.as_ref().map(|mission| mission.status),
+                self.mission_view().map(|mission| mission.status),
                 self.archived(),
                 self.secondary_state(cx).secondary,
             )
@@ -367,6 +441,9 @@ impl MissionWorkspace {
     }
 
     pub(super) fn open_stop_all_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.remote_supports(&["stopMission"]) {
+            return;
+        }
         if self.lifecycle_busy() || self.secondary_state(cx).secondary {
             return;
         }
@@ -380,7 +457,7 @@ impl MissionWorkspace {
         let cancel = confirm.clone();
         runner_app::ui::ConfirmDialog::new(
             stop_all_title(
-                self.sessions
+                self.members()
                     .iter()
                     .filter(|session| session.session.status == SessionStatus::Running)
                     .count(),
@@ -407,7 +484,26 @@ impl MissionWorkspace {
         .into_any_element()
     }
 
-    fn stop_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn stop_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            if !self.lifecycle_busy()
+                && self.remote_supports(&["stopMission"])
+                && self
+                    .mission_view()
+                    .is_some_and(|mission| mission.status == MissionStatus::Running)
+            {
+                if let Some(id) = self.mission_id.clone() {
+                    self.stopping = true;
+                    self.remote_action(
+                        "stopMission",
+                        "stopMission".into(),
+                        move |client| client.stop_mission(id).map(|_| Vec::new()),
+                        cx,
+                    );
+                }
+            }
+            return;
+        }
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
@@ -466,6 +562,26 @@ impl MissionWorkspace {
     }
 
     pub(super) fn resume_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            if !self.lifecycle_busy()
+                && self.remote_supports(&["resumeMission"])
+                && self
+                    .mission_view()
+                    .is_some_and(|mission| mission.status == MissionStatus::Running)
+            {
+                if let Some(id) = self.mission_id.clone() {
+                    let size = self.current_mission_terminal_size(window, cx);
+                    self.resuming = true;
+                    self.remote_action(
+                        "resumeMission",
+                        "resumeMission".into(),
+                        move |client| client.resume_mission(id, size),
+                        cx,
+                    );
+                }
+            }
+            return;
+        }
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
@@ -577,6 +693,27 @@ impl MissionWorkspace {
     }
 
     pub(super) fn archive_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            if !self.lifecycle_busy() && self.remote_supports(&["archive"]) {
+                if let Some(id) = self.mission_id.clone() {
+                    self.archiving = true;
+                    self.remote_action(
+                        "archive",
+                        "archive".into(),
+                        move |client| {
+                            client
+                                .archive(runner_core::companion::ActionTarget {
+                                    kind: runner_core::companion::ActionKind::Mission,
+                                    id,
+                                })
+                                .map(|_| Vec::new())
+                        },
+                        cx,
+                    );
+                }
+            }
+            return;
+        }
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
@@ -627,7 +764,10 @@ impl MissionWorkspace {
     }
 
     fn open_mission_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(mission) = self.mission.as_ref() else {
+        if !self.remote_supports(&["rename"]) {
+            return;
+        }
+        let Some(mission) = self.mission_view() else {
             return;
         };
         let original = mission.title.clone();
@@ -670,6 +810,42 @@ impl MissionWorkspace {
     }
 
     pub(super) fn submit_mission_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            if !self.remote_supports(&["rename"]) {
+                return;
+            }
+            let Some(modal) = self.rename_modal.as_mut() else {
+                return;
+            };
+            if modal.submitting || modal.input.read(cx).is_composing() {
+                return;
+            }
+            let title = modal.input.read(cx).text().trim().to_owned();
+            if title.is_empty() || title == modal.original.trim() {
+                self.close_mission_rename(window, cx);
+                return;
+            }
+            modal.submitting = true;
+            modal.error = None;
+            let id = modal.mission_id.clone();
+            self.remote_action(
+                "rename",
+                "rename".into(),
+                move |client| {
+                    client
+                        .rename(
+                            runner_core::companion::ActionTarget {
+                                kind: runner_core::companion::ActionKind::Mission,
+                                id,
+                            },
+                            title,
+                        )
+                        .map(|_| Vec::new())
+                },
+                cx,
+            );
+            return;
+        }
         let Some(modal) = self.rename_modal.as_mut() else {
             return;
         };

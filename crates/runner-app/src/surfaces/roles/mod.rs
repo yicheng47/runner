@@ -126,8 +126,58 @@ impl std::ops::DerefMut for RoleEditForm {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum RoleListRow {
+    Local(RoleWithActivity),
+    Remote {
+        role: runner_core::companion::CatalogRole,
+        crew_count: usize,
+        target: crate::surfaces::front_page::FrontPageTarget,
+        epoch: u64,
+    },
+}
+
+struct RoleListDisplay<'a> {
+    id: &'a str,
+    handle: &'a str,
+    display_name: &'a str,
+    runtime: &'a str,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+}
+
+impl RoleListRow {
+    fn display(&self) -> RoleListDisplay<'_> {
+        match self {
+            Self::Local(item) => RoleListDisplay {
+                id: &item.role.id,
+                handle: &item.role.handle,
+                display_name: &item.role.display_name,
+                runtime: &item.role.runtime,
+                model: item.role.model.as_deref(),
+                effort: item.role.effort.as_deref(),
+            },
+            Self::Remote { role, .. } => RoleListDisplay {
+                id: &role.id,
+                handle: &role.handle,
+                display_name: &role.name,
+                runtime: &role.runtime,
+                model: role.model.as_deref(),
+                effort: role.effort.as_deref(),
+            },
+        }
+    }
+
+    fn local(&self) -> Option<&RoleWithActivity> {
+        match self {
+            Self::Local(item) => Some(item),
+            Self::Remote { .. } => None,
+        }
+    }
+}
+
 pub(crate) struct RoleSurfaces {
-    list: ListControls<RoleWithActivity>,
+    list: ListControls<RoleListRow>,
     search: Entity<SearchInput>,
     page_size: Entity<StyledSelect>,
     scroll: ScrollHandle,
@@ -148,9 +198,39 @@ pub(crate) struct RoleSurfaces {
 }
 
 impl RoleSurfaces {
+    pub(crate) fn set_library_load(&mut self, error: Option<String>) {
+        self.list.loading = error.is_none();
+        self.list.error = error;
+    }
+    pub(crate) fn invalidate_library(&mut self) {
+        self.list.items.clear();
+        self.list.filtered_count = 0;
+        self.list.total_count = 0;
+        self.list.loaded = false;
+        self.list.loading = true;
+        self.list.error = None;
+    }
     pub(crate) fn new(
         root: Entity<NativeRoot>,
         page_size: usize,
+        cx: &mut Context<NativeRoot>,
+    ) -> Self {
+        Self::new_for_window(root, page_size, None, cx)
+    }
+
+    pub(crate) fn new_remote(
+        root: Entity<NativeRoot>,
+        page_size: usize,
+        epoch: u64,
+        cx: &mut Context<NativeRoot>,
+    ) -> Self {
+        Self::new_for_window(root, page_size, Some(epoch), cx)
+    }
+
+    fn new_for_window(
+        root: Entity<NativeRoot>,
+        page_size: usize,
+        remote_epoch: Option<u64>,
         cx: &mut Context<NativeRoot>,
     ) -> Self {
         let size_root = root.clone();
@@ -158,7 +238,15 @@ impl RoleSurfaces {
             "role-page-size",
             page_size,
             Rc::new(move |size, _, cx| {
-                size_root.update(cx, |this, cx| this.set_role_page_size(size, cx));
+                size_root.update(cx, |this, cx| match remote_epoch {
+                    None => this.set_local_role_page_size(size, cx),
+                    Some(epoch)
+                        if this.remote_window.is_some() && this.client_ui.epoch == epoch =>
+                    {
+                        this.set_role_page_size(size, cx)
+                    }
+                    Some(_) => {}
+                });
             }),
             cx,
         );
@@ -169,7 +257,15 @@ impl RoleSurfaces {
                 crate::i18n::message("ui.roles_search_label"),
                 crate::i18n::message("ui.roles_search_placeholder"),
                 Rc::new(move |query, cx| {
-                    search_root.update(cx, |this, cx| this.set_role_query(query, cx));
+                    search_root.update(cx, |this, cx| match remote_epoch {
+                        None => this.set_local_role_query(query, cx),
+                        Some(epoch)
+                            if this.remote_window.is_some() && this.client_ui.epoch == epoch =>
+                        {
+                            this.set_role_query(query, cx)
+                        }
+                        Some(_) => {}
+                    });
                 }),
                 search_cx,
             )

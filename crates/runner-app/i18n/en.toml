@@ -1377,3 +1377,20 @@
 "client.host_account" = "Host Claude account: {account}"
 "remote.local_only" = "Local only"
 "remote.local_only_detail" = "Use Runner on this computer only. Hides Account, Remote access and the computer picker, and nothing on this computer can be opened from another one."
+
+"mission.load_older" = "Load older messages"
+"mission.update_action" = "update the mission"
+"mission.shell_action" = "start the mission terminal"
+"client.no_host_crews" = "Create a crew with roles on the host before starting a mission."
+
+"client.roles_read_only" = "Roles on this computer are read-only here. Start a chat from a role; edit its configuration on the host."
+
+"client.crews_read_only" = "Crews on this computer are read-only here. Start a mission from a crew; edit its configuration on the host."
+
+"client.crews_search" = "Search checks crew names and slot and role handles."
+
+"client.refresh_library" = "Refresh"
+
+"client.role_unavailable" = "This role is no longer available on the host. Refresh the list and choose another role."
+
+"client.crew_unavailable" = "This crew is no longer available on the host. Close this form and refresh the list."

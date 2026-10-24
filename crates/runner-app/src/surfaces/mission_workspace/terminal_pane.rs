@@ -4,7 +4,6 @@ use gpui::prelude::*;
 use gpui::{div, px, rems, svg, AnyElement, FontWeight, MouseButton, SharedString, Window};
 use runner_app::ui::{SessionControlKind, SessionOverlay, SessionOverlayKind};
 use runner_core::protocol::model::SessionStatus;
-use runner_core::protocol::session::SessionRow;
 
 use super::*;
 use crate::*;
@@ -12,7 +11,7 @@ use crate::*;
 impl MissionWorkspace {
     pub(super) fn render_mission_terminal_pane(
         &self,
-        session: SessionRow,
+        session: crate::surfaces::front_page::model::MissionMemberDisplay,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -29,6 +28,29 @@ impl MissionWorkspace {
         );
         let terminal_background =
             crate::terminal::element::to_hsla(self.terminal_style(cx).palette.background, 1.);
+        if self.remote.is_some() {
+            let mut pane = div()
+                .absolute()
+                .inset_0()
+                .overflow_hidden()
+                .bg(terminal_background)
+                .child(self.remote_terminal_content(&session_id, cx));
+            pane = match overlay {
+                SlotOverlayState::Stopped => {
+                    pane.child(self.render_stopped_slot_overlay(&session, cx))
+                }
+                SlotOverlayState::Starting => pane.child(SessionOverlay::transition(
+                    format!("mission-starting-{session_id}"),
+                    SessionOverlayKind::Starting,
+                )),
+                SlotOverlayState::Resuming => pane.child(SessionOverlay::transition(
+                    format!("mission-resuming-{session_id}"),
+                    SessionOverlayKind::Resuming,
+                )),
+                _ => pane,
+            };
+            return pane.into_any_element();
+        }
         let Some(chat) = self.attached.get(&session_id) else {
             let pane = div()
                 .absolute()
@@ -204,7 +226,7 @@ impl MissionWorkspace {
     }
 
     pub(super) fn control_session_ids(&self, cx: &App) -> Vec<String> {
-        self.sessions
+        self.members()
             .iter()
             .filter(|session| session.session.status == SessionStatus::Running)
             .map(|session| session.session.id.clone())
@@ -320,18 +342,20 @@ impl MissionWorkspace {
 
     fn render_stopped_slot_overlay(
         &self,
-        session: &SessionRow,
+        session: &crate::surfaces::front_page::model::MissionMemberDisplay,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if !mission_slot_actions_available(
-            self.mission.as_ref().map(|mission| mission.status),
-            self.archived(),
-            self.secondary,
-        ) {
+        if !self.remote_supports(&["resume", "restart"])
+            || !mission_slot_actions_available(
+                self.mission_view().as_ref().map(|mission| mission.status),
+                self.archived(),
+                self.secondary,
+            )
+        {
             return div().into_any_element();
         }
         let others = self
-            .sessions
+            .members()
             .iter()
             .filter(|other| {
                 other.session.id != session.session.id
@@ -364,7 +388,9 @@ impl MissionWorkspace {
     }
 
     pub(super) fn render_mission_paused_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.roster.is_empty() {
+        if self.mission_composer_roster().is_empty()
+            || !self.remote_supports(&["resumeMission", "archive"])
+        {
             return div().into_any_element();
         }
         let root = cx.entity();

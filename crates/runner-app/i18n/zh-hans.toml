@@ -1377,3 +1377,20 @@
 "client.host_account" = "主机 Claude 账号：{account}"
 "remote.local_only" = "仅本机使用"
 "remote.local_only_detail" = "仅在这台电脑上使用 Runner。隐藏账号、远程访问和电脑选择器，其他电脑也无法访问这台电脑。"
+
+"mission.load_older" = "加载更早的消息"
+"mission.update_action" = "更新任务"
+"mission.shell_action" = "启动任务终端"
+"client.no_host_crews" = "请先在主机上创建包含角色的团队，再启动任务。"
+
+"client.roles_read_only" = "这里的角色列表为只读。可以用角色开始聊天；请在远程电脑上编辑配置。"
+
+"client.crews_read_only" = "这里的团队列表为只读。可以用团队开始任务；请在远程电脑上编辑配置。"
+
+"client.crews_search" = "搜索团队名称、成员代号和角色代号。"
+
+"client.refresh_library" = "刷新"
+
+"client.role_unavailable" = "远程电脑上的这个角色已不可用。请刷新列表并选择其他角色。"
+
+"client.crew_unavailable" = "远程电脑上的这个团队已不可用。请关闭此表单并刷新列表。"

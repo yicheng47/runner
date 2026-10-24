@@ -9,7 +9,7 @@ use crate::*;
 impl MissionWorkspace {
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !mission_drawer_available(self.archived(), self.secondary_state(cx).secondary)
-            || self.mission.is_none()
+            || self.mission_view().is_none()
         {
             return;
         }
@@ -36,6 +36,9 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            self.remote_navigation_changed(cx);
+        }
         match self.persist_mission_layout(cx) {
             Ok(()) => {
                 self.error = None;
@@ -70,6 +73,9 @@ impl MissionWorkspace {
         if !self.layout.drawer.activate(session_id) {
             return;
         }
+        if self.remote.is_some() {
+            self.remote_navigation_changed(cx);
+        }
         match self.persist_mission_layout(cx) {
             Ok(()) => {
                 self.error = None;
@@ -93,6 +99,10 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            self.add_remote_mission_shell(window, cx);
+            return;
+        }
         if !mission_drawer_available(self.archived(), self.secondary_state(cx).secondary) {
             return;
         }
@@ -187,6 +197,27 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            if launch_claim
+                || !self
+                    .layout
+                    .drawer
+                    .shells()
+                    .iter()
+                    .any(|id| id == session_id)
+            {
+                return;
+            }
+            let id = session_id.to_owned();
+            let size = self.estimated_mission_drawer_terminal_size(window, cx);
+            self.remote_action(
+                "resume",
+                format!("shell-resume:{id}"),
+                move |client| client.resume(&id, size).map(|id| vec![id]),
+                cx,
+            );
+            return;
+        }
         if self.transitions.contains_key(session_id) {
             return;
         }
@@ -252,6 +283,25 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            if !self
+                .layout
+                .drawer
+                .shells()
+                .iter()
+                .any(|id| id == session_id)
+            {
+                return;
+            }
+            let id = session_id.to_owned();
+            self.remote_action(
+                "close",
+                format!("shell-close:{id}"),
+                move |client| client.close(&id).map(|_| Vec::new()),
+                cx,
+            );
+            return;
+        }
         if !self.closing_drawer_shells.insert(session_id.to_owned()) {
             return;
         }
@@ -301,6 +351,24 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote.is_some() {
+            if !self.remote_supports(&["close"]) {
+                return;
+            }
+            if let Some(shell) = self.shell.upgrade() {
+                let session_id = session_id.to_owned();
+                shell.update(cx, |shell, cx| {
+                    TerminalCloseConfirm::open(
+                        &mut shell.terminal_close_confirm,
+                        TerminalCloseTarget::MissionDrawer { session_id },
+                        window,
+                        cx,
+                    );
+                    cx.notify();
+                });
+            }
+            return;
+        }
         match self
             .core(cx)
             .session_shell_has_foreground_process(session_id)
@@ -375,7 +443,7 @@ impl MissionWorkspace {
     }
 
     fn terminal_status(&self, session_id: &str, cx: &App) -> Option<SessionStatus> {
-        self.sessions
+        self.members()
             .iter()
             .find(|session| session.session.id == session_id)
             .map(|session| session.session.status)

@@ -1,3 +1,4 @@
+pub(crate) mod feed;
 pub(crate) mod model;
 mod pairing;
 mod picker;

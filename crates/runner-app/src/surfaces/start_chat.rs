@@ -427,10 +427,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_window.is_some() {
-            return;
-        }
-
         if self.create_modal_open() {
             return;
         }
@@ -587,6 +583,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.remote_mission_workspace() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.add_terminal_drawer_shell(window, cx)
+            });
+            return;
+        }
         if self.remote_window.is_some() {
             if !self.front_page_is_chat() {
                 return;
@@ -650,6 +652,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.remote_mission_workspace() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_terminal_drawer(window, cx)
+            });
+            return;
+        }
         if self.remote_window.is_some() {
             let Some(layout) = self.front_page_layout() else {
                 return;
@@ -694,6 +702,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn hide_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.remote_mission_workspace() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.hide_terminal_drawer(window, cx)
+            });
+            return;
+        }
         if self.remote_window.is_some() {
             if let Some(layout) = self.front_page_layout_mut() {
                 layout.set_drawer_open(false);
@@ -1073,6 +1087,32 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_remote_start_chat_with_role(target, scope, None, window, cx);
+    }
+
+    pub(crate) fn open_remote_role_chat(
+        &mut self,
+        role_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_remote_start_chat_with_role(
+            ChatTarget::NewTab,
+            ProjectScope::Root,
+            Some(role_id),
+            window,
+            cx,
+        );
+    }
+
+    fn open_remote_start_chat_with_role(
+        &mut self,
+        target: ChatTarget,
+        scope: ProjectScope,
+        default_role_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.create_modal_open() {
             return;
         }
@@ -1110,6 +1150,16 @@ impl NativeRoot {
                 }
                 match result {
                     Ok(catalog) => {
+                        if default_role_id
+                            .as_ref()
+                            .is_some_and(|id| !catalog.roles.iter().any(|role| &role.id == id))
+                        {
+                            remote.action_error =
+                                Some(crate::i18n::text("client.role_unavailable").to_owned());
+                            cx.notify();
+                            return;
+                        }
+                        let role_launch = default_role_id.is_some();
                         remote.catalog = Some(catalog.clone());
                         let roles = catalog.roles.clone().into_iter().map(Into::into).collect();
                         let runtimes = catalog
@@ -1119,7 +1169,7 @@ impl NativeRoot {
                             .collect();
                         root.build_start_chat_modal(
                             target,
-                            None,
+                            default_role_id,
                             roles,
                             runtimes,
                             Vec::new(),
@@ -1135,6 +1185,9 @@ impl NativeRoot {
                             window,
                             cx,
                         );
+                        if role_launch {
+                            root.switch_start_chat_mode(ChatMode::Role, window, cx);
+                        }
                     }
                     Err(error) => remote.action_error = Some(error.to_string()),
                 }

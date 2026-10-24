@@ -854,7 +854,22 @@ impl NativeRoot {
         } else {
             Vec::new()
         };
-        let entity_overlays = if self.route != AppRoute::Settings && self.remote_window.is_none() {
+        let entity_overlays = if let Some(remote) = &self.remote_window {
+            let fallback = (!self.create_modal_open()
+                && self.chat_rename_modal.is_none()
+                && self.fork_confirm.is_none()
+                && self.terminal_close_confirm.is_none()
+                && self.client_ui.pair.is_none()
+                && !self.client_ui.picker_open)
+                .then(|| self.root_focus.clone());
+            remote
+                .mission_workspace
+                .clone()
+                .update(cx, |workspace, cx| {
+                    workspace.restore_remote_dialog_focus(fallback.as_ref(), window, cx);
+                    workspace.render_mission_overlays(cx)
+                })
+        } else if self.route != AppRoute::Settings {
             self.render_entity_overlays(window, cx)
         } else {
             Vec::new()
@@ -996,6 +1011,9 @@ impl NativeRoot {
                     }
                     if let Some(remote) = this.remote_window.as_mut() {
                         remote.sidebar_width = width;
+                        remote.mission_workspace.update(cx, |workspace, cx| {
+                            workspace.set_remote_sidebar_width(width, cx)
+                        });
                         cx.notify();
                         return;
                     }
@@ -1935,6 +1953,9 @@ impl NativeRoot {
     ) {
         if let Some(remote) = self.remote_window.as_mut() {
             remote.sidebar_collapsed = collapsed;
+            remote.mission_workspace.update(cx, |workspace, cx| {
+                workspace.set_sidebar_collapsed(collapsed, cx)
+            });
             cx.notify();
             return;
         }
@@ -2065,7 +2086,11 @@ impl NativeRoot {
         self.sidebar_preview_peeking = false;
         if !collapsed {
             self.sidebar_preview_open = false;
-            if matches!(self.route, AppRoute::Mission(_)) {
+            if let Some(workspace) = self.remote_mission_workspace() {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.focus_active_mission_terminal(window, cx)
+                });
+            } else if self.remote_window.is_none() && matches!(self.route, AppRoute::Mission(_)) {
                 self.mission_workspace.update(cx, |workspace, cx| {
                     workspace.focus_active_mission_terminal(window, cx);
                 });

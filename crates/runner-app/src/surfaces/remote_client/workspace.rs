@@ -1,17 +1,16 @@
 use super::*;
 use runner_app::ui::button::spinner;
-use runner_core::companion::{
-    Overview, Pane, SidebarNode, SidebarNodeKind, SplitDirection, Status,
-};
+use runner_core::companion::{Overview, SidebarNode, SidebarNodeKind, Status};
 use runner_core::remote::RemoteTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Item {
+    Roles,
+    Crews,
     Tab(String),
     Mission(String),
-    Shell(String),
 }
 pub(super) struct RemotePane {
     _lifetime: transport::AttachmentLifetime,
@@ -28,6 +27,7 @@ pub(crate) struct RemoteWindow {
     pub(crate) computer: Computer,
     pub(crate) front_page: crate::surfaces::front_page::FrontPageClient,
     pub(crate) sidebar: Entity<Sidebar>,
+    pub(crate) mission_workspace: Entity<MissionWorkspace>,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) sidebar_width: f32,
     _follow: Option<model::Follow>,
@@ -43,6 +43,11 @@ pub(crate) struct RemoteWindow {
     pub(crate) action_error: Option<String>,
     pub(crate) shell_placement: Arc<Mutex<Option<(String, PaneLayout)>>>,
     pub(crate) catalog: Option<runner_core::companion::Catalog>,
+    pub(crate) library_catalog: Option<runner_core::companion::Catalog>,
+    pub(crate) library_request: u64,
+    pub(crate) library_target: Option<crate::surfaces::front_page::FrontPageTarget>,
+    pub(crate) role_surfaces: crate::surfaces::roles::RoleSurfaces,
+    pub(crate) crew_surfaces: crate::surfaces::crews::CrewSurfaces,
     catalog_target: Option<crate::surfaces::front_page::FrontPageTarget>,
     pub(crate) project_picker:
         Option<Entity<crate::surfaces::front_page::folder_picker::FolderPicker>>,
@@ -56,13 +61,14 @@ pub(crate) struct RemoteWindow {
     pub(crate) activate_placement: Option<(String, Option<String>)>,
     pub(crate) reopen_sessions: HashSet<String>,
     pub(crate) activate_tab: Option<String>,
+    pub(crate) activate_mission: Option<String>,
     pub(crate) form_generation: u64,
     pub(super) terminals: HashMap<String, RemotePane>,
     recovery: HashSet<String>,
     terminal_epoch: u64,
     pair_epoch: u64,
     attachment_generation: u64,
-    pending: HashSet<String>,
+    pending: HashMap<String, Arc<()>>,
     sizes: HashMap<String, (u16, u16)>,
     errors: HashSet<String>,
     connected: Arc<AtomicBool>,
@@ -76,61 +82,24 @@ impl Drop for RemoteWindow {
     }
 }
 impl RemoteWindow {
-    fn visible_sessions(&self, overview: &Overview) -> Vec<String> {
-        let mut ids = Vec::new();
-        if let Some(tree) = self.tree(overview) {
-            session_ids(&tree, &mut ids);
+    fn visible_sessions(&self, _overview: &Overview, cx: &App) -> Vec<String> {
+        match self.active.as_ref() {
+            Some(Item::Mission(_)) => self.mission_workspace.read(cx).remote_visible_sessions(),
+            Some(Item::Tab(id)) => self
+                .layouts
+                .get(id)
+                .map(|layout| {
+                    let mut ids = layout.session_ids();
+                    if layout.drawer_open() {
+                        if let Some(id) = layout.active_drawer_shell() {
+                            ids.push(id.into());
+                        }
+                    }
+                    ids
+                })
+                .unwrap_or_default(),
+            None | Some(Item::Roles | Item::Crews) => Vec::new(),
         }
-        if let Some(Item::Tab(id)) = &self.active {
-            if let Some(layout) = self.layouts.get(id).filter(|layout| layout.drawer_open()) {
-                if let Some(shell) = layout.active_drawer_shell() {
-                    ids.push(shell.into());
-                }
-            }
-        }
-        ids
-    }
-    fn tree(&self, overview: &Overview) -> Option<Pane> {
-        match self.active.as_ref()? {
-            Item::Tab(id) => overview
-                .tabs
-                .iter()
-                .find(|tab| &tab.id == id)
-                .map(|tab| tab.panes.clone()),
-            Item::Mission(id) => overview
-                .missions
-                .iter()
-                .find(|mission| &mission.id == id)
-                .map(|mission| mission_panes(&mission.members)),
-            Item::Shell(id) => Some(Pane::Leaf {
-                session: Some(id.clone()),
-            }),
-        }
-    }
-}
-pub(super) fn mission_panes(members: &[runner_core::companion::Member]) -> Pane {
-    if members.len() <= 1 {
-        return Pane::Leaf {
-            session: members.first().map(|member| member.session.clone()),
-        };
-    }
-    let mid = members.len() / 2;
-    Pane::Split {
-        split: SplitDirection::Row,
-        sizes: [mid as f64, (members.len() - mid) as f64],
-        a: Box::new(mission_panes(&members[..mid])),
-        b: Box::new(mission_panes(&members[mid..])),
-    }
-}
-
-fn session_ids(pane: &Pane, ids: &mut Vec<String>) {
-    match pane {
-        Pane::Split { a, b, .. } => {
-            session_ids(a, ids);
-            session_ids(b, ids);
-        }
-        Pane::Leaf { session: Some(id) } => ids.push(id.clone()),
-        _ => {}
     }
 }
 
@@ -208,6 +177,11 @@ impl NativeRoot {
                 .send(Command::Retry(computer.id));
             return;
         }
+        if let Some(remote) = &self.remote_window {
+            remote
+                .mission_workspace
+                .update(cx, |workspace, cx| workspace.release_window(cx));
+        }
         self.start_chat_modal = None;
         self.start_mission_modal = None;
         self.chat_rename_modal = None;
@@ -260,7 +234,19 @@ impl NativeRoot {
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_front_page_target(front_page.clone(), cx)
         });
+        let shell = cx.weak_entity();
+        let mission_workspace = cx.new(|workspace_cx| {
+            MissionWorkspace::new_remote(
+                self.window_label.clone(),
+                shell,
+                self.app_store.clone(),
+                front_page.clone(),
+                window,
+                workspace_cx,
+            )
+        });
         self.remote_window = Some(RemoteWindow {
+            mission_workspace,
             sidebar,
             sidebar_collapsed: false,
             sidebar_width: self.settings(cx).sidebar_width,
@@ -279,6 +265,21 @@ impl NativeRoot {
             action_error: None,
             shell_placement: Arc::new(Mutex::new(None)),
             catalog: None,
+            library_catalog: None,
+            library_request: 0,
+            library_target: None,
+            role_surfaces: crate::surfaces::roles::RoleSurfaces::new_remote(
+                cx.entity(),
+                self.settings(cx).roles_page_size,
+                epoch,
+                cx,
+            ),
+            crew_surfaces: crate::surfaces::crews::CrewSurfaces::new_remote(
+                cx.entity(),
+                self.settings(cx).crews_page_size,
+                epoch,
+                cx,
+            ),
             catalog_target: None,
             project_picker: None,
             project_picker_subscription: None,
@@ -291,13 +292,14 @@ impl NativeRoot {
             activate_placement: None,
             reopen_sessions: HashSet::new(),
             activate_tab: None,
+            activate_mission: None,
             form_generation: 0,
             terminals: HashMap::new(),
             recovery: HashSet::new(),
             terminal_epoch: clients.read(cx).terminal_epoch,
             pair_epoch,
             attachment_generation: 0,
-            pending: HashSet::new(),
+            pending: HashMap::new(),
             sizes: HashMap::new(),
             errors: HashSet::new(),
             connected: Arc::new(AtomicBool::new(false)),
@@ -315,12 +317,18 @@ impl NativeRoot {
     }
     pub(crate) fn return_to_this_computer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.start_chat_modal = None;
+        self.start_mission_modal = None;
         self.chat_rename_modal = None;
         self.pane_rename = None;
         self.fork_confirm = None;
         self.terminal_close_confirm = None;
         self.command_palette
             .update(cx, |palette, cx| palette.close_for_target_change(cx));
+        if let Some(remote) = &self.remote_window {
+            remote
+                .mission_workspace
+                .update(cx, |workspace, cx| workspace.release_window(cx));
+        }
         self.remote_window = None;
         self.client_ui.picker_open = false;
         self.root_focus.focus(window, cx);
@@ -366,7 +374,7 @@ impl NativeRoot {
                 }
             }
             remote.recovery.extend(remote.terminals.keys().cloned());
-            remote.recovery.extend(remote.pending.iter().cloned());
+            remote.recovery.extend(remote.pending.keys().cloned());
             remote.terminals.clear();
             remote.pending.clear();
             remote.errors.clear();
@@ -494,14 +502,24 @@ impl NativeRoot {
                 remote.activate_tab = None;
             }
         }
+        if let Some(mission) = &remote.activate_mission {
+            if clients
+                .read(cx)
+                .overviews
+                .get(&remote.computer.id)
+                .is_some_and(|overview| overview.missions.iter().any(|item| &item.id == mission))
+            {
+                remote.active = Some(Item::Mission(mission.clone()));
+                remote.activate_mission = None;
+            }
+        }
         if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
             let valid = match &remote.active {
                 Some(Item::Tab(id)) => remote.layouts.contains_key(id),
                 Some(Item::Mission(id)) => {
                     overview.missions.iter().any(|mission| &mission.id == id)
                 }
-                Some(Item::Shell(id)) => overview.sessions.contains_key(id),
-                None => true,
+                Some(Item::Roles | Item::Crews) | None => true,
             };
             if !valid {
                 remote.active = None;
@@ -526,8 +544,13 @@ impl NativeRoot {
             .store(connection == Connection::Connected, Ordering::Release);
         if connection != Connection::Connected {
             remote.catalog = None;
+            remote.library_catalog = None;
+            remote.library_target = None;
+            remote.role_surfaces.invalidate_library();
+            remote.crew_surfaces.invalidate_library();
             remote.catalog_target = None;
             self.start_chat_modal = None;
+            self.start_mission_modal = None;
             self.chat_rename_modal = None;
             self.pane_rename = None;
             self.fork_confirm = None;
@@ -542,6 +565,7 @@ impl NativeRoot {
             remote.activate_session = None;
             remote.activate_placement = None;
             remote.activate_tab = None;
+            remote.activate_mission = None;
             for pane in remote.terminals.values() {
                 pane.input.update(cx, |input, cx| {
                     input.cancel_composition();
@@ -605,6 +629,17 @@ impl NativeRoot {
                 cx,
             );
         });
+        let workspace = remote.mission_workspace.clone();
+        let mission = match &remote.active {
+            Some(Item::Mission(id)) => Some(id.clone()),
+            _ => None,
+        };
+        let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
+        let client = remote.front_page.clone();
+        workspace.update(cx, |workspace, cx| {
+            workspace.sync_remote(client, mission, overview, clients, cx)
+        });
+        self.ensure_remote_library(cx);
         self.load_remote_metadata(cx);
         self.refresh_remote_palette(cx);
         self.attach_remote_panes(cx);
@@ -650,11 +685,13 @@ impl NativeRoot {
         if let Some(remote) = self.remote_window.as_mut() {
             if remote.active.as_ref() != Some(&item) {
                 self.start_chat_modal = None;
+                self.start_mission_modal = None;
                 remote.form_generation = remote.form_generation.wrapping_add(1);
                 remote.navigation_generation = remote.navigation_generation.wrapping_add(1);
                 remote.activate_session = None;
                 remote.activate_placement = None;
                 remote.activate_tab = None;
+                remote.activate_mission = None;
                 for (id, hint) in &mut remote.layout_hints {
                     if let Some(previous) = remote.layouts.get(id) {
                         crate::surfaces::front_page::model::retain_presentation(hint, previous);
@@ -678,15 +715,36 @@ impl NativeRoot {
         let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
         let ids = overview
             .as_ref()
-            .map(|overview| remote.visible_sessions(overview))
+            .map(|overview| remote.visible_sessions(overview, cx))
+            .unwrap_or_default();
+        let running = overview
+            .as_ref()
+            .map(|overview| {
+                overview
+                    .sessions
+                    .iter()
+                    .filter(|(_, session)| {
+                        !matches!(
+                            session.status.status.effective(),
+                            Status::Stopped | Status::Error
+                        )
+                    })
+                    .map(|(id, _)| id)
+                    .collect::<HashSet<_>>()
+            })
             .unwrap_or_default();
         remote.terminals.retain(|id, _| ids.contains(id));
+        remote
+            .pending
+            .retain(|id, _| ids.contains(id) && running.contains(id));
+        remote.errors.retain(|id| running.contains(id));
         if remote.connection != Connection::Connected {
             return;
         }
         for id in ids {
-            if remote.terminals.contains_key(&id)
-                || remote.pending.contains(&id)
+            if !running.contains(&id)
+                || remote.terminals.contains_key(&id)
+                || remote.pending.contains_key(&id)
                 || remote.errors.contains(&id)
             {
                 continue;
@@ -694,7 +752,8 @@ impl NativeRoot {
             let Some(&(cols, rows)) = remote.sizes.get(&id) else {
                 continue;
             };
-            remote.pending.insert(id.clone());
+            let request = Arc::new(());
+            remote.pending.insert(id.clone(), request.clone());
             let config = RemoteTerminal {
                 computer: remote.computer.id.clone(),
                 session: id.clone(),
@@ -736,19 +795,33 @@ impl NativeRoot {
                     }) else {
                         return;
                     };
+                    if !remote
+                        .pending
+                        .get(&id)
+                        .is_some_and(|pending| Arc::ptr_eq(pending, &request))
+                    {
+                        return;
+                    }
                     remote.pending.remove(&id);
+                    let clients = state(&root.app_store, cx);
+                    let wanted = clients
+                        .read(cx)
+                        .overviews
+                        .get(&remote.computer.id)
+                        .is_some_and(|overview| {
+                            remote.visible_sessions(overview, cx).contains(&id)
+                                && overview.sessions.get(&id).is_some_and(|session| {
+                                    !matches!(
+                                        session.status.status.effective(),
+                                        Status::Stopped | Status::Error
+                                    )
+                                })
+                        });
+                    if !wanted {
+                        return;
+                    }
                     match result {
                         Ok(terminal) => {
-                            let clients = state(&root.app_store, cx);
-                            let desired = clients
-                                .read(cx)
-                                .overviews
-                                .get(&remote.computer.id)
-                                .map(|overview| remote.visible_sessions(overview))
-                                .unwrap_or_default();
-                            if !desired.contains(&id) {
-                                return;
-                            }
                             terminal.set_palette(app_settings::terminal_palette(
                                 &root.app_store.read(cx).settings,
                                 theme::active_variant(),
@@ -829,11 +902,31 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mission = self.remote_window.as_ref().is_some_and(|remote| {
-            matches!(remote.active, Some(Item::Mission(_)) | Some(Item::Shell(_)))
-        });
-        let body = if mission {
-            self.render_remote_mission_bridge(window, cx)
+        let mission = self
+            .remote_window
+            .as_ref()
+            .is_some_and(|remote| matches!(remote.active, Some(Item::Mission(_))));
+        let library = self
+            .remote_window
+            .as_ref()
+            .and_then(|remote| remote.active.clone());
+        let body = if matches!(library, Some(Item::Roles)) {
+            self.render_roles_page(window, cx)
+        } else if matches!(library, Some(Item::Crews)) {
+            self.render_crews_page(window, cx)
+        } else if mission {
+            let remote = self.remote_window.as_ref().unwrap();
+            let mut sizes = remote.sizes.clone();
+            sizes.extend(
+                remote
+                    .terminals
+                    .iter()
+                    .map(|(id, pane)| (id.clone(), pane.terminal.size())),
+            );
+            remote.mission_workspace.update(cx, |workspace, _| {
+                workspace.set_remote_terminal_sizes(sizes)
+            });
+            remote.mission_workspace.clone().into_any_element()
         } else {
             self.render_active_tab(window, cx)
         };
@@ -897,232 +990,24 @@ impl NativeRoot {
             )
             .into_any_element()
     }
-    fn render_remote_mission_bridge(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let remote = self.remote_window.as_ref().unwrap();
-        let clients = state(&self.app_store, cx);
-        let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
-        let tree = overview.as_ref().and_then(|overview| remote.tree(overview));
-        let title = overview
-            .as_ref()
-            .and_then(|overview| match remote.active.as_ref()? {
-                Item::Tab(_) => None,
-                Item::Mission(id) => overview
-                    .missions
-                    .iter()
-                    .find(|mission| &mission.id == id)
-                    .map(|mission| mission.title.clone()),
-                Item::Shell(id) => overview
-                    .sessions
-                    .get(id)
-                    .map(|session| session.title.clone()),
-            })
-            .unwrap_or_else(|| remote.computer.name.clone());
-        let mut body = div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .min_h_0()
-            .child(
-                div()
-                    .h(rems(44. / 16.))
-                    .debug_selector({
-                        let title = title.clone();
-                        move || format!("REMOTE_WORKSPACE_TITLE:{title}")
-                    })
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme::border())
-                    .child(title),
-            );
-        if let Some(tree) = tree.as_ref() {
-            let pane = self.render_remote_tree(tree, overview.as_ref().unwrap(), window, cx);
-            body = body.child(div().relative().flex_1().min_h_0().flex().child(pane));
-        } else {
-            body = body.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .flex_col()
-                    .gap_3()
-                    .children(
-                        (remote.connection == Connection::Opening)
-                            .then(|| spinner("remote-opening", 24., theme::muted())),
-                    )
-                    .child(label(
-                        if remote.connection == Connection::Opening {
-                            "client.opening_title"
-                        } else {
-                            "client.choose_tab"
-                        },
-                        &remote.computer.name,
-                    ))
-                    .child(
-                        div()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::faint())
-                            .child(crate::i18n::text("client.opening_detail")),
-                    ),
-            );
-        }
-        if let Some(Item::Mission(id)) = &remote.active {
-            if let Some(mission) = overview
-                .as_ref()
-                .and_then(|overview| overview.missions.iter().find(|mission| &mission.id == id))
-            {
-                if !mission.shells.is_empty() {
-                    body = body.child(self.remote_shells(
-                        &mission.shells,
-                        overview.as_ref().unwrap(),
-                        cx,
-                    ));
-                }
-            }
-        }
-        body.into_any_element()
-    }
-    fn remote_shells(
-        &self,
-        shells: &[String],
-        overview: &Overview,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .debug_selector(|| "REMOTE_SHELLS".into())
-            .flex()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .border_t_1()
-            .border_color(theme::border())
-            .children(shells.iter().map(|id| {
-                let item = Item::Shell(id.clone());
-                let name = overview
-                    .sessions
-                    .get(id)
-                    .map(|session| session.title.clone())
-                    .unwrap_or_else(|| crate::i18n::text("noun.terminal").into());
-                Button::new(
-                    SharedString::from(format!("remote-mission-shell-{id}")),
-                    name,
-                )
-                .variant(ButtonVariant::Ghost)
-                .size(ButtonSize::Sm)
-                .on_press({
-                    let root = cx.entity();
-                    move |_, cx| {
-                        root.update(cx, |root, cx| root.select_remote_item(item.clone(), cx))
-                    }
-                })
-                .into_any_element()
-            }))
-            .into_any_element()
-    }
-    fn render_remote_tree(
-        &self,
-        tree: &Pane,
-        overview: &Overview,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        match tree {
-            Pane::Split { split, sizes, a, b } => {
-                let column = *split == SplitDirection::Column;
-                let total = sizes[0] + sizes[1];
-                let ratio = if total.is_finite() && total > 0. {
-                    (sizes[0] / total).clamp(0.05, 0.95) as f32
-                } else {
-                    0.5
-                };
-                div()
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .flex()
-                    .when(column, |pane| pane.flex_col())
-                    .child(
-                        div()
-                            .relative()
-                            .min_w_0()
-                            .min_h_0()
-                            .flex_none()
-                            .when(column, |pane| pane.h(relative(ratio)).w_full())
-                            .when(!column, |pane| pane.w(relative(ratio)).h_full())
-                            .child(self.render_remote_tree(a, overview, window, cx)),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .when(column, |pane| pane.border_t_1())
-                            .when(!column, |pane| pane.border_l_1())
-                            .border_color(theme::border())
-                            .child(self.render_remote_tree(b, overview, window, cx)),
-                    )
-                    .into_any_element()
-            }
-            Pane::Leaf { session: Some(id) } => {
-                self.render_remote_terminal(id, overview, window, cx)
-            }
-            _ => div().size_full().into_any_element(),
-        }
-    }
-    fn render_remote_terminal(
-        &self,
-        id: &str,
-        overview: &Overview,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let name = overview
-            .sessions
-            .get(id)
-            .map(|session| session.title.clone())
-            .unwrap_or_default();
-        let header_id = id.to_owned();
-        let surface = div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .min_w_0()
-            .min_h_0()
-            .child(
-                div()
-                    .debug_selector(move || format!("REMOTE_TERMINAL_HEADER_{header_id}"))
-                    .h(rems(30. / 16.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .flex_none()
-                    .bg(theme::panel())
-                    .border_b_1()
-                    .border_color(theme::border())
-                    .text_size(theme::text_body())
-                    .child(name),
-            );
-        surface
-            .child(self.render_remote_terminal_content(id, cx))
-            .into_any_element()
-    }
     pub(crate) fn render_remote_terminal_content(
         &self,
         id: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let remote = self.remote_window.as_ref().unwrap();
+        let clients = state(&self.app_store, cx);
+        let running = clients
+            .read(cx)
+            .overviews
+            .get(&remote.computer.id)
+            .and_then(|overview| overview.sessions.get(id))
+            .is_some_and(|session| {
+                !matches!(
+                    session.status.status.effective(),
+                    Status::Stopped | Status::Error
+                )
+            });
         let mut surface = div()
             .relative()
             .size_full()
@@ -1172,6 +1057,9 @@ impl NativeRoot {
             )
             .absolute()
             .inset_0();
+            if !running {
+                return surface.child(measure).into_any_element();
+            }
             return surface
                 .child(
                     div()
@@ -1268,15 +1156,6 @@ impl NativeRoot {
                     .child(crate::i18n::text("client.take_control_failed")),
             );
         }
-        let clients = state(&self.app_store, cx);
-        let running = clients
-            .read(cx)
-            .overviews
-            .get(&remote.computer.id)
-            .and_then(|overview| overview.sessions.get(id))
-            .is_some_and(|session| {
-                !matches!(session.status.status, Status::Stopped | Status::Error)
-            });
         let interactive = connected && controlled && running;
         let option_as_meta = self.settings(cx).option_as_meta;
         surface

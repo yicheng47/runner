@@ -255,7 +255,9 @@ impl Sidebar {
             SidebarMenuAction::NewTerminal(_) => {
                 self.front_page.supports(&["startShell", "layout"])
             }
-            SidebarMenuAction::NewMission(_) => false,
+            SidebarMenuAction::NewMission(_) => {
+                self.front_page.supports(&["catalog", "startMission"])
+            }
             SidebarMenuAction::TogglePin { .. } => self.front_page.supports(&["pin"]),
             SidebarMenuAction::Rename(_) => self.front_page.supports(&["rename"]),
             SidebarMenuAction::ForkChat(id) => {

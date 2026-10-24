@@ -1753,3 +1753,92 @@ fn existing_crew_validation_follows_language_changes_without_resetting_drafts() 
         }
     });
 }
+
+#[test]
+fn remote_libraries_preserve_local_crew_query_page_size_and_pending_search() {
+    use crate::surfaces::remote_client::tests as remote;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (store, fake, _) = remote::fixture(&mut cx, temp.path());
+    remote::enable_front_page(&fake);
+    let window = remote::add_window(&mut cx, &store, temp.path(), "saved-local-crew-list");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.open_crews(window, cx);
+            root.set_crew_page_size(10, cx);
+            root.crew_surfaces
+                .search
+                .update(cx, |search, cx| search.set_value("local-only-filter", cx));
+            remote::choose_host(root, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(
+            crate::list_controls::LIST_QUERY_DEBOUNCE_MS,
+        ));
+    cx.run_until_parked();
+    fake.queue_result("catalog", Ok(remote::library_catalog(2)));
+    window
+        .update(&mut cx, |root, window, cx| root.open_crews(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let old_search = window
+        .read_with(&cx, |root, _| {
+            root.remote_window
+                .as_ref()
+                .unwrap()
+                .crew_surfaces
+                .search
+                .clone()
+        })
+        .unwrap();
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.set_crew_page_size(50, cx);
+            root.set_crew_query("host-coder-1".into(), cx);
+            root.load_local_crew_page(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.return_to_this_computer(window, cx);
+            old_search.update(cx, |search, cx| search.set_value("old-window-search", cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, _| {
+            assert_eq!(root.route, AppRoute::Crews);
+            assert_eq!(root.crew_surfaces.list.query, "local-only-filter");
+            assert_eq!(root.crew_surfaces.list.debounced_query, "local-only-filter");
+            assert_eq!(root.crew_surfaces.list.page_size, 10);
+        })
+        .unwrap();
+    window.update(&mut cx, remote::choose_host).unwrap();
+    cx.run_until_parked();
+    fake.queue_result("catalog", Ok(remote::library_catalog(2)));
+    window
+        .update(&mut cx, |root, window, cx| root.open_crews(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    old_search.update(&mut cx, |search, cx| {
+        search.set_value("another-old-window-search", cx)
+    });
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, _| {
+            assert!(root
+                .remote_window
+                .as_ref()
+                .unwrap()
+                .crew_surfaces
+                .list
+                .query
+                .is_empty());
+            assert_eq!(root.crew_surfaces.list.query, "local-only-filter");
+        })
+        .unwrap();
+}

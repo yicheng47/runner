@@ -28,6 +28,9 @@ impl Transport for Fake {
                     "startChat" | "startShell" | "resume" | "restart" | "fork" => {
                         json!({"session": "same-id"})
                     }
+                    "resumeMission" => {
+                        json!({"mission":value["mission"],"sessions":["resumed-member"]})
+                    }
                     "layout" => json!({"target": value["target"]}),
                     "createProject" => json!({"project":"host-project"}),
                     "catalog" => {
@@ -282,9 +285,12 @@ fn sidebar_requests_use_public_targets_complete_orders_and_host_project_paths() 
     client.delete_project("host-project".into(), false).unwrap();
     client.delete_project("host-project".into(), true).unwrap();
     client.stop_mission("host-mission".into()).unwrap();
-    client
-        .resume_mission("host-mission".into(), (90, 32))
-        .unwrap();
+    assert_eq!(
+        client
+            .resume_mission("host-mission".into(), (90, 32))
+            .unwrap(),
+        ["resumed-member"]
+    );
     let requests = fake.requests.lock().unwrap();
     assert_eq!(
         requests[1].1,

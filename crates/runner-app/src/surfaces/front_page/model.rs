@@ -554,3 +554,75 @@ impl From<DirectSessionEntry> for SessionDisplay {
         Self::local(&entry)
     }
 }
+
+#[derive(Clone)]
+pub(crate) struct WorkspaceMission {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) status: runner_core::protocol::model::MissionStatus,
+    pub(crate) cwd: Option<String>,
+    pub(crate) project_id: Option<String>,
+    pub(crate) started_at: Option<runner_core::protocol::model::Timestamp>,
+    pub(crate) archived: bool,
+    pub(crate) pinned: bool,
+}
+
+impl From<&runner_core::protocol::model::Mission> for WorkspaceMission {
+    fn from(mission: &runner_core::protocol::model::Mission) -> Self {
+        Self {
+            id: mission.id.clone(),
+            title: mission.title.clone(),
+            status: mission.status,
+            cwd: mission.cwd.clone(),
+            project_id: mission.project_id.clone(),
+            started_at: Some(mission.started_at),
+            archived: mission.archived_at.is_some(),
+            pinned: mission.pinned_at.is_some(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct MissionMemberDisplay {
+    pub(crate) session: MissionMemberSession,
+    pub(crate) handle: String,
+    pub(crate) lead: bool,
+    pub(crate) runtime: String,
+    pub(crate) live_title: Option<String>,
+    pub(crate) agent_session_key: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct MissionMemberSession {
+    pub(crate) id: String,
+    pub(crate) status: runner_core::protocol::model::SessionStatus,
+    pub(crate) cwd: Option<String>,
+}
+
+impl From<&runner_core::protocol::session::SessionRow> for MissionMemberDisplay {
+    fn from(row: &runner_core::protocol::session::SessionRow) -> Self {
+        Self {
+            session: MissionMemberSession {
+                id: row.session.id.clone(),
+                status: row.session.status,
+                cwd: row.session.cwd.clone(),
+            },
+            handle: row.handle.clone(),
+            lead: row.lead,
+            runtime: row.runtime.clone(),
+            live_title: row.live_title.clone(),
+            agent_session_key: row.agent_session_key.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MissionQuestionDisplay {
+    pub(crate) id: String,
+    pub(crate) markdown_id: String,
+    pub(crate) asker: String,
+    pub(crate) prompt: String,
+    pub(crate) choices: Vec<String>,
+    pub(crate) chain: String,
+    pub(crate) time: Option<String>,
+}

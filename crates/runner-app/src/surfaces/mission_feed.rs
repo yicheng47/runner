@@ -9,11 +9,13 @@ pub(crate) enum FeedBlock {
     MessageGroup { author: String, events: Vec<Event> },
     Signal(Event),
     AskCard(Event),
+    PendingAsk(crate::surfaces::front_page::model::MissionQuestionDisplay),
 }
 
 impl FeedBlock {
     pub(crate) fn id(&self) -> &str {
         match self {
+            Self::PendingAsk(question) => &question.id,
             Self::MessageGroup { events, .. } => &events[0].id,
             Self::Divider(event) | Self::Signal(event) | Self::AskCard(event) => &event.id,
         }

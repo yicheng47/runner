@@ -286,12 +286,16 @@ impl Sidebar {
                                 format!("mission:{id}"),
                                 &[feature],
                                 move |client| {
+                                    let mut done =
+                                        crate::surfaces::front_page::actions::Completion::default();
                                     match action {
                                         SidebarMenuAction::StopMission(_) => {
                                             client.stop_mission(id)?
                                         }
-                                        SidebarMenuAction::ResumeMission(_) => client
-                                            .resume_mission(id, (INITIAL_COLS, INITIAL_ROWS))?,
+                                        SidebarMenuAction::ResumeMission(_) => {
+                                            done.reopened_sessions = client
+                                                .resume_mission(id, (INITIAL_COLS, INITIAL_ROWS))?
+                                        }
                                         _ => client.archive(
                                             runner_core::companion::ActionTarget {
                                                 kind: runner_core::companion::ActionKind::Mission,
@@ -299,7 +303,7 @@ impl Sidebar {
                                             },
                                         )?,
                                     }
-                                    Ok(Default::default())
+                                    Ok(done)
                                 },
                                 cx,
                             );
@@ -350,9 +354,15 @@ impl Sidebar {
             }
             SidebarMenuAction::NewMission(scope) => {
                 self.set_active_project(scope.project_id().map(str::to_owned), cx);
+                let client = self.front_page.clone();
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
+                            if !client.valid()
+                                || shell.front_page_client(shell_cx).target != client.target
+                            {
+                                return;
+                            }
                             shell.open_start_mission_modal(None, scope, window, shell_cx)
                         });
                     });
