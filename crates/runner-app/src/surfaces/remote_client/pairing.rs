@@ -187,6 +187,7 @@ impl NativeRoot {
                         }) {
                             clients.changed_identities.remove(&computer.id);
                             clients.connections.remove(&computer.id);
+                            clients.invalidate_capabilities(&computer.id);
                             let epoch = clients.pair_epochs.entry(computer.id.clone()).or_default();
                             *epoch = epoch.wrapping_add(1);
                             clients.send(Command::Paired(computer.id.clone()));

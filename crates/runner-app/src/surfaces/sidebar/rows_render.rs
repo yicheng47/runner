@@ -1,5 +1,4 @@
 use super::elements::attention_indicator;
-use super::elements::chat_tab_row_active;
 use super::elements::empty_sidebar_label;
 use super::elements::project_row_action;
 use super::elements::project_row_label;
@@ -14,12 +13,11 @@ use super::menus::MenuOrigin;
 
 use super::*;
 use crate::surfaces::sidebar_logic::{AttentionState, DropKind};
-use crate::surfaces::*;
 use crate::*;
 use gpui::{svg, DragMoveEvent};
 use runner_app::ui::Tooltip;
-use runner_core::protocol::mission::MissionSummary;
-use runner_core::protocol::node::{NodeRow, NodeType};
+
+use runner_core::protocol::node::NodeType;
 
 pub(crate) fn project_header_icon(collapsed: bool) -> ChatIcon {
     ChatIcon::generic(if collapsed {
@@ -57,7 +55,7 @@ impl Sidebar {
         &self,
         node: NodeRow,
         layout: PaneLayout,
-        members: Vec<DirectSessionEntry>,
+        members: Vec<SessionDisplay>,
         attention: AttentionState,
         shortcut_index: Option<u8>,
         drop_kind: DropKind,
@@ -65,10 +63,7 @@ impl Sidebar {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = self.shell.upgrade().is_some_and(|shell| {
-            let shell = shell.read(cx);
-            chat_tab_row_active(&shell.route, shell.tabs.active_tab_id(), node.id.as_str())
-        });
+        let active = self.tab_selected(&node.id, cx);
         let live = members
             .iter()
             .any(|member| member.status == SessionStatus::Running);
@@ -157,6 +152,9 @@ impl Sidebar {
                     pinned: node.pinned_position.is_some(),
                 },
             )
+            .when(self.front_page.is_remote(), |row| {
+                row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
+            })
             .when(!live, |row| row.text_color(theme::faint()))
             .child(trailing)
             .on_hover({
@@ -212,13 +210,7 @@ impl Sidebar {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = self.shell.upgrade().is_some_and(|shell| {
-            matches!(
-                &shell.read(cx).route,
-                AppRoute::Mission(active_id) if active_id == &summary.mission.id
-            )
-        });
-
+        let active = self.mission_selected(&summary.mission.id, cx);
         let renaming = self.rename.as_ref().is_some_and(|rename| {
             rename
                 .target
@@ -292,6 +284,9 @@ impl Sidebar {
                     pinned: node.pinned_position.is_some(),
                 },
             )
+            .when(self.front_page.is_remote(), |row| {
+                row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
+            })
             .child(trailing)
             .on_hover({
                 let id = node.id.clone();
@@ -337,7 +332,7 @@ impl Sidebar {
     pub(super) fn render_project(
         &self,
         node: NodeRow,
-        project: runner_core::protocol::project::ProjectRow,
+        project: crate::surfaces::front_page::model::ProjectDisplay,
         nested: Vec<SidebarRow>,
         attention: AttentionState,
         visible_projects: Vec<String>,
@@ -406,7 +401,10 @@ impl Sidebar {
                 Tooltip::new(
                     SharedString::from(format!("project-cwd-{}", project.id)),
                     project.cwd.clone(),
-                    project_row_label(project.name.clone()),
+                    project_row_label(project.name.clone()).debug_selector({
+                        let id = project.id.clone();
+                        move || format!("SIDEBAR_PROJECT:{id}")
+                    }),
                 )
                 .expand(),
             )
@@ -694,6 +692,9 @@ impl Sidebar {
         visible_ids: Vec<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if !self.front_page.supports(&["move"]) && !self.front_page.supports(&["reorderPinned"]) {
+            return row;
+        }
         let drag = SidebarNodeDrag::new(node.id.clone(), label, icon);
         let drag_root = cx.entity();
         let hovered_id = node.id.clone();

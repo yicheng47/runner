@@ -22,6 +22,7 @@ use crate::surfaces::sidebar_logic::DropKind;
 use gpui::{
     prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
 };
+use runner_core::protocol::node::NodeRow;
 use runner_core::protocol::ClientEvent as AppEvent;
 
 struct SidebarRenameTest {
@@ -513,18 +514,23 @@ fn tab_titles_use_live_words_before_the_session_snapshot_refreshes() {
         (Some("Discuss cars | project"), "Discuss cars"),
     ] {
         assert_eq!(
-            tab_label_live(&layout, &[entry.clone()], |_| live.map(str::to_owned)),
+            tab_label_live(&layout, &[SessionDisplay::local(&entry)], |_| live
+                .map(str::to_owned)),
             expected
         );
     }
     entry.live_title = Some("Old topic".into());
     assert_eq!(
-        tab_label_live(&layout, &[entry.clone()], |_| Some("New topic".into())),
+        tab_label_live(&layout, &[SessionDisplay::local(&entry)], |_| Some(
+            "New topic".into()
+        )),
         "New topic"
     );
     entry.title = Some("My chat".into());
     assert_eq!(
-        tab_label_live(&layout, &[entry], |_| Some("New topic".into())),
+        tab_label_live(&layout, &[SessionDisplay::local(&entry)], |_| Some(
+            "New topic".into()
+        )),
         "My chat"
     );
 }
@@ -533,7 +539,10 @@ fn tab_titles_use_live_words_before_the_session_snapshot_refreshes() {
 fn split_tab_titles_follow_layout_order_and_manual_names_instead_of_focus() {
     let first = direct_session("first", "codex", SessionStatus::Running);
     let second = direct_session("second", "claude-code", SessionStatus::Running);
-    let sessions = [second, first];
+    let sessions = [second, first]
+        .iter()
+        .map(SessionDisplay::local)
+        .collect::<Vec<_>>();
     let live = |id: &str| Some(if id == "first" { "Cars" } else { "Planes" }.into());
     let mut layout = two_pane_layout("first", "second");
     for id in ["first", "second"] {
@@ -1435,9 +1444,10 @@ fn both_create_menus_show_effective_bindings_and_omit_unbound_keys() {
 fn empty_tab_rename_source_changes_language_while_named_tabs_stay_literal() {
     crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
         let mut layout = PaneLayout::single(None, &[]);
-        let source = super::elements::tab_label_source(&layout, &[], |_| None);
+        let source = super::elements::tab_label_source(&layout, &[] as &[SessionDisplay], |_| None);
         layout.name = Some("Empty tab {name}".into());
-        let literal = super::elements::tab_label_source(&layout, &[], |_| None);
+        let literal =
+            super::elements::tab_label_source(&layout, &[] as &[SessionDisplay], |_| None);
         assert_eq!(source.resolve(), "Empty tab");
         crate::i18n::set_active_locale(crate::i18n::Locale::SimplifiedChinese);
         assert_eq!(source.resolve(), "空标签页");
@@ -2716,5 +2726,76 @@ fn active_mixed_split_is_one_chat_row_targeting_the_working_chat() {
                 );
             }
         });
+    }
+}
+
+#[test]
+fn remote_tab_rename_placeholder_uses_the_remote_layout_even_with_colliding_local_ids() {
+    use crate::surfaces::remote_client::tests::{
+        add_window, choose_host, enable_front_page, fixture,
+    };
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for colliding_local_tab in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, clients) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "remote-rename-placeholder");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        clients.update(&mut cx, |clients, cx| {
+            let mut overview = clients.overviews["host"].clone();
+            overview.tabs[0].name.clear();
+            overview.tabs[0].panes = serde_json::from_value(serde_json::json!({"split":"column","sizes":[0.5,0.5],"a":{"session":"s"},"b":{"session":null}})).unwrap();
+            overview.sessions.get_mut("s").unwrap().title = "Host derived title".into();
+            clients.apply_event(AppEvent {
+                name: "remote/overview".into(),
+                payload: serde_json::json!({"computer":"host","overview":overview}),
+            });
+            cx.notify();
+        });
+        cx.run_until_parked();
+        if colliding_local_tab {
+            window.update(&mut cx, |root, _, _| {
+                let mut local = PaneLayout::single(Some("s"), &[]);
+                local.split("p1", SplitOrientation::Column).unwrap();
+                let row = serde_json::from_value(serde_json::json!({"id":"remote-tab","parent_id":null,"position":0,"type":"tab","name":"Local collision label","ref_id":null,"layout":local.serialize().unwrap(),"pinned_position":null,"last_completed_at":null,"last_viewed_at":null,"created_at":"2026-10-24T00:00:00Z"})).unwrap();
+                root.tabs = TabSet::from_rows(&[row]);
+            }).unwrap();
+        }
+        let sidebar = window
+            .read_with(&cx, |root, _| root.front_page_sidebar().clone())
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.update(|window, cx| {
+            window.activate_window();
+            sidebar.update(cx, |sidebar, cx| {
+                sidebar.handle_sidebar_menu_action(
+                    SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+                        node_id: "remote-tab".into(),
+                        original: String::new(),
+                        session_id: None,
+                    }),
+                    window,
+                    cx,
+                )
+            });
+        });
+        visual.run_until_parked();
+        sidebar.read_with(&visual, |sidebar, cx| {
+            let field = sidebar.rename.as_ref().unwrap().input.read(cx);
+            assert_eq!(field.placeholder(), "Host derived title");
+            assert!(field.text().is_empty());
+        });
+        if colliding_local_tab {
+            window
+                .read_with(&visual, |root, _| {
+                    assert_eq!(
+                        root.tabs.tabs()[0].name.as_deref(),
+                        Some("Local collision label")
+                    );
+                })
+                .unwrap();
+        }
     }
 }

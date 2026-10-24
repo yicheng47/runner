@@ -285,7 +285,7 @@ fn close_target(
 #[cfg(not(test))]
 fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
     if this.remote_window.is_some() {
-        this.return_to_this_computer(window, cx);
+        this.close_remote_front_page(window, cx);
         return;
     }
     let drawer_focused = this.route == AppRoute::Chat

@@ -1,15 +1,14 @@
 use super::*;
-use crate::surfaces::sidebar::{self, SidebarItemView};
-use crate::surfaces::sidebar_logic::SidebarTree;
 use runner_app::ui::button::spinner;
 use runner_core::companion::{
     Overview, Pane, SidebarNode, SidebarNodeKind, SplitDirection, Status,
 };
 use runner_core::remote::RemoteTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 #[derive(Clone, PartialEq, Eq)]
-pub(super) enum Item {
+pub(crate) enum Item {
     Tab(String),
     Mission(String),
     Shell(String),
@@ -27,8 +26,37 @@ pub(super) struct RemotePane {
 }
 pub(crate) struct RemoteWindow {
     pub(crate) computer: Computer,
-    _follow: model::Follow,
-    active: Option<Item>,
+    pub(crate) front_page: crate::surfaces::front_page::FrontPageClient,
+    pub(crate) sidebar: Entity<Sidebar>,
+    pub(crate) sidebar_collapsed: bool,
+    pub(crate) sidebar_width: f32,
+    _follow: Option<model::Follow>,
+    pub(crate) active: Option<Item>,
+    pub(crate) layouts: HashMap<String, PaneLayout>,
+    pub(crate) overview_revision: u64,
+    pub(crate) resize_draft: Option<PaneLayout>,
+    pub(crate) resizing_split: Option<String>,
+    pub(crate) drawer_resizing: bool,
+    pub(crate) pane_bounds: HashMap<PaneKey, gpui::Size<Pixels>>,
+    pub(crate) layout_hints: HashMap<String, PaneLayout>,
+    pub(crate) actions_pending: HashSet<String>,
+    pub(crate) action_error: Option<String>,
+    pub(crate) shell_placement: Arc<Mutex<Option<(String, PaneLayout)>>>,
+    pub(crate) catalog: Option<runner_core::companion::Catalog>,
+    catalog_target: Option<crate::surfaces::front_page::FrontPageTarget>,
+    pub(crate) project_picker:
+        Option<Entity<crate::surfaces::front_page::folder_picker::FolderPicker>>,
+    pub(crate) project_picker_subscription: Option<Subscription>,
+    pub(crate) delete_project: Option<String>,
+    pub(crate) delete_project_busy: bool,
+    pub(crate) delete_project_force: bool,
+    pub(crate) delete_project_error: Option<String>,
+    pub(crate) navigation_generation: u64,
+    pub(crate) activate_session: Option<String>,
+    pub(crate) activate_placement: Option<(String, Option<String>)>,
+    pub(crate) reopen_sessions: HashSet<String>,
+    pub(crate) activate_tab: Option<String>,
+    pub(crate) form_generation: u64,
     pub(super) terminals: HashMap<String, RemotePane>,
     recovery: HashSet<String>,
     terminal_epoch: u64,
@@ -41,11 +69,6 @@ pub(crate) struct RemoteWindow {
     pub(super) connection: Connection,
     epoch: u64,
     wake: futures::channel::mpsc::UnboundedSender<String>,
-    sidebar_scroll: ScrollHandle,
-    sidebar_scrollbar: Entity<Scrollbar>,
-    collapsed_projects: HashSet<String>,
-    sidebar_projects_open: bool,
-    sidebar_recents_open: bool,
 }
 impl Drop for RemoteWindow {
     fn drop(&mut self) {
@@ -53,6 +76,20 @@ impl Drop for RemoteWindow {
     }
 }
 impl RemoteWindow {
+    fn visible_sessions(&self, overview: &Overview) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Some(tree) = self.tree(overview) {
+            session_ids(&tree, &mut ids);
+        }
+        if let Some(Item::Tab(id)) = &self.active {
+            if let Some(layout) = self.layouts.get(id).filter(|layout| layout.drawer_open()) {
+                if let Some(shell) = layout.active_drawer_shell() {
+                    ids.push(shell.into());
+                }
+            }
+        }
+        ids
+    }
     fn tree(&self, overview: &Overview) -> Option<Pane> {
         match self.active.as_ref()? {
             Item::Tab(id) => overview
@@ -98,6 +135,46 @@ fn session_ids(pane: &Pane, ids: &mut Vec<String>) {
 }
 
 impl NativeRoot {
+    pub(crate) fn remote_terminal_interactive(&self, id: &str, cx: &App) -> bool {
+        self.remote_window.as_ref().is_some_and(|remote| {
+            remote.connection == Connection::Connected
+                && remote
+                    .terminals
+                    .get(id)
+                    .is_some_and(|pane| pane.terminal.control().desktop())
+                && self
+                    .app_store
+                    .read(cx)
+                    .remote_clients
+                    .read(cx)
+                    .overviews
+                    .get(&remote.computer.id)
+                    .and_then(|overview| overview.sessions.get(id))
+                    .is_some_and(|session| {
+                        !matches!(
+                            session.status.status.effective(),
+                            Status::Stopped | Status::Error
+                        )
+                    })
+        })
+    }
+    pub(crate) fn remote_terminal_size(&self, id: &str) -> Option<(u16, u16)> {
+        let remote = self.remote_window.as_ref()?;
+        remote
+            .terminals
+            .get(id)
+            .map(|pane| pane.terminal.size())
+            .or_else(|| remote.sizes.get(id).copied())
+    }
+    pub(crate) fn focus_remote_terminal(&self, id: &str, window: &mut Window, cx: &mut App) {
+        if let Some(pane) = self
+            .remote_window
+            .as_ref()
+            .and_then(|remote| remote.terminals.get(id))
+        {
+            pane.focus.focus(window, cx);
+        }
+    }
     pub(crate) fn visit_computer(
         &mut self,
         computer: Computer,
@@ -131,6 +208,14 @@ impl NativeRoot {
                 .send(Command::Retry(computer.id));
             return;
         }
+        self.start_chat_modal = None;
+        self.start_mission_modal = None;
+        self.chat_rename_modal = None;
+        self.pane_rename = None;
+        self.fork_confirm = None;
+        self.terminal_close_confirm = None;
+        self.command_palette
+            .update(cx, |palette, cx| palette.close_for_target_change(cx));
         self.client_ui.epoch += 1;
         let epoch = self.client_ui.epoch;
         let clients = state(&self.app_store, cx);
@@ -166,13 +251,47 @@ impl NativeRoot {
             .get(&computer.id)
             .copied()
             .unwrap_or_default();
-        let sidebar_scroll = ScrollHandle::new();
-        let scroll_owner = cx.entity_id();
-        let sidebar_scrollbar = cx.new(|_| Scrollbar::app(sidebar_scroll.clone(), scroll_owner));
+        let access = clients.update(cx, |state, cx| state.front_page_access(&computer, cx));
+        let front_page =
+            crate::surfaces::front_page::FrontPageClient::remote(self.core(cx).clone(), access);
+        let shell = cx.weak_entity();
+        let sidebar =
+            cx.new(|sidebar_cx| Sidebar::new(shell, self.app_store.clone(), None, sidebar_cx));
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_front_page_target(front_page.clone(), cx)
+        });
         self.remote_window = Some(RemoteWindow {
+            sidebar,
+            sidebar_collapsed: false,
+            sidebar_width: self.settings(cx).sidebar_width,
+            front_page,
             computer,
-            _follow: follow,
+            _follow: Some(follow),
             active: None,
+            layouts: HashMap::new(),
+            overview_revision: 0,
+            resize_draft: None,
+            resizing_split: None,
+            drawer_resizing: false,
+            pane_bounds: HashMap::new(),
+            layout_hints: HashMap::new(),
+            actions_pending: HashSet::new(),
+            action_error: None,
+            shell_placement: Arc::new(Mutex::new(None)),
+            catalog: None,
+            catalog_target: None,
+            project_picker: None,
+            project_picker_subscription: None,
+            delete_project: None,
+            delete_project_busy: false,
+            delete_project_force: false,
+            delete_project_error: None,
+            navigation_generation: 0,
+            activate_session: None,
+            activate_placement: None,
+            reopen_sessions: HashSet::new(),
+            activate_tab: None,
+            form_generation: 0,
             terminals: HashMap::new(),
             recovery: HashSet::new(),
             terminal_epoch: clients.read(cx).terminal_epoch,
@@ -185,14 +304,8 @@ impl NativeRoot {
             connection: Connection::Opening,
             epoch,
             wake,
-            sidebar_scroll,
-            sidebar_scrollbar,
-            collapsed_projects: HashSet::new(),
-            sidebar_projects_open: true,
-            sidebar_recents_open: true,
         });
         self.client_ui.picker_open = false;
-        self.attached.clear();
         self.mission_workspace
             .update(cx, |workspace, cx| workspace.release_window(cx));
         self.root_focus.focus(window, cx);
@@ -201,6 +314,13 @@ impl NativeRoot {
         cx.notify();
     }
     pub(crate) fn return_to_this_computer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_chat_modal = None;
+        self.chat_rename_modal = None;
+        self.pane_rename = None;
+        self.fork_confirm = None;
+        self.terminal_close_confirm = None;
+        self.command_palette
+            .update(cx, |palette, cx| palette.close_for_target_change(cx));
         self.remote_window = None;
         self.client_ui.picker_open = false;
         self.root_focus.focus(window, cx);
@@ -254,12 +374,138 @@ impl NativeRoot {
             remote.attachment_generation = remote.attachment_generation.wrapping_add(1);
         }
         let connection = clients.read(cx).connection(&remote.computer.id);
+        let connection = if !remote.computer.paired && connection == Connection::Connected {
+            Connection::Revoked
+        } else {
+            connection
+        };
+        let trusted = clients.read(cx).computers.iter().any(|computer| {
+            computer.id == remote.computer.id
+                && computer.fingerprint == remote.computer.fingerprint
+                && computer.paired
+        }) && !matches!(connection, Connection::Revoked | Connection::Forgotten);
+        if !trusted {
+            remote._follow = None;
+        } else if remote._follow.is_none() {
+            remote._follow = Some(clients.read(cx).follow(remote.computer.id.clone()));
+        }
+
         if connection == Connection::Forgotten && remote.connection != connection {
             remote.terminals.clear();
             remote.pending.clear();
             remote.recovery.clear();
             remote.errors.clear();
             remote.attachment_generation = remote.attachment_generation.wrapping_add(1);
+        }
+        let revision = clients
+            .read(cx)
+            .overview_revisions
+            .get(&remote.computer.id)
+            .copied()
+            .unwrap_or_default();
+        let pushed = revision != remote.overview_revision;
+        remote.overview_revision = revision;
+        if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
+            if pushed {
+                remote.layout_hints.retain(|id, _| {
+                    !remote.layouts.contains_key(id)
+                        || overview.tabs.iter().any(|tab| &tab.id == id)
+                });
+            }
+            remote
+                .layouts
+                .retain(|id, _| overview.tabs.iter().any(|tab| &tab.id == id));
+            for tab in &overview.tabs {
+                let layout = crate::surfaces::front_page::model::reconcile_tab(
+                    tab,
+                    remote.layouts.get(&tab.id),
+                    remote.layout_hints.get(&tab.id),
+                );
+                if remote.layout_hints.get(&tab.id).is_some_and(|hint| {
+                    crate::surfaces::front_page::model::matches_layout(hint, tab)
+                        || (pushed
+                            && remote.layouts.get(&tab.id).is_some_and(|old| {
+                                !crate::surfaces::front_page::model::matches_layout(old, tab)
+                            }))
+                }) {
+                    remote.layout_hints.remove(&tab.id);
+                }
+                remote.layouts.insert(tab.id.clone(), layout);
+            }
+        }
+        if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
+            let live = remote
+                .reopen_sessions
+                .iter()
+                .filter(|id| {
+                    overview.sessions.get(*id).is_some_and(|session| {
+                        !matches!(
+                            session.status.status.effective(),
+                            Status::Stopped | Status::Error
+                        )
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for id in live {
+                remote.reopen_sessions.remove(&id);
+                remote.terminals.remove(&id);
+                remote.pending.remove(&id);
+                remote.recovery.remove(&id);
+            }
+        }
+        if let Some(session) = &remote.activate_session {
+            let destination = if let Some((tab, pane)) = &remote.activate_placement {
+                remote
+                    .layouts
+                    .get(tab)
+                    .filter(|layout| match pane {
+                        Some(pane) => layout.root.leaves().iter().any(|leaf| {
+                            &leaf.id == pane && leaf.session_id.as_ref() == Some(session)
+                        }),
+                        None => layout.drawer_shells().contains(session),
+                    })
+                    .map(|_| tab.clone())
+            } else {
+                remote
+                    .layouts
+                    .iter()
+                    .find(|(_, layout)| layout.all_session_ids().contains(session))
+                    .map(|(id, _)| id.clone())
+            };
+            if let Some(id) = destination {
+                let layout = remote.layouts.get_mut(&id).unwrap();
+                if let Some((_, pane)) = &remote.activate_placement {
+                    if let Some(pane) = pane {
+                        layout.focus_pane(pane);
+                    } else {
+                        layout.activate_drawer_shell(session);
+                        layout.set_drawer_open(true);
+                    }
+                }
+                remote.active = Some(Item::Tab(id));
+                remote.activate_session = None;
+                remote.activate_placement = None;
+            }
+        }
+        if let Some(tab) = &remote.activate_tab {
+            if remote.layouts.contains_key(tab) {
+                remote.active = Some(Item::Tab(tab.clone()));
+                remote.activate_tab = None;
+            }
+        }
+        if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
+            let valid = match &remote.active {
+                Some(Item::Tab(id)) => remote.layouts.contains_key(id),
+                Some(Item::Mission(id)) => {
+                    overview.missions.iter().any(|mission| &mission.id == id)
+                }
+                Some(Item::Shell(id)) => overview.sessions.contains_key(id),
+                None => true,
+            };
+            if !valid {
+                remote.active = None;
+            }
         }
         if remote.active.is_none() {
             if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
@@ -279,6 +525,23 @@ impl NativeRoot {
             .connected
             .store(connection == Connection::Connected, Ordering::Release);
         if connection != Connection::Connected {
+            remote.catalog = None;
+            remote.catalog_target = None;
+            self.start_chat_modal = None;
+            self.chat_rename_modal = None;
+            self.pane_rename = None;
+            self.fork_confirm = None;
+            self.terminal_close_confirm = None;
+            remote.project_picker = None;
+            remote.project_picker_subscription = None;
+            remote.delete_project = None;
+            *remote.shell_placement.lock().unwrap() = None;
+            remote.actions_pending.clear();
+            remote.layout_hints.clear();
+            remote.reopen_sessions.clear();
+            remote.activate_session = None;
+            remote.activate_placement = None;
+            remote.activate_tab = None;
             for pane in remote.terminals.values() {
                 pane.input.update(cx, |input, cx| {
                     input.cancel_composition();
@@ -290,30 +553,133 @@ impl NativeRoot {
             remote.errors.clear();
         }
         remote.connection = connection;
+        let access = clients.update(cx, |state, cx| {
+            state.front_page_access(&remote.computer, cx)
+        });
+        remote.front_page = crate::surfaces::front_page::FrontPageClient::remote(
+            self.app_store.read(cx).client.clone(),
+            access,
+        );
+        let sessions = clients
+            .read(cx)
+            .overviews
+            .get(&remote.computer.id)
+            .map(|overview| {
+                overview
+                    .sessions
+                    .iter()
+                    .map(|(id, session)| {
+                        let native = remote.catalog.as_ref().is_some_and(|catalog| {
+                            catalog.runtimes.iter().any(|runtime| {
+                                Some(&runtime.name) == session.runtime.as_ref()
+                                    && runtime.native_fork
+                            })
+                        });
+                        let pinned = overview.tabs.iter().any(|tab| {
+                            tab.pinned
+                                && remote
+                                    .layouts
+                                    .get(&tab.id)
+                                    .is_some_and(|layout| layout.contains_session(id))
+                        });
+                        (
+                            id.clone(),
+                            crate::surfaces::front_page::model::SessionDisplay::remote(
+                                id,
+                                session,
+                                pinned,
+                                native,
+                                remote.front_page.supports(&["resume"]),
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        remote.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_front_page_target(remote.front_page.clone(), cx);
+            sidebar.set_remote_presentation(
+                remote.layouts.clone(),
+                sessions,
+                remote.active.clone(),
+                cx,
+            );
+        });
+        self.load_remote_metadata(cx);
+        self.refresh_remote_palette(cx);
         self.attach_remote_panes(cx);
         cx.notify();
     }
-    pub(super) fn select_remote_item(&mut self, item: Item, cx: &mut Context<Self>) {
+    fn load_remote_metadata(&mut self, cx: &mut Context<Self>) {
+        let Some(remote) = self.remote_window.as_mut() else {
+            return;
+        };
+        if !remote.front_page.supports(&["catalog"])
+            || remote.catalog_target.as_ref() == Some(&remote.front_page.target)
+        {
+            return;
+        }
+        remote.catalog = None;
+        remote.catalog_target = Some(remote.front_page.target.clone());
+        let client = remote.front_page.clone();
+        let guard = client.clone();
+        let epoch = self.client_ui.epoch;
+        let work = cx.background_spawn(async move { client.catalog() });
+        cx.spawn(async move |weak, cx| {
+            let result = work.await;
+            let _ = weak.update(cx, |root, cx| {
+                if root.client_ui.epoch != epoch || !guard.valid() {
+                    return;
+                }
+                if let Some(remote) = root
+                    .remote_window
+                    .as_mut()
+                    .filter(|remote| remote.front_page.target == guard.target)
+                {
+                    if let Ok(catalog) = result {
+                        remote.catalog = Some(catalog);
+                    }
+                    root.sync_remote_state(cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+    pub(crate) fn select_remote_item(&mut self, item: Item, cx: &mut Context<Self>) {
         if let Some(remote) = self.remote_window.as_mut() {
             if remote.active.as_ref() != Some(&item) {
+                self.start_chat_modal = None;
+                remote.form_generation = remote.form_generation.wrapping_add(1);
+                remote.navigation_generation = remote.navigation_generation.wrapping_add(1);
+                remote.activate_session = None;
+                remote.activate_placement = None;
+                remote.activate_tab = None;
+                for (id, hint) in &mut remote.layout_hints {
+                    if let Some(previous) = remote.layouts.get(id) {
+                        crate::surfaces::front_page::model::retain_presentation(hint, previous);
+                    }
+                }
+                *remote.shell_placement.lock().unwrap() = None;
+                remote.action_error = None;
                 remote.recovery.clear();
             }
             remote.active = Some(item);
             remote.errors.clear();
         }
-        self.attach_remote_panes(cx);
+        self.sync_remote_state(cx);
         cx.notify();
     }
-    fn attach_remote_panes(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn attach_remote_panes(&mut self, cx: &mut Context<Self>) {
         let clients = state(&self.app_store, cx);
         let Some(remote) = self.remote_window.as_mut() else {
             return;
         };
         let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
-        let mut ids = Vec::new();
-        if let Some(tree) = overview.as_ref().and_then(|overview| remote.tree(overview)) {
-            session_ids(&tree, &mut ids);
-        }
+        let ids = overview
+            .as_ref()
+            .map(|overview| remote.visible_sessions(overview))
+            .unwrap_or_default();
         remote.terminals.retain(|id, _| ids.contains(id));
         if remote.connection != Connection::Connected {
             return;
@@ -374,15 +740,12 @@ impl NativeRoot {
                     match result {
                         Ok(terminal) => {
                             let clients = state(&root.app_store, cx);
-                            let mut desired = Vec::new();
-                            if let Some(tree) = clients
+                            let desired = clients
                                 .read(cx)
                                 .overviews
                                 .get(&remote.computer.id)
-                                .and_then(|overview| remote.tree(overview))
-                            {
-                                session_ids(&tree, &mut desired);
-                            }
+                                .map(|overview| remote.visible_sessions(overview))
+                                .unwrap_or_default();
                             if !desired.contains(&id) {
                                 return;
                             }
@@ -420,376 +783,6 @@ impl NativeRoot {
             })
             .detach();
         }
-    }
-    pub(crate) fn render_remote_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let remote = self.remote_window.as_ref().unwrap();
-        let clients = state(&self.app_store, cx);
-        let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
-        let mut scroll =
-            sidebar::sidebar_scroll_container("remote-sidebar-scroll", &remote.sidebar_scroll);
-        if let Some(overview) = overview.as_ref() {
-            let tree = remote_sidebar_tree(overview);
-            let pinned = tree
-                .pinned
-                .iter()
-                .filter_map(|node| self.render_remote_sidebar_node(node, overview, cx))
-                .collect::<Vec<_>>();
-            let has_pinned = !pinned.is_empty();
-            if has_pinned {
-                scroll = scroll
-                    .child(sidebar::section_title(crate::i18n::text("heading.pinned")))
-                    .child(
-                        div()
-                            .px_3()
-                            .pt_1()
-                            .flex()
-                            .flex_col()
-                            .gap(rems(2. / 16.))
-                            .children(pinned),
-                    );
-            }
-            scroll = scroll.child(div().when(has_pinned, |row| row.mt_5()).child(
-                sidebar::sidebar_section_header(
-                    "remote-projects-section".into(),
-                    crate::i18n::text("heading.projects"),
-                    remote.sidebar_projects_open,
-                    div().into_any_element(),
-                    cx.listener(|root, _, _, cx| {
-                        if let Some(remote) = root.remote_window.as_mut() {
-                            remote.sidebar_projects_open = !remote.sidebar_projects_open;
-                            cx.notify();
-                        }
-                    }),
-                ),
-            ));
-            if remote.sidebar_projects_open {
-                let mut projects = div().px_3().pt_1().flex().flex_col().gap(rems(2. / 16.));
-                for node in &tree.projects {
-                    if let Some(project) = overview
-                        .projects
-                        .iter()
-                        .find(|project| project.id == node.id)
-                    {
-                        projects = projects
-                            .child(self.render_remote_project(project, overview, &tree, cx));
-                    }
-                }
-                if tree.projects.is_empty() {
-                    projects = projects.child(sidebar::empty_sidebar_label(crate::i18n::text(
-                        "ui.no_projects_yet",
-                    )));
-                }
-                scroll = scroll.child(projects);
-            }
-            scroll = scroll.child(div().mt_5().child(sidebar::sidebar_section_header(
-                "remote-recents-section".into(),
-                crate::i18n::text("heading.recents"),
-                remote.sidebar_recents_open,
-                div().into_any_element(),
-                cx.listener(|root, _, _, cx| {
-                    if let Some(remote) = root.remote_window.as_mut() {
-                        remote.sidebar_recents_open = !remote.sidebar_recents_open;
-                        cx.notify();
-                    }
-                }),
-            )));
-            if remote.sidebar_recents_open {
-                let mut recent = div().px_3().pt_1().flex().flex_col().gap(rems(2. / 16.));
-                for node in tree.children(None) {
-                    if let Some(row) = self.render_remote_sidebar_node(node, overview, cx) {
-                        recent = recent.child(row);
-                    }
-                }
-                if tree.children(None).next().is_none() {
-                    recent =
-                        recent.child(sidebar::empty_sidebar_label(crate::i18n::text("ui.empty")));
-                }
-                scroll = scroll.child(recent);
-            }
-        } else {
-            for width in [160., 200., 130., 170.] {
-                scroll = scroll.child(
-                    div()
-                        .mx_2()
-                        .my_2()
-                        .h(rems(12. / 16.))
-                        .w(rems(width / 16.))
-                        .max_w_full()
-                        .rounded_sm()
-                        .bg(theme::raised()),
-                );
-            }
-        }
-        let workspace = [
-            sidebar::workspace_new_chat_row(None, false, |_, _| {}),
-            sidebar::workspace_row(
-                "remote-workspace-role",
-                "user.svg",
-                crate::i18n::text("noun.role"),
-                false,
-                false,
-                |_, _| {},
-            ),
-            sidebar::workspace_row(
-                "remote-workspace-crew",
-                "users.svg",
-                crate::i18n::text("noun.crew"),
-                false,
-                false,
-                |_, _| {},
-            ),
-        ]
-        .map(|row| {
-            div()
-                .debug_selector(|| "REMOTE_DISABLED_CREATE".into())
-                .child(row)
-                .into_any_element()
-        });
-        sidebar::sidebar_contents(
-            workspace,
-            sidebar::sidebar_scroll_frame()
-                .child(scroll)
-                .child(remote.sidebar_scrollbar.clone())
-                .into_any_element(),
-        )
-        .into_any_element()
-    }
-    fn toggle_remote_project(&mut self, id: &str, cx: &mut Context<Self>) {
-        if let Some(remote) = self.remote_window.as_mut() {
-            if !remote.collapsed_projects.remove(id) {
-                remote.collapsed_projects.insert(id.to_owned());
-            }
-            cx.notify();
-        }
-    }
-    fn render_remote_sidebar_node(
-        &self,
-        node: &SidebarNode,
-        overview: &Overview,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        match node.kind {
-            SidebarNodeKind::Tab => {
-                let tab = overview.tabs.iter().find(|tab| tab.id == node.id)?;
-                Some(self.remote_sidebar_row(
-                    &tab_title(tab, overview),
-                    Item::Tab(tab.id.clone()),
-                    tab_attention(&tab.panes, overview),
-                    cx,
-                ))
-            }
-            SidebarNodeKind::Mission => {
-                let mission = overview
-                    .missions
-                    .iter()
-                    .find(|mission| mission.id == node.id)?;
-                Some(self.remote_sidebar_row(
-                    &mission.title,
-                    Item::Mission(mission.id.clone()),
-                    mission.asks.len(),
-                    cx,
-                ))
-            }
-            _ => None,
-        }
-    }
-    fn render_remote_project(
-        &self,
-        project: &runner_core::companion::Project,
-        overview: &Overview,
-        tree: &SidebarTree,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let collapsed = self
-            .remote_window
-            .as_ref()
-            .unwrap()
-            .collapsed_projects
-            .contains(&project.id);
-        let click_id = project.id.clone();
-        let key_id = project.id.clone();
-        let header = sidebar::sidebar_row_shell(
-            format!("remote-project-{}", project.id).into(),
-            false,
-            false,
-        )
-        .debug_selector({
-            let id = project.id.clone();
-            move || format!("REMOTE_PROJECT:{id}")
-        })
-        .tab_index(0)
-        .child(icon(
-            if collapsed {
-                "chevron-right.svg"
-            } else {
-                "chevron-down.svg"
-            },
-            theme::muted(),
-        ))
-        .child(sidebar::sidebar_icon(
-            sidebar::project_header_icon(collapsed),
-            true,
-        ))
-        .child(sidebar::project_row_label(project.name.clone()))
-        .on_click(cx.listener(move |root, _, _, cx| root.toggle_remote_project(&click_id, cx)))
-        .on_key_down(cx.listener(move |root, event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                root.toggle_remote_project(&key_id, cx);
-                cx.stop_propagation();
-            }
-        }));
-        let mut body = div().flex().flex_col().gap(rems(2. / 16.)).child(header);
-        if !collapsed {
-            let mut rows = tree
-                .children(Some(&project.id))
-                .filter_map(|node| self.render_remote_sidebar_node(node, overview, cx))
-                .collect::<Vec<_>>();
-            if rows.is_empty() {
-                rows.push(sidebar::empty_sidebar_label(crate::i18n::text("ui.empty")));
-            }
-            body = body.child(sidebar::project_children().children(rows));
-        }
-        body.into_any_element()
-    }
-    fn remote_sidebar_row(
-        &self,
-        name: &str,
-        item: Item,
-        attention: usize,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = self
-            .remote_window
-            .as_ref()
-            .is_some_and(|remote| remote.active.as_ref() == Some(&item));
-        let key = match &item {
-            Item::Tab(id) => format!("remote-tab-{id}"),
-            Item::Mission(id) => format!("remote-mission-{id}"),
-            Item::Shell(id) => format!("remote-shell-{id}"),
-        };
-        let mut glyph = match &item {
-            Item::Mission(_) => ChatIcon::mission(),
-            Item::Shell(_) => ChatIcon::for_runtime("shell"),
-            Item::Tab(_) => ChatIcon::generic("message-square.svg"),
-        };
-        let mut pinned = false;
-        let (live, rollup) =
-            {
-                let clients = state(&self.app_store, cx);
-                let overview = self
-                    .remote_window
-                    .as_ref()
-                    .and_then(|remote| clients.read(cx).overviews.get(&remote.computer.id));
-                let mut ids = Vec::new();
-                let mut clear_stale_unread = false;
-                if let Some(overview) = overview {
-                    match &item {
-                        Item::Tab(id) => {
-                            if let Some(tab) = overview.tabs.iter().find(|tab| &tab.id == id) {
-                                session_ids(&tab.panes, &mut ids);
-                                pinned = tab.pinned;
-                                glyph =
-                                    if matches!(tab.panes, Pane::Split { .. }) {
-                                        ChatIcon::split()
-                                    } else {
-                                        let session =
-                                            ids.iter().find_map(|id| overview.sessions.get(id));
-                                        ChatIcon::for_runtime(session.and_then(|session| {
-                                    if session.kind == runner_core::companion::SessionKind::Shell {
-                                        Some("shell")
-                                    } else {
-                                        session.runtime.as_deref()
-                                    }
-                                }).unwrap_or_default())
-                                    };
-                            }
-                        }
-                        Item::Mission(id) => {
-                            if let Some(mission) =
-                                overview.missions.iter().find(|mission| &mission.id == id)
-                            {
-                                pinned = mission.pinned;
-                                clear_stale_unread =
-                                    mission.state == runner_core::companion::MissionState::Running;
-                                ids.extend(
-                                    mission.members.iter().map(|member| member.session.clone()),
-                                );
-                            }
-                        }
-                        Item::Shell(id) => ids.push(id.clone()),
-                    }
-                }
-                let sessions = ids
-                    .iter()
-                    .filter_map(|id| {
-                        overview
-                            .and_then(|overview| overview.sessions.get(id))
-                            .map(|session| (id, session))
-                    })
-                    .collect::<Vec<_>>();
-                let live = sessions.iter().any(|(_, session)| {
-                    !matches!(session.status.status, Status::Stopped | Status::Error)
-                });
-                let mut rollup = runner_app::ui::agent_status::StatusRollup {
-                    entries: sessions
-                        .into_iter()
-                        .filter(|(_, session)| {
-                            session.kind != runner_core::companion::SessionKind::Shell
-                        })
-                        .map(|(id, session)| (id.clone(), model::agent_status(&session.status)))
-                        .collect(),
-                };
-                if clear_stale_unread && !live {
-                    for (_, status) in &mut rollup.entries {
-                        status.unread_since = None;
-                    }
-                }
-                if matches!(item, Item::Mission(_))
-                    && attention > 0
-                    && !rollup
-                        .entries
-                        .iter()
-                        .any(|(_, status)| status.observation.needs_you())
-                {
-                    rollup.entries.push((
-                        String::new(),
-                        model::agent_status(&runner_core::companion::SessionStatus {
-                            status: Status::NeedsYou,
-                            reason: Some(runner_core::companion::NeedsYouReason::Answer),
-                            unread: false,
-                        }),
-                    ));
-                }
-                (live, rollup)
-            };
-        sidebar::sidebar_item_row(
-            key.clone().into(),
-            &SidebarItemView {
-                title: name.to_owned(),
-                icon: glyph,
-                live,
-                selected,
-                pinned,
-            },
-        )
-        .debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
-        .tab_index(0)
-        .when(!live, |row| row.text_color(theme::faint()))
-        .on_click(cx.listener({
-            let item = item.clone();
-            move |root, _, _, cx| root.select_remote_item(item.clone(), cx)
-        }))
-        .on_key_down(cx.listener(move |root, event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                root.select_remote_item(item.clone(), cx);
-                cx.stop_propagation();
-            }
-        }))
-        .child(
-            sidebar::sidebar_row_trailing_slot()
-                .child(rollup.render(SharedString::from(format!("remote-attention-{key}")))),
-        )
-        .into_any_element()
     }
     pub(crate) fn render_remote_connection(&self, _cx: &mut Context<Self>) -> AnyElement {
         let remote = self.remote_window.as_ref().unwrap();
@@ -836,6 +829,79 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let mission = self.remote_window.as_ref().is_some_and(|remote| {
+            matches!(remote.active, Some(Item::Mission(_)) | Some(Item::Shell(_)))
+        });
+        let body = if mission {
+            self.render_remote_mission_bridge(window, cx)
+        } else {
+            self.render_active_tab(window, cx)
+        };
+        let remote = self.remote_window.as_ref().unwrap();
+        let retry_shell = remote
+            .shell_placement
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(_, layout)| layout.clone());
+        let retry_root = cx.entity();
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(body)
+            .children(
+                remote.action_error.clone().map(|error| {
+                    runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                }),
+            )
+            .children(
+                retry_shell
+                    .filter(|_| {
+                        remote.action_error.is_some() && remote.front_page.supports(&["layout"])
+                    })
+                    .map(|draft| {
+                        Button::new("retry-shell-placement", crate::i18n::text("ui.retry"))
+                            .on_press(move |_, cx| {
+                                retry_root.update(cx, |root, cx| {
+                                    root.remote_start_shell(
+                                        draft.clone(),
+                                        None,
+                                        (INITIAL_COLS, INITIAL_ROWS),
+                                        cx,
+                                    )
+                                })
+                            })
+                    }),
+            )
+            .children((remote.connection == Connection::Reconnecting).then(|| {
+                div()
+                    .absolute()
+                    .top(rems(74. / 16.))
+                    .left_0()
+                    .right_0()
+                    .px_4()
+                    .py_2()
+                    .bg(theme::with_alpha(theme::warning(), 0.12))
+                    .text_color(theme::warning())
+                    .text_size(theme::text_body())
+                    .child(label("client.reconnecting_banner", &remote.computer.name))
+            }))
+            .children(
+                matches!(
+                    remote.connection,
+                    Connection::Unreachable | Connection::Revoked | Connection::Forgotten
+                )
+                .then(|| self.remote_connection_card(cx)),
+            )
+            .into_any_element()
+    }
+    fn render_remote_mission_bridge(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let remote = self.remote_window.as_ref().unwrap();
         let clients = state(&self.app_store, cx);
         let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
@@ -843,11 +909,7 @@ impl NativeRoot {
         let title = overview
             .as_ref()
             .and_then(|overview| match remote.active.as_ref()? {
-                Item::Tab(id) => overview
-                    .tabs
-                    .iter()
-                    .find(|tab| &tab.id == id)
-                    .map(|tab| tab_title(tab, overview)),
+                Item::Tab(_) => None,
                 Item::Mission(id) => overview
                     .missions
                     .iter()
@@ -913,17 +975,6 @@ impl NativeRoot {
                     ),
             );
         }
-        if let Some(Item::Tab(id)) = &remote.active {
-            if let Some(tab) = overview
-                .as_ref()
-                .and_then(|overview| overview.tabs.iter().find(|tab| &tab.id == id))
-            {
-                if !tab.shells.is_empty() {
-                    body =
-                        body.child(self.remote_shells(&tab.shells, overview.as_ref().unwrap(), cx));
-                }
-            }
-        }
         if let Some(Item::Mission(id)) = &remote.active {
             if let Some(mission) = overview
                 .as_ref()
@@ -937,27 +988,6 @@ impl NativeRoot {
                     ));
                 }
             }
-        }
-        if remote.connection == Connection::Reconnecting {
-            body = body.child(
-                div()
-                    .absolute()
-                    .top(rems(74. / 16.))
-                    .left_0()
-                    .right_0()
-                    .px_4()
-                    .py_2()
-                    .bg(theme::with_alpha(theme::warning(), 0.12))
-                    .text_color(theme::warning())
-                    .text_size(theme::text_body())
-                    .child(label("client.reconnecting_banner", &remote.computer.name)),
-            );
-        }
-        if matches!(
-            remote.connection,
-            Connection::Unreachable | Connection::Revoked | Connection::Forgotten
-        ) {
-            body = body.child(self.remote_connection_card(cx));
         }
         body.into_any_element()
     }
@@ -982,7 +1012,19 @@ impl NativeRoot {
                     .get(id)
                     .map(|session| session.title.clone())
                     .unwrap_or_else(|| crate::i18n::text("noun.terminal").into());
-                self.remote_sidebar_row(&name, item, 0, cx)
+                Button::new(
+                    SharedString::from(format!("remote-mission-shell-{id}")),
+                    name,
+                )
+                .variant(ButtonVariant::Ghost)
+                .size(ButtonSize::Sm)
+                .on_press({
+                    let root = cx.entity();
+                    move |_, cx| {
+                        root.update(cx, |root, cx| root.select_remote_item(item.clone(), cx))
+                    }
+                })
+                .into_any_element()
             }))
             .into_any_element()
     }
@@ -1044,14 +1086,13 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let remote = self.remote_window.as_ref().unwrap();
         let name = overview
             .sessions
             .get(id)
             .map(|session| session.title.clone())
             .unwrap_or_default();
         let header_id = id.to_owned();
-        let mut surface = div()
+        let surface = div()
             .relative()
             .size_full()
             .flex()
@@ -1072,6 +1113,23 @@ impl NativeRoot {
                     .text_size(theme::text_body())
                     .child(name),
             );
+        surface
+            .child(self.render_remote_terminal_content(id, cx))
+            .into_any_element()
+    }
+    pub(crate) fn render_remote_terminal_content(
+        &self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let remote = self.remote_window.as_ref().unwrap();
+        let mut surface = div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .min_h_0();
         let Some(pane) = remote.terminals.get(id) else {
             let failed = remote.errors.contains(id);
             let owner = cx.weak_entity();
@@ -1210,25 +1268,33 @@ impl NativeRoot {
                     .child(crate::i18n::text("client.take_control_failed")),
             );
         }
-        let running = overview.sessions.get(id).is_some_and(|session| {
-            !matches!(session.status.status, Status::Stopped | Status::Error)
-        });
+        let clients = state(&self.app_store, cx);
+        let running = clients
+            .read(cx)
+            .overviews
+            .get(&remote.computer.id)
+            .and_then(|overview| overview.sessions.get(id))
+            .is_some_and(|session| {
+                !matches!(session.status.status, Status::Stopped | Status::Error)
+            });
         let interactive = connected && controlled && running;
         let option_as_meta = self.settings(cx).option_as_meta;
         surface
             .child(
-                div()
+                div().relative().flex_1().min_h_0().min_w_0().child(
+                    crate::surfaces::panes::TerminalSurface {
+                        terminal,
+                        interaction: pane.interaction.clone(),
+                        input: pane.input.clone(),
+                        focus: pane.focus.clone(),
+                        scrollbar: pane.scrollbar.clone(),
+                        style,
+                        interactive,
+                        resize_owner: interactive,
+                        scrollable: true,
+                    }
+                    .render()
                     .id(SharedString::from(format!("remote-terminal-{id}")))
-                    .relative()
-                    .key_context("Terminal")
-                    .track_focus(&pane.focus)
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .flex()
-                    .py_3()
-                    .pl_3()
-                    .pr_1()
                     .opacity(if interactive { 1. } else { 0.45 })
                     .on_key_down(move |event: &KeyDownEvent, _, cx| {
                         if !interactive {
@@ -1258,29 +1324,8 @@ impl NativeRoot {
                             );
                         }
                         cx.stop_propagation();
-                    })
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .pr(runner_app::ui::terminal_scrollbar_gutter())
-                            .child(
-                                TerminalElement::new(
-                                    terminal,
-                                    pane.interaction.clone(),
-                                    pane.input.clone(),
-                                    pane.focus.clone(),
-                                    interactive,
-                                    interactive,
-                                    style,
-                                )
-                                .scrollable(true)
-                                .cached(),
-                            )
-                            .child(pane.scrollbar.clone()),
-                    ),
+                    }),
+                ),
             )
             .into_any_element()
     }
@@ -1454,7 +1499,7 @@ impl NativeRoot {
             .into_any_element()
     }
 }
-fn remote_sidebar_tree(overview: &Overview) -> SidebarTree {
+pub(crate) fn sidebar_nodes(overview: &Overview) -> Vec<SidebarNode> {
     let nodes = overview.sidebar.clone().unwrap_or_else(|| {
         let mut nodes = overview
             .projects
@@ -1489,42 +1534,5 @@ fn remote_sidebar_tree(overview: &Overview) -> SidebarTree {
         }
         nodes
     });
-    SidebarTree::new(nodes)
-}
-
-fn tab_title(tab: &runner_core::companion::Tab, overview: &Overview) -> String {
-    if !tab.name.is_empty() {
-        return tab.name.clone();
-    }
-    let mut ids = Vec::new();
-    session_ids(&tab.panes, &mut ids);
-    ids.iter()
-        .find_map(|id| overview.sessions.get(id))
-        .map(|session| {
-            if !session.title.is_empty() {
-                session.title.clone()
-            } else if session.kind == runner_core::companion::SessionKind::Shell {
-                crate::i18n::text("ui.terminal").into()
-            } else {
-                session
-                    .runtime
-                    .as_deref()
-                    .and_then(runner_core::Runtime::parse)
-                    .map(|runtime| runtime.display_name().to_owned())
-                    .unwrap_or_else(|| crate::i18n::text("ui.new_chat").into())
-            }
-        })
-        .unwrap_or_else(|| crate::i18n::text("ui.empty_tab").into())
-}
-fn tab_attention(pane: &Pane, overview: &Overview) -> usize {
-    let mut ids = Vec::new();
-    session_ids(pane, &mut ids);
-    ids.iter()
-        .filter(|id| {
-            overview
-                .sessions
-                .get(*id)
-                .is_some_and(|session| session.status.status == Status::NeedsYou)
-        })
-        .count()
+    nodes
 }

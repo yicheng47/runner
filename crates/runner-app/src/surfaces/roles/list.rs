@@ -30,6 +30,10 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn open_roles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         if self.route != AppRoute::Roles {
             self.role_surfaces.list.reset();
             self.role_surfaces
@@ -49,6 +53,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         self.role_surfaces.prompt_expanded = false;
         self.enter_entity_route(AppRoute::RoleDetail(handle.clone()), window, cx);
         self.load_role_detail(handle, cx);

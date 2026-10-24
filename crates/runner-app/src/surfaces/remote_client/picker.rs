@@ -91,6 +91,11 @@ impl NativeRoot {
             .map(|remote| remote.computer.name.clone())
             .or(local_name)
             .unwrap_or_else(|| crate::i18n::text("client.this_computer").into());
+        let attention = clients.read(cx).computers.iter().any(|computer| {
+            !computer.is_self
+                && current.is_none_or(|remote| remote.computer.id != computer.id)
+                && clients.read(cx).needs_attention(&computer.id)
+        });
         let owner = cx.weak_entity();
         div()
             .mx_3()
@@ -146,31 +151,23 @@ impl NativeRoot {
                             .text_size(theme::text_body())
                             .child(name),
                     )
-                    .children(current.map(|remote| {
-                        match remote.connection {
-                            Connection::Connected => div()
-                                .size(rems(6. / 16.))
-                                .rounded_full()
-                                .bg(theme::accent())
-                                .into_any_element(),
-                            Connection::Revoked => {
-                                icon("lock.svg", theme::danger()).into_any_element()
-                            }
-                            Connection::Unreachable | Connection::Forgotten => div()
-                                .size(rems(6. / 16.))
-                                .rounded_full()
-                                .bg(theme::faint())
-                                .into_any_element(),
-                            _ => runner_app::ui::button::spinner(
-                                "computer-connection-spinner",
-                                12.,
-                                if remote.connection == Connection::Reconnecting {
-                                    theme::warning()
-                                } else {
-                                    theme::muted()
-                                },
-                            ),
+                    .children(attention.then(|| attention_dot("COMPUTER_TRIGGER_ATTENTION")))
+                    .children(current.and_then(|remote| match remote.connection {
+                        Connection::Connected | Connection::Unreachable | Connection::Forgotten => {
+                            None
                         }
+                        Connection::Revoked => {
+                            Some(icon("lock.svg", theme::danger()).into_any_element())
+                        }
+                        _ => Some(runner_app::ui::button::spinner(
+                            "computer-connection-spinner",
+                            12.,
+                            if remote.connection == Connection::Reconnecting {
+                                theme::warning()
+                            } else {
+                                theme::muted()
+                            },
+                        )),
                     }))
                     .child(icon("chevrons-up-down.svg", theme::faint())),
             )
@@ -229,6 +226,7 @@ impl NativeRoot {
                     .is_some_and(|remote| remote.computer.id == computer.id)
             };
             let detail = computer_detail(computer);
+            let attention = clients.read(cx).needs_attention(&computer.id);
             let trust = self
                 .app_store
                 .read(cx)
@@ -313,6 +311,7 @@ impl NativeRoot {
                                 )
                             }),
                     )
+                    .children(attention.then(|| attention_dot("COMPUTER_ROW_ATTENTION")))
                     .when(selected, |row| {
                         row.child(icon("check.svg", theme::accent()))
                     })
@@ -403,18 +402,6 @@ impl NativeRoot {
                         .child(crate::i18n::text("client.directory_failed")),
                 )
             })
-            .when(signed_in, |menu| {
-                menu.child(
-                    div()
-                        .debug_selector(|| "COMPUTER_PICKER_HINT".into())
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .p_2()
-                        .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("client.picker_hint")),
-                )
-            })
             .when(!signed_in, |menu| {
                 menu.child(div().h(px(1.)).bg(theme::border()).my_1())
                     .child(
@@ -459,4 +446,14 @@ impl NativeRoot {
             }),
         ))
     }
+}
+
+fn attention_dot(selector: &'static str) -> AnyElement {
+    div()
+        .debug_selector(move || selector.into())
+        .flex_none()
+        .size(rems(7. / 16.))
+        .rounded_full()
+        .bg(theme::accent())
+        .into_any_element()
 }

@@ -47,3 +47,9 @@ On Windows, launching Runner while it is running, from the Start menu, a shortcu
 For alerts while the app is in the background, open **Settings → Notifications**. Chat events are enabled by default; mission events are opt-in. Clicking a notification opens its chat or mission. When the active window shows another computer, local alerts can still appear; clicking one returns a window to this computer and opens the local item.
 
 See [Keyboard shortcuts](../reference/keyboard-shortcuts.md) for all defaults and customization.
+
+## Work on another computer
+
+With [Remote access](remote-access.md) enabled, choose a computer in the sidebar. Chat creation, pane splits and resizing, drawer shells, chat lifecycle and sidebar organization use the same controls on that host. Available actions depend on the host’s version. The command palette searches that computer’s chats and missions; Settings, Roles, Crews and Archived are available after returning to this computer.
+
+New chat uses the host’s agents and defaults. Its Working directory Browse menu lists host projects and recent folders, then lets you browse folders on that computer. Choosing a folder fills the field; Escape or clicking outside leaves it unchanged. Local windows keep their OS folder picker. Returning to this computer restores its own tabs, selection and sidebar state; remote sidebar choices do not change saved local preferences.

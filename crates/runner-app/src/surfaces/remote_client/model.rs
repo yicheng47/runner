@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::surfaces::front_page::{FrontPageClient, FrontPageTarget, RemoteAccess};
 use futures::{channel::mpsc, future::BoxFuture, FutureExt, StreamExt};
 use gpui::{AppContext, Context, Entity};
 use runner_core::{
@@ -7,8 +8,9 @@ use runner_core::{
     protocol::{ClientEvent, DaemonClient, EventError},
     remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
 };
+use std::sync::Arc;
 
-pub(super) fn agent_status(status: &SessionStatus) -> runner_core::protocol::AgentStatus {
+pub(crate) fn agent_status(status: &SessionStatus) -> runner_core::protocol::AgentStatus {
     use runner_core::protocol::{
         Activity, AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason,
     };
@@ -78,6 +80,7 @@ impl Connection {
     pub(crate) fn failure(error: &str) -> Self {
         if [
             "unknownDevice",
+            "pinLocked",
             "pinned",
             "badHandshake",
             "Pair with",
@@ -104,6 +107,7 @@ pub(crate) enum Command {
 }
 
 pub(super) enum Update {
+    Access(bool),
     Computers(Result<Vec<Computer>, ()>),
     Overview(String, Overview),
     Connection(String, Connection),
@@ -126,14 +130,20 @@ impl Drop for Follow {
 pub(crate) struct ClientState {
     pub(crate) computers: Vec<Computer>,
     pub(crate) overviews: HashMap<String, Overview>,
+    pub(crate) overview_revisions: HashMap<String, u64>,
     pub(crate) connections: HashMap<String, Connection>,
     pub(crate) changed_identities: HashSet<String>,
     pub(crate) directory_error: bool,
     pub(crate) loading: bool,
     pub(crate) action_failed: bool,
     pub(crate) terminal_epoch: u64,
+    client: DaemonClient,
+    capabilities: HashMap<String, Arc<RemoteAccess>>,
+    capability_generation: u64,
     pub(super) pair_epochs: HashMap<String, u64>,
     signed_in: Option<bool>,
+    attention_follows: HashMap<String, Follow>,
+    enabled: bool,
     commands: mpsc::UnboundedSender<Command>,
     _tasks: Vec<gpui::Task<()>>,
 }
@@ -177,10 +187,14 @@ impl ClientState {
             }
         });
         let executor = cx.background_executor().clone();
-        let command_task =
-            cx.background_spawn(run_commands(client, requests, updates, move |job| {
+        let command_task = cx.background_spawn(run_commands(
+            client.clone(),
+            requests,
+            updates,
+            move |job| {
                 executor.spawn(job).detach();
-            }));
+            },
+        ));
         let response_task = cx.spawn(async move |weak, cx| {
             while let Some(update) = responses.next().await {
                 if weak
@@ -197,17 +211,66 @@ impl ClientState {
         Self {
             computers: Vec::new(),
             overviews: HashMap::new(),
+            overview_revisions: HashMap::new(),
             connections: HashMap::new(),
             changed_identities: HashSet::new(),
             directory_error: false,
             loading: false,
             action_failed: false,
             terminal_epoch: 0,
+            client,
+            capabilities: HashMap::new(),
+            capability_generation: 0,
             pair_epochs: HashMap::new(),
             signed_in: None,
+            attention_follows: HashMap::new(),
+            enabled: true,
             commands,
             _tasks: vec![event_task, command_task, response_task],
         }
+    }
+
+    pub(crate) fn invalidate_capabilities(&mut self, computer: &str) {
+        if let Some(access) = self.capabilities.remove(computer) {
+            access.invalidate();
+        }
+    }
+
+    pub(crate) fn front_page_access(
+        &mut self,
+        computer: &Computer,
+        cx: &mut Context<Self>,
+    ) -> Arc<RemoteAccess> {
+        if !computer.paired {
+            self.invalidate_capabilities(&computer.id);
+        }
+        if let Some(access) = self.capabilities.get(&computer.id) {
+            if matches!(&access.target, FrontPageTarget::Remote { fingerprint, .. } if fingerprint == &computer.fingerprint)
+            {
+                return access.clone();
+            }
+        }
+        self.invalidate_capabilities(&computer.id);
+        self.capability_generation = self.capability_generation.wrapping_add(1);
+        let access = RemoteAccess::new(FrontPageTarget::Remote {
+            computer: computer.id.clone(),
+            fingerprint: computer.fingerprint.clone(),
+            generation: self.capability_generation,
+        });
+        self.capabilities
+            .insert(computer.id.clone(), access.clone());
+        if computer.paired && self.connection(&computer.id) == Connection::Connected {
+            let client = FrontPageClient::remote(self.client.clone(), access.clone());
+            let task = cx.background_spawn(async move { client.discover() });
+            cx.spawn(async move |weak, cx| {
+                let _ = task.await;
+                let _ = weak.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        } else {
+            self.invalidate_capabilities(&computer.id);
+        }
+        access
     }
 
     pub(crate) fn send(&self, command: Command) {
@@ -232,6 +295,7 @@ impl ClientState {
     }
     fn apply(&mut self, update: Update) {
         match update {
+            Update::Access(enabled) => self.signed_in = Some(enabled),
             Update::Computers(result) => {
                 self.loading = false;
                 if self.signed_in == Some(false) {
@@ -248,6 +312,9 @@ impl ClientState {
                                 old.id == computer.id && old.fingerprint != computer.fingerprint
                             })
                         {
+                            if let Some(access) = self.capabilities.remove(&computer.id) {
+                                access.invalidate();
+                            }
                             self.changed_identities.insert(computer.id.clone());
                             self.overviews.remove(&computer.id);
                             self.connections
@@ -260,10 +327,14 @@ impl ClientState {
             }
             Update::Overview(computer, overview) => {
                 if self.connection(&computer) != Connection::Forgotten {
+                    *self.overview_revisions.entry(computer.clone()).or_default() += 1;
                     self.overviews.insert(computer, overview);
                 }
             }
             Update::Connection(computer, connection) => {
+                if connection != Connection::Connected {
+                    self.invalidate_capabilities(&computer);
+                }
                 if self.connection(&computer) != Connection::Forgotten
                     && (connection != Connection::Connected
                         || self.connection(&computer) != Connection::Revoked)
@@ -275,6 +346,7 @@ impl ClientState {
             Update::Forgotten(computer, success) => {
                 self.action_failed = !success;
                 if success {
+                    self.invalidate_capabilities(&computer);
                     self.connections
                         .insert(computer.clone(), Connection::Forgotten);
                     self.overviews.remove(&computer);
@@ -285,12 +357,65 @@ impl ClientState {
                 }
             }
         }
+        self.sync_attention_follows();
     }
+    pub(crate) fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.sync_attention_follows();
+            cx.notify();
+        }
+    }
+
+    fn sync_attention_follows(&mut self) {
+        let desired = self
+            .computers
+            .iter()
+            .filter(|computer| {
+                self.enabled
+                    && self.signed_in == Some(true)
+                    && !computer.is_self
+                    && computer.online
+                    && computer.paired
+                    && !self.changed_identities.contains(&computer.id)
+                    && !matches!(
+                        self.connection(&computer.id),
+                        Connection::Revoked | Connection::Forgotten
+                    )
+            })
+            .map(|computer| computer.id.clone())
+            .collect::<HashSet<_>>();
+        self.attention_follows.retain(|id, _| desired.contains(id));
+        for id in desired {
+            if !self.attention_follows.contains_key(&id) {
+                self.attention_follows.insert(id.clone(), self.follow(id));
+            }
+        }
+    }
+
+    pub(crate) fn needs_attention(&self, computer: &str) -> bool {
+        self.attention_follows.contains_key(computer)
+            && self.connection(computer) == Connection::Connected
+            && self.overviews.get(computer).is_some_and(|overview| {
+                overview
+                    .sessions
+                    .values()
+                    .any(|session| session.status.status.effective() == Status::NeedsYou)
+                    || overview
+                        .missions
+                        .iter()
+                        .any(|mission| !mission.asks.is_empty())
+            })
+    }
+
     pub(crate) fn apply_event(&mut self, event: ClientEvent) {
         if matches!(
             event.name.as_str(),
             "daemon/disconnected" | "daemon/reconnected"
         ) {
+            for (_, access) in self.capabilities.drain() {
+                access.invalidate();
+            }
             self.terminal_epoch = self.terminal_epoch.wrapping_add(1);
             for connection in self.connections.values_mut() {
                 if *connection != Connection::Forgotten {
@@ -308,7 +433,11 @@ impl ClientState {
                     self.send(Command::Refresh);
                 }
                 self.signed_in = Some(signed_in);
+                self.enabled = signed_in;
                 if !signed_in {
+                    for (_, access) in self.capabilities.drain() {
+                        access.invalidate();
+                    }
                     self.computers.clear();
                     self.overviews.clear();
                     for connection in self.connections.values_mut() {
@@ -334,6 +463,7 @@ impl ClientState {
         match event.name.as_str() {
             "remote/overview" => {
                 if let Ok(overview) = serde_json::from_value(event.payload["overview"].clone()) {
+                    *self.overview_revisions.entry(computer.clone()).or_default() += 1;
                     self.overviews.insert(computer, overview);
                 }
             }
@@ -369,6 +499,9 @@ impl ClientState {
                 } else {
                     state
                 };
+                if state != Connection::Connected {
+                    self.invalidate_capabilities(&computer);
+                }
                 self.connections.insert(computer.clone(), state);
                 if state == Connection::Revoked {
                     if let Some(row) = self.computers.iter_mut().find(|row| row.id == computer) {
@@ -402,12 +535,16 @@ pub(super) async fn run_commands(
         async move {
             while refreshes.next().await.is_some() {
                 let computers = match directory_client.remote_status() {
-                    Ok(status)
-                        if crate::surfaces::settings::remote::account::signed_in(&status) =>
-                    {
-                        directory_client.remote_computers().map_err(|_| ())
+                    Ok(status) => {
+                        let enabled =
+                            crate::surfaces::settings::remote::account::signed_in(&status);
+                        let _ = directory_updates.unbounded_send(Update::Access(enabled));
+                        if enabled {
+                            directory_client.remote_computers().map_err(|_| ())
+                        } else {
+                            Ok(Vec::new())
+                        }
                     }
-                    Ok(_) => Ok(Vec::new()),
                     Err(_) => Err(()),
                 };
                 let _ = directory_updates.unbounded_send(Update::Computers(computers));

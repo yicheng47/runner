@@ -4,7 +4,7 @@ use super::elements::{
 };
 use super::*;
 use runner_app::ui::agent_status::StatusRollup;
-use runner_core::protocol::model::{MissionStatus, Runtime};
+use runner_core::protocol::model::Runtime;
 use runner_core::protocol::status::{Activity, AgentStatus, Lifecycle, ObservationSource};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -59,7 +59,7 @@ impl ActiveSidebarRow {
         }
     }
 
-    pub(super) fn shortcut_row(&self, nodes: &[NodeRow]) -> SidebarShortcutRow {
+    pub(super) fn shortcut_row(&self, nodes: &[impl Clone + Into<NodeRow>]) -> SidebarShortcutRow {
         let mut row = self.source.shortcut_row(nodes);
         if let (SidebarActivationTarget::Tab { session_id, .. }, Some(target)) =
             (&mut row.target, self.rollup.target())
@@ -71,7 +71,7 @@ impl ActiveSidebarRow {
 }
 
 fn active_session_status(
-    session: &DirectSessionEntry,
+    session: &SessionDisplay,
     status: Option<&AgentStatus>,
     activity: Option<&SessionActivityState>,
 ) -> AgentStatus {
@@ -100,7 +100,9 @@ fn sort_active_rows(rows: &mut [ActiveSidebarRow]) {
         let node = row.source.node();
         (
             row.group(),
-            chrono::DateTime::parse_from_rfc3339(&node.created_at).ok(),
+            node.created_at
+                .as_deref()
+                .and_then(|created| chrono::DateTime::parse_from_rfc3339(created).ok()),
             node.id.clone(),
         )
     });
@@ -148,11 +150,15 @@ impl Sidebar {
         cx: &App,
     ) -> Vec<ActiveSidebarRow> {
         let store = self.app_store.read(cx);
-        let mission_members = store
-            .missions
-            .iter()
-            .flat_map(|summary| summary.session_statuses.iter().map(|(id, _)| id.as_str()))
-            .collect::<HashSet<_>>();
+        let mission_members = if self.front_page.is_remote() {
+            HashSet::new()
+        } else {
+            store
+                .missions
+                .iter()
+                .flat_map(|summary| summary.session_statuses.iter().map(|(id, _)| id.as_str()))
+                .collect::<HashSet<_>>()
+        };
         let mut rows = Vec::new();
         for source in self.resolved_sidebar_rows_for_tabs(tabs, cx) {
             let (group, rollup, live) = match &source {
@@ -167,7 +173,7 @@ impl Sidebar {
                     if members.is_empty() {
                         continue;
                     }
-                    let is_shell = |session: &DirectSessionEntry| {
+                    let is_shell = |session: &SessionDisplay| {
                         Runtime::parse(&session.agent_runtime).is_some_and(Runtime::is_shell)
                     };
                     let terminals_only = members.iter().all(|session| is_shell(session));
@@ -177,8 +183,12 @@ impl Sidebar {
                         .map(|session| {
                             let mut status = active_session_status(
                                 session,
-                                store.session_statuses.get(&session.session_id),
-                                store.session_activity.get(&session.session_id),
+                                self.session_status(&session.session_id, cx).as_ref(),
+                                if self.front_page.is_remote() {
+                                    None
+                                } else {
+                                    store.session_activity.get(&session.session_id)
+                                },
                             );
                             if self.archiving_sessions.contains(&session.session_id) {
                                 super::rows::mark_archiving_status(&mut status);
@@ -205,8 +215,7 @@ impl Sidebar {
                     (
                         ActiveGroup::Missions,
                         self.mission_status_rollup(summary),
-                        summary.mission.status == MissionStatus::Running
-                            && summary.any_session_live,
+                        summary.mission.running && summary.any_session_live,
                     )
                 }
             };
@@ -374,22 +383,13 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let store = self.app_store.read(cx);
-        let shortcut = row.shortcut_row(&store.nodes);
-        let active = self.shell.upgrade().is_some_and(|shell| {
-            let shell = shell.read(cx);
-            match &shortcut.target {
-                SidebarActivationTarget::Tab { tab_id, .. } => {
-                    super::elements::chat_tab_row_active(
-                        &shell.route,
-                        shell.tabs.active_tab_id(),
-                        tab_id,
-                    )
-                }
-                SidebarActivationTarget::Mission { mission_id, .. } => {
-                    matches!(&shell.route, AppRoute::Mission(id) if id == mission_id)
-                }
+        let shortcut = row.shortcut_row(&self.source_nodes(cx));
+        let active = match &shortcut.target {
+            SidebarActivationTarget::Tab { tab_id, .. } => self.tab_selected(tab_id, cx),
+            SidebarActivationTarget::Mission { mission_id, .. } => {
+                self.mission_selected(mission_id, cx)
             }
-        });
+        };
         let (label, icon) = row.title_and_icon(|id| self.live_title(id, cx));
         let (live, cwd, project_id) = match &row.source {
             SidebarRow::Tab {
@@ -404,24 +404,35 @@ impl Sidebar {
                         .iter()
                         .any(|member| member.status == SessionStatus::Running),
                     target.cwd.as_deref(),
-                    node_project_id(&store.nodes, node).or_else(|| target.project_id.clone()),
+                    node_project_id(&self.source_nodes(cx), node)
+                        .or_else(|| target.project_id.clone()),
                 )
             }
             SidebarRow::Mission { node, summary, .. } => (
                 summary.any_session_live,
                 summary.mission.cwd.as_deref(),
-                node_project_id(&store.nodes, node).or_else(|| summary.mission.project_id.clone()),
+                node_project_id(&self.source_nodes(cx), node)
+                    .or_else(|| summary.mission.project_id.clone()),
             ),
         };
-        let project = store
-            .projects
+        let projects = self.source_projects(cx);
+        let project = projects
             .iter()
             .find(|project| Some(&project.id) == project_id.as_ref());
-        let location = active_location(
-            project,
-            cwd,
-            store.home_dir.as_deref().and_then(|path| path.to_str()),
-        );
+        let location = if self.front_page.is_remote() {
+            match (project, cwd) {
+                (Some(project), Some(cwd)) => format!("{} › {}", project.name, cwd),
+                (Some(project), None) => project.name.clone(),
+                (None, Some(cwd)) => cwd.to_owned(),
+                _ => String::new(),
+            }
+        } else {
+            active_location(
+                project.and_then(|p| p.local.as_ref()),
+                cwd,
+                store.home_dir.as_deref().and_then(|path| path.to_str()),
+            )
+        };
         let title = if renaming {
             div()
                 .debug_selector(|| format!("ACTIVE_RENAME {}", shortcut.node_id))
@@ -459,10 +470,10 @@ impl Sidebar {
                 }),
             )
         } else {
-            sidebar_row_trailing_slot().child(row.rollup.render_pane(SharedString::from(format!(
-                "active-status-{}",
-                shortcut.node_id
-            ))))
+            sidebar_row_trailing_slot().child(row.rollup.render_pane_with_elapsed(
+                SharedString::from(format!("active-status-{}", shortcut.node_id)),
+                !self.front_page.is_remote(),
+            ))
         };
         let hover_id = shortcut.node_id.clone();
         let target = shortcut.target;

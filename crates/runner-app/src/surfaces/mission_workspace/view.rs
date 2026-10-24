@@ -545,6 +545,8 @@ impl MissionWorkspace {
             active_id.as_deref(),
             &labels,
             super::panes::TerminalDrawerCallbacks {
+                can_add: true,
+                can_close: true,
                 activate: Rc::new(move |session_id, window, cx| {
                     activate_root.update(cx, |this, cx| {
                         this.activate_terminal_drawer_shell(&session_id, window, cx)

@@ -871,6 +871,9 @@ impl AppStore {
         if !update(&mut self.settings) {
             return false;
         }
+        let remote_enabled = self.remote_access_enabled();
+        self.remote_clients
+            .update(cx, |clients, cx| clients.set_enabled(remote_enabled, cx));
         if agent_settings
             != (
                 self.settings.enabled_agents.clone(),

@@ -2,7 +2,7 @@ pub(crate) mod model;
 mod pairing;
 mod picker;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod transport;
 mod workspace;
 
@@ -14,7 +14,7 @@ use runner_app::ui::ButtonVariant;
 use runner_core::remote::{Computer, RemoteStatus, RemoteTrust};
 
 pub(crate) use pairing::PairDialog;
-pub(crate) use workspace::RemoteWindow;
+pub(crate) use workspace::{sidebar_nodes, Item as RemoteItem, RemoteWindow};
 
 pub(crate) struct ClientUi {
     pub(crate) picker_open: bool,

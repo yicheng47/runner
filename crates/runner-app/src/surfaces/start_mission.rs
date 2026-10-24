@@ -61,6 +61,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let project = scope
             .project_id()
             .and_then(|id| {

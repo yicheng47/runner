@@ -20,20 +20,15 @@ impl Sidebar {
             let action_root = root.clone();
             let entries =
                 sidebar_create_menu_entries(&menu_store.read(menu_cx).settings.keymap_overrides);
-            let actions = entries
-                .iter()
-                .map(|(_, action)| action.clone())
-                .collect::<Vec<_>>();
             PopoverMenu::new(
                 "sidebar-create",
                 menu_cx.focus_handle(),
                 entries.into_iter().map(|(item, _)| item).collect(),
                 Rc::new(move |index, window, cx| {
-                    let Some(action) = actions.get(index).cloned() else {
-                        return;
-                    };
                     action_root.update(cx, |this, cx| {
-                        this.handle_sidebar_menu_action(action, window, cx)
+                        if let Some(action) = this.create_actions.get(index).cloned() {
+                            this.handle_sidebar_menu_action(action, window, cx);
+                        }
                     });
                 }),
                 menu_cx,
@@ -45,18 +40,32 @@ impl Sidebar {
         });
         let store_revisions = app_store.read(cx).revisions;
         Self {
+            front_page: crate::surfaces::front_page::FrontPageClient::local(
+                app_store.read(cx).client.clone(),
+            ),
+            remote_settings: None,
+            remote_layouts: HashMap::new(),
+            remote_sessions: HashMap::new(),
+            remote_selection: None,
             shell,
             app_store: app_store.clone(),
             store_revisions,
             scroll,
             scrollbar,
             create_menu,
+            create_actions: sidebar_create_menu_entries(
+                &app_store.read(cx).settings.keymap_overrides,
+            )
+            .into_iter()
+            .map(|(_, action)| action)
+            .collect(),
             context_menu: None,
             rename: None,
             live_titles: HashMap::new(),
             archiving_sessions: HashSet::new(),
             archiving_missions: HashSet::new(),
             active_project_id,
+            project_anchor: None,
             window_id: 0,
             dragged_id: None,
             drop_target: None,
@@ -69,12 +78,7 @@ impl Sidebar {
             tab_index_by_node: HashMap::new(),
             _rename_focus_subscription: None,
             _store_subscription: cx.observe(&app_store, |this, _, cx| {
-                let items = sidebar_create_menu_entries(&this.settings(cx).keymap_overrides)
-                    .into_iter()
-                    .map(|(item, _)| item)
-                    .collect();
-                this.create_menu
-                    .update(cx, |menu, cx| menu.set_items(items, cx));
+                this.refresh_create_menu(cx);
                 this.handle_store_update(cx);
             }),
         }
@@ -84,27 +88,44 @@ impl Sidebar {
         &self.app_store.read(cx).client
     }
 
-    pub(super) fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
-        &self.app_store.read(cx).settings
+    pub(super) fn settings<'a>(&'a self, cx: &'a App) -> &'a AppSettings {
+        self.remote_settings
+            .as_ref()
+            .unwrap_or(&self.app_store.read(cx).settings)
     }
 
     pub(super) fn update_app_settings(
-        &self,
+        &mut self,
         cx: &mut Context<Self>,
         persist: bool,
         update: impl FnOnce(&mut AppSettings) -> bool,
     ) -> bool {
+        if let Some(settings) = self.remote_settings.as_mut() {
+            let changed = update(settings);
+            if changed {
+                cx.notify();
+            }
+            return changed;
+        }
         self.app_store.update(cx, |store, store_cx| {
             store.update_settings(update, persist, store_cx)
         })
     }
 
     pub(super) fn refresh_store(&self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        if self.front_page.is_remote() {
+            cx.notify();
+            return;
+        }
         self.app_store
             .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
     }
 
     fn handle_store_update(&mut self, cx: &mut Context<Self>) {
+        if self.front_page.is_remote() {
+            cx.notify();
+            return;
+        }
         let revisions = self.app_store.read(cx).revisions;
         let previous = self.store_revisions;
         self.store_revisions = revisions;
@@ -147,7 +168,11 @@ impl Sidebar {
         };
         cx.defer(move |cx| {
             shell.update(cx, |shell, shell_cx| {
-                shell.error = Some(error.into());
+                if let Some(remote) = shell.remote_window.as_mut() {
+                    remote.action_error = Some(error);
+                } else {
+                    shell.error = Some(error.into());
+                }
                 shell_cx.notify();
             });
         });

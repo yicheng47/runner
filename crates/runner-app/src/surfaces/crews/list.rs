@@ -32,6 +32,10 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn open_crews(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         if self.route != AppRoute::Crews {
             self.crew_surfaces.list.reset();
             self.crew_surfaces
@@ -51,6 +55,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.remote_window.is_some() {
+            return;
+        }
+
         let editor = &mut self.crew_surfaces.editor;
         editor.conventions_expanded = false;
         editor.missions_expanded = false;
