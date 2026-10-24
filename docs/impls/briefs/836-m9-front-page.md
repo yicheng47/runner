@@ -6,7 +6,7 @@ Implement m9 of Phase 3 of [#836](https://github.com/yicheng47/runner/issues/836
 
 - **One front page, two computers.** The front page's actions go through one target, this computer's `runnerd` or the window's computer, so each surface runs the same code for both. m7c's separate remote views in `surfaces/remote_client/` give way to the local components wherever those can serve both. A parallel remote copy of a local surface is a must-fix unless the plan names why it has to differ.
 - **Local windows do not change.** Every local surface behaves exactly as before, apart from Jason’s explicit footer-avatar ring change in Scope; its size and interactions stay unchanged. Local parity is the largest risk in m9, and the reviewer checks it first.
-- **m8's protocol as it is.** `remote_request(computer, request)` and the `remote/feed` event carry everything; the companion requests are the spec's Remote actions section and m8's golden files. No `runnerd`, companion or client-protocol change; if one seems needed, stop and ask the human through Runner.
+- **m8's protocol as it is.** `remote_request(computer, request)` and the `remote/feed` event carry everything; the companion requests are the spec's Remote actions section and m8's golden files. No `runnerd`, companion or client-protocol change; if one seems needed, stop and ask the human through Runner. Jason authorized one narrow host/core naming exception during live testing (2026-10-24, Runner messages `01M5Q2DD5WKC98WYFT1MV4FWX5` and `01M5Q2DD6JDAH8ZJQVQEYGWGR2`): share the existing local session naming policy with the host's `Session.title` projection, including role handles and explicit renames. No wire-format change, request or migration; older hosts retain their current labels. Add fake-driven regressions and whole working-tree review, and keep all live fixes uncommitted and unpushed until Jason confirms live.
 - **The result is not the state.** The remote sidebar, tabs and panes change when the overview and status pushes arrive, never from a request's result.
 
 ## Settled before this mission
@@ -19,7 +19,7 @@ An earlier mission wrote the plan and Jason archived it on 2026-10-24 after the 
 
 ## Scope
 
-As the spec's Remote actions section and the plan's m9 section lay out: New chat and the start surface with the host's catalog, the host folder menu, stop, resume, restart, fork, rename and archive; new tabs, splitting, filling and closing panes, resizing splits, closing tabs; the terminal drawer's shells; the sidebar's pin, move, reorder and rename; projects; the mission workspace in a remote window (feed, composer, answer cards, stop, resume and archive) and Start mission from an existing crew; remote mission members in the mission's own pane arrangement; the remote tab header from the local one (live-fix Problem 11: no bare title, no empty per-pane bar); the picker hint's removal and accent attention dots on the trigger and remote rows (Jason, 2026-10-24); the footer avatar’s 2 px `theme::faint()` ring, keeping its hit area and interaction styling (Jason’s final selection, mission message `01M5NY7AVERWCA6N7MRNAX7N1A`); PR 2’s first commit replacing the Remote access switch with Local only as the updated spec and approved frames `fUMPv`, `vzS3a`, `ZUHff`, `iAY5X`, `pI2HC` require (Jason, 2026-10-24; not in PR 1); controls hidden when the host lacks a request in `welcome.features`; and the guide. Out: Settings, the Roles and Crews pages, Archived.
+As the spec's Remote actions section and the plan's m9 section lay out: New chat and the start surface with the host's catalog, the host folder menu, stop, resume, restart, fork, rename and archive; new tabs, splitting, filling and closing panes, resizing splits, closing tabs; the terminal drawer's shells; the sidebar's pin, move, reorder and rename; projects; the mission workspace in a remote window (feed, composer, answer cards, stop, resume and archive) and Start mission from an existing crew; remote mission members in the mission's own pane arrangement; the remote tab header from the local one (live-fix Problem 11: no bare title, no empty per-pane bar); the picker hint's removal and accent attention dots on the trigger and remote rows (Jason, 2026-10-24); the footer avatar’s 2 px `theme::faint()` ring, keeping its hit area and interaction styling (Jason’s final selection, mission message `01M5NY7AVERWCA6N7MRNAX7N1A`); PR 2’s first commit replacing the Remote access switch with Local only as the updated spec and approved frames `fUMPv`, `vzS3a`, `ZUHff`, `iAY5X`, `pI2HC` require (Jason, 2026-10-24; not in PR 1); controls hidden when the host lacks a request in `welcome.features`; and the guide. Jason’s live addition on 2026-10-24 restores read-only host Roles and Crews lists, with chat/mission launch actions on the existing catalog. Out: Settings, role/crew creation, editing and deletion, Archived.
 
 ## Read first
 
@@ -54,14 +54,16 @@ The reviewer waits for an explicit Runner handoff for each PR and reviews the wh
 
 - any change in a local window's behavior or layout;
 - a parallel remote copy of a local surface the plan did not justify;
-- a `runnerd`, companion or client-protocol change;
+- a `runnerd`, companion or client-protocol change beyond the narrow host/core naming exception above;
 - remote state changed from a result instead of the overview and status pushes;
 - a remote control shown for a request the host does not list in `welcome.features`;
-- Settings, Roles, Crews or Archived reachable from a remote window;
+- Settings, role/crew management or Archived reachable from a remote window; read-only catalog lists and launch actions are allowed by Jason’s 2026-10-24 live addition;
 - a design state from the approved frames missing, or a string missing in `zh-hans.toml`;
 - a new crate, a migration, or a test that sleeps or reaches a network.
 
 Iterate until `NO REMAINING MUST-FIX ISSUES` on the whole diff, and recheck the final history (each commit builds) before the push.
+
+Jason accepted the live fixes and explicitly authorized landing them through Runner `01M5Q42T9XKW0XD18003F5T43G` (2026-10-24), once the paused-terminal fix passes whole working-tree review. Fold Local only placement into PR 2’s first commit, and read-only Roles/Crews plus paused-terminal handling into the mission-workspace commit. The independently buildable host naming fix may remain its own commit. Verify each commit builds/passes its tests, have reviewer check final history, then force-with-lease push, update #1017’s body and drive macOS/Windows CI green. No further live-confirmation round is required. Claude Code still merges and cuts the remote nightly; the crew does neither.
 
 After clean reviewer review, post that the whole working tree is ready for Claude Code and wait for his explicit “go” (Jason’s mission gate, 2026-10-24, message `01M5P060G8EQ0NATADTJRECNF8`). His findings return through reviewer review. Only after “go”, Jason authorizes:
 

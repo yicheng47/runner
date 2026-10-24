@@ -37,8 +37,6 @@ pub(crate) use panes::{
 };
 pub(crate) use roles::RoleSurfaces;
 pub(crate) use settings_page::{SettingsPane, SettingsState};
-pub(crate) use sidebar::{
-    default_session_label, session_label, session_label_live, ProjectModal, Sidebar,
-};
+pub(crate) use sidebar::{session_label, session_label_live, ProjectModal, Sidebar};
 pub(crate) use start_chat::StartChatModal;
 pub(crate) use start_mission::StartMissionModalState;

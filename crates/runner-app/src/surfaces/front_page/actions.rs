@@ -13,6 +13,7 @@ pub(crate) enum SessionAction {
 #[derive(Default)]
 pub(crate) struct Completion {
     pub(crate) session: Option<String>,
+    pub(crate) reopened_sessions: Vec<String>,
     pub(crate) layout: Option<PaneLayout>,
     pub(crate) layouts: Vec<PaneLayout>,
     pub(crate) activate_tab: Option<String>,
@@ -153,6 +154,7 @@ impl NativeRoot {
                 remote.layout_hints.insert(layout.id.clone(), layout);
             }
         }
+        remote.reopen_sessions.extend(done.reopened_sessions);
         if let Some(session) = done.session {
             remote.reopen_sessions.insert(session.clone());
             if activate && remote.navigation_generation == navigation_generation {
@@ -572,6 +574,10 @@ impl NativeRoot {
     }
 
     pub(crate) fn close_remote_front_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.remote_mission_workspace() {
+            workspace.update(cx, |workspace, cx| workspace.close_visible_tab(window, cx));
+            return;
+        }
         let Some(layout) = self.front_page_layout().cloned() else {
             return;
         };

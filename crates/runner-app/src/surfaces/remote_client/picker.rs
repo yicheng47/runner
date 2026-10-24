@@ -184,6 +184,16 @@ impl NativeRoot {
             .into_any_element()
     }
     fn toggle_computer_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.app_store.read(cx).remote_access_enabled()
+            || !self
+                .app_store
+                .read(cx)
+                .remote_status
+                .as_ref()
+                .is_some_and(crate::surfaces::settings::remote::account::signed_in)
+        {
+            return;
+        }
         self.client_ui.picker_open = !self.client_ui.picker_open;
         if self.client_ui.picker_open {
             self.refresh_computers(cx);
@@ -208,11 +218,10 @@ impl NativeRoot {
             .clone()
             .unwrap_or_default();
         let signed_in = crate::surfaces::settings::remote::account::signed_in(&status);
-        let mut computers = if signed_in {
-            clients.read(cx).computers.clone()
-        } else {
-            Vec::new()
-        };
+        if !signed_in {
+            return None;
+        }
+        let mut computers = clients.read(cx).computers.clone();
         if !computers.iter().any(|c| c.is_self) {
             computers.insert(0, model::this_computer(&status, signed_in));
         }
@@ -401,36 +410,6 @@ impl NativeRoot {
                         .text_color(theme::warning())
                         .child(crate::i18n::text("client.directory_failed")),
                 )
-            })
-            .when(!signed_in, |menu| {
-                menu.child(div().h(px(1.)).bg(theme::border()).my_1())
-                    .child(
-                        div()
-                            .id("computer-picker-sign-in")
-                            .debug_selector(|| "COMPUTER_PICKER_SIGN_IN".into())
-                            .tab_index(0)
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_2()
-                            .rounded(rems(6. / 16.))
-                            .cursor_pointer()
-                            .hover(|row| row.bg(theme::chrome_hover()))
-                            .child(icon("log-in.svg", theme::muted()))
-                            .child(crate::i18n::text("client.picker_sign_in"))
-                            .on_click(cx.listener(|root, _, window, cx| {
-                                root.client_ui.picker_open = false;
-                                root.enter_settings_route(Some("account"), window, cx);
-                            }))
-                            .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    root.client_ui.picker_open = false;
-                                    root.enter_settings_route(Some("account"), window, cx);
-                                    cx.stop_propagation();
-                                }
-                            })),
-                    )
             });
         Some(popup_layer(
             anchor,

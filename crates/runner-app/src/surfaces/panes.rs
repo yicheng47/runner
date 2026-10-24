@@ -2933,6 +2933,11 @@ impl NativeRoot {
                                     self.front_page_client(cx).supports(&["resume"]),
                                     self.front_page_client(cx).supports(&["close", "layout"]),
                                 )
+                                .when(cfg!(test), |overlay| {
+                                    overlay.primary_debug_selector(format!(
+                                        "BUTTON:ended-{session_id}-restart"
+                                    ))
+                                })
                                 .into_any_element(),
                             )
                         } else {
@@ -2982,6 +2987,11 @@ impl NativeRoot {
                                     self.front_page_client(cx).supports(&["resume"]),
                                     self.front_page_client(cx).supports(&["archive", "layout"]),
                                 )
+                                .when(cfg!(test), |overlay| {
+                                    overlay.primary_debug_selector(format!(
+                                        "BUTTON:ended-{session_id}-resume"
+                                    ))
+                                })
                                 .into_any_element(),
                             )
                         }
@@ -3466,7 +3476,7 @@ fn render_start_surface(
                                 overrides,
                             )
                         }))
-                        .children((!client.is_remote()).then(|| {
+                        .children((client.supports(&["catalog", "startMission"])).then(|| {
                             start_surface_action_row(
                                 "new-mission",
                                 crate::i18n::text("ui.new_mission"),

@@ -2416,3 +2416,92 @@ fn refreshed_role_runtime_placeholders_follow_peer_language_changes() {
         }
     });
 }
+
+#[test]
+fn remote_libraries_preserve_local_list_query_page_size_and_pending_search() {
+    use crate::surfaces::remote_client::tests as remote;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (store, fake, _) = remote::fixture(&mut cx, temp.path());
+    remote::enable_front_page(&fake);
+    let window = remote::add_window(&mut cx, &store, temp.path(), "saved-local-role-list");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.open_roles(window, cx);
+            root.set_role_page_size(10, cx);
+            root.role_surfaces
+                .search
+                .update(cx, |search, cx| search.set_value("local-only-filter", cx));
+            remote::choose_host(root, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(
+            crate::list_controls::LIST_QUERY_DEBOUNCE_MS,
+        ));
+    cx.run_until_parked();
+    fake.queue_result("catalog", Ok(remote::library_catalog(25)));
+    window
+        .update(&mut cx, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let old_search = window
+        .read_with(&cx, |root, _| {
+            root.remote_window
+                .as_ref()
+                .unwrap()
+                .role_surfaces
+                .search
+                .clone()
+        })
+        .unwrap();
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.set_role_page_size(50, cx);
+            root.set_role_query("host-coder-24".into(), cx);
+            root.load_local_role_page(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.return_to_this_computer(window, cx);
+            old_search.update(cx, |search, cx| search.set_value("old-window-search", cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, _| {
+            assert_eq!(root.route, AppRoute::Roles);
+            assert_eq!(root.role_surfaces.list.query, "local-only-filter");
+            assert_eq!(root.role_surfaces.list.debounced_query, "local-only-filter");
+            assert_eq!(root.role_surfaces.list.page_size, 10);
+        })
+        .unwrap();
+    window.update(&mut cx, remote::choose_host).unwrap();
+    cx.run_until_parked();
+    fake.queue_result("catalog", Ok(remote::library_catalog(2)));
+    window
+        .update(&mut cx, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    old_search.update(&mut cx, |search, cx| {
+        search.set_value("another-old-window-search", cx)
+    });
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, _| {
+            assert!(root
+                .remote_window
+                .as_ref()
+                .unwrap()
+                .role_surfaces
+                .list
+                .query
+                .is_empty());
+            assert_eq!(root.role_surfaces.list.query, "local-only-filter");
+        })
+        .unwrap();
+}

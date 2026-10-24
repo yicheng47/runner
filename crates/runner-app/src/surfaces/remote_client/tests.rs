@@ -152,6 +152,12 @@ impl Fake {
             _ => None,
         }
     }
+    pub(crate) fn set_features(&self, features: &[&str]) {
+        *self.features.lock().unwrap() = features
+            .iter()
+            .map(|feature| (*feature).to_owned())
+            .collect();
+    }
     pub(crate) fn queue_result(&self, kind: &str, result: Result<serde_json::Value, ClientError>) {
         self.action_results
             .lock()
@@ -167,7 +173,7 @@ impl Fake {
         self.local_requests.lock().unwrap().len()
     }
 
-    fn set_overview(&self, data: Overview) {
+    pub(crate) fn set_overview(&self, data: Overview) {
         *self.overview.lock().unwrap() = data.clone();
         self.emit(
             "remote/overview",
@@ -177,7 +183,7 @@ impl Fake {
     fn client(self: &Arc<Self>) -> DaemonClient {
         DaemonClient::new(self.clone())
     }
-    fn emit(&self, name: &str, payload: serde_json::Value) {
+    pub(crate) fn emit(&self, name: &str, payload: serde_json::Value) {
         let event = ClientEvent {
             name: name.into(),
             payload,
@@ -243,7 +249,10 @@ impl Transport for Fake {
                     "catalog" => serde_json::json!({"roles":[{"id":"host-role","name":"Host coder","handle":"host-coder","runtime":"codex","model":null,"effort":null,"speed":null}],"runtimes":[{"name":"codex","label":"Host Codex","available":true,"nativeFork":true,"defaultModel":null,"defaultEffort":null,"models":[],"efforts":[],"speeds":["standard","fast"]}],"accounts":[{"id":"host-account","name":"Host account"}],"activeAccount":"host-account","crews":[],"projects":[{"id":"host-project","name":"Host project","path":"C:\\work"}],"recentFolders":["C:\\work","\\\\nas\\share"]}),
                     "folders" => serde_json::json!({"path":value["path"].as_str().unwrap_or("C:\\Users\\Jason"),"parent":null,"folders":[]}),
                     "startChat" | "startShell" | "fork" => serde_json::json!({"session":"started-session"}),
-                    "resume" => serde_json::json!({"session":value["session"]}),
+                    "resume" | "restart" => serde_json::json!({"session":value["session"]}),
+                    "feed" => serde_json::json!({"entries":[],"before":null}),
+                    "startMission" => serde_json::json!({"mission":"created-mission"}),
+                    "resumeMission" => serde_json::json!({"mission":value["mission"],"sessions":["member"]}),
                     "layout" => serde_json::json!({"target":value["target"]}),
                     "createProject" => serde_json::json!({"project":"new-project"}),
                     "deleteProject" => serde_json::json!({"archivedMissions":[],"archivedSessions":[]}),
@@ -493,7 +502,7 @@ pub(crate) fn fixture(
     });
     let clients = cx.new(|cx| model::ClientState::new(fake.client(), cx));
     store.update(cx, |store, _| {
-        store.settings.remote_access_enabled = true;
+        store.settings.local_only = false;
         store.client = fake.client();
         store.remote_clients = clients.clone();
     });
@@ -1088,6 +1097,15 @@ fn remote_sidebar_reuses_local_status_indicators_and_tracks_pushes() {
                 );
             }
             visual.run_until_parked();
+            if mission {
+                window
+                    .update(&mut visual, |root, _, cx| {
+                        root.remote_window.as_mut().unwrap().active = None;
+                        cx.notify();
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+            }
             let row = visual.debug_bounds("REMOTE_SIDEBAR_ROW").unwrap();
             for (candidate, selector) in [
                 ("Approval", "STATUS_ROLLUP:Approval"),
@@ -1392,7 +1410,7 @@ fn disabling_remote_access_returns_every_window_to_this_computer() {
         store.remote_status = Some(RemoteStatus::default());
         store.update_settings(
             |settings| {
-                settings.remote_access_enabled = false;
+                settings.local_only = true;
                 true
             },
             false,
@@ -1739,10 +1757,7 @@ fn signed_in_picker_shows_attention_dots_and_never_counts() {
 }
 
 #[test]
-fn signed_out_picker_omits_attention_and_opens_account_without_listing_or_enrolling() {
-    use runner_core::protocol::status::{
-        AgentObservation, AgentStatus, HumanInteraction, WaitReason,
-    };
+fn signed_out_has_no_picker_even_with_cached_directory_and_opens_account_from_avatar() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
@@ -1753,102 +1768,45 @@ fn signed_out_picker_omits_attention_and_opens_account_without_listing_or_enroll
                     reason: StopReason::Removed,
                 }),
             ] {
-                for activation in ["click", "enter", "space"] {
-                    let temp = tempfile::tempdir().unwrap();
-                    let mut cx = TestAppContext::single();
-                    let (store, fake, clients) = fixture(&mut cx, temp.path());
-                    let status = RemoteStatus {
-                        state: remote_state.clone().unwrap_or_default(),
-                        host_id: Some("old-host".into()),
-                        host_name: Some("Old computer name".into()),
-                        account: Some(RemoteAccount {
-                            username: "old-account".into(),
-                            display_name: "Old account".into(),
-                        }),
-                        ..Default::default()
-                    };
-                    *fake.status.lock().unwrap() = status.clone();
-                    fake.fail_directory.store(true, Ordering::SeqCst);
-                    store.update(&mut cx, |store, _| {
-                        store.remote_status = remote_state.as_ref().map(|_| status.clone());
-                    });
-                    let calls = fake.directory_calls.load(Ordering::SeqCst);
-                    let window = add_window(&mut cx, &store, temp.path(), "signed-out-picker");
-                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
-                    visual.run_until_parked();
-                    store.update(&mut visual, |store, cx| {
-                        store.session_statuses.insert(
-                            "local-attention".into(),
-                            AgentStatus {
-                                observation: AgentObservation {
-                                    interactions: vec![HumanInteraction {
-                                        id: "local-approval".into(),
-                                        reason: WaitReason::Approval,
-                                        owners: Vec::new(),
-                                        since: 1,
-                                    }],
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            },
-                        );
-                        cx.notify();
-                    });
-                    visual.run_until_parked();
-                    window
-                        .update(&mut visual, |root, _, cx| {
-                            root.route = AppRoute::Chat;
-                            cx.notify();
-                        })
-                        .unwrap();
-                    visual.run_until_parked();
-                    let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
-                    visual.simulate_click(trigger.center(), Default::default());
-                    visual.run_until_parked();
-                    clients.update(&mut visual, |clients, cx| {
-                        clients.directory_error = true;
-                        clients.action_failed = true;
-                        cx.notify();
-                    });
-                    visual.run_until_parked();
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_some());
-                    let name = visual.debug_bounds("COMPUTER_PICKER_NAME").unwrap();
-                    assert!(name.size.width > px(0.) && name.size.height > px(0.));
-                    assert!(visual
-                        .debug_bounds("COMPUTER_PICKER_TRIGGER_BADGE")
-                        .is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_DETAIL").is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_ERROR").is_none());
-                    assert!(visual
-                        .debug_bounds("COMPUTER_PICKER_ACTION_ERROR")
-                        .is_none());
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_HINT").is_none());
-                    let sign_in = visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").unwrap();
-                    if activation == "click" {
-                        visual.simulate_click(sign_in.center(), Default::default());
-                    } else {
-                        visual.simulate_keystrokes(&format!("tab tab {activation}"));
-                    }
-                    visual.run_until_parked();
-                    assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
-                    assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
-                    window
-                        .read_with(&visual, |root, _| {
-                            assert!(
-                                root.settings_page.pane
-                                    == crate::surfaces::settings_page::SettingsPane::Account
-                            );
-                        })
-                        .unwrap();
-                    assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                    fake.emit("daemon/reconnected", serde_json::json!({}));
-                    visual.run_until_parked();
-                    assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
-                }
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                let (store, fake, clients) = fixture(&mut cx, temp.path());
+                let status = RemoteStatus {
+                    state: remote_state.clone().unwrap_or_default(),
+                    host_id: Some("old-host".into()),
+                    account: Some(RemoteAccount {
+                        username: "old-account".into(),
+                        display_name: "Old account".into(),
+                    }),
+                    ..Default::default()
+                };
+                *fake.status.lock().unwrap() = status.clone();
+                store.update(&mut cx, |store, _| {
+                    store.remote_status = remote_state.as_ref().map(|_| status.clone())
+                });
+                let calls = fake.directory_calls.load(Ordering::SeqCst);
+                let window = add_window(&mut cx, &store, temp.path(), "signed-out-no-picker");
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                visual.run_until_parked();
+                clients.update(&mut visual, |clients, cx| {
+                    clients.directory_error = true;
+                    clients.action_failed = true;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").is_none());
+                assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                let avatar = visual.debug_bounds("SIDEBAR_ACCOUNT").unwrap();
+                visual.simulate_click(avatar.center(), Default::default());
+                visual.run_until_parked();
+                let sign_in = visual.debug_bounds("ACCOUNT_MENU_ITEM_1").unwrap();
+                visual.simulate_click(sign_in.center(), Default::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
+                assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
             }
         });
     }
@@ -1925,6 +1883,11 @@ fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal(
             })
             .unwrap();
         visual.run_until_parked();
+        if !signed {
+            assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+            continue;
+        }
         let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
         visual.simulate_click(trigger.center(), Default::default());
         visual.run_until_parked();
@@ -1997,6 +1960,220 @@ fn picker_new_window_changes_only_the_new_window() {
         }
     });
     assert_eq!(remote_count, 1);
+}
+
+#[test]
+fn paused_remote_chats_and_shells_wait_for_a_running_push_before_attaching() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            for shell in [false, true] {
+                for status in [Status::Stopped, Status::Error] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut cx = TestAppContext::single();
+                    let (store, fake, clients) = fixture(&mut cx, temp.path());
+                    enable_front_page(&fake);
+                    let mut data = overview();
+                    let session = data.sessions.get_mut("s").unwrap();
+                    session.status.status = status.clone();
+                    if shell {
+                        session.kind = runner_core::companion::SessionKind::Shell;
+                        session.runtime = None;
+                    }
+                    fake.set_overview(data);
+                    cx.run_until_parked();
+                    clients.read_with(&cx, |clients, _| {
+                        assert_eq!(
+                            clients.overviews["host"].sessions["s"].status.status,
+                            status
+                        );
+                    });
+                    fake.fail_attach.store(true, Ordering::SeqCst);
+                    let window = add_window(&mut cx, &store, temp.path(), "paused-remote");
+                    window.update(&mut cx, choose_host).unwrap();
+                    cx.run_until_parked();
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    assert!(visual.debug_bounds("SESSION_ENDED_CARD").is_some());
+                    assert!(visual.debug_bounds("REMOTE_TERMINAL_FAILED").is_none());
+                    assert!(fake.attaches.lock().unwrap().is_empty());
+                    let size = window
+                        .read_with(&visual, |root, _| root.remote_terminal_size("s"))
+                        .unwrap()
+                        .unwrap();
+                    assert!(size.0 >= 20 && size.1 >= 8);
+                    window
+                        .read_with(&visual, |root, cx| {
+                            assert!(root.front_page_client(cx).supports(&["resume"]));
+                            assert!(matches!(
+                                root.remote_window.as_ref().unwrap().connection,
+                                Connection::Connected
+                            ));
+                        })
+                        .unwrap();
+                    let selector = if shell {
+                        "BUTTON:ended-s-restart"
+                    } else {
+                        "BUTTON:ended-s-resume"
+                    };
+                    let button = visual
+                        .debug_bounds(selector)
+                        .expect("visible ended primary button");
+                    assert!(button.size.width > px(0.) && button.size.height > px(0.));
+                    let position = button.center();
+                    visual.simulate_mouse_down(position, MouseButton::Left, Default::default());
+                    visual.run_until_parked();
+                    let pressed = visual
+                        .debug_bounds(selector)
+                        .expect("ended primary button after press");
+                    let position = pressed.center();
+                    let size = window
+                        .read_with(&visual, |root, _| root.remote_terminal_size("s"))
+                        .unwrap()
+                        .unwrap();
+                    assert!(size.0 >= 20 && size.1 >= 8);
+                    visual.simulate_mouse_up(position, MouseButton::Left, Default::default());
+                    visual.run_until_parked();
+                    let resumes = action_trace(&fake, "resume");
+                    assert_eq!(resumes.len(), 1, "shell={shell} status={status:?} before={button:?} pressed={pressed:?} size={size:?}");
+                    assert_eq!(resumes[0]["session"], "s");
+                    assert_eq!(resumes[0]["cols"], size.0);
+                    assert_eq!(resumes[0]["rows"], size.1);
+                    assert!(fake.attaches.lock().unwrap().is_empty());
+                    assert!(visual.debug_bounds("SESSION_ENDED_CARD").is_some());
+                    fake.fail_attach.store(false, Ordering::SeqCst);
+                    fake.emit("remote/session-status", serde_json::json!({"computer":"host","status":{"session":"s","status":"working","unread":false}}));
+                    visual.run_until_parked();
+                    assert_eq!(fake.attaches.lock().unwrap().len(), 1);
+                    assert!(visual.debug_bounds("SESSION_ENDED_CARD").is_none());
+                    assert!(visual.debug_bounds("REMOTE_TERMINAL_FAILED").is_none());
+                    let terminal = window
+                        .read_with(&visual, |root, _| {
+                            root.remote_window.as_ref().unwrap().terminals["s"]
+                                .terminal
+                                .clone()
+                        })
+                        .unwrap();
+                    fake.emit("remote/session-status", serde_json::json!({"computer":"host","status":{"session":"s","status":"stopped","unread":false}}));
+                    visual.run_until_parked();
+                    assert!(visual.debug_bounds("SESSION_ENDED_CARD").is_some());
+                    assert!(visual.debug_bounds("REMOTE_TERMINAL_FAILED").is_none());
+                    assert_eq!(fake.attaches.lock().unwrap().len(), 1);
+                    window
+                        .read_with(&visual, |root, cx| {
+                            assert!(Arc::ptr_eq(
+                                &terminal,
+                                &root.remote_window.as_ref().unwrap().terminals["s"].terminal
+                            ));
+                            assert!(!root.remote_terminal_interactive("s", cx));
+                        })
+                        .unwrap();
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn obsolete_remote_attach_results_cannot_replace_a_resumed_terminal() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for first_fails in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, clients) = fixture(&mut cx, temp.path());
+        let mut data = overview();
+        data.sessions.get_mut("s").unwrap().status.status = Status::Stopped;
+        fake.set_overview(data);
+        cx.run_until_parked();
+        let window = add_window(&mut cx, &store, temp.path(), "paused-attach-race");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        assert!(fake.attaches.lock().unwrap().is_empty());
+        fake.fail_attach.store(first_fails, Ordering::SeqCst);
+        *fake.snapshot.lock().unwrap() = b"previous terminal".to_vec();
+        clients.update(&mut cx, |clients, _| {
+            clients
+                .overviews
+                .get_mut("host")
+                .unwrap()
+                .sessions
+                .get_mut("s")
+                .unwrap()
+                .status
+                .status = Status::Working;
+        });
+        window
+            .update(&mut cx, |root, _, cx| root.sync_remote_state(cx))
+            .unwrap();
+        for _ in 0..1000 {
+            if fake.attaches.lock().unwrap().len() == 1 {
+                break;
+            }
+            assert!(cx.background_executor.tick());
+        }
+        assert_eq!(fake.attaches.lock().unwrap().len(), 1);
+        window
+            .read_with(&cx, |root, _| {
+                assert!(root.remote_window.as_ref().unwrap().terminals.is_empty())
+            })
+            .unwrap();
+        clients.update(&mut cx, |clients, _| {
+            clients
+                .overviews
+                .get_mut("host")
+                .unwrap()
+                .sessions
+                .get_mut("s")
+                .unwrap()
+                .status
+                .status = Status::Stopped;
+        });
+        window
+            .update(&mut cx, |root, _, cx| root.sync_remote_state(cx))
+            .unwrap();
+        fake.fail_attach.store(false, Ordering::SeqCst);
+        *fake.snapshot.lock().unwrap() = b"resumed terminal".to_vec();
+        clients.update(&mut cx, |clients, _| {
+            clients
+                .overviews
+                .get_mut("host")
+                .unwrap()
+                .sessions
+                .get_mut("s")
+                .unwrap()
+                .status
+                .status = Status::Working;
+        });
+        window
+            .update(&mut cx, |root, _, cx| root.sync_remote_state(cx))
+            .unwrap();
+        for _ in 0..1000 {
+            if fake.attaches.lock().unwrap().len() == 2 {
+                break;
+            }
+            assert!(cx.background_executor.tick());
+        }
+        assert_eq!(fake.attaches.lock().unwrap().len(), 2);
+        cx.run_until_parked();
+        let terminal = window
+            .read_with(&cx, |root, _| {
+                root.remote_window.as_ref().unwrap().terminals["s"]
+                    .terminal
+                    .clone()
+            })
+            .unwrap();
+        let text = terminal
+            .term
+            .lock()
+            .grid()
+            .display_iter()
+            .map(|cell| cell.cell.c)
+            .collect::<String>();
+        assert!(text.contains("resumed terminal"));
+        assert!(!text.contains("previous terminal"));
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("REMOTE_TERMINAL_FAILED").is_none());
+        assert!(visual.debug_bounds("SESSION_ENDED_CARD").is_none());
+    }
 }
 
 #[test]
@@ -2471,19 +2648,7 @@ fn forgetting_locally_closes_the_mirror_and_uses_plain_pairing_copy_despite_late
 }
 
 #[test]
-fn mission_members_receive_equal_width_and_empty_shells_draw_no_strip() {
-    use runner_core::companion::Pane;
-    fn widths(pane: &Pane, width: f64, found: &mut Vec<(String, f64)>) {
-        match pane {
-            Pane::Leaf { session: Some(id) } => found.push((id.clone(), width)),
-            Pane::Split { sizes, a, b, .. } => {
-                let total = sizes[0] + sizes[1];
-                widths(a, width * sizes[0] / total, found);
-                widths(b, width * sizes[1] / total, found);
-            }
-            _ => {}
-        }
-    }
+fn mission_members_use_the_shared_workspace_and_empty_shells_draw_no_drawer() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
@@ -2498,17 +2663,6 @@ fn mission_members_receive_equal_width_and_empty_shells_draw_no_strip() {
     for count in [0, 1, 2, 3, 4, 7, 24] {
         let mut overview = overview();
         overview.missions[0].members = (0..count).map(|i| serde_json::from_value(serde_json::json!({"handle":format!("slot-{i}"),"session":format!("session-{i}"),"lead":i==0})).unwrap()).collect();
-        let mut found = Vec::new();
-        widths(
-            &workspace::mission_panes(&overview.missions[0].members),
-            1.,
-            &mut found,
-        );
-        assert_eq!(found.len(), count);
-        for (i, (id, width)) in found.iter().enumerate() {
-            assert_eq!(id, &format!("session-{i}"));
-            assert!((width - 1. / count as f64).abs() < 1e-10);
-        }
         fake.emit(
             "remote/overview",
             serde_json::json!({"computer":"host","overview":overview}),
@@ -2520,7 +2674,10 @@ fn mission_members_receive_equal_width_and_empty_shells_draw_no_strip() {
             .unwrap();
         cx.run_until_parked();
         let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        assert!(visual.debug_bounds("REMOTE_SHELLS").is_none());
+        assert!(visual.debug_bounds("MISSION_HEADER").is_some());
+        assert!(visual.debug_bounds("MISSION_TABS").is_some());
+        assert!(visual.debug_bounds("MISSION_RAIL").is_some());
+        assert!(visual.debug_bounds("mission-terminal-drawer").is_none());
     }
 }
 
@@ -2766,7 +2923,7 @@ pub(crate) fn enable_front_page(fake: &Fake) {
     .map(str::to_owned)
     .to_vec();
 }
-fn action_trace(fake: &Fake, kind: &str) -> Vec<serde_json::Value> {
+pub(crate) fn action_trace(fake: &Fake, kind: &str) -> Vec<serde_json::Value> {
     fake.action_requests
         .lock()
         .unwrap()
@@ -3680,6 +3837,97 @@ fn remote_resume_and_pane_shortcuts_use_the_remote_layout_with_local_start_saved
 }
 
 #[test]
+fn remote_split_shortcuts_use_target_focus_with_no_or_disjoint_local_tabs() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for saved_start in [true, false] {
+        for (shortcut, direction) in [("cmd-d", "row"), ("shift-cmd-d", "column")] {
+            for capable in [true, false] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = TestAppContext::single();
+                cx.update(|cx| {
+                    crate::keymap::install_bindings(
+                        cx,
+                        &crate::keymap::KeymapOverrides::new(),
+                        false,
+                    )
+                });
+                let (store, fake, _) = fixture(&mut cx, temp.path());
+                enable_front_page(&fake);
+                if !capable {
+                    fake.set_features(&["overview"]);
+                }
+                let window = add_window(&mut cx, &store, temp.path(), "split-shortcuts");
+                window.update(&mut cx, |root, window, cx| {
+                    let mut local = PaneLayout::single(None, &["local-only-session".into()]);
+                    if let runner_app::pane_layout::PaneNode::Leaf(leaf) = &mut local.root {
+                        leaf.id = "local-only-pane".into();
+                    }
+                    local.focused_pane_id = "local-only-pane".into();
+                    let row = serde_json::from_value(serde_json::json!({"id":"local-tab","parent_id":null,"position":0,"type":"tab","name":"Local tab","ref_id":null,"layout":local.serialize().unwrap(),"pinned_position":null,"last_completed_at":null,"last_viewed_at":null,"created_at":"2026-10-23T00:00:00Z"})).unwrap();
+                    root.tabs = TabSet::from_rows(&[row]);
+                    root.route = if saved_start { AppRoute::Chat } else { AppRoute::Roles };
+                    if saved_start { root.tabs.clear_active(); }
+                    choose_host(root, window, cx);
+                }).unwrap();
+                cx.run_until_parked();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        window.activate_window();
+                        root.focus_remote_terminal("s", window, cx);
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                let local_calls = fake.local_call_count();
+                visual.simulate_keystrokes(&crate::keymap::platform_default(shortcut));
+                visual.run_until_parked();
+                let layouts = action_trace(&fake, "layout");
+                assert_eq!(
+                    layouts.len(),
+                    usize::from(capable),
+                    "{shortcut} saved_start={saved_start}"
+                );
+                if capable {
+                    assert_eq!(layouts[0]["target"]["id"], "remote-tab");
+                    assert_eq!(layouts[0]["panes"]["split"], direction);
+                    window
+                        .read_with(&visual, |root, _| {
+                            assert_eq!(root.front_page_layout().unwrap().root.leaves().len(), 1)
+                        })
+                        .unwrap();
+                    let mut pushed = overview();
+                    pushed.tabs[0].panes =
+                        serde_json::from_value(layouts[0]["panes"].clone()).unwrap();
+                    fake.set_overview(pushed);
+                    visual.run_until_parked();
+                    window
+                        .read_with(&visual, |root, _| {
+                            assert_eq!(root.front_page_layout().unwrap().root.leaves().len(), 2)
+                        })
+                        .unwrap();
+                }
+                assert_eq!(fake.local_call_count(), local_calls);
+                window
+                    .read_with(&visual, |root, _| {
+                        assert_eq!(root.tabs.active().is_none(), saved_start);
+                        assert_eq!(root.tabs.tabs()[0].root.leaves().len(), 1);
+                        assert_eq!(root.tabs.tabs()[0].focused_pane_id, "local-only-pane");
+                        assert_eq!(
+                            root.route,
+                            if saved_start {
+                                AppRoute::Chat
+                            } else {
+                                AppRoute::Roles
+                            }
+                        );
+                    })
+                    .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn remote_shell_split_and_empty_fill_inherit_the_owning_host_cwd() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for cwd in [r"D:\work\shell-folder", r"\\nas\share\shell-folder"] {
@@ -4070,4 +4318,540 @@ fn navigation_cancels_a_start_form_waiting_for_its_catalog_without_holding_the_n
         .read_with(&cx, |root, _| assert!(root.start_chat_modal.is_some()))
         .unwrap();
     assert_eq!(action_trace(&fake, "catalog").len(), catalogs_before + 2);
+}
+
+pub(crate) fn enable_missions(fake: &Fake) {
+    enable_front_page(fake);
+    fake.features.lock().unwrap().extend(
+        [
+            "feed",
+            "follow",
+            "unfollow",
+            "answer",
+            "post",
+            "restart",
+            "startMission",
+        ]
+        .map(str::to_owned),
+    );
+}
+
+pub(crate) fn library_catalog(count: usize) -> serde_json::Value {
+    serde_json::json!({
+        "roles": (0..count).map(|i| serde_json::json!({
+            "id":format!("host-role-{i}"), "name":format!("Host role {i}"), "handle":format!("host-coder-{i}"),
+            "runtime":"codex", "model":"host-model", "effort":"high", "speed":null
+        })).collect::<Vec<_>>(),
+        "runtimes":[{"name":"codex","label":"Host Codex","available":true,"nativeFork":true,"defaultModel":null,"defaultEffort":null,"models":[],"efforts":[],"speeds":["standard","fast"]}],
+        "accounts":[],"activeAccount":"",
+        "crews": if count == 0 { vec![] } else { vec![serde_json::json!({"id":"host-crew","name":"Host duo","slots":(0..count.min(2)).map(|i| serde_json::json!({"handle":format!("worker-{i}"),"role":format!("host-role-{i}"),"lead":i==0})).collect::<Vec<_>>()})] },
+        "projects":[],"recentFolders":[]
+    })
+}
+
+#[test]
+fn remote_libraries_show_host_rows_without_management_or_local_requests() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "remote-libraries");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.open_roles(window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let original_route = window.read_with(&cx, |root, _| root.route.clone()).unwrap();
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    fake.local_requests.lock().unwrap().clear();
+    fake.action_requests.lock().unwrap().clear();
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    let role_entry = visual
+        .debug_bounds("SIDEBAR_WORKSPACE:workspace-role")
+        .unwrap();
+    visual.simulate_click(role_entry.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-0").is_some());
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-1").is_some());
+    assert!(visual
+        .debug_bounds("ROLE_TABLE_CELL Model host-model")
+        .is_some());
+    for selector in ["NEW_ROLE", "EMPTY_NEW_ROLE", "NEW_CREW", "EMPTY_NEW_CREW"] {
+        assert!(visual.debug_bounds(selector).is_none(), "{selector}");
+    }
+    let row = visual.debug_bounds("ROLE_ROW:host-role-0").unwrap();
+    visual.simulate_click(row.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.start_chat_modal.is_none());
+            assert_eq!(root.route, original_route);
+            assert!(root.remote_window.as_ref().unwrap().active == Some(Item::Roles));
+        })
+        .unwrap();
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    let crew_entry = visual
+        .debug_bounds("SIDEBAR_WORKSPACE:workspace-crew")
+        .unwrap();
+    visual.simulate_click(crew_entry.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CREW_ROW:host-crew").is_some());
+    assert!(visual.debug_bounds("NEW_CREW").is_none());
+    let row = visual.debug_bounds("CREW_ROW:host-crew").unwrap();
+    visual.simulate_click(row.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.start_mission_modal.is_none());
+            assert_eq!(root.route, original_route);
+            assert!(root.remote_window.as_ref().unwrap().active == Some(Item::Crews));
+        })
+        .unwrap();
+    assert!(fake.local_requests.lock().unwrap().is_empty());
+    assert!(fake
+        .action_requests
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|(computer, request)| computer == "host" && request["type"] == "catalog"));
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.choose_computer(computers()[0].clone(), false, window, cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_window.is_none());
+            assert_eq!(root.route, original_route);
+        })
+        .unwrap();
+    assert!(visual.debug_bounds("NEW_ROLE").is_some());
+}
+
+#[test]
+fn remote_libraries_require_catalog_and_gate_launch_actions_separately() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for catalog in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        fake.set_features(if catalog { &["catalog"] } else { &[] });
+        let window = add_window(&mut cx, &store, temp.path(), "library-capabilities");
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.choose_computer(computers()[1].clone(), false, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert_eq!(
+            visual
+                .debug_bounds("SIDEBAR_WORKSPACE:workspace-role")
+                .is_some(),
+            catalog
+        );
+        assert_eq!(
+            visual
+                .debug_bounds("SIDEBAR_WORKSPACE:workspace-crew")
+                .is_some(),
+            catalog
+        );
+        assert!(visual.debug_bounds("SIDEBAR_WORKSPACE_NEW_CHAT").is_none());
+        fake.queue_result("catalog", Ok(library_catalog(2)));
+        window
+            .update(&mut visual, |root, window, cx| root.open_roles(window, cx))
+            .unwrap();
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("ROLE_ROW:host-role-0").is_some(),
+            catalog
+        );
+        assert!(visual.debug_bounds("ROLE_ROW_CHAT:host-role-0").is_none());
+        fake.queue_result("catalog", Ok(library_catalog(2)));
+        window
+            .update(&mut visual, |root, window, cx| root.open_crews(window, cx))
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("CREW_ROW_START:host-crew").is_none());
+        assert!(action_trace(&fake, "startChat").is_empty());
+        assert!(action_trace(&fake, "startMission").is_empty());
+    }
+}
+
+#[test]
+fn remote_libraries_filter_page_and_refresh_errors_without_local_preferences() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "library-search");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let sizes = store.read_with(&cx, |store, _| {
+        (
+            store.settings.roles_page_size,
+            store.settings.crews_page_size,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    fake.queue_result("catalog", Err(ClientError::msg("host catalog unavailable")));
+    window
+        .update(&mut visual, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PAGINATED_LIST_ERROR").is_some());
+    fake.queue_result("catalog", Ok(library_catalog(25)));
+    let refresh = visual.debug_bounds("REMOTE_LIBRARY_REFRESH").unwrap();
+    visual.simulate_click(refresh.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PAGINATED_LIST_ERROR").is_none());
+    window
+        .update(&mut visual, |root, _, cx| root.set_role_page_size(10, cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-0").is_some());
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-10").is_none());
+    window
+        .update(&mut visual, |root, _, cx| root.set_role_page(2, cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-0").is_none());
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-10").is_some());
+    let reads = action_trace(&fake, "catalog").len();
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.set_role_query("host-coder-24".into(), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-24").is_some());
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-10").is_none());
+    assert_eq!(action_trace(&fake, "catalog").len(), reads);
+    assert_eq!(
+        store.read_with(&visual, |store, _| (
+            store.settings.roles_page_size,
+            store.settings.crews_page_size
+        )),
+        sizes
+    );
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    window
+        .update(&mut visual, |root, window, cx| root.open_crews(window, cx))
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.set_crew_query("host-coder-1".into(), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CREW_ROW:host-crew").is_some());
+    fake.queue_result("catalog", Ok(library_catalog(0)));
+    window
+        .update(&mut visual, |root, _, cx| root.refresh_remote_library(cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CREW_ROW:host-crew").is_none());
+    assert!(visual.debug_bounds("EMPTY_NEW_CREW").is_none());
+}
+
+#[test]
+fn remote_role_library_launch_refreshes_and_preselects_the_clicked_host_role() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "library-role-launch");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    window
+        .update(&mut visual, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    visual.run_until_parked();
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    let chat = visual.debug_bounds("ROLE_ROW_CHAT:host-role-1").unwrap();
+    visual.simulate_click(chat.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("START_CHAT_FORM").is_some());
+    visual.update(|window, cx| window.dispatch_action(Box::new(ConfirmStartChat), cx));
+    visual.run_until_parked();
+    let starts = action_trace(&fake, "startChat");
+    assert_eq!(starts.len(), 1);
+    assert_eq!(starts[0]["role"], "host-role-1");
+    for field in ["runtime", "cwd", "model", "effort", "speed", "project"] {
+        assert!(starts[0][field].is_null(), "{field}");
+    }
+    assert_eq!(action_trace(&fake, "catalog").len(), 3);
+}
+
+#[test]
+fn remote_library_catalog_replies_cannot_override_a_refresh_or_local_return() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for return_local in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "library-race");
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.choose_computer(computers()[1].clone(), false, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        let reads = action_trace(&fake, "catalog").len();
+        fake.queue_result("catalog", Ok(library_catalog(2)));
+        window
+            .update(&mut visual, |root, window, cx| root.open_roles(window, cx))
+            .unwrap();
+        for _ in 0..1000 {
+            if action_trace(&fake, "catalog").len() > reads {
+                break;
+            }
+            assert!(visual.background_executor.tick());
+        }
+        assert_eq!(action_trace(&fake, "catalog").len(), reads + 1);
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root
+                    .remote_window
+                    .as_ref()
+                    .unwrap()
+                    .library_catalog
+                    .is_none())
+            })
+            .unwrap();
+        if return_local {
+            window
+                .update(&mut visual, |root, window, cx| {
+                    root.choose_computer(computers()[0].clone(), false, window, cx)
+                })
+                .unwrap();
+        } else {
+            fake.queue_result("catalog", Ok(library_catalog(3)));
+            window
+                .update(&mut visual, |root, _, cx| root.refresh_remote_library(cx))
+                .unwrap();
+        }
+        visual.run_until_parked();
+        if return_local {
+            window
+                .read_with(&visual, |root, _| assert!(root.remote_window.is_none()))
+                .unwrap();
+            assert!(visual.debug_bounds("ROLE_ROW:host-role-0").is_none());
+        } else {
+            assert!(visual.debug_bounds("ROLE_ROW:host-role-2").is_some());
+            window
+                .read_with(&visual, |root, _| {
+                    assert_eq!(
+                        root.remote_window
+                            .as_ref()
+                            .unwrap()
+                            .library_catalog
+                            .as_ref()
+                            .unwrap()
+                            .roles
+                            .len(),
+                        3
+                    )
+                })
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn remote_role_library_does_not_replace_a_removed_role_with_another() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "missing-library-role");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    window
+        .update(&mut cx, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    fake.queue_result("catalog", Ok(library_catalog(1)));
+    let chat = visual.debug_bounds("ROLE_ROW_CHAT:host-role-1").unwrap();
+    visual.simulate_click(chat.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.start_chat_modal.is_none());
+            assert_eq!(
+                root.remote_window.as_ref().unwrap().action_error.as_deref(),
+                Some(crate::i18n::text("client.role_unavailable"))
+            );
+        })
+        .unwrap();
+    assert!(action_trace(&fake, "startChat").is_empty());
+}
+
+#[test]
+fn remote_library_catalog_replies_are_scoped_to_host_and_connection_generation() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for change_host in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, clients) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "library-target-race");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let old = window
+            .read_with(&cx, |root, _| {
+                root.remote_window
+                    .as_ref()
+                    .unwrap()
+                    .front_page
+                    .target
+                    .clone()
+            })
+            .unwrap();
+        let reads = action_trace(&fake, "catalog").len();
+        fake.queue_result("catalog", Ok(library_catalog(2)));
+        window
+            .update(&mut cx, |root, window, cx| root.open_roles(window, cx))
+            .unwrap();
+        for _ in 0..1000 {
+            if action_trace(&fake, "catalog").len() > reads {
+                break;
+            }
+            assert!(cx.background_executor.tick());
+        }
+        assert_eq!(action_trace(&fake, "catalog").len(), reads + 1);
+        if change_host {
+            let mut other = computers()[1].clone();
+            other.id = "other-host".into();
+            other.name = "Other host".into();
+            other.fingerprint = "other-host-key".into();
+            fake.computers.lock().unwrap().push(other.clone());
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.choose_computer(other, false, window, cx)
+                })
+                .unwrap();
+        } else {
+            clients.update(&mut cx, |clients, _| {
+                clients.invalidate_capabilities("host")
+            });
+            window
+                .update(&mut cx, |root, _, cx| root.sync_remote_state(cx))
+                .unwrap();
+        }
+        for _ in 0..4 {
+            fake.queue_result("catalog", Ok(library_catalog(3)));
+        }
+        cx.run_until_parked();
+        if change_host {
+            window
+                .update(&mut cx, |root, window, cx| root.open_roles(window, cx))
+                .unwrap();
+            cx.run_until_parked();
+        }
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        assert!(visual.debug_bounds("ROLE_ROW:host-role-2").is_some());
+        window
+            .read_with(&visual, |root, _| {
+                let remote = root.remote_window.as_ref().unwrap();
+                assert_ne!(remote.front_page.target, old);
+                assert_eq!(remote.library_catalog.as_ref().unwrap().roles.len(), 3);
+                assert_eq!(
+                    remote.computer.id,
+                    if change_host { "other-host" } else { "host" }
+                );
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn remote_libraries_fit_narrow_zoomed_windows_in_both_languages() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, _) = fixture(&mut cx, temp.path());
+            enable_front_page(&fake);
+            let window = add_window(&mut cx, &store, temp.path(), "library-geometry");
+            window.update(&mut cx, choose_host).unwrap();
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            for crews in [false, true] {
+                fake.queue_result("catalog", Ok(library_catalog(2)));
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        if crews {
+                            root.open_crews(window, cx);
+                        } else {
+                            root.open_roles(window, cx);
+                        }
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                for zoom in [1., 1.3] {
+                    for width in [640., 1100.] {
+                        visual.simulate_resize(gpui::size(px(width), px(900.)));
+                        window
+                            .update(&mut visual, |root, window, cx| {
+                                root.set_zoom(zoom, window, cx)
+                            })
+                            .unwrap();
+                        visual.run_until_parked();
+                        for selector in [
+                            "REMOTE_LIBRARY_REFRESH",
+                            "PAGINATED_LIST_FOOTER",
+                            if crews {
+                                "CREW_TABLE_ROWS"
+                            } else {
+                                "ROLE_TABLE_ROWS"
+                            },
+                        ] {
+                            let bounds = visual.debug_bounds(selector).unwrap();
+                            assert!(
+                                bounds.left() >= px(0.) && bounds.right() <= px(width + 1.),
+                                "{locale:?} {crews} {width} {zoom}: {selector} {bounds:?}"
+                            );
+                        }
+                        assert!(visual.debug_bounds("NEW_ROLE").is_none());
+                        assert!(visual.debug_bounds("NEW_CREW").is_none());
+                    }
+                }
+            }
+        });
+    }
 }

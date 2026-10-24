@@ -195,15 +195,19 @@ impl MissionWorkspace {
             .gap_3()
             .child(rail_section_label(crate::i18n::text("ui.sessions")));
         let root = cx.entity();
-        for session in &self.sessions {
+        for session in &self.members() {
             let session_id = session.session.id.clone();
             let open_id = session_id.clone();
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let status = runner_app::ui::agent_status::StatusPresentation::new(
+            let mut status = runner_app::ui::agent_status::StatusPresentation::new(
                 &self.slot_agent_status(&session_id, cx),
             );
+            if self.remote.is_some() {
+                status.waiting_since = None;
+                status.estimated = false;
+            }
             let subtitle = runner_app::ui::agent_status::status_indicator(
                 status,
                 true,
@@ -216,11 +220,22 @@ impl MissionWorkspace {
                 || self.archiving
                 || self.slot_actions.contains(&session_id)
                 || self.transitions.contains_key(&session_id);
-            let controls = mission_slot_actions_available(
-                self.mission.as_ref().map(|mission| mission.status),
-                self.archived(),
-                self.secondary,
-            )
+            let available_controls = slot_controls(session.session.status)
+                .into_iter()
+                .filter(|action| {
+                    self.remote_supports(&[match action {
+                        SessionControlKind::Stop => "stop",
+                        SessionControlKind::Restart => "restart",
+                        _ => "resume",
+                    }])
+                })
+                .collect::<Vec<_>>();
+            let controls = (!available_controls.is_empty()
+                && mission_slot_actions_available(
+                    self.mission_view().as_ref().map(|mission| mission.status),
+                    self.archived(),
+                    self.secondary,
+                ))
             .then(|| {
                 let remove_root = root.clone();
                 let remove_id = session_id.clone();
@@ -230,35 +245,31 @@ impl MissionWorkspace {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .children(
-                        slot_controls(session.session.status)
-                            .into_iter()
-                            .map(|action| {
-                                let action_root = root.clone();
-                                let target = session_id.clone();
-                                SessionControl::new(
-                                    SharedString::from(format!("slot-{action:?}-{session_id}")),
-                                    action,
-                                )
-                                .variant(SessionControlVariant::Header)
-                                .title(slot_control_title(
-                                    action,
-                                    &self.settings(cx).keymap_overrides,
-                                ))
-                                .header_size(24.)
-                                .restarting(
-                                    self.transition_kind(&session_id)
-                                        == Some(MissionTransitionKind::Restarting),
-                                )
-                                .lifecycle_disabled(disabled)
-                                .on_press(move |window, cx| {
-                                    action_root.update(cx, |this, cx| {
-                                        this.request_slot_action(&target, action, window, cx)
-                                    })
-                                })
-                            }),
-                    )
-                    .when(!session.lead, |controls| {
+                    .children(available_controls.into_iter().map(|action| {
+                        let action_root = root.clone();
+                        let target = session_id.clone();
+                        SessionControl::new(
+                            SharedString::from(format!("slot-{action:?}-{session_id}")),
+                            action,
+                        )
+                        .variant(SessionControlVariant::Header)
+                        .title(slot_control_title(
+                            action,
+                            &self.settings(cx).keymap_overrides,
+                        ))
+                        .header_size(24.)
+                        .restarting(
+                            self.transition_kind(&session_id)
+                                == Some(MissionTransitionKind::Restarting),
+                        )
+                        .lifecycle_disabled(disabled)
+                        .on_press(move |window, cx| {
+                            action_root.update(cx, |this, cx| {
+                                this.request_slot_action(&target, action, window, cx)
+                            })
+                        })
+                    }))
+                    .when(!session.lead && self.remote.is_none(), |controls| {
                         controls.child(
                             IconButton::new(
                                 SharedString::from(format!("remove-role-{session_id}")),
@@ -472,46 +483,48 @@ impl MissionWorkspace {
                                 |card| card.child(subtitle),
                             ),
                     )
-                    .child(
-                        div()
-                            .pt_2()
-                            .flex()
-                            .gap_2()
-                            .border_t_1()
-                            .border_color(theme::with_alpha(theme::border(), 0.7))
-                            .text_size(theme::text_caption())
-                            .line_height(rems(14. / 16.))
-                            .child(
-                                div()
-                                    .debug_selector(|| {
-                                        format!("MISSION_CARD_KEY_LABEL {session_id}")
-                                    })
-                                    .w(rems(72. / 16.))
-                                    .flex_none()
-                                    .text_color(theme::faint())
-                                    .child("session_key"),
-                            )
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .flex_1()
-                                    .flex()
-                                    .items_start()
-                                    .gap(rems(6. / 16.))
-                                    .child(key_value)
-                                    .children(copy.map(|copy| {
-                                        div()
-                                            .debug_selector(|| {
-                                                format!("MISSION_CARD_KEY_COPY {session_id}")
-                                            })
-                                            .flex_none()
-                                            .child(copy)
-                                    })),
-                            ),
-                    ),
+                    .when(self.remote.is_none(), |card| {
+                        card.child(
+                            div()
+                                .pt_2()
+                                .flex()
+                                .gap_2()
+                                .border_t_1()
+                                .border_color(theme::with_alpha(theme::border(), 0.7))
+                                .text_size(theme::text_caption())
+                                .line_height(rems(14. / 16.))
+                                .child(
+                                    div()
+                                        .debug_selector(|| {
+                                            format!("MISSION_CARD_KEY_LABEL {session_id}")
+                                        })
+                                        .w(rems(72. / 16.))
+                                        .flex_none()
+                                        .text_color(theme::faint())
+                                        .child("session_key"),
+                                )
+                                .child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .flex_1()
+                                        .flex()
+                                        .items_start()
+                                        .gap(rems(6. / 16.))
+                                        .child(key_value)
+                                        .children(copy.map(|copy| {
+                                            div()
+                                                .debug_selector(|| {
+                                                    format!("MISSION_CARD_KEY_COPY {session_id}")
+                                                })
+                                                .flex_none()
+                                                .child(copy)
+                                        })),
+                                ),
+                        )
+                    }),
             );
         }
-        if self.roster.is_empty() {
+        if self.mission_composer_roster().is_empty() {
             list = list.child(
                 div()
                     .debug_selector(|| "MISSION_RAIL_NO_ROLES".into())
@@ -520,11 +533,13 @@ impl MissionWorkspace {
                     .child(crate::i18n::text("ui.mission_roster_empty")),
             );
         }
-        if mission_slot_actions_available(
-            self.mission.as_ref().map(|mission| mission.status),
-            self.archived(),
-            self.secondary,
-        ) {
+        if self.remote.is_none()
+            && mission_slot_actions_available(
+                self.mission_view().as_ref().map(|mission| mission.status),
+                self.archived(),
+                self.secondary,
+            )
+        {
             let shell = self.shell.clone();
             let mission = self.mission.clone();
             let roster = self.roster.clone();
@@ -557,6 +572,9 @@ impl MissionWorkspace {
     }
 
     fn reveal_mission_cwd(&mut self, cwd: String, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            return;
+        }
         let task = cx.background_spawn(async move {
             #[cfg(target_os = "macos")]
             {
@@ -596,7 +614,7 @@ impl MissionWorkspace {
     }
 
     fn render_mission_meta_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(mission) = self.mission.clone() else {
+        let Some(mission) = self.mission_view() else {
             return div().into_any_element();
         };
         let root = cx.entity();
@@ -656,51 +674,54 @@ impl MissionWorkspace {
                         .into_any_element(),
                 },
             ));
-        panel = panel.child(meta_section(
-            crate::i18n::text("ui.working_dir"),
-            mission.cwd.clone().map_or_else(
-                || {
-                    div()
-                        .text_size(theme::text_ui())
-                        .italic()
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("ui.no_cwd_set"))
-                        .into_any_element()
-                },
-                |cwd| {
-                    let reveal = cwd.clone();
-                    #[cfg(target_os = "macos")]
-                    let reveal_label = crate::i18n::text("ui.reveal_in_finder");
-                    #[cfg(windows)]
-                    let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
-                    Tooltip::new(
-                        "reveal-mission-cwd-tooltip",
-                        reveal_label,
+        if self.remote.is_none() {
+            panel = panel.child(meta_section(
+                crate::i18n::text("ui.working_dir"),
+                mission.cwd.clone().map_or_else(
+                    || {
                         div()
-                            .id("reveal-mission-cwd")
-                            .w_full()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::panel())
-                            .px_2()
-                            .py_2()
-                            .cursor_pointer()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_meta())
-                            .text_color(theme::text())
-                            .hover(|button| button.border_color(theme::border_strong()))
-                            .on_click(move |_, _, cx| {
-                                let reveal = reveal.clone();
-                                cwd_root.update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
-                            })
-                            .child(cwd),
-                    )
-                    .expand()
-                    .into_any_element()
-                },
-            ),
-        ));
+                            .text_size(theme::text_ui())
+                            .italic()
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("ui.no_cwd_set"))
+                            .into_any_element()
+                    },
+                    |cwd| {
+                        let reveal = cwd.clone();
+                        #[cfg(target_os = "macos")]
+                        let reveal_label = crate::i18n::text("ui.reveal_in_finder");
+                        #[cfg(windows)]
+                        let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
+                        Tooltip::new(
+                            "reveal-mission-cwd-tooltip",
+                            reveal_label,
+                            div()
+                                .id("reveal-mission-cwd")
+                                .w_full()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(theme::border())
+                                .bg(theme::panel())
+                                .px_2()
+                                .py_2()
+                                .cursor_pointer()
+                                .font_family(theme::UI_MONOSPACE_FONT)
+                                .text_size(theme::text_meta())
+                                .text_color(theme::text())
+                                .hover(|button| button.border_color(theme::border_strong()))
+                                .on_click(move |_, _, cx| {
+                                    let reveal = reveal.clone();
+                                    cwd_root
+                                        .update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
+                                })
+                                .child(cwd),
+                        )
+                        .expand()
+                        .into_any_element()
+                    },
+                ),
+            ));
+        }
         panel
             .children(permission_mode.map(|mode| {
                 meta_section(
@@ -712,25 +733,27 @@ impl MissionWorkspace {
                         .child(mode),
                 )
             }))
-            .child(meta_section(
-                crate::i18n::text("ui.started"),
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(theme::text_ui())
-                    .child(
-                        svg()
-                            .flex_none()
-                            .path("clock.svg")
-                            .size(rems(12. / 16.))
-                            .text_color(theme::muted()),
-                    )
-                    .child(runner_app::text_util::format_relative_time(
-                        mission.started_at,
-                        Utc::now(),
-                    )),
-            ))
+            .children(mission.started_at.map(|started_at| {
+                meta_section(
+                    crate::i18n::text("ui.started"),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .text_size(theme::text_ui())
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path("clock.svg")
+                                .size(rems(12. / 16.))
+                                .text_color(theme::muted()),
+                        )
+                        .child(runner_app::text_util::format_relative_time(
+                            started_at,
+                            Utc::now(),
+                        )),
+                )
+            }))
             .child(
                 div()
                     .debug_selector(|| "MISSION_META_END".into())

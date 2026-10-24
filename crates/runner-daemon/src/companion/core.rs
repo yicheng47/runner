@@ -489,6 +489,43 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
         } else {
             SessionKind::Chat
         };
+        let handle = if row.mission_id.is_some() {
+            overview
+                .missions
+                .iter()
+                .flat_map(|mission| &mission.members)
+                .find(|member| member.session == id)
+                .map(|member| member.handle.clone())
+        } else {
+            repo::session::get_direct(&conn, &id)?.and_then(|entry| entry.role_handle)
+        };
+        let runtime_key = runtime.as_deref().unwrap_or_default();
+        let display_name = crate::runtimes::for_key(runtime_key)
+            .catalog()
+            .map(|catalog| catalog.display_name)
+            .unwrap_or(runtime_key);
+        let command = row
+            .launch_definition
+            .as_ref()
+            .map(|definition| definition.command.as_str())
+            .or(row.agent_command.as_deref())
+            .unwrap_or_default();
+        let title = runner_core::protocol::session_title::preferred_title(
+            row.title.as_deref(),
+            row.live_title.as_deref(),
+            None,
+            runtime_key,
+            handle.as_deref(),
+            row.cwd.as_deref(),
+        )
+        .unwrap_or_else(|| {
+            runner_core::protocol::session_title::default_label(
+                runtime_key,
+                command,
+                handle.as_deref(),
+                display_name,
+            )
+        });
         let status = statuses
             .get(&id)
             .map(SessionStatus::from)
@@ -501,17 +538,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
             id,
             Session {
                 kind,
-                title: row
-                    .title
-                    .or_else(|| {
-                        row.live_title.as_deref().and_then(|title| {
-                            runner_core::protocol::session_title::provider_title(
-                                title,
-                                row.cwd.as_deref(),
-                            )
-                        })
-                    })
-                    .unwrap_or_default(),
+                title,
                 runtime: runtime.filter(|_| !shell),
                 cwd: row.cwd,
                 status,
@@ -563,6 +590,125 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn overview_session_titles_preserve_role_identity_and_explicit_names() {
+        let core = crate::test_support::test_core();
+        let conn = core.db.get().unwrap();
+        for (id, handle) in [("role-one", "planner"), ("role-two", "coder")] {
+            crate::test_support::insert_test_role(&conn, id, handle, "pi", "pi");
+        }
+        let project = repo::project::create(&conn, "Project", "/tmp/titles").unwrap();
+        let parent = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        let mut tabs = Vec::new();
+        for (position, (id, role, runtime, command, title, live, expected)) in [
+            ("one", Some("role-one"), "pi", "pi", None, "pi", "@planner"),
+            (
+                "two",
+                Some("role-two"),
+                "pi",
+                "pi",
+                None,
+                "π - runner-biz-plan - titles",
+                "@coder",
+            ),
+            (
+                "named",
+                Some("role-two"),
+                "pi",
+                "pi",
+                Some("Release prep"),
+                "π - Injected prompt - titles",
+                "Release prep",
+            ),
+            (
+                "topic",
+                None,
+                "pi",
+                "pi",
+                None,
+                "π - Fix the parser - titles",
+                "Fix the parser",
+            ),
+            ("plain", None, "pi", "pi", None, "π - titles", "pi"),
+            ("shell", None, "shell", "/bin/zsh", None, "", "zsh"),
+            (
+                "shell-live",
+                None,
+                "shell",
+                "/bin/zsh",
+                None,
+                "⠋ /tmp/titles",
+                "⠋ /tmp/titles",
+            ),
+            (
+                "shell-named",
+                None,
+                "shell",
+                "/bin/zsh",
+                Some("Build logs"),
+                "/tmp/titles",
+                "Build logs",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut row = repo::session::SessionRowDb::new_running(id.into());
+            row.status = crate::model::SessionStatus::Stopped;
+            row.role_id = role.map(str::to_owned);
+            row.agent_runtime = Some(runtime.into());
+            row.agent_command = Some(command.into());
+            row.cwd = Some("/tmp/titles".into());
+            row.title = title.map(str::to_owned);
+            row.live_title = Some(live.into());
+            repo::session::insert(&conn, &row).unwrap();
+            let node = repo::node::create_tab(
+                &conn,
+                Some(&parent.id),
+                "",
+                position as i64,
+                &serde_json::json!({"slots":[id]}).to_string(),
+            )
+            .unwrap();
+            if role.is_some() {
+                repo::node::set_pinned(&conn, &node.id, true).unwrap();
+            }
+            tabs.push((id, node.id, expected));
+        }
+        drop(conn);
+        let before = overview(&core).unwrap();
+        for (id, tab, expected) in &tabs {
+            assert_eq!(before.sessions[*id].title, *expected, "{id}");
+            let tab = before.tabs.iter().find(|item| item.id == *tab).unwrap();
+            assert!(tab.name.is_empty());
+            assert_eq!(tab.project.as_deref(), Some(project.id.as_str()));
+        }
+        assert_eq!(before.tabs.iter().filter(|tab| tab.pinned).count(), 3);
+        assert_eq!(before.sessions["shell"].runtime, None);
+        assert_eq!(before.sessions["one"].runtime.as_deref(), Some("pi"));
+        let conn = core.db.get().unwrap();
+        assert_eq!(
+            repo::session::set_live_title(&conn, "one", Some("New provider topic"), None).unwrap(),
+            1
+        );
+        repo::session::set_title(&conn, "two", Some("User session name")).unwrap();
+        repo::node::rename(&conn, &tabs[0].1, "User tab name").unwrap();
+        drop(conn);
+        let after = overview(&core).unwrap();
+        assert_eq!(after.sessions["one"].title, "@planner");
+        assert_eq!(after.sessions["two"].title, "User session name");
+        assert_eq!(after.sessions["named"].title, "Release prep");
+        assert_eq!(
+            after
+                .tabs
+                .iter()
+                .find(|tab| tab.id == tabs[0].1)
+                .unwrap()
+                .name,
+            "User tab name"
+        );
+    }
 
     #[test]
     fn overview_reads_nodes_layout_status_and_unread_without_retaining_the_core() {
@@ -715,7 +861,13 @@ mod tests {
         let conn = core.db.get().unwrap();
         let project = repo::project::create(&conn, "Mission project", "/tmp/m5").unwrap();
         let now = chrono::Utc::now();
-        crate::test_support::insert_test_role(&conn, "agent-role", "coder", "codex", "codex");
+        crate::test_support::insert_test_role(
+            &conn,
+            "agent-role",
+            "coder-template",
+            "codex",
+            "codex",
+        );
         crate::test_support::insert_test_role(&conn, "shell-role", "shell", "shell", "zsh");
         repo::crew::insert(
             &conn,
@@ -759,10 +911,12 @@ mod tests {
         agent.slot_id = Some("slot".into());
         agent.role_id = Some("agent-role".into());
         agent.agent_runtime = Some("codex".into());
+        agent.live_title = Some("Injected role prompt topic".into());
         repo::session::insert(&conn, &agent).unwrap();
         let mut shell = repo::session::SessionRowDb::new_running("shell".into());
         shell.role_id = Some("shell-role".into());
         shell.agent_runtime = Some("shell".into());
+        shell.agent_command = Some("/bin/zsh".into());
         repo::session::insert(&conn, &shell).unwrap();
         let mut node =
             repo::node::ensure_mission_node(&conn, "mission", Some(&project.id)).unwrap();
@@ -804,7 +958,9 @@ mod tests {
         );
         assert_eq!(mission.shells, ["shell"]);
         assert_eq!(overview.sessions["agent"].kind, SessionKind::Agent);
+        assert_eq!(overview.sessions["agent"].title, "@coder");
         assert_eq!(overview.sessions["shell"].kind, SessionKind::Shell);
+        assert_eq!(overview.sessions["shell"].title, "zsh");
         assert_eq!(overview.sessions["shell"].runtime, None);
         let stored_node = repo::node::get(&core.db.get().unwrap(), &node.id)
             .unwrap()

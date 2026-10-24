@@ -1,3 +1,47 @@
+use super::model::Runtime;
+
+pub fn preferred_title(
+    title: Option<&str>,
+    live: Option<&str>,
+    persisted_live: Option<&str>,
+    runtime: &str,
+    handle: Option<&str>,
+    cwd: Option<&str>,
+) -> Option<String> {
+    title.map(str::to_owned).or_else(|| {
+        if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
+            return live
+                .filter(|title| !title.trim().is_empty())
+                .map(str::to_owned);
+        }
+        // Provider topics can describe the injected role prompt; identity stays stable.
+        if handle.is_some() {
+            return None;
+        }
+        live.and_then(|title| provider_title(title, cwd))
+            .or_else(|| persisted_live.and_then(|title| provider_title(title, cwd)))
+    })
+}
+
+pub fn default_label(
+    runtime: &str,
+    command: &str,
+    handle: Option<&str>,
+    display_name: &str,
+) -> String {
+    if Runtime::parse(runtime).is_some_and(Runtime::is_shell) {
+        return std::path::Path::new(command)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("shell")
+            .to_owned();
+    }
+    handle
+        .map(|handle| format!("@{handle}"))
+        .unwrap_or_else(|| display_name.to_owned())
+}
+
 pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
     let clean: String = raw
         .chars()
@@ -128,6 +172,101 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preferred_titles_keep_manual_names_role_identity_and_live_fallbacks() {
+        for handle in ["planner", "coder"] {
+            assert_eq!(
+                preferred_title(
+                    None,
+                    Some("New topic"),
+                    Some("Stored topic"),
+                    "pi",
+                    Some(handle),
+                    None
+                ),
+                None
+            );
+            assert_eq!(
+                default_label("pi", "pi", Some(handle), "pi"),
+                format!("@{handle}")
+            );
+            assert_eq!(
+                preferred_title(
+                    Some("My name"),
+                    Some("New topic"),
+                    None,
+                    "pi",
+                    Some(handle),
+                    None
+                )
+                .as_deref(),
+                Some("My name")
+            );
+        }
+        for (live, expected) in [
+            ("π - Fresh topic - runner", "Fresh topic"),
+            ("π - runner", "Stored topic"),
+            ("", "Stored topic"),
+        ] {
+            assert_eq!(
+                preferred_title(
+                    None,
+                    Some(live),
+                    Some("Stored topic"),
+                    "pi",
+                    None,
+                    Some("/tmp/runner")
+                )
+                .as_deref(),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            preferred_title(
+                None,
+                Some("π - runner"),
+                Some("pi"),
+                "pi",
+                None,
+                Some("/tmp/runner")
+            ),
+            None
+        );
+        assert_eq!(default_label("pi", "pi", None, "pi"), "pi");
+    }
+
+    #[test]
+    fn shell_titles_keep_raw_live_text_and_ignore_persisted_topics() {
+        for (live, expected) in [
+            (Some("⠋ /tmp/runner"), Some("⠋ /tmp/runner")),
+            (Some("  "), None),
+            (None, None),
+        ] {
+            assert_eq!(
+                preferred_title(
+                    None,
+                    live,
+                    Some("Old terminal title"),
+                    "shell",
+                    Some("term"),
+                    None
+                )
+                .as_deref(),
+                expected
+            );
+            assert_eq!(
+                preferred_title(Some("Build logs"), live, None, "shell", Some("term"), None)
+                    .as_deref(),
+                Some("Build logs")
+            );
+        }
+        assert_eq!(
+            default_label("shell", "/bin/zsh", Some("term"), "Shell"),
+            "zsh"
+        );
+        assert_eq!(default_label("shell", "", None, "Shell"), "shell");
+    }
 
     #[test]
     fn copilot_titles_keep_only_the_topic() {

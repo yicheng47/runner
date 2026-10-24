@@ -854,7 +854,22 @@ impl NativeRoot {
         } else {
             Vec::new()
         };
-        let entity_overlays = if self.route != AppRoute::Settings && self.remote_window.is_none() {
+        let entity_overlays = if let Some(remote) = &self.remote_window {
+            let fallback = (!self.create_modal_open()
+                && self.chat_rename_modal.is_none()
+                && self.fork_confirm.is_none()
+                && self.terminal_close_confirm.is_none()
+                && self.client_ui.pair.is_none()
+                && !self.client_ui.picker_open)
+                .then(|| self.root_focus.clone());
+            remote
+                .mission_workspace
+                .clone()
+                .update(cx, |workspace, cx| {
+                    workspace.restore_remote_dialog_focus(fallback.as_ref(), window, cx);
+                    workspace.render_mission_overlays(cx)
+                })
+        } else if self.route != AppRoute::Settings {
             self.render_entity_overlays(window, cx)
         } else {
             Vec::new()
@@ -996,6 +1011,9 @@ impl NativeRoot {
                     }
                     if let Some(remote) = this.remote_window.as_mut() {
                         remote.sidebar_width = width;
+                        remote.mission_workspace.update(cx, |workspace, cx| {
+                            workspace.set_remote_sidebar_width(width, cx)
+                        });
                         cx.notify();
                         return;
                     }
@@ -1464,9 +1482,16 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .when(self.app_store.read(cx).remote_access_enabled(), |sidebar| {
-                sidebar.child(self.render_computer_trigger(cx))
-            })
+            .when(
+                self.app_store.read(cx).remote_access_enabled()
+                    && self
+                        .app_store
+                        .read(cx)
+                        .remote_status
+                        .as_ref()
+                        .is_some_and(crate::surfaces::settings::remote::account::signed_in),
+                |sidebar| sidebar.child(self.render_computer_trigger(cx)),
+            )
             .child(self.front_page_sidebar())
             .child(footer)
             .children(self.render_account_menu(window, cx))
@@ -1928,6 +1953,9 @@ impl NativeRoot {
     ) {
         if let Some(remote) = self.remote_window.as_mut() {
             remote.sidebar_collapsed = collapsed;
+            remote.mission_workspace.update(cx, |workspace, cx| {
+                workspace.set_sidebar_collapsed(collapsed, cx)
+            });
             cx.notify();
             return;
         }
@@ -2058,7 +2086,11 @@ impl NativeRoot {
         self.sidebar_preview_peeking = false;
         if !collapsed {
             self.sidebar_preview_open = false;
-            if matches!(self.route, AppRoute::Mission(_)) {
+            if let Some(workspace) = self.remote_mission_workspace() {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.focus_active_mission_terminal(window, cx)
+                });
+            } else if self.remote_window.is_none() && matches!(self.route, AppRoute::Mission(_)) {
                 self.mission_workspace.update(cx, |workspace, cx| {
                     workspace.focus_active_mission_terminal(window, cx);
                 });
@@ -3023,9 +3055,7 @@ mod tests {
                     let temp = tempfile::tempdir().unwrap();
                     let mut cx = TestAppContext::single();
                     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                    store.update(&mut cx, |store, _| {
-                        store.settings.remote_access_enabled = true
-                    });
+                    store.update(&mut cx, |store, _| store.settings.local_only = false);
                     store.update(&mut cx, |store, _| {
                         store.settings.app_theme = if variant.is_light() {
                             theme::ThemeIntent::Light
@@ -3116,9 +3146,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-        store.update(&mut cx, |store, _| {
-            store.settings.remote_access_enabled = true
-        });
+        store.update(&mut cx, |store, _| store.settings.local_only = false);
         let host = cx.add_window(|window, cx| {
             let mut root = NativeRoot::new(
                 "sidebar-footer-actions".into(),

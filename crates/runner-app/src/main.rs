@@ -1256,14 +1256,14 @@ impl NativeRoot {
         }
         if reactions.reload_role_surfaces {
             match self.route.clone() {
-                AppRoute::Roles => self.load_role_page(cx),
+                AppRoute::Roles => self.load_local_role_page(cx),
                 AppRoute::RoleDetail(handle) => self.load_role_detail(handle, cx),
                 _ => {}
             }
         }
         if reactions.reload_crew_surfaces {
             match self.route.clone() {
-                AppRoute::Crews => self.load_crew_page(cx),
+                AppRoute::Crews => self.load_local_crew_page(cx),
                 AppRoute::CrewEditor(crew_id) => self.load_crew_editor(crew_id, cx),
                 _ => {}
             }

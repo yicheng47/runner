@@ -1153,8 +1153,6 @@
 
 "remote.off" = "This computer is not connected"
 "remote.intro" = "Connect this computer to your account. Your other computers can pair with its PIN and open this one from Runner’s sidebar."
-"remote.feature_detail" = "Let your computers open each other through Runner’s relay. Invite-only for now."
-"remote.feature_off_detail" = "Turn on Remote access to add the computer picker, Account and pairing."
 "remote.private_beta" = "Private beta"
 "remote.beta_detail" = "Remote access is invite-only and available only in mainland China for now. Signing in to the hosted service needs an account created from an invite code."
 "remote.step_connect" = "Connect here"
@@ -1335,7 +1333,6 @@
 "client.fingerprint" = "{computer}’s fingerprint: {fingerprint}"
 "client.fingerprint_changed" = "{computer}’s fingerprint changed to {fingerprint}. Check it in {computer}’s Settings first."
 "client.list_hint" = "To let a computer open this one, pick this computer in its sidebar and enter this computer’s PIN. Pair here to open that computer from this one."
-"client.picker_sign_in" = "Sign in to see your computers…"
 "client.open_window" = "Open in another window"
 "client.unpaired_picker" = "{status} · Not paired"
 "client.connection_live" = "{computer} · relay · encrypted"
@@ -1378,3 +1375,22 @@
 "client.folder_invalid" = "{computer} can’t open this folder. Check the path and try again."
 
 "client.host_account" = "Host Claude account: {account}"
+"remote.local_only" = "Local only"
+"remote.local_only_detail" = "Use Runner on this computer only. Hides Account, Remote access and the computer picker, and nothing on this computer can be opened from another one."
+
+"mission.load_older" = "Load older messages"
+"mission.update_action" = "update the mission"
+"mission.shell_action" = "start the mission terminal"
+"client.no_host_crews" = "Create a crew with roles on the host before starting a mission."
+
+"client.roles_read_only" = "Roles on this computer are read-only here. Start a chat from a role; edit its configuration on the host."
+
+"client.crews_read_only" = "Crews on this computer are read-only here. Start a mission from a crew; edit its configuration on the host."
+
+"client.crews_search" = "Search checks crew names and slot and role handles."
+
+"client.refresh_library" = "Refresh"
+
+"client.role_unavailable" = "This role is no longer available on the host. Refresh the list and choose another role."
+
+"client.crew_unavailable" = "This crew is no longer available on the host. Close this form and refresh the list."

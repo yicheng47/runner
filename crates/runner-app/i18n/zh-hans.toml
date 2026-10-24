@@ -1153,8 +1153,6 @@
 
 "remote.off" = "这台电脑尚未连接"
 "remote.intro" = "将这台电脑连接到你的账户。其他电脑可使用它的 PIN 配对，并从 Runner 侧边栏打开它。"
-"remote.feature_detail" = "让你的电脑通过 Runner 中继互相访问。目前仅限受邀用户。"
-"remote.feature_off_detail" = "开启远程访问后，即可使用电脑选择器、账号和配对。"
 "remote.private_beta" = "内测"
 "remote.beta_detail" = "远程访问目前仅限受邀用户，且仅在中国大陆提供。登录托管服务需要通过邀请码创建的账户。"
 "remote.step_connect" = "在此连接"
@@ -1335,7 +1333,6 @@
 "client.fingerprint" = "{computer} 的指纹：{fingerprint}"
 "client.fingerprint_changed" = "{computer} 的指纹已变为 {fingerprint}。请先在对方的设置中核对。"
 "client.list_hint" = "要让另一台电脑访问本机，请在对方的侧边栏选择本机并输入本机的 PIN。在这里配对则允许本机访问对方。"
-"client.picker_sign_in" = "登录以查看你的电脑…"
 "client.open_window" = "在新窗口中打开"
 "client.unpaired_picker" = "{status} · 未配对"
 "client.connection_live" = "{computer} · 中继 · 已加密"
@@ -1378,3 +1375,22 @@
 "client.folder_invalid" = "{computer} 无法打开此文件夹。请检查路径后重试。"
 
 "client.host_account" = "主机 Claude 账号：{account}"
+"remote.local_only" = "仅本机使用"
+"remote.local_only_detail" = "仅在这台电脑上使用 Runner。隐藏账号、远程访问和电脑选择器，其他电脑也无法访问这台电脑。"
+
+"mission.load_older" = "加载更早的消息"
+"mission.update_action" = "更新任务"
+"mission.shell_action" = "启动任务终端"
+"client.no_host_crews" = "请先在主机上创建包含角色的团队，再启动任务。"
+
+"client.roles_read_only" = "这里的角色列表为只读。可以用角色开始聊天；请在远程电脑上编辑配置。"
+
+"client.crews_read_only" = "这里的团队列表为只读。可以用团队开始任务；请在远程电脑上编辑配置。"
+
+"client.crews_search" = "搜索团队名称、成员代号和角色代号。"
+
+"client.refresh_library" = "刷新"
+
+"client.role_unavailable" = "远程电脑上的这个角色已不可用。请刷新列表并选择其他角色。"
+
+"client.crew_unavailable" = "远程电脑上的这个团队已不可用。请关闭此表单并刷新列表。"

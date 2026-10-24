@@ -1,6 +1,7 @@
 pub(crate) mod actions;
 pub(crate) mod client;
 pub(crate) mod folder_picker;
+mod library;
 pub(crate) mod model;
 #[cfg(test)]
 mod tests;

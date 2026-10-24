@@ -38,6 +38,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 - [ ] An accent dot, with no count, lights on the host's row and the trigger when a host session waits for approval or input or a host mission has a question, and clears once answered. Unread output alone does not light it; offline, unpaired and locked computers have none. ([m9](836-m9-front-page.md#jasons-pending-live-checks))
 - [ ] Open the host in the same window, with Shift-click and with the window button. Returning to this computer keeps its tabs, panes and mission selection, its terminals take input and its feed has caught up; after a restart every window opens on this computer. ([m7c 2](836-m7c-client-app.md#live-checks-pending-for-jason))
 - [ ] The remote sidebar has PINNED, PROJECTS and RECENTS, project indentation and collapse, provider, split and mission icons, no blank titles, and follows the host's order and title changes; the local sidebar's state is unchanged on return. ([live fixes 3](836-remote-live-fixes.md#problem-3-blank-remote-sidebar-tab-labels))
+- [ ] With the host on this build, two pi role chats show their `@handles` and a renamed chat keeps its name in pinned, project, recent, Active and headers; an older host keeps its runtime-name fallback.
 - [ ] Remote rows match local ones for working, unread, approval, answer, input, error and dimmed stopped, including tooltips and pushed changes. ([live fixes, sidebar status](836-remote-live-fixes.md#shared-sidebar-status-presentation))
 
 ## 4. Terminals — both directions
@@ -54,6 +55,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 
 - [ ] New chat, Direct and Role, offers the host's agents, roles, models, effort, speed and Claude account, and starts on the host. (WS-CREATE-01/02/03, [m9](836-m9-front-page.md#jasons-pending-live-checks))
 - [ ] Working directory → Browse: Projects and Recent, Browse folders… through home, a subfolder and Parent; an empty folder can be used; a failed listing offers Retry; Escape or an outside click keeps the field. A typed host path is accepted or shows its error under the field; a blank field uses the host's default. New project uses the same menu. ([m9](836-m9-front-page.md#jasons-pending-live-checks), frames `k3GCC`–`m1P4o`)
+- [ ] Open a stopped/crashed remote chat or shell: only its paused/exited card appears, without a terminal-open failure or connection spinner. Resume/Restart attaches after the host pushes running status; a real attachment failure on a running chat remains visible and retryable.
 - [ ] Stop, resume, restart a shell, fork, rename and archive a chat; the host's desktop shows each change at once. ([m9](836-m9-front-page.md#jasons-pending-live-checks))
 
 ## 6. Tabs, panes, drawer and sidebar on the other computer
@@ -61,7 +63,7 @@ Already passed: Phase 1's connect checks ([`836-connect-host.md`](836-connect-ho
 - [ ] New tab; split, fill, resize and close panes; close a tab. (WS-PANE-01/02/03/04)
 - [ ] Add and close drawer shells. (WS-DRAWER-01/02)
 - [ ] Pin and unpin, move between projects, reorder and rename; create, rename and delete a project, including the running-member confirmation. (WS-SIDEBAR-01)
-- [ ] Search, the Active filter and the command palette show only the host's chats and missions; Settings, Roles, Crews and Archived are not reachable from the remote window. ([m9](836-m9-front-page.md#pr-1-selected-checks))
+- [ ] Search, the Active filter and the command palette show only the host's chats and missions; Settings, role/crew management and Archived are not reachable from the remote window. Role and Crew show only the host’s read-only catalog: search, paging, Refresh/error recovery and chat/mission forms preselect the clicked item without exposing create/edit/delete. ([m9](836-m9-front-page.md#pr-1-selected-checks))
 
 ## 7. Missions on the other computer — PR 2
 

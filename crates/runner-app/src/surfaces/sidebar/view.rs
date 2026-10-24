@@ -365,11 +365,30 @@ impl Sidebar {
             .into_iter()
             .filter(|entry| {
                 !self.front_page.is_remote()
-                    || (matches!(entry, WorkspaceEntry::NewTab)
-                        && self.front_page.supports(&["catalog", "startChat"]))
+                    || match entry {
+                        WorkspaceEntry::NewTab => {
+                            self.front_page.supports(&["catalog", "startChat"])
+                        }
+                        WorkspaceEntry::Role | WorkspaceEntry::Crew => {
+                            self.front_page.supports(&["catalog"])
+                        }
+                    }
             })
             .map(|entry| {
-                let active = entry.selected(&route);
+                let active = if self.front_page.is_remote() {
+                    matches!(
+                        (entry, &self.remote_selection),
+                        (
+                            WorkspaceEntry::Role,
+                            Some(crate::surfaces::remote_client::RemoteItem::Roles)
+                        ) | (
+                            WorkspaceEntry::Crew,
+                            Some(crate::surfaces::remote_client::RemoteItem::Crews)
+                        )
+                    )
+                } else {
+                    entry.selected(&route)
+                };
                 match entry {
                     WorkspaceEntry::NewTab => {
                         let shell = self.shell.clone();

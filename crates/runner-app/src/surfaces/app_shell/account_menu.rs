@@ -439,9 +439,7 @@ mod tests {
                 let temp = tempfile::tempdir().unwrap();
                 let mut cx = TestAppContext::single();
                 let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-                store.update(&mut cx, |store, _| {
-                    store.settings.remote_access_enabled = true
-                });
+                store.update(&mut cx, |store, _| store.settings.local_only = false);
                 let host = cx.add_window(|window, cx| {
                     NativeRoot::new(
                         "avatar-menu".into(),

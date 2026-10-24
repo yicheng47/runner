@@ -7,7 +7,7 @@ use runner_core::companion::{
 use runner_core::protocol::{ClientError, ClientResult, DaemonClient};
 use serde::de::DeserializeOwned;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum FrontPageTarget {
     Local,
     Remote {
@@ -308,7 +308,6 @@ impl FrontPageClient {
         .map(|s| s.session)
     }
 
-    #[cfg(test)]
     pub(crate) fn restart(&self, session: &str, size: (u16, u16)) -> ClientResult<String> {
         if !self.is_remote() {
             return self
@@ -492,11 +491,19 @@ impl FrontPageClient {
         self.action("stopMission", ActionRequest::StopMission { id: 0, mission })
     }
 
-    pub(crate) fn resume_mission(&self, mission: String, size: (u16, u16)) -> ClientResult<()> {
+    pub(crate) fn resume_mission(
+        &self,
+        mission: String,
+        size: (u16, u16),
+    ) -> ClientResult<Vec<String>> {
         if !self.is_remote() {
-            return self.daemon.mission_resume(&mission).map(drop);
+            return self.daemon.mission_resume(&mission).map(|_| Vec::new());
         }
-        self.action::<serde_json::Value>(
+        #[derive(serde::Deserialize)]
+        struct Resumed {
+            sessions: Vec<String>,
+        }
+        self.action::<Resumed>(
             "resumeMission",
             ActionRequest::ResumeMission {
                 id: 0,
@@ -505,7 +512,7 @@ impl FrontPageClient {
                 rows: size.1,
             },
         )
-        .map(drop)
+        .map(|result| result.sessions)
     }
 
     pub(crate) fn archive(&self, target: ActionTarget) -> ClientResult<()> {
@@ -518,6 +525,150 @@ impl FrontPageClient {
             };
         }
         self.action("archive", ActionRequest::Archive { id: 0, target })
+    }
+
+    pub(crate) fn start_mission(
+        &self,
+        crew: String,
+        title: String,
+        goal: Option<String>,
+        project: Option<String>,
+        cwd: Option<String>,
+        size: (u16, u16),
+    ) -> ClientResult<String> {
+        #[derive(serde::Deserialize)]
+        struct Started {
+            mission: String,
+        }
+        self.action::<Started>(
+            "startMission",
+            ActionRequest::StartMission {
+                id: 0,
+                crew,
+                title,
+                goal,
+                project,
+                cwd,
+                cols: size.0,
+                rows: size.1,
+            },
+        )
+        .map(|result| result.mission)
+    }
+
+    pub(crate) fn mission_layout(&self, mission: String, shells: Vec<String>) -> ClientResult<()> {
+        self.action::<serde_json::Value>(
+            "layout",
+            ActionRequest::Layout {
+                id: 0,
+                target: ActionTarget {
+                    kind: ActionKind::Mission,
+                    id: mission,
+                },
+                project: None,
+                name: String::new(),
+                panes: runner_core::companion::ActionPane::Leaf {
+                    id: "drawer".into(),
+                    session: None,
+                },
+                shells,
+            },
+        )
+        .map(drop)
+    }
+
+    pub(crate) fn mission_pin(&self, mission: String, pinned: bool) -> ClientResult<()> {
+        self.action(
+            "pin",
+            ActionRequest::Pin {
+                id: 0,
+                target: ActionTarget {
+                    kind: ActionKind::Mission,
+                    id: mission,
+                },
+                pinned,
+            },
+        )
+    }
+
+    fn message<T: DeserializeOwned>(
+        &self,
+        feature: &str,
+        request: ClientMessage,
+    ) -> ClientResult<T> {
+        let FrontPageTarget::Remote { computer, .. } = &self.target else {
+            return Err(ClientError::msg("This operation requires a remote target."));
+        };
+        if !self.supports(&[feature]) {
+            return Err(ClientError::msg(
+                "This action is unavailable on the selected computer.",
+            ));
+        }
+        let result = self.daemon.remote_request(computer.clone(), request)?;
+        if !self.valid() {
+            return Err(ClientError::msg("The selected computer changed."));
+        }
+        serde_json::from_value(result.result)
+            .map_err(|_| ClientError::msg("The computer returned an invalid result."))
+    }
+
+    pub(crate) fn feed(
+        &self,
+        mission: String,
+        before: Option<String>,
+    ) -> ClientResult<runner_core::companion::FeedPage> {
+        self.message(
+            "feed",
+            ClientMessage::Feed(runner_core::companion::FeedRequest {
+                id: 0,
+                mission,
+                before,
+                limit: 100,
+            }),
+        )
+    }
+
+    pub(crate) fn follow_feed(&self, mission: String) -> ClientResult<()> {
+        self.message(
+            "follow",
+            ClientMessage::Follow(runner_core::companion::MissionRequest { id: 0, mission }),
+        )
+    }
+
+    pub(crate) fn unfollow_feed(&self, mission: String) -> ClientResult<()> {
+        self.message(
+            "unfollow",
+            ClientMessage::Unfollow(runner_core::companion::MissionRequest { id: 0, mission }),
+        )
+    }
+
+    pub(crate) fn answer(
+        &self,
+        mission: String,
+        question: String,
+        text: String,
+    ) -> ClientResult<()> {
+        self.message(
+            "answer",
+            ClientMessage::Answer(runner_core::companion::AnswerRequest {
+                id: 0,
+                mission,
+                question,
+                text,
+            }),
+        )
+    }
+
+    pub(crate) fn post(&self, mission: String, to: Vec<String>, text: String) -> ClientResult<()> {
+        self.message(
+            "post",
+            ClientMessage::Post(runner_core::companion::PostRequest {
+                id: 0,
+                mission,
+                to,
+                text,
+            }),
+        )
     }
 }
 

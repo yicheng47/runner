@@ -178,6 +178,8 @@ impl MissionWorkspace {
         .detach();
         let store_revisions = app_store.read(cx).revisions;
         Self {
+            remote: None,
+            remote_selected_handle: None,
             render_regions: HashMap::new(),
             window_label,
             shell,
@@ -340,6 +342,11 @@ impl MissionWorkspace {
 
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
+        if let Some(remote) = &mut self.remote {
+            remote.feed = None;
+            remote.feed_subscription = None;
+            self.generation += 1;
+        }
         self.feed_list.scrollbar_drag_ended();
         self.attached.clear();
         self.feed_selection = None;
@@ -352,23 +359,21 @@ impl MissionWorkspace {
     }
 
     pub(super) fn all_sessions_live(&self) -> bool {
-        !self.sessions.is_empty()
+        !self.members().is_empty()
             && self
-                .sessions
+                .members()
                 .iter()
                 .all(|session| session.session.status == SessionStatus::Running)
     }
 
     pub(super) fn any_session_live(&self) -> bool {
-        self.sessions
+        self.members()
             .iter()
             .any(|session| session.session.status == SessionStatus::Running)
     }
 
     pub(super) fn archived(&self) -> bool {
-        self.mission
-            .as_ref()
-            .is_some_and(|mission| mission.archived_at.is_some())
+        self.mission_view().is_some_and(|mission| mission.archived)
     }
 
     pub(super) fn lifecycle_busy(&self) -> bool {
@@ -379,6 +384,9 @@ impl MissionWorkspace {
         &self,
         cx: &App,
     ) -> runner_core::protocol::window::SecondaryState {
+        if self.remote.is_some() {
+            return Default::default();
+        }
         let Some(mission_id) = self.mission_id.as_ref() else {
             return runner_core::protocol::window::SecondaryState::default();
         };
@@ -439,6 +447,7 @@ impl MissionWorkspace {
             .map(|(id, part)| (id.to_owned(), part));
         self.event_ids = self.events.iter().map(|event| event.id.clone()).collect();
         self.feed_blocks = group_feed_blocks(&self.events);
+        self.append_remote_questions();
         self.feed_rows.clear();
         self.feed_block_starts.clear();
         for group in 0..self.feed_blocks.len() {
@@ -515,6 +524,27 @@ impl MissionWorkspace {
         }
         self.askers_by_question = asks.askers_by_question;
         self.resolved_asks = asks.resolved_asks;
+        if self.remote.is_some() {
+            for event in &self.events {
+                if let (Some(id), Some(from)) = (
+                    event
+                        .payload
+                        .get("question_id")
+                        .and_then(serde_json::Value::as_str),
+                    event
+                        .payload
+                        .get("remote_from")
+                        .and_then(serde_json::Value::as_str),
+                ) {
+                    self.askers_by_question.insert(id.into(), from.into());
+                }
+            }
+            if let Some(mission) = self.remote_summary().cloned() {
+                for ask in mission.asks {
+                    self.askers_by_question.insert(ask.question, ask.from);
+                }
+            }
+        }
         self.pending_ask_choices
             .retain(|question_id, _| !self.resolved_asks.contains_key(question_id));
         self.goal = if self.events.is_empty() {
@@ -546,6 +576,14 @@ impl MissionWorkspace {
         session_id: &str,
         cx: &App,
     ) -> runner_core::protocol::status::AgentStatus {
+        if let Some(remote) = &self.remote {
+            return remote
+                .overview
+                .as_ref()
+                .and_then(|overview| overview.sessions.get(session_id))
+                .map(|session| crate::surfaces::remote_client::model::agent_status(&session.status))
+                .unwrap_or_default();
+        }
         use runner_core::protocol::status::{Activity, AgentStatus, Lifecycle, ObservationSource};
         let Some(session) = self
             .sessions
@@ -654,11 +692,18 @@ impl MissionWorkspace {
     }
 
     pub(super) fn invalidate_feed_ask(&self, question_id: &str) {
-        if let Some(index) = self
-            .feed_blocks
-            .iter()
-            .position(|block| matches!(block, FeedBlock::AskCard(event) if event.id == question_id))
-        {
+        if let Some(index) = self.feed_blocks.iter().position(|block| match block {
+            FeedBlock::AskCard(event) => {
+                event
+                    .payload
+                    .get("question_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&event.id)
+                    == question_id
+            }
+            FeedBlock::PendingAsk(ask) => ask.id == question_id,
+            _ => false,
+        }) {
             let row = self.feed_block_starts[index];
             self.splice_feed_items(row..row + 1, 1);
             if self.feed_item_count() > self.feed_rows.len().max(1) {
@@ -674,7 +719,10 @@ impl MissionWorkspace {
     }
 
     pub(super) fn settings<'a>(&self, cx: &'a App) -> &'a AppSettings {
-        &self.app_store.read(cx).settings
+        self.remote
+            .as_ref()
+            .map(|remote| remote.settings.read(cx))
+            .unwrap_or(&self.app_store.read(cx).settings)
     }
 
     pub(super) fn update_app_settings(
@@ -683,6 +731,9 @@ impl MissionWorkspace {
         persist: bool,
         update: impl FnOnce(&mut AppSettings) -> bool,
     ) -> bool {
+        if let Some(remote) = &self.remote {
+            return remote.settings.update(cx, |settings, _| update(settings));
+        }
         self.app_store.update(cx, |store, store_cx| {
             store.update_settings(update, persist, store_cx)
         })
@@ -696,15 +747,23 @@ impl MissionWorkspace {
     }
 
     pub(super) fn save_settings(&self, cx: &App) {
-        self.app_store.read(cx).save_settings();
+        if self.remote.is_none() {
+            self.app_store.read(cx).save_settings();
+        }
     }
 
     pub(super) fn refresh_store(&self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        if self.remote.is_some() {
+            return;
+        }
         self.app_store
             .update(cx, |store, store_cx| store.refresh(refresh, store_cx));
     }
 
     pub(super) fn load_mission_layout(&mut self, cx: &App) -> Result<()> {
+        if self.remote.is_some() {
+            return Ok(());
+        }
         let Some(mission_id) = self.mission_id.as_deref() else {
             return Ok(());
         };
@@ -727,6 +786,9 @@ impl MissionWorkspace {
     }
 
     pub(super) fn persist_mission_layout(&self, cx: &App) -> Result<()> {
+        if self.remote.is_some() {
+            return Ok(());
+        }
         let node_id = self
             .mission_node_id
             .as_deref()
@@ -736,16 +798,28 @@ impl MissionWorkspace {
         Ok(())
     }
 
-    pub(super) fn drawer_session_entry<'a>(
+    pub(super) fn drawer_session_entry(
         &self,
         session_id: &str,
-        cx: &'a App,
-    ) -> Option<&'a DirectSessionEntry> {
+        cx: &App,
+    ) -> Option<crate::surfaces::front_page::model::SessionDisplay> {
+        use crate::surfaces::front_page::model::SessionDisplay;
+        if let Some(remote) = &self.remote {
+            let session = remote.overview.as_ref()?.sessions.get(session_id)?;
+            return Some(SessionDisplay::remote(
+                session_id,
+                session,
+                false,
+                false,
+                remote.client.supports(&["resume"]),
+            ));
+        }
         self.app_store
             .read(cx)
             .sessions
             .iter()
             .find(|entry| entry.session_id == session_id)
+            .map(SessionDisplay::local)
     }
 
     pub(super) fn is_active(&self, _: &App) -> bool {
@@ -789,6 +863,20 @@ impl MissionWorkspace {
         let reactions = revisions.reactions_since(previous);
         self.store_revisions = revisions;
         if revisions.settings != previous.settings || revisions.locale != previous.locale {
+            if let Some(remote) = &self.remote {
+                let mut global = self.app_store.read(cx).settings.clone();
+                let own = remote.settings.read(cx);
+                global.sidebar_width = own.sidebar_width;
+                global.mission_rail_width = own.mission_rail_width;
+                global.mission_rail_open = own.mission_rail_open;
+                global
+                    .last_mission_terminal_ids
+                    .clone_from(&own.last_mission_terminal_ids);
+                remote.settings.update(cx, |settings, cx| {
+                    *settings = global;
+                    cx.notify();
+                });
+            }
             let count = self.feed_list.item_count();
             self.feed_empty_panel_min_height.set(px(0.));
             self.splice_feed_items(0..count, count);
@@ -799,7 +887,11 @@ impl MissionWorkspace {
         if reactions.apply_terminal_settings {
             self.apply_terminal_settings(cx);
         }
-        if reactions.reload_tabs && self.mission.is_some() && !self.archived() {
+        if self.remote.is_none()
+            && reactions.reload_tabs
+            && self.mission.is_some()
+            && !self.archived()
+        {
             if let Err(error) = self.load_mission_layout(cx) {
                 self.error = Some(error.to_string().into());
             }

@@ -65,7 +65,7 @@ fn suspended_mission_test() -> (
     let mut cx = gpui::TestAppContext::single();
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
     store.update(&mut cx, |store, _| {
-        store.settings.remote_access_enabled = true;
+        store.settings.local_only = false;
         crate::app_store::seed_mixed_working_sessions(store)
     });
     let core = store.read_with(&cx, |store, _| store.test_core.clone());
@@ -754,7 +754,11 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         host.update(&mut cx, |root, window, cx| {
             assert!(window.is_window_active());
             root.mission_workspace.update(cx, |workspace, cx| {
-                drop(workspace.render_mission_terminal_pane(archived_slot.clone(), window, cx));
+                drop(workspace.render_mission_terminal_pane(
+                    crate::surfaces::front_page::model::MissionMemberDisplay::from(&archived_slot),
+                    window,
+                    cx,
+                ));
                 workspace.mark_active_session_viewed(window, cx);
             });
         })
@@ -1574,7 +1578,12 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 .collect();
                 workspace.sync_mission_copy_entities(cx);
                 assert_eq!(
-                    workspace.session_title_tooltip(&workspace.sessions[0], cx),
+                    workspace.session_title_tooltip(
+                        &crate::surfaces::front_page::model::MissionMemberDisplay::from(
+                            &workspace.sessions[0]
+                        ),
+                        cx
+                    ),
                     "@abcdefghijklmnopqrstuvwxyz012345"
                 );
                 workspace

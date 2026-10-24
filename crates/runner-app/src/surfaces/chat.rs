@@ -2160,8 +2160,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let Some(pane_id) = self
-            .tabs
-            .active()
+            .front_page_layout()
             .map(|layout| layout.focused_pane_id.clone())
         else {
             return;
@@ -2766,7 +2765,17 @@ impl NativeRoot {
                 TerminalCloseTarget::ArchiveAll { session_ids, .. } => {
                     self.remote_archive_sessions(session_ids, cx)
                 }
-                _ => {}
+                TerminalCloseTarget::MissionDrawer { session_id } => {
+                    let workspace = self
+                        .remote_window
+                        .as_ref()
+                        .unwrap()
+                        .mission_workspace
+                        .clone();
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.close_terminal_drawer_shell(&session_id, window, cx)
+                    });
+                }
             }
             return;
         }

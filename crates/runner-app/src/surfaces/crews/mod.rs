@@ -1,4 +1,4 @@
-pub(crate) use logic::{crew_picture, slot_setup};
+pub(crate) use logic::{crew_picture, slot_setup, SlotSetup};
 pub(crate) use slots::{lead_badge, slot_setup_line};
 mod add_slot;
 mod create;
@@ -174,8 +174,86 @@ struct SlotRemoveConfirm {
     slot: SlotWithRole,
 }
 
+#[derive(Clone)]
+pub(crate) enum CrewListRow {
+    Local(CrewListItem),
+    Remote {
+        crew: runner_core::companion::CatalogCrew,
+        role_handles: Vec<Option<String>>,
+        runtimes: Vec<(String, usize)>,
+        target: crate::surfaces::front_page::FrontPageTarget,
+        epoch: u64,
+    },
+}
+
+impl CrewListRow {
+    fn id(&self) -> &str {
+        match self {
+            Self::Local(item) => &item.crew.id,
+            Self::Remote { crew, .. } => &crew.id,
+        }
+    }
+    fn name(&self) -> &str {
+        match self {
+            Self::Local(item) => &item.crew.name,
+            Self::Remote { crew, .. } => &crew.name,
+        }
+    }
+    fn handles(&self) -> Vec<gpui::SharedString> {
+        match self {
+            Self::Local(item) => item
+                .members
+                .iter()
+                .map(|slot| slot.slot_handle.clone().into())
+                .collect(),
+            Self::Remote { crew, .. } => crew
+                .slots
+                .iter()
+                .map(|slot| slot.handle.clone().into())
+                .collect(),
+        }
+    }
+    fn local(&self) -> Option<&CrewListItem> {
+        match self {
+            Self::Local(item) => Some(item),
+            Self::Remote { .. } => None,
+        }
+    }
+    fn summary(&self) -> String {
+        match self {
+            Self::Local(item) => logic::crew_summary(
+                item.members.len(),
+                item.members
+                    .iter()
+                    .find(|slot| slot.lead)
+                    .map(|slot| slot.slot_handle.as_str()),
+            ),
+            Self::Remote {
+                crew, role_handles, ..
+            } => crew
+                .slots
+                .iter()
+                .zip(role_handles)
+                .map(|(slot, role_handle)| {
+                    let lead = if slot.lead {
+                        format!(" · {}", crate::i18n::text("ui.lead"))
+                    } else {
+                        String::new()
+                    };
+                    let role = role_handle
+                        .as_ref()
+                        .map(|handle| format!(": @{handle}"))
+                        .unwrap_or_default();
+                    format!("@{}{}{}", slot.handle, role, lead)
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+        }
+    }
+}
+
 pub(crate) struct CrewSurfaces {
-    list: ListControls<CrewListItem>,
+    list: ListControls<CrewListRow>,
     /// The list row under the pointer, which trades its play icon for a button.
     hovered_row: Option<String>,
     search: Entity<SearchInput>,
@@ -193,9 +271,39 @@ pub(crate) struct CrewSurfaces {
 }
 
 impl CrewSurfaces {
+    pub(crate) fn set_library_load(&mut self, error: Option<String>) {
+        self.list.loading = error.is_none();
+        self.list.error = error;
+    }
+    pub(crate) fn invalidate_library(&mut self) {
+        self.list.items.clear();
+        self.list.filtered_count = 0;
+        self.list.total_count = 0;
+        self.list.loaded = false;
+        self.list.loading = true;
+        self.list.error = None;
+    }
     pub(crate) fn new(
         root: Entity<NativeRoot>,
         page_size: usize,
+        cx: &mut Context<NativeRoot>,
+    ) -> Self {
+        Self::new_for_window(root, page_size, None, cx)
+    }
+
+    pub(crate) fn new_remote(
+        root: Entity<NativeRoot>,
+        page_size: usize,
+        epoch: u64,
+        cx: &mut Context<NativeRoot>,
+    ) -> Self {
+        Self::new_for_window(root, page_size, Some(epoch), cx)
+    }
+
+    fn new_for_window(
+        root: Entity<NativeRoot>,
+        page_size: usize,
+        remote_epoch: Option<u64>,
         cx: &mut Context<NativeRoot>,
     ) -> Self {
         let size_root = root.clone();
@@ -203,7 +311,15 @@ impl CrewSurfaces {
             "crew-page-size",
             page_size,
             Rc::new(move |size, _, cx| {
-                size_root.update(cx, |this, cx| this.set_crew_page_size(size, cx));
+                size_root.update(cx, |this, cx| match remote_epoch {
+                    None => this.set_local_crew_page_size(size, cx),
+                    Some(epoch)
+                        if this.remote_window.is_some() && this.client_ui.epoch == epoch =>
+                    {
+                        this.set_crew_page_size(size, cx)
+                    }
+                    Some(_) => {}
+                });
             }),
             cx,
         );
@@ -213,7 +329,15 @@ impl CrewSurfaces {
                 crate::i18n::message("ui.search_crews"),
                 crate::i18n::message("ui.search_crews_slots_and_roles"),
                 Rc::new(move |query, cx| {
-                    root.update(cx, |this, cx| this.set_crew_query(query, cx));
+                    root.update(cx, |this, cx| match remote_epoch {
+                        None => this.set_local_crew_query(query, cx),
+                        Some(epoch)
+                            if this.remote_window.is_some() && this.client_ui.epoch == epoch =>
+                        {
+                            this.set_crew_query(query, cx)
+                        }
+                        Some(_) => {}
+                    });
                 }),
                 search_cx,
             )

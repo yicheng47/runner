@@ -275,7 +275,9 @@ fn filtered_nav_groups(query: &str, remote_access: bool) -> Vec<(&'static str, V
             let panes = panes
                 .iter()
                 .copied()
-                .filter(|pane| remote_access || *pane != SettingsPane::Account)
+                .filter(|pane| {
+                    remote_access || !matches!(pane, SettingsPane::Account | SettingsPane::Remote)
+                })
                 .filter(|pane| query.is_empty() || pane.label().to_lowercase().contains(&query))
                 .collect::<Vec<_>>();
             (!panes.is_empty()).then_some((crate::i18n::text(label), panes))
@@ -938,12 +940,13 @@ impl NativeRoot {
             return;
         }
 
-        let pane =
-            if pane == SettingsPane::Account && !self.app_store.read(cx).remote_access_enabled() {
-                SettingsPane::Remote
-            } else {
-                pane
-            };
+        let pane = if matches!(pane, SettingsPane::Account | SettingsPane::Remote)
+            && !self.app_store.read(cx).remote_access_enabled()
+        {
+            SettingsPane::General
+        } else {
+            pane
+        };
         if self.settings_page.pane != pane {
             self.dismiss_remote_dialog();
         }
@@ -2212,6 +2215,7 @@ impl NativeRoot {
                     )
                     .into_any_element(),
             ]))
+            .child(self.render_local_only_setting(cx))
             .child(
                 div().flex().flex_col().gap_2()
                     .child(settings_section_heading(crate::i18n::text("ui.sessions")))

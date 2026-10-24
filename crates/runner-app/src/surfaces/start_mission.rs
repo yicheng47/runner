@@ -12,9 +12,12 @@ use runner_core::protocol::project::ProjectRow;
 use runner_core::protocol::project::ProjectScope;
 
 use crate::surfaces::crews::{crew_picture, lead_badge, slot_setup, slot_setup_line};
+use crate::surfaces::front_page::folder_picker::FolderPicker;
+use crate::surfaces::front_page::{FrontPageClient, FrontPageTarget};
 use crate::*;
 
 pub(crate) struct StartMissionModalState {
+    remote: Option<RemoteMissionForm>,
     initial_crew_id: Option<String>,
     project: Option<ProjectRow>,
     crews: Vec<CrewListItem>,
@@ -34,16 +37,98 @@ pub(crate) struct StartMissionModalState {
     _subscriptions: Vec<Subscription>,
 }
 
+struct RemoteMissionForm {
+    client: FrontPageClient,
+    navigation: u64,
+    form: u64,
+    project: Option<String>,
+    catalog: Option<runner_core::companion::Catalog>,
+    folder_picker: Option<Entity<FolderPicker>>,
+}
+
+struct StartMissionSlotDisplay {
+    handle: String,
+    lead: bool,
+    role_name: String,
+    setup: Option<crate::surfaces::crews::SlotSetup>,
+}
+
 impl StartMissionModalState {
     fn can_submit(&self, cx: &App) -> bool {
         !self.submitting
             && !self.loading
             && !self.title.read(cx).text().trim().is_empty()
-            && (self.crew_id.is_empty()
-                || self
-                    .crews
-                    .iter()
-                    .any(|crew| crew.crew.id == self.crew_id && crew.role_count > 0))
+            && self
+                .remote
+                .as_ref()
+                .is_none_or(|remote| remote.client.supports(&["catalog", "startMission"]))
+            && (if self.remote.is_some() {
+                self.host_crew().is_some_and(|crew| !crew.slots.is_empty())
+            } else {
+                self.crew_id.is_empty()
+                    || self
+                        .crews
+                        .iter()
+                        .any(|crew| crew.crew.id == self.crew_id && crew.role_count > 0)
+            })
+    }
+
+    fn host_crew(&self) -> Option<&runner_core::companion::CatalogCrew> {
+        self.remote
+            .as_ref()?
+            .catalog
+            .as_ref()?
+            .crews
+            .iter()
+            .find(|crew| crew.id == self.crew_id)
+    }
+
+    fn lead_handle(&self) -> Option<&str> {
+        if self.remote.is_some() {
+            return self
+                .host_crew()?
+                .slots
+                .iter()
+                .find(|slot| slot.lead)
+                .map(|slot| slot.handle.as_str());
+        }
+        self.roster
+            .iter()
+            .find(|member| member.slot.lead)
+            .map(|member| member.slot.slot_handle.as_str())
+    }
+
+    fn slot_display(&self) -> Vec<StartMissionSlotDisplay> {
+        if let Some(remote) = &self.remote {
+            let Some(catalog) = &remote.catalog else {
+                return Vec::new();
+            };
+            return self
+                .host_crew()
+                .into_iter()
+                .flat_map(|crew| &crew.slots)
+                .map(|slot| StartMissionSlotDisplay {
+                    handle: slot.handle.clone(),
+                    lead: slot.lead,
+                    role_name: catalog
+                        .roles
+                        .iter()
+                        .find(|role| role.id == slot.role)
+                        .map(|role| role.name.clone())
+                        .unwrap_or_default(),
+                    setup: None,
+                })
+                .collect();
+        }
+        self.roster
+            .iter()
+            .map(|member| StartMissionSlotDisplay {
+                handle: member.slot.slot_handle.clone(),
+                lead: member.slot.lead,
+                role_name: member.role.display_name.clone(),
+                setup: Some(slot_setup(member)),
+            })
+            .collect()
     }
 
     fn is_composing(&self, cx: &App) -> bool {
@@ -61,23 +146,45 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_window.is_some() {
-            return;
-        }
-        let project = scope
-            .project_id()
-            .and_then(|id| {
-                self.app_store
-                    .read(cx)
-                    .projects
-                    .iter()
-                    .find(|project| project.id == id)
+        let remote_form = if let Some(remote) = self.remote_window.as_mut() {
+            if !remote.front_page.supports(&["catalog", "startMission"]) {
+                return;
+            }
+            remote.form_generation = remote.form_generation.wrapping_add(1);
+            Some(RemoteMissionForm {
+                client: remote.front_page.clone(),
+                navigation: remote.navigation_generation,
+                form: remote.form_generation,
+                project: scope.project_id().map(str::to_owned),
+                catalog: None,
+                folder_picker: None,
             })
-            .cloned();
-        let cwd = project
-            .as_ref()
-            .map(|project| project.cwd.clone())
-            .unwrap_or_else(|| self.settings(cx).default_working_dir.clone());
+        } else {
+            None
+        };
+        let project = remote_form
+            .is_none()
+            .then(|| {
+                scope
+                    .project_id()
+                    .and_then(|id| {
+                        self.app_store
+                            .read(cx)
+                            .projects
+                            .iter()
+                            .find(|project| project.id == id)
+                    })
+                    .cloned()
+            })
+            .flatten();
+        let cwd = if remote_form.is_some() {
+            String::new()
+        } else {
+            project
+                .as_ref()
+                .map(|project| project.cwd.clone())
+                .unwrap_or_else(|| self.settings(cx).default_working_dir.clone())
+        };
         let title = cx.new(|input_cx| {
             TextField::new(
                 input_cx.focus_handle(),
@@ -127,6 +234,7 @@ impl NativeRoot {
             .map(|input| cx.observe(input, |_, _, cx| cx.notify()))
             .collect();
         self.start_mission_modal = Some(StartMissionModalState {
+            remote: remote_form,
             initial_crew_id,
             project,
             crews: Vec::new(),
@@ -148,6 +256,10 @@ impl NativeRoot {
         crew_focus.focus(window, cx);
         cx.notify();
 
+        if self.remote_window.is_some() {
+            self.load_remote_mission_catalog(window, cx);
+            return;
+        }
         let core = self.core(cx).clone();
         let task = cx.background_spawn(async move {
             core.crew_list(1, 10_000, "")
@@ -196,6 +308,24 @@ impl NativeRoot {
         if modal.submitting || modal.crew_id == crew_id {
             return;
         }
+        if modal.remote.is_some() {
+            if modal
+                .remote
+                .as_ref()
+                .and_then(|remote| remote.catalog.as_ref())
+                .is_some_and(|catalog| {
+                    catalog
+                        .crews
+                        .iter()
+                        .any(|crew| crew.id == crew_id && !crew.slots.is_empty())
+                })
+            {
+                modal.crew_id = crew_id;
+                modal.error = None;
+                cx.notify();
+            }
+            return;
+        }
         modal.crew_id = crew_id.clone();
         modal.roster.clear();
         modal.error = None;
@@ -207,6 +337,9 @@ impl NativeRoot {
     }
 
     fn load_start_mission_roster(&mut self, crew_id: String, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let core = self.core(cx).clone();
         let load_id = crew_id.clone();
         let task = cx.background_spawn(async move {
@@ -253,6 +386,9 @@ impl NativeRoot {
     }
 
     fn browse_start_mission_cwd(&mut self, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            return;
+        }
         let Some(cwd) = self
             .start_mission_modal
             .as_ref()
@@ -315,6 +451,10 @@ impl NativeRoot {
     }
 
     fn submit_start_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_window.is_some() {
+            self.submit_remote_mission(window, cx);
+            return;
+        }
         let Some(modal) = self.start_mission_modal.as_mut() else {
             return;
         };
@@ -370,9 +510,13 @@ impl NativeRoot {
             .crews
             .iter()
             .find(|crew| crew.crew.id == modal.crew_id);
-        let launchable = selected.is_some_and(|crew| crew.role_count > 0);
+        let launchable = if modal.remote.is_some() {
+            modal.host_crew().is_some_and(|crew| !crew.slots.is_empty())
+        } else {
+            selected.is_some_and(|crew| crew.role_count > 0)
+        };
         let can_submit = modal.can_submit(cx);
-        let lead = modal.roster.iter().find(|member| member.slot.lead);
+        let lead = modal.lead_handle();
         let root = cx.entity();
         let close_root = root.clone();
         let browse_root = root.clone();
@@ -419,6 +563,10 @@ impl NativeRoot {
             .flex_col()
             .gap_5()
             .children(modal.error.clone().filter(|_| !self.app_store.read(cx).daemon_disconnected).map(|error| runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)))
+            .children((modal.remote.as_ref().is_some_and(|remote| remote.catalog.is_none()) && !modal.loading && modal.error.is_some()).then(|| {
+                let retry = cx.entity();
+                Button::new("retry-mission-catalog", crate::i18n::text("ui.retry")).on_press(move |window,cx| retry.update(cx,|this,cx| this.load_remote_mission_catalog(window,cx)))
+            }))
             .child(
                 Field::new(
                     "start-mission-crew-field",
@@ -427,7 +575,8 @@ impl NativeRoot {
                 )
                 .emphasized(true),
             )
-            .children((selected.is_some() && !launchable).then(|| {
+            .children((modal.remote.is_some() && !modal.loading && !launchable).then(|| div().text_size(theme::text_meta()).text_color(theme::warning()).child(crate::i18n::text("client.no_host_crews"))))
+            .children((modal.remote.is_none() && selected.is_some() && !launchable).then(|| {
                 div()
                     .mt(rems(-14. / 16.))
                     .text_size(theme::text_meta())
@@ -448,27 +597,32 @@ impl NativeRoot {
                     .emphasized(true)
                     .subtitle(
                         lead.map(|lead| {
-                            crate::i18n::tf("format.delivered_to_lead_on_mission_start", &[("handle", (lead.slot.slot_handle).to_string())])
+                            crate::i18n::tf("format.delivered_to_lead_on_mission_start", &[("handle", lead.to_owned())])
                         })
-                        .unwrap_or_else(|| if modal.crew_id.is_empty() { crate::i18n::text("ui.shared_with_every_role_that_joins_give_each_one_its_own_task_when_you_add_it").into() } else { crate::i18n::text("ui.delivered_to_the_crew_lead_on_mission_start").into() }),
+                        .unwrap_or_else(|| if modal.remote.is_none() && modal.crew_id.is_empty() { crate::i18n::text("ui.shared_with_every_role_that_joins_give_each_one_its_own_task_when_you_add_it").into() } else { crate::i18n::text("ui.delivered_to_the_crew_lead_on_mission_start").into() }),
                     ),
             )
             .child(
                 Field::new(
                     "start-mission-cwd-field",
                     crate::i18n::text("ui.working_directory"),
-                    WorkingDirField::new(
+                    div().debug_selector(|| "START_MISSION_WORKING_DIR_FIELD".into()).w_full().relative().child(WorkingDirField::new(
                         modal.cwd.clone(),
                         modal.submitting,
-                        Rc::new(move |_, cx| {
-                            browse_root.update(cx, |this, cx| this.browse_start_mission_cwd(cx));
+                        Rc::new(move |window, cx| {
+                            browse_root.update(cx, |this, cx| {
+                                if let Some(picker) = this.start_mission_modal.as_ref().and_then(|modal| modal.remote.as_ref()).and_then(|remote| remote.folder_picker.clone()) { picker.update(cx, |picker,cx| picker.toggle(window,cx)); }
+                                else { this.browse_start_mission_cwd(cx); }
+                            });
                         }),
                     )
                     .browse_id("browse-start-mission")
-                    .browse_focus(modal.browse_focus.clone()),
+                    .browse_focus(modal.browse_focus.clone())
+                    .show_browse(modal.remote.as_ref().is_none_or(|remote| remote.client.supports(&["folders"]))))
+                    .children(modal.remote.as_ref().and_then(|remote| remote.folder_picker.clone()).map(FolderPicker::anchor)),
                 )
                 .emphasized(true)
-                .subtitle(if modal.crew_id.is_empty() { crate::i18n::text("ui.every_role_you_add_starts_here_leave_blank_to_use_its_default_directory_or_your_home_direc") } else { crate::i18n::text("ui.each_role_starts_here_leave_blank_to_use_its_default_directory_or_your_home_directory") }),
+                .subtitle(if modal.crew_id.is_empty() { crate::i18n::text("ui.every_role_you_add_starts_here_leave_blank_to_use_its_default_directory_or_your_home_direc") } else { crate::i18n::text("ui.each_role_starts_here_leave_blank_to_use_its_default_directory_or_your_home_directory") }).map(|field| if let Some(error) = modal.remote.as_ref().and_then(|remote| remote.folder_picker.as_ref()).and_then(|picker| picker.read(cx).path_error.clone()) { field.error(error) } else { field }),
             )
             ;
         let footer = div().w_full().flex().items_center().justify_end().child(
@@ -518,16 +672,22 @@ impl NativeRoot {
         .focus_order(if modal.submitting {
             Vec::new()
         } else {
-            vec![
+            let mut order = vec![
                 modal.close_focus.clone(),
                 modal.crew_select.read(cx).focus_handle(),
                 modal.title.read(cx).focus_handle(),
                 modal.goal.read(cx).focus_handle(),
                 modal.cwd.read(cx).focus_handle(),
-                modal.browse_focus.clone(),
-                modal.cancel_focus.clone(),
-                modal.submit_focus.clone(),
-            ]
+            ];
+            if modal
+                .remote
+                .as_ref()
+                .is_none_or(|remote| remote.client.supports(&["folders"]))
+            {
+                order.push(modal.browse_focus.clone());
+            }
+            order.extend([modal.cancel_focus.clone(), modal.submit_focus.clone()]);
+            order
         })
         .footer(footer);
         div()
@@ -536,8 +696,244 @@ impl NativeRoot {
             .inset_0()
             .on_action(cx.listener(Self::confirm_start_mission))
             .child(modal_element)
+            .children(
+                modal
+                    .remote
+                    .as_ref()
+                    .and_then(|remote| remote.folder_picker.clone()),
+            )
             .into_any_element()
     }
+}
+
+impl NativeRoot {
+    fn remote_mission_form_current(
+        &self,
+        target: &FrontPageTarget,
+        navigation: u64,
+        form: u64,
+    ) -> bool {
+        self.remote_window.as_ref().is_some_and(|remote| {
+            remote.front_page.target == *target
+                && remote.front_page.valid()
+                && remote.navigation_generation == navigation
+                && remote.form_generation == form
+        }) && self
+            .start_mission_modal
+            .as_ref()
+            .and_then(|modal| modal.remote.as_ref())
+            .is_some_and(|remote| {
+                remote.client.target == *target
+                    && remote.navigation == navigation
+                    && remote.form == form
+            })
+    }
+
+    fn load_remote_mission_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(remote) = self
+            .start_mission_modal
+            .as_ref()
+            .and_then(|modal| modal.remote.as_ref())
+        else {
+            return;
+        };
+        if !remote.client.supports(&["catalog", "startMission"]) {
+            return;
+        }
+        let client = remote.client.clone();
+        let target = client.target.clone();
+        let navigation = remote.navigation;
+        let form = remote.form;
+        let modal = self.start_mission_modal.as_mut().unwrap();
+        modal.loading = true;
+        modal.error = None;
+        let task =
+            cx.background_spawn(async move { client.catalog().map_err(|error| error.to_string()) });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update_in(cx, |this, window, cx| {
+                if !this.remote_mission_form_current(&target, navigation, form) {
+                    return;
+                }
+                let host = this.remote_window.as_ref().unwrap();
+                let computer = host.computer.name.clone();
+                let platform = host.computer.info.platform.clone();
+                let modal = this.start_mission_modal.as_mut().unwrap();
+                modal.loading = false;
+                match result {
+                    Ok(catalog) => {
+                        if modal.initial_crew_id.as_ref().is_some_and(|id| {
+                            !catalog
+                                .crews
+                                .iter()
+                                .any(|crew| &crew.id == id && !crew.slots.is_empty())
+                        }) {
+                            modal.error =
+                                Some(crate::i18n::text("client.crew_unavailable").to_owned());
+                            cx.notify();
+                            return;
+                        }
+                        let preferred = modal
+                            .initial_crew_id
+                            .as_ref()
+                            .and_then(|id| {
+                                catalog
+                                    .crews
+                                    .iter()
+                                    .find(|crew| &crew.id == id && !crew.slots.is_empty())
+                            })
+                            .or_else(|| catalog.crews.iter().find(|crew| !crew.slots.is_empty()))
+                            .map(|crew| crew.id.clone())
+                            .unwrap_or_default();
+                        modal.crew_id = preferred.clone();
+                        modal.crew_select.update(cx, |select, cx| {
+                            select.set_options(remote_mission_crew_options(&catalog), cx);
+                            select.set_value(preferred, cx);
+                        });
+                        let input = modal.cwd.clone();
+                        let client = modal.remote.as_ref().unwrap().client.clone();
+                        let choices = crate::surfaces::front_page::folder_picker::choices(&catalog);
+                        let picker = cx.new(|cx| {
+                            FolderPicker::new(
+                                client,
+                                computer,
+                                platform,
+                                input.clone(),
+                                choices,
+                                cx,
+                            )
+                        });
+                        let subscription = cx.observe(&picker, |_, _, cx| cx.notify());
+                        let blur_picker = picker.clone();
+                        let blur = cx.on_focus_out(
+                            &input.read(cx).focus_handle(),
+                            window,
+                            move |_, _, _, cx| {
+                                blur_picker.update(cx, |picker, cx| picker.validate(cx))
+                            },
+                        );
+                        let remote = modal.remote.as_mut().unwrap();
+                        remote.catalog = Some(catalog);
+                        remote.folder_picker = Some(picker);
+                        modal._subscriptions.extend([subscription, blur]);
+                    }
+                    Err(error) => modal.error = Some(error),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn submit_remote_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(modal) = self.start_mission_modal.as_ref() else {
+            return;
+        };
+        if !modal.can_submit(cx) || modal.is_composing(cx) {
+            return;
+        }
+        let Some(remote) = &modal.remote else {
+            return;
+        };
+        let client = remote.client.clone();
+        let target = client.target.clone();
+        let navigation = remote.navigation;
+        let form = remote.form;
+        if !self.remote_mission_form_current(&target, navigation, form) {
+            return;
+        }
+        let crew = modal.crew_id.clone();
+        let title = modal.title.read(cx).text().trim().to_owned();
+        let goal = nonempty(modal.goal.read(cx).text());
+        let cwd = nonempty(modal.cwd.read(cx).text());
+        let project = remote.project.clone();
+        let size = self
+            .remote_window
+            .as_ref()
+            .unwrap()
+            .mission_workspace
+            .read(cx)
+            .estimated_mission_terminal_size(window, cx);
+        let size = (size.0.max(20), size.1.max(8));
+        let modal = self.start_mission_modal.as_mut().unwrap();
+        modal.submitting = true;
+        modal.error = None;
+        set_start_mission_fields_disabled(modal, true, cx);
+        let task = cx.background_spawn(async move {
+            client
+                .start_mission(crew, title, goal, project, cwd, size)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                if !this.remote_mission_form_current(&target, navigation, form) {
+                    return;
+                }
+                match result {
+                    Ok(mission) => {
+                        this.start_mission_modal = None;
+                        this.remote_window.as_mut().unwrap().activate_mission = Some(mission);
+                        this.sync_remote_state(cx);
+                    }
+                    Err(error) => {
+                        let computer = this.remote_window.as_ref().unwrap().computer.name.clone();
+                        let modal = this.start_mission_modal.as_mut().unwrap();
+                        modal.submitting = false;
+                        if error == "Choose an accessible folder on the host." {
+                            if let Some(picker) = modal
+                                .remote
+                                .as_ref()
+                                .and_then(|remote| remote.folder_picker.clone())
+                            {
+                                picker.update(cx, |picker, cx| {
+                                    picker.path_error =
+                                        Some(crate::surfaces::remote_client::label(
+                                            "client.folder_invalid",
+                                            &computer,
+                                        ));
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        modal.error = Some(error);
+                        set_start_mission_fields_disabled(modal, false, cx);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+}
+
+fn remote_mission_crew_options(catalog: &runner_core::companion::Catalog) -> Vec<SelectOption> {
+    catalog
+        .crews
+        .iter()
+        .map(|crew| {
+            let handles = crew
+                .slots
+                .iter()
+                .map(|slot| SharedString::from(slot.handle.clone()))
+                .collect::<Vec<_>>();
+            SelectOption::new(crew.id.clone(), crew.name.clone())
+                .disabled(crew.slots.is_empty())
+                .description(crew_summary_message(
+                    crew.slots.len(),
+                    crew.slots
+                        .iter()
+                        .find(|slot| slot.lead)
+                        .map(|slot| slot.handle.as_str()),
+                ))
+                .leading(SelectLeading::new(
+                    format!("host-crew:{}:{handles:?}", crew.id),
+                    move |size| crew_picture(&handles, size),
+                ))
+        })
+        .collect()
 }
 
 fn set_start_mission_fields_disabled(
@@ -554,6 +950,7 @@ fn set_start_mission_fields_disabled(
 }
 
 fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
+    let roster = modal.slot_display();
     div()
         .w_full()
         .min_w(px(0.))
@@ -562,10 +959,10 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
         .border_color(theme::border())
         .bg(theme::bg())
         .child(modal.crew_select.clone())
-        .children(modal.crew_id.is_empty().then(|| div().border_t_1().border_color(theme::border()).px_4().py_3()
+        .children((modal.remote.is_none() && modal.crew_id.is_empty()).then(|| div().border_t_1().border_color(theme::border()).px_4().py_3()
             .text_size(theme::text_ui()).text_color(theme::muted())
             .child(crate::i18n::text("ui.no_roles_at_start_add_them_one_at_a_time_from_the_mission_once_it_starts_each_joins_as_a_w"))))
-        .children((!modal.roster.is_empty()).then(|| {
+        .children((!roster.is_empty()).then(|| {
             div()
                 .border_t_1()
                 .border_color(theme::border())
@@ -574,10 +971,10 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .children(modal.roster.iter().map(|member| {
+                .children(roster.iter().map(|member| {
                     div()
                         .debug_selector({
-                            let handle = member.slot.slot_handle.clone();
+                            let handle = member.handle.clone();
                             move || format!("START_MISSION_SLOT {handle}")
                         })
                         .w_full()
@@ -585,7 +982,7 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(RoleAvatar::new(member.slot.slot_handle.clone(), 24.))
+                        .child(RoleAvatar::new(member.handle.clone(), 24.))
                         .child(
                             div()
                                 .min_w(px(0.))
@@ -602,26 +999,26 @@ fn start_mission_crew_card(modal: &StartMissionModalState) -> gpui::Div {
                                         .text_size(theme::text_ui())
                                         .text_color(
                                             runner_app::ui::avatar::hue_for_seed(
-                                                &member.slot.slot_handle,
+                                                &member.handle,
                                             )
                                             .color(),
                                         )
-                                        .child(format!("@{}", member.slot.slot_handle)),
+                                        .child(format!("@{}", member.handle)),
                                 )
-                                .children(member.slot.lead.then(lead_badge))
+                                .children(member.lead.then(lead_badge))
                                 .child(
                                     div()
                                         .min_w(px(0.))
                                         .truncate()
                                         .text_size(theme::text_meta())
                                         .text_color(theme::muted())
-                                        .child(member.role.display_name.clone()),
+                                        .child(member.role_name.clone()),
                                 ),
                         )
-                        .child(
-                            slot_setup_line(&slot_setup(member))
+                        .children(member.setup.as_ref().map(|setup|
+                            slot_setup_line(setup)
                                 .max_w(rems(250. / 16.))
-                                .min_w(px(0.)),
+                                .min_w(px(0.))),
                         )
                 }))
         }))
@@ -1025,5 +1422,506 @@ mod keyboard_tests {
             assert_eq!(form.project.as_ref().unwrap().id, project_id);
             assert_eq!(form.cwd.read(cx).text(), "/tmp");
         });
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use crate::surfaces::remote_client::{
+        tests::{self as remote_test, Fake},
+        RemoteItem,
+    };
+    use gpui::{TestAppContext, VisualTestContext};
+    use runner_app::i18n::{testing::with_locale, Locale};
+    use runner_core::companion::Overview;
+    use std::sync::Arc;
+
+    fn catalog() -> serde_json::Value {
+        serde_json::json!({"roles":[{"id":"host-role","name":"Host coder","handle":"host-coder","runtime":"codex","model":"host-role-model","effort":"high","speed":null}],"runtimes":[],"accounts":[],"activeAccount":"","crews":[{"id":"empty-host-crew","name":"Empty host crew","slots":[]},{"id":"host-crew","name":"Host duo","slots":[{"handle":"lead","role":"host-role","lead":true},{"handle":"reviewer","role":"host-role","lead":false}]}],"projects":[{"id":"host-project","name":"Host project","path":"\\\\nas\\share"}],"recentFolders":["C:\\host\\recent"]})
+    }
+    fn overview(created: bool) -> Overview {
+        serde_json::from_value(serde_json::json!({"projects":[{"id":"host-project","name":"Host project"}],"tabs":[{"id":"first","project":null,"name":"First","pinned":false,"panes":{"session":null},"shells":[]},{"id":"other","project":null,"name":"Other","pinned":false,"panes":{"session":null},"shells":[]}],"missions":if created {serde_json::json!([{"id":"created-mission","title":"Host mission","project":"host-project","crew":"Host duo","state":"running","pinned":false,"members":[],"asks":[],"shells":[]}])} else {serde_json::json!([])},"sessions":{}})).unwrap()
+    }
+    fn setup(
+        features: Option<&[&str]>,
+    ) -> (
+        tempfile::TempDir,
+        TestAppContext,
+        gpui::WindowHandle<NativeRoot>,
+        Entity<AppStore>,
+        Arc<Fake>,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        if let Some(features) = features {
+            fake.set_features(features);
+        }
+        fake.set_overview(overview(false));
+        store.update(&mut cx, |store, _| {
+            store.settings.default_working_dir = "/local/unchanged".into()
+        });
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), "start-host-mission");
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        (temp, cx, window, store, fake)
+    }
+    fn open(
+        cx: &mut TestAppContext,
+        window: gpui::WindowHandle<NativeRoot>,
+        fake: &Fake,
+        scope: ProjectScope,
+    ) {
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(cx, |root, window, cx| {
+                root.open_start_mission_modal(None, scope, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |root, _, cx| {
+                let form = root.start_mission_modal.as_ref().unwrap();
+                form.title
+                    .update(cx, |field, cx| field.reset("Host mission", cx));
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn host_catalog_existing_crew_defaults_scope_size_and_activation_come_from_the_target() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for push_before_result in [true, false] {
+            let (_temp, mut cx, window, store, fake) = setup(None);
+            let catalogs = fake.request_count("catalog");
+            let local = fake.local_call_count();
+            open(
+                &mut cx,
+                window,
+                &fake,
+                ProjectScope::Project("host-project".into()),
+            );
+            assert_eq!(fake.request_count("catalog"), catalogs + 1);
+            let mut size = (0, 0);
+            window
+                .update(&mut cx, |root, window, cx| {
+                    size = root
+                        .remote_window
+                        .as_ref()
+                        .unwrap()
+                        .mission_workspace
+                        .read(cx)
+                        .estimated_mission_terminal_size(window, cx);
+                    let modal = root.start_mission_modal.as_ref().unwrap();
+                    assert!(modal.crews.is_empty());
+                    assert!(modal.roster.is_empty());
+                    assert_eq!(modal.crew_id, "host-crew");
+                    assert_eq!(modal.lead_handle(), Some("lead"));
+                    assert!(modal.cwd.read(cx).text().is_empty());
+                    assert!(modal.slot_display().iter().all(|slot| slot.setup.is_none()));
+                    assert!(modal.can_submit(cx));
+                    modal
+                        .goal
+                        .update(cx, |field, cx| field.reset("Host goal", cx));
+                    root.confirm_start_mission(&ConfirmStartMission, window, cx);
+                    assert!(root.start_mission_modal.as_ref().unwrap().submitting);
+                    assert!(root
+                        .remote_window
+                        .as_ref()
+                        .unwrap()
+                        .activate_mission
+                        .is_none());
+                    if push_before_result {
+                        let clients = root.app_store.read(cx).remote_clients.clone();
+                        clients.update(cx, |clients, cx| {
+                            clients.overviews.insert("host".into(), overview(true));
+                            cx.notify();
+                        });
+                        root.sync_remote_state(cx);
+                        assert!(matches!(
+                            root.remote_window.as_ref().unwrap().active,
+                            Some(RemoteItem::Tab(_))
+                        ));
+                    }
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let requests = remote_test::action_trace(&fake, "startMission");
+            let request = &requests[0];
+            assert_eq!(request["crew"], "host-crew");
+            assert_eq!(request["title"], "Host mission");
+            assert_eq!(request["goal"], "Host goal");
+            assert_eq!(request["project"], "host-project");
+            assert!(request["cwd"].is_null());
+            assert_eq!(request["cols"], size.0.max(20));
+            assert_eq!(request["rows"], size.1.max(8));
+            window
+                .read_with(&cx, |root, _| {
+                    let remote = root.remote_window.as_ref().unwrap();
+                    assert!(root.start_mission_modal.is_none());
+                    if push_before_result {
+                        assert!(
+                            remote.active == Some(RemoteItem::Mission("created-mission".into()))
+                        );
+                    } else {
+                        assert_eq!(remote.activate_mission.as_deref(), Some("created-mission"));
+                        assert!(matches!(remote.active, Some(RemoteItem::Tab(_))));
+                    }
+                })
+                .unwrap();
+            assert_eq!(fake.local_call_count(), local);
+            fake.set_overview(overview(true));
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |root, _| {
+                    let remote = root.remote_window.as_ref().unwrap();
+                    assert!(remote.active == Some(RemoteItem::Mission("created-mission".into())));
+                    assert!(remote.activate_mission.is_none());
+                })
+                .unwrap();
+            store.read_with(&cx, |store, _| {
+                assert_eq!(store.settings.default_working_dir, "/local/unchanged")
+            });
+        }
+    }
+
+    #[test]
+    fn host_folder_menu_uses_the_existing_field_and_typed_windows_paths_survive_failure() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for locale in [Locale::English, Locale::SimplifiedChinese] {
+            with_locale(locale, || {
+                let (_temp, mut cx, window, _, fake) = setup(None);
+                open(&mut cx, window, &fake, ProjectScope::Root);
+                cx.simulate_window_resize(window.into(), size(px(760.), px(900.)));
+                cx.run_until_parked();
+                window
+                    .update(&mut cx, |root, window, cx| {
+                        let modal = root.start_mission_modal.as_ref().unwrap();
+                        modal.browse_focus.focus(window, cx);
+                    })
+                    .unwrap();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                visual.simulate_keystrokes("space");
+                visual.run_until_parked();
+                let field = visual
+                    .debug_bounds("START_MISSION_WORKING_DIR_FIELD")
+                    .unwrap();
+                let menu = visual.debug_bounds("HOST_FOLDER_MENU").unwrap();
+                assert_eq!(field.size.width, menu.size.width);
+                assert!(menu.bottom() <= field.top());
+                let choice = visual.debug_bounds("HOST_FOLDER_ROW:choice-0").unwrap();
+                visual.simulate_click(choice.center(), Default::default());
+                visual.run_until_parked();
+                window
+                    .read_with(&visual, |root, cx| {
+                        assert_eq!(
+                            root.start_mission_modal
+                                .as_ref()
+                                .unwrap()
+                                .cwd
+                                .read(cx)
+                                .text(),
+                            "\\\\nas\\share"
+                        )
+                    })
+                    .unwrap();
+                fake.queue_result(
+                    "startMission",
+                    Err(runner_core::protocol::ClientError::msg(
+                        "Choose an accessible folder on the host.",
+                    )),
+                );
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        root.confirm_start_mission(&ConfirmStartMission, window, cx)
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                window
+                    .read_with(&visual, |root, cx| {
+                        let modal = root.start_mission_modal.as_ref().unwrap();
+                        assert_eq!(modal.cwd.read(cx).text(), "\\\\nas\\share");
+                        assert_eq!(modal.title.read(cx).text(), "Host mission");
+                        assert!(!modal.submitting);
+                        assert!(modal
+                            .remote
+                            .as_ref()
+                            .unwrap()
+                            .folder_picker
+                            .as_ref()
+                            .unwrap()
+                            .read(cx)
+                            .path_error
+                            .is_some());
+                    })
+                    .unwrap();
+                assert_eq!(
+                    remote_test::action_trace(&fake, "startMission")[0]["cwd"],
+                    "\\\\nas\\share"
+                );
+                assert!(remote_test::action_trace(&fake, "startMission")[0]["project"].is_null());
+            });
+        }
+    }
+
+    #[test]
+    fn missing_catalog_or_start_capability_and_empty_host_crews_never_fall_back_locally() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for features in [vec!["catalog"], vec!["startMission"], vec![]] {
+            let (_temp, mut cx, window, _, fake) = setup(Some(&features));
+            let local = fake.local_call_count();
+            let catalogs = fake.request_count("catalog");
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.new_mission_action(&NewMission, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |root, _| assert!(root.start_mission_modal.is_none()))
+                .unwrap();
+            assert_eq!(fake.request_count("catalog"), catalogs);
+            assert_eq!(fake.request_count("startMission"), 0);
+            assert_eq!(fake.local_call_count(), local);
+        }
+        let (_temp, mut cx, window, _, fake) = setup(None);
+        let mut empty = catalog();
+        empty["crews"] = serde_json::json!([]);
+        fake.queue_result("catalog", Ok(empty));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.new_mission_action(&NewMission, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, window, cx| {
+                let modal = root.start_mission_modal.as_ref().unwrap();
+                modal
+                    .title
+                    .update(cx, |field, cx| field.reset("No host crew", cx));
+                assert!(!modal.can_submit(cx));
+                root.confirm_start_mission(&ConfirmStartMission, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(fake.request_count("startMission"), 0);
+    }
+
+    #[test]
+    fn navigating_during_catalog_or_start_cancels_old_forms_and_activation_intents() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for before_result in [true, false] {
+            let (_temp, mut cx, window, _, fake) = setup(None);
+            fake.queue_result("catalog", Ok(catalog()));
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.new_mission_action(&NewMission, window, cx);
+                    root.select_remote_item(RemoteItem::Tab("other".into()), cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |root, _| assert!(root.start_mission_modal.is_none()))
+                .unwrap();
+            open(&mut cx, window, &fake, ProjectScope::Root);
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.confirm_start_mission(&ConfirmStartMission, window, cx);
+                    if before_result {
+                        root.select_remote_item(RemoteItem::Tab("first".into()), cx);
+                    }
+                })
+                .unwrap();
+            cx.run_until_parked();
+            if !before_result {
+                window
+                    .update(&mut cx, |root, _, cx| {
+                        root.select_remote_item(RemoteItem::Tab("first".into()), cx)
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+            }
+            fake.set_overview(overview(true));
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |root, _| {
+                    let remote = root.remote_window.as_ref().unwrap();
+                    assert!(remote.active == Some(RemoteItem::Tab("first".into())));
+                    assert!(remote.activate_mission.is_none());
+                    assert!(root.start_mission_modal.is_none());
+                })
+                .unwrap();
+            assert_eq!(fake.request_count("startMission"), 1);
+        }
+    }
+    #[test]
+    fn missing_folders_skips_browse_in_the_tab_order_and_preserves_typed_host_defaults() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, _, fake) = setup(Some(&["catalog", "startMission"]));
+        open(&mut cx, window, &fake, ProjectScope::Root);
+        window
+            .update(&mut cx, |root, window, cx| {
+                let modal = root.start_mission_modal.as_ref().unwrap();
+                modal
+                    .cwd
+                    .update(cx, |field, cx| field.reset("C:\\host\\typed", cx));
+                modal.cwd.read(cx).focus_handle().focus(window, cx);
+                window.activate_window();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                assert!(root
+                    .start_mission_modal
+                    .as_ref()
+                    .unwrap()
+                    .cancel_focus
+                    .is_focused(window));
+                root.confirm_start_mission(&ConfirmStartMission, window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("folders"), 0);
+        let request = &remote_test::action_trace(&fake, "startMission")[0];
+        assert_eq!(request["cwd"], "C:\\host\\typed");
+        assert!(request["project"].is_null());
+    }
+
+    #[test]
+    fn reopening_refreshes_host_crews_and_catalog_failure_retries_in_the_same_form() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, _, fake) = setup(None);
+        let before = fake.request_count("catalog");
+        open(&mut cx, window, &fake, ProjectScope::Root);
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.close_start_mission_modal(window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        fake.queue_result(
+            "catalog",
+            Err(runner_core::protocol::ClientError::msg("Catalog refused")),
+        );
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.new_mission_action(&NewMission, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(&cx, |root, cx| {
+                let modal = root.start_mission_modal.as_ref().unwrap();
+                assert!(modal.error.is_some());
+                assert!(modal.remote.as_ref().unwrap().catalog.is_none());
+                assert!(!modal.can_submit(cx));
+            })
+            .unwrap();
+        let mut changed = catalog();
+        changed["crews"][1]["id"] = serde_json::json!("refreshed-crew");
+        fake.queue_result("catalog", Ok(changed));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.load_remote_mission_catalog(window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .read_with(&cx, |root, _| {
+                assert_eq!(
+                    root.start_mission_modal.as_ref().unwrap().crew_id,
+                    "refreshed-crew"
+                )
+            })
+            .unwrap();
+        assert_eq!(fake.request_count("catalog"), before + 3);
+        assert_eq!(fake.request_count("startMission"), 0);
+    }
+    #[test]
+    fn remote_crew_library_launch_refreshes_and_preselects_the_clicked_crew() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, _store, fake) = setup(None);
+        let mut listing = catalog();
+        listing["crews"].as_array_mut().unwrap().push(serde_json::json!({"id":"chosen-host-crew","name":"Chosen crew","slots":[{"handle":"captain","role":"host-role","lead":true}]}));
+        fake.queue_result("catalog", Ok(listing.clone()));
+        window
+            .update(&mut cx, |root, window, cx| root.open_crews(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let reads = fake.request_count("catalog");
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        fake.queue_result("catalog", Ok(listing));
+        let start = visual
+            .debug_bounds("CREW_ROW_START:chosen-host-crew")
+            .unwrap();
+        visual.simulate_click(start.center(), Default::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("START_MISSION_SLOT captain").is_some());
+        window
+            .update(&mut visual, |root, window, cx| {
+                let form = root.start_mission_modal.as_ref().unwrap();
+                assert_eq!(form.crew_id, "chosen-host-crew");
+                form.title
+                    .update(cx, |title, cx| title.reset("From the host library", cx));
+                root.confirm_start_mission(&ConfirmStartMission, window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let starts = remote_test::action_trace(&fake, "startMission");
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["crew"], "chosen-host-crew");
+        assert!(starts[0]["cwd"].is_null());
+        assert!(starts[0]["project"].is_null());
+        assert_eq!(fake.request_count("catalog"), reads + 1);
+    }
+
+    #[test]
+    fn remote_crew_library_does_not_replace_a_removed_crew_with_another() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, _store, fake) = setup(None);
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(&mut cx, |root, window, cx| root.open_crews(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        let mut fresh = catalog();
+        fresh["crews"][1]["id"] = "another-crew".into();
+        fake.queue_result("catalog", Ok(fresh));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_start_mission_modal(
+                    Some("host-crew".into()),
+                    ProjectScope::Root,
+                    window,
+                    cx,
+                )
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, window, cx| {
+                let form = root.start_mission_modal.as_ref().unwrap();
+                assert_eq!(
+                    form.error.as_deref(),
+                    Some(crate::i18n::text("client.crew_unavailable"))
+                );
+                assert!(form.crew_id.is_empty());
+                root.confirm_start_mission(&ConfirmStartMission, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(fake.request_count("startMission"), 0);
     }
 }

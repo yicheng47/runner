@@ -36,6 +36,7 @@ pub struct SessionOverlay {
     ended_style: EndedStyle,
     primary_visible: bool,
     secondary_visible: bool,
+    primary_selector: Option<SharedString>,
 }
 
 impl SessionOverlay {
@@ -51,6 +52,7 @@ impl SessionOverlay {
             on_secondary: None,
             primary_visible: true,
             secondary_visible: true,
+            primary_selector: None,
             ended_style: EndedStyle::Chat,
         }
     }
@@ -71,6 +73,7 @@ impl SessionOverlay {
             on_secondary: Some(Rc::new(on_secondary)),
             primary_visible: true,
             secondary_visible: true,
+            primary_selector: None,
             ended_style: EndedStyle::Chat,
         }
     }
@@ -91,6 +94,7 @@ impl SessionOverlay {
             on_secondary: Some(Rc::new(on_close)),
             primary_visible: true,
             secondary_visible: true,
+            primary_selector: None,
             ended_style: EndedStyle::Shell,
         }
     }
@@ -98,6 +102,11 @@ impl SessionOverlay {
     pub fn actions_visible(mut self, primary: bool, secondary: bool) -> Self {
         self.primary_visible = primary;
         self.secondary_visible = secondary;
+        self
+    }
+
+    pub fn primary_debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.primary_selector = Some(selector.into());
         self
     }
 
@@ -256,6 +265,9 @@ impl RenderOnce for SessionOverlay {
                             )
                             .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Primary)
+                            .when_some(self.primary_selector.clone(), |button, selector| {
+                                button.debug_selector(selector)
+                            })
                             .on_press(move |window, cx| primary_click(window, cx))
                         }))
                         .children(self.secondary_visible.then(|| {
@@ -284,6 +296,9 @@ impl RenderOnce for SessionOverlay {
                             )
                             .icon("play.svg")
                             .variant(ButtonVariant::Primary)
+                            .when_some(self.primary_selector.clone(), |button, selector| {
+                                button.debug_selector(selector)
+                            })
                             .on_press(move |window, cx| primary_click(window, cx))
                         }))
                         .children(self.secondary_visible.then(|| {
