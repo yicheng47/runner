@@ -370,6 +370,21 @@ impl NativeRoot {
                             .text_size(theme::text_micro())
                             .text_color(theme::muted())
                             .child(count.to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("refresh-computers", crate::i18n::text("ui.refresh"))
+                            .debug_selector("REMOTE_COMPUTERS_REFRESH")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .icon("refresh-cw.svg")
+                            .loading(clients.read(cx).loading)
+                            .on_press({
+                                let root = cx.weak_entity();
+                                move |_, cx| {
+                                    let _ = root.update(cx, |root, cx| root.refresh_computers(cx));
+                                }
+                            }),
                     ),
             )
             .child(
@@ -395,6 +410,7 @@ impl NativeRoot {
             .when(clients.read(cx).directory_error, |body| {
                 body.child(
                     div()
+                        .debug_selector(|| "REMOTE_COMPUTERS_ERROR".into())
                         .text_size(theme::text_meta())
                         .text_color(theme::warning())
                         .child(crate::i18n::text("client.directory_failed")),

@@ -1314,7 +1314,7 @@
 "client.offline_seen" = "离线 · 最后在线 {time}"
 "client.forget" = "忘记"
 "client.action_failed" = "无法更新这台电脑的访问权限，请重试。"
-"client.directory_failed" = "无法刷新电脑列表。请检查账户和网络连接，然后重新打开列表。"
+"client.directory_failed" = "无法刷新电脑列表。请检查账户和网络连接，然后重试。"
 "client.status" = "状态"
 "client.access" = "访问权限"
 "client.pair" = "配对"

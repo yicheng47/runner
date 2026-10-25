@@ -1314,7 +1314,7 @@
 "client.offline_seen" = "Offline · seen {time}"
 "client.forget" = "Forget"
 "client.action_failed" = "Could not update this computer’s access. Try again."
-"client.directory_failed" = "Could not refresh computers. Check Account and your connection, then reopen this list."
+"client.directory_failed" = "Could not refresh computers. Check Account and your connection, then try again."
 "client.status" = "Status"
 "client.access" = "Access"
 "client.pair" = "Pair"

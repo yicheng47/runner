@@ -1813,6 +1813,89 @@ fn signed_out_has_no_picker_even_with_cached_directory_and_opens_account_from_av
 }
 
 #[test]
+fn settings_computers_refresh_retries_failures_and_disables_while_loading() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, clients) = fixture(&mut cx, temp.path());
+            let window = add_window(&mut cx, &store, temp.path(), "computers-refresh");
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.route = AppRoute::Settings;
+                    root.settings_page.pane = SettingsPane::Remote;
+                    cx.notify();
+                })
+                .unwrap();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            visual.run_until_parked();
+            let refresh = visual.debug_bounds("REMOTE_COMPUTERS_REFRESH").unwrap();
+            let initial = clients.read_with(&visual, |clients, _| {
+                clients
+                    .computers
+                    .iter()
+                    .map(|computer| computer.id.clone())
+                    .collect::<Vec<_>>()
+            });
+            let calls = fake.directory_calls.load(Ordering::SeqCst);
+
+            clients.update(&mut visual, |clients, cx| {
+                clients.loading = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_click(refresh.center(), Default::default());
+            visual.run_until_parked();
+            assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+
+            clients.update(&mut visual, |clients, cx| {
+                clients.loading = false;
+                cx.notify();
+            });
+            fake.fail_directory.store(true, Ordering::SeqCst);
+            visual.run_until_parked();
+            visual.simulate_click(refresh.center(), Default::default());
+            visual.run_until_parked();
+            assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls + 1);
+            assert!(visual.debug_bounds("REMOTE_COMPUTERS_ERROR").is_some());
+            clients.read_with(&visual, |clients, _| {
+                assert_eq!(
+                    clients
+                        .computers
+                        .iter()
+                        .map(|computer| computer.id.clone())
+                        .collect::<Vec<_>>(),
+                    initial
+                );
+                assert!(!clients.loading);
+            });
+
+            fake.fail_directory.store(false, Ordering::SeqCst);
+            fake.computers.lock().unwrap().push(Computer {
+                id: "new-computer".into(),
+                name: "New computer".into(),
+                ..Default::default()
+            });
+            visual.simulate_click(refresh.center(), Default::default());
+            visual.run_until_parked();
+            assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls + 2);
+            assert!(visual.debug_bounds("REMOTE_COMPUTERS_ERROR").is_none());
+            clients.read_with(&visual, |clients, _| {
+                assert_eq!(clients.computers.len(), initial.len() + 1);
+                assert!(!clients.loading);
+            });
+            window
+                .read_with(&visual, |root, _| {
+                    assert_eq!(root.route, AppRoute::Settings);
+                    assert_eq!(root.settings_page.pane, SettingsPane::Remote);
+                })
+                .unwrap();
+        });
+    }
+}
+
+#[test]
 fn account_sign_in_resumes_directory_refresh_and_signed_in_failures_remain_errors() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
