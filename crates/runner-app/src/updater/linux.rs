@@ -72,8 +72,8 @@ fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
             "https://github.com/yicheng47/runner/releases/latest",
         ),
         _ => (
-            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
-            "https://github.com/yicheng47/runner/releases/tag/nightly",
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/linux-nightly",
+            "https://github.com/yicheng47/runner/releases/tag/linux-nightly",
         ),
     }
 }

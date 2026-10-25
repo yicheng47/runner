@@ -111,7 +111,7 @@ class NightlyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = dict(os.environ, SOURCE_SHA=SHA, GITHUB_SHA=SHA,
-                        BUILD_STAMP=STAMP, NIGHTLY_VERSION=VERSION, NIGHTLY_SHORT_SHA=SHA[:7], PLATFORM='both',
+                        BUILD_STAMP=STAMP, NIGHTLY_VERSION=VERSION, NIGHTLY_SHORT_SHA=SHA[:7], PLATFORM='both', NIGHTLY_RELEASE='nightly',
                         DMG_NAME=f'Runner-Nightly-{SHA[:7]}.{STAMP}-arm64.dmg',
                         SETUP_NAME=f'Runner-Setup-{VERSION}-x64.exe',
                         RELEASE_EXISTS='true',
@@ -192,7 +192,8 @@ class NightlyTests(unittest.TestCase):
 
     def test_publish_predicate_including_default_and_cancellation(self):
         self.assertEqual(WORKFLOW[True]['workflow_dispatch']['inputs']['platform']['default'], 'all')
-        self.assertEqual(WORKFLOW['concurrency'], {'group': 'nightly', 'cancel-in-progress': True})
+        self.assertEqual(WORKFLOW['concurrency'], {'group': 'linux-nightly', 'cancel-in-progress': True})
+        self.assertEqual(WORKFLOW['jobs']['publish']['env']['NIGHTLY_RELEASE'], 'linux-nightly')
         self.assertIn('!cancelled()', JOBS['publish']['if'])
         results = ['success', 'failure', 'cancelled', 'skipped']
         for platform, prepare, macos, windows, cancelled in itertools.product(

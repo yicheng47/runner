@@ -321,6 +321,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PLATFORM: ${{ inputs.platform }}
+      NIGHTLY_RELEASE: linux-nightly
       SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
       BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
       NIGHTLY_VERSION: ${{ needs.prepare.outputs.version }}
@@ -358,7 +359,7 @@ jobs:
 
       - name: Validate selected artifacts before publishing
         run: |
-          test "$PLATFORM" = linux || { echo "error: linux-nightly publishes Linux only" >&2; exit 1; }
+          [[ "$NIGHTLY_RELEASE" == nightly || "$PLATFORM" == linux ]] || { echo "error: $NIGHTLY_RELEASE publishes Linux only" >&2; exit 1; }
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
             test -s "nightly-artifacts/macos/$DMG_NAME"
             python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast.xml "nightly-artifacts/macos/$DMG_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP"
@@ -402,73 +403,79 @@ jobs:
               fi
             fi
             echo
-            echo 'Temporary pre-merge Linux build of [#982](https://github.com/yicheng47/runner/pull/982). It is not a supported channel and is removed once Linux support reaches `main`. In-app updates read the `nightly` release, so these installs see no update until a nightly from `main` carries Linux packages.'
-            echo
-            sed -n '/^## Linux$/,$p' script/nightly-release-notes.md
+            if [[ "$NIGHTLY_RELEASE" == nightly ]]; then
+              cat script/nightly-release-notes.md
+            else
+              echo 'Temporary pre-merge Linux build of the Linux support umbrella, [#1027](https://github.com/yicheng47/runner/pull/1027). It is not a supported channel and is removed once Linux support reaches `main`. Installs from this release update in-app from it. After Linux support merges, install a regular nightly by hand once to move to the `nightly` channel.'
+              echo
+              sed -n '/^## Linux$/,$p' script/nightly-release-notes.md
+            fi
           } > "$notes"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag --force --annotate linux-nightly --message "Runner Nightly $NIGHTLY_VERSION" "$SOURCE_SHA"
-          git push --force origin refs/tags/linux-nightly
+          git tag --force --annotate "$NIGHTLY_RELEASE" --message "Runner Nightly $NIGHTLY_VERSION" "$SOURCE_SHA"
+          git push --force origin refs/tags/$NIGHTLY_RELEASE
 
       - name: Prepare the rolling nightly prerelease
         run: |
           notes="$RUNNER_TEMP/nightly-notes.md"
-          if gh release view linux-nightly >/dev/null 2>&1; then
-            gh release edit linux-nightly --target "$SOURCE_SHA" --title "Runner Linux Nightly (#982)" --notes-file "$notes" --prerelease --draft=false --latest=false
+          title="Runner Nightly"
+          [[ "$NIGHTLY_RELEASE" == nightly ]] || title="Runner Linux Nightly (#1027)"
+          if gh release view "$NIGHTLY_RELEASE" >/dev/null 2>&1; then
+            gh release edit "$NIGHTLY_RELEASE" --target "$SOURCE_SHA" --title "$title" --notes-file "$notes" --prerelease --draft=false --latest=false
           else
-            gh release create linux-nightly --target "$SOURCE_SHA" --title "Runner Linux Nightly (#982)" --notes-file "$notes" --prerelease --latest=false
+            gh release create "$NIGHTLY_RELEASE" --target "$SOURCE_SHA" --title "$title" --notes-file "$notes" --prerelease --latest=false
           fi
 
       - name: Publish macOS nightly assets
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
-          gh release upload linux-nightly "nightly-artifacts/macos/$DMG_NAME" --clobber
-          gh release upload linux-nightly nightly-artifacts/macos/appcast.xml --clobber
+          gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/macos/$DMG_NAME" --clobber
+          gh release upload "$NIGHTLY_RELEASE" nightly-artifacts/macos/appcast.xml --clobber
 
       - name: Publish Windows nightly assets
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          gh release upload linux-nightly "nightly-artifacts/windows/$SETUP_NAME" --clobber
-          gh release upload linux-nightly "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
+          gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/windows/$SETUP_NAME" --clobber
+          gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/windows/$SETUP_NAME.sig" --clobber
 
       - name: Publish Linux nightly assets
         if: inputs.platform == 'all' || inputs.platform == 'linux'
         run: |
           for arch in x86_64 aarch64; do
             for format in tar.gz deb rpm; do
-              gh release upload linux-nightly "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format" --clobber
-              gh release upload linux-nightly "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig" --clobber
+              gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format" --clobber
+              gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig" --clobber
             done
           done
 
       - name: Verify the public nightly release and downloads before pruning
         run: |
-          gh release view linux-nightly --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg setup "$SETUP_NAME" '
+          gh release view "$NIGHTLY_RELEASE" --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg setup "$SETUP_NAME" '
             .isPrerelease and (.isDraft | not) and
             ([.assets[].name] |
               (($platform != "all" and $platform != "both" and $platform != "macos") or (index($dmg) != null and index("appcast.xml") != null)) and
               (($platform != "all" and $platform != "both" and $platform != "windows") or (index($setup) != null and index($setup + ".sig") != null)))'
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
-            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/$DMG_NAME" >/dev/null
-            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
+            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/$DMG_NAME" >/dev/null
+            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
             cmp nightly-artifacts/macos/appcast.xml "$RUNNER_TEMP/public-appcast.xml"
           fi
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
-            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/$SETUP_NAME" >/dev/null
-            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
+            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/$SETUP_NAME" >/dev/null
+            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
             cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
           fi
 
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
-            assets=$(gh release view linux-nightly --json assets --jq '.assets[].name')
+            assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
             for arch in x86_64 aarch64; do
               for format in tar.gz deb rpm; do
                 name="Runner-$NIGHTLY_VERSION-linux-$arch.$format"
                 printf '%s\n' "$assets" | grep -Fxq "$name"
                 printf '%s\n' "$assets" | grep -Fxq "$name.sig"
-                curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/$name" >/dev/null
-                curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/linux-nightly/$name.sig" --output "$RUNNER_TEMP/linux-update.sig"
+                curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/$name" >/dev/null
+                curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$NIGHTLY_RELEASE/$name.sig" --output "$RUNNER_TEMP/linux-update.sig"
                 cmp "nightly-artifacts/linux/$name.sig" "$RUNNER_TEMP/linux-update.sig"
               done
             done
@@ -477,7 +484,7 @@ jobs:
       - name: Prune macOS nightlies to two builds
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
-          assets=$(gh release view linux-nightly --json assets --jq '.assets[].name')
+          assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
           pattern='^Runner-Nightly-.*\.([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$'
           stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
             if [[ "$name" =~ $pattern ]]; then
@@ -489,13 +496,13 @@ jobs:
             exit 1
           fi
           while IFS= read -r name; do
-            [[ -z "$name" ]] || gh release delete-asset linux-nightly "$name" --yes
+            [[ -z "$name" ]] || gh release delete-asset "$NIGHTLY_RELEASE" "$name" --yes
           done <<< "$stale"
 
       - name: Prune Windows nightlies to two builds
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
         run: |
-          assets=$(gh release view linux-nightly --json assets --jq '.assets[].name')
+          assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
           pattern='^Runner-Setup-.*\.([0-9]{8})\.([0-9]{4})-x64\.exe$'
           stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
             if [[ "$name" =~ $pattern ]]; then
@@ -508,9 +515,9 @@ jobs:
           fi
           while IFS= read -r name; do
             if [[ -n "$name" ]]; then
-              gh release delete-asset linux-nightly "$name" --yes
+              gh release delete-asset "$NIGHTLY_RELEASE" "$name" --yes
               if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then
-                gh release delete-asset linux-nightly "$name.sig" --yes
+                gh release delete-asset "$NIGHTLY_RELEASE" "$name.sig" --yes
               fi
             fi
           done <<< "$stale"
@@ -518,7 +525,7 @@ jobs:
       - name: Prune Linux nightlies to two stamps per architecture
         if: inputs.platform == 'all' || inputs.platform == 'linux'
         run: |
-          assets=$(gh release view linux-nightly --json assets --jq '.assets[].name')
+          assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
           for arch in x86_64 aarch64; do
             pattern="^Runner-nightly\\.[a-fA-F0-9]+\\.([0-9]{8})\\.([0-9]{4})-linux-$arch\\.(tar\\.gz|deb|rpm)$"
             stamps=$(printf '%s\n' "$assets" | while IFS= read -r name; do
@@ -529,8 +536,8 @@ jobs:
               if [[ "$name" =~ $pattern ]]; then
                 stamp="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
                 if printf '%s\n' "$stamps" | grep -Fxq "$stamp"; then
-                  gh release delete-asset linux-nightly "$name" --yes
-                  if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then gh release delete-asset linux-nightly "$name.sig" --yes; fi
+                  gh release delete-asset "$NIGHTLY_RELEASE" "$name" --yes
+                  if printf '%s\n' "$assets" | grep -Fxq "$name.sig"; then gh release delete-asset "$NIGHTLY_RELEASE" "$name.sig" --yes; fi
                 fi
               fi
             done <<< "$assets"
@@ -538,9 +545,9 @@ jobs:
 
       - name: Report completed nightly publication
         run: |
-          echo "Published $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA to release linux-nightly." >> "$GITHUB_STEP_SUMMARY"
+          echo "Published $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA to release $NIGHTLY_RELEASE." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report incomplete nightly publication
         if: failure() || cancelled()
         run: |
-          echo "Incomplete $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA. Some files may already be uploaded; inspect release linux-nightly before another cut." >> "$GITHUB_STEP_SUMMARY"
+          echo "Incomplete $PLATFORM nightly $NIGHTLY_VERSION from $SOURCE_SHA. Some files may already be uploaded; inspect release $NIGHTLY_RELEASE before another cut." >> "$GITHUB_STEP_SUMMARY"
