@@ -156,6 +156,7 @@ impl NativeRoot {
         let owner = cx.entity();
         div()
             .id("account-avatar")
+            .group("account-avatar")
             .debug_selector(|| "SIDEBAR_ACCOUNT".into())
             .tab_index(0)
             .flex_none()
@@ -190,6 +191,9 @@ impl NativeRoot {
                     .rounded_full()
                     .border_2()
                     .border_color(theme::faint())
+                    .group_hover("account-avatar", |circle| {
+                        circle.border_color(theme::muted())
+                    })
                     .flex()
                     .items_center()
                     .justify_center()
