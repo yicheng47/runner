@@ -343,23 +343,36 @@ impl NativeRoot {
             .pb_4()
             .child(
                 Button::new("remote-cancel-start", crate::i18n::text("ui.cancel"))
+                    .debug_selector("REMOTE_CANCEL_START")
                     .size(ButtonSize::Sm)
                     .variant(ButtonVariant::Secondary)
-                    .on_press(move |_, cx| {
-                        root.update(cx, |r, cx| {
-                            r.settings_page.remote.busy = false;
-                            r.remote_request(
-                                false,
-                                |c| {
-                                    c.remote_logout()?;
-                                    c.remote_status()
-                                },
-                                cx,
-                            );
-                        })
-                    }),
+                    .on_press(move |_, cx| root.update(cx, |r, cx| r.remote_cancel_start(cx))),
             )
             .into_any_element()
+    }
+
+    pub(super) fn remote_cancel_start(&mut self, cx: &mut Context<Self>) {
+        self.settings_page.remote.request_generation += 1;
+        self.settings_page.remote.busy = false;
+        self.settings_page.remote.opening = false;
+        self.settings_page.remote.error = None;
+        if let Some(start) = self.settings_page.remote.enrollment_start.take() {
+            start
+                .abandoned
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let client = self.core(cx).clone();
+            let cleanup = cx
+                .background_spawn(async move {
+                    let _ = start.task.await;
+                    if start.dispatched.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = client.remote_logout();
+                    }
+                })
+                .shared();
+            cx.background_spawn(cleanup.clone()).detach();
+            self.settings_page.remote.enrollment_cleanup = Some(cleanup);
+        }
+        cx.notify();
     }
 
     fn enrollment_card(

@@ -340,17 +340,39 @@ fn spawn_with_clock(
                     None
                 }
             };
-            match result {
+            let error = match result {
                 Some(Ok(Ok(()))) | None => break,
-                _ => log::error!(
-                    "remote task ended unexpectedly; restarting independently of sessions"
-                ),
-            }
+                Some(Ok(Err(error))) => remote::redact(&error),
+                Some(Err(error)) => remote::redact(&format!("Remote worker failed: {error}")),
+            };
+            log::error!(
+                "remote task ended unexpectedly: {error}; restarting independently of sessions"
+            );
+            let mut status = status_tx.status.borrow().clone();
+            status.last_error = Some(error.clone());
+            status_tx.status.send_replace(status.clone());
+            events.emit("remote/status", &status);
             #[cfg(test)]
             restart_tx.send_modify(|count| *count += 1);
             let delay = machine::backoff(attempt, rand::random());
             attempt = attempt.saturating_add(1);
-            tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay as u64)) => {}, _ = stop.cancelled() => break }
+            let mut commands = rx.commands.lock().await;
+            let delay = tokio::time::sleep(std::time::Duration::from_millis(delay as u64));
+            tokio::pin!(delay);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = stop.cancelled() => break,
+                    envelope = commands.recv() => {
+                        let Some(envelope) = envelope else { break; };
+                        let _ = envelope.reply.send(Err(error.clone()));
+                    }
+                    _ = &mut delay => break,
+                }
+            }
+            if stop.is_cancelled() || commands.is_closed() {
+                break;
+            }
         }
         stopped_tx.send_replace(true);
     });
@@ -422,10 +444,12 @@ async fn run(
     inbox: Arc<Inbox>,
     cancel: CancellationToken,
     clock: Clock,
-) -> Result<(), &'static str> {
+) -> Result<(), String> {
+    let startup_error = status_tx.status.borrow().last_error.clone();
+    let mut rx = inbox.commands.lock().await;
     let prepare_root = root.clone();
     let prepare_store = store.clone();
-    let preparation = tokio::task::spawn_blocking(move || -> Result<_, &'static str> {
+    let mut preparation = tokio::task::spawn_blocking(move || -> Result<_, &'static str> {
         let client = transport::client()?;
         let saved = Saved::load(&prepare_root)?;
         let (identity, secrets) = store::restore(
@@ -435,9 +459,15 @@ async fn run(
         let trust = trust::Trust::load(&prepare_root)?;
         Ok((client, saved, identity, secrets, trust))
     });
-    let (client, saved, identity, secrets, trust) = tokio::select! {
-        prepared=preparation=>prepared.map_err(|_| "Remote startup worker failed")??,
-        _=cancel.cancelled()=>return Ok(()),
+    let (client, saved, identity, secrets, trust) = loop {
+        tokio::select! {
+            prepared = &mut preparation => break prepared.map_err(|error| format!("Remote startup worker failed: {error}"))??,
+            _ = cancel.cancelled() => return Ok(()),
+            envelope = rx.recv(), if startup_error.is_some() => {
+                let Some(envelope) = envelope else { return Ok(()); };
+                let _ = envelope.reply.send(Err(startup_error.clone().unwrap()));
+            }
+        }
     };
     let (mut machine, initial) = Machine::restore(saved, secrets, clock.now());
     machine.identity = identity;
@@ -445,21 +475,30 @@ async fn run(
     machine.host = remote::HostInfo::current();
     let mut socket = None;
     let trust_writes = &inbox.trust_writes;
-    let initialized = tokio::select! {
-        result = perform(
-        &mut machine,
-        initial,
-        &mut socket,
-        &client,
-        &store,
-        &root,
-        &events,
-        &status_tx,
-        &clock,
-        trust_writes,
-    )
-     => Some(result),
-        _ = cancel.cancelled() => None,
+    let initialized = {
+        let initialization = perform(
+            &mut machine,
+            initial,
+            &mut socket,
+            &client,
+            &store,
+            &root,
+            &events,
+            &status_tx,
+            &clock,
+            trust_writes,
+        );
+        tokio::pin!(initialization);
+        loop {
+            tokio::select! {
+                result = &mut initialization => break Some(result),
+                _ = cancel.cancelled() => break None,
+                envelope = rx.recv(), if startup_error.is_some() => {
+                    let Some(envelope) = envelope else { return Ok(()); };
+                    let _ = envelope.reply.send(Err(startup_error.clone().unwrap()));
+                }
+            }
+        }
     };
     match initialized {
         Some(result) => {
@@ -470,7 +509,11 @@ async fn run(
             return Ok(());
         }
     }
-    let mut rx = inbox.commands.lock().await;
+    if let Some(error) = startup_error {
+        while let Ok(envelope) = rx.try_recv() {
+            let _ = envelope.reply.send(Err(error.clone()));
+        }
+    }
     let mut pending_start: Option<oneshot::Sender<Result<Reply, String>>> = None;
     let mut channels: Option<channels::Channels> = None;
     loop {
@@ -623,7 +666,7 @@ async fn run(
                 if let Some(reply) = reply {
                     let _ = reply.send(Err(error.into()));
                 }
-                return Err(error);
+                return Err(error.into());
             }
         };
         let frames = channels::transition(&mut channels, &mut machine, &effects, revoke.as_deref());

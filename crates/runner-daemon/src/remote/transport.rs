@@ -300,6 +300,36 @@ fn client_refusal(status: u16, after: Option<u64>) -> Failure {
 #[cfg(test)]
 mod client_tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn client_initializes_without_usable_native_roots() {
+        const CHILD: &str = "RUNNER_TEST_EMPTY_NATIVE_ROOTS";
+        if std::env::var_os(CHILD).is_some() {
+            client().expect("Missing roots affect HTTPS requests, not client initialization");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let empty = root.path().join("empty.pem");
+        std::fs::write(&empty, b"").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "remote::transport::client_tests::client_initializes_without_usable_native_roots",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("SSL_CERT_FILE", empty)
+            .env("SSL_CERT_DIR", root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn client_upgrade_uses_bearer_header_and_refusals_are_static() {
         let client = client().unwrap();

@@ -1,5 +1,6 @@
 use crate::surfaces::settings_page::{settings_section_heading, SettingsPane};
 use crate::{theme, NativeRoot};
+use futures::FutureExt;
 use gpui::prelude::*;
 use gpui::{div, rems, svg, AnyElement, Context, FontWeight, SharedString};
 use runner_app::ui::{
@@ -21,6 +22,8 @@ pub(crate) struct RemotePaneState {
     busy: bool,
     opening: bool,
     request_generation: u64,
+    enrollment_start: Option<EnrollmentStart>,
+    enrollment_cleanup: Option<futures::future::Shared<gpui::Task<()>>>,
     error: Option<String>,
     pub(crate) confirm: bool,
     reset_identity: bool,
@@ -29,6 +32,13 @@ pub(crate) struct RemotePaneState {
     pin: Option<PinDialog>,
     pub(crate) focus: gpui::FocusHandle,
     generation: u64,
+}
+type EnrollmentTask =
+    futures::future::Shared<gpui::Task<Result<RemoteStatus, runner_core::protocol::ClientError>>>;
+struct EnrollmentStart {
+    abandoned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    dispatched: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    task: EnrollmentTask,
 }
 struct PinDialog {
     fields: [gpui::Entity<PinField>; 2],
@@ -44,6 +54,8 @@ impl RemotePaneState {
             busy: false,
             opening: false,
             request_generation: 0,
+            enrollment_start: None,
+            enrollment_cleanup: None,
             error: None,
             confirm: false,
             reset_identity: false,
@@ -299,12 +311,44 @@ impl NativeRoot {
         let generation = self.settings_page.remote.request_generation;
         self.settings_page.remote.error = None;
         let client = self.core(cx).clone();
-        let task = cx.background_spawn(async move { request(client) });
+        let task = if open_browser {
+            let cleanup = self.settings_page.remote.enrollment_cleanup.clone();
+            let abandoned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancelled = abandoned.clone();
+            let started = dispatched.clone();
+            let task = cx
+                .background_spawn(async move {
+                    // A cancelled Start may still mutate the daemon until its cleanup finishes.
+                    if let Some(cleanup) = cleanup {
+                        cleanup.await;
+                    }
+                    if cancelled.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(runner_core::protocol::ClientError::msg(
+                            "Enrollment cancelled.",
+                        ));
+                    }
+                    started.store(true, std::sync::atomic::Ordering::SeqCst);
+                    request(client)
+                })
+                .shared();
+            self.settings_page.remote.enrollment_start = Some(EnrollmentStart {
+                abandoned,
+                dispatched,
+                task: task.clone(),
+            });
+            task
+        } else {
+            cx.background_spawn(async move { request(client) }).shared()
+        };
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |root, cx| {
                 if root.settings_page.remote.request_generation != generation {
                     return;
+                }
+                if open_browser {
+                    root.settings_page.remote.enrollment_start = None;
                 }
                 root.settings_page.remote.busy = false;
                 match result {
@@ -1727,6 +1771,149 @@ mod tests {
                     Some(trust)
                 );
             }
+        }
+    }
+
+    #[test]
+    fn cancel_start_ignores_late_daemon_results_and_unlocks_sign_in() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for fail in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            cx.run_until_parked();
+            store.update(&mut cx, |store, _| store.settings.local_only = false);
+            let window = switch_window(&mut cx, &store, temp.path(), "cancel-start");
+            let requests = std::sync::Arc::new(RemoteRequests::default());
+            requests
+                .fail_logout
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            store.update(&mut cx, |store, _| {
+                store.client = DaemonClient::new(requests.clone());
+            });
+            let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let pending = completed.clone();
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.route = crate::AppRoute::Settings;
+                    root.settings_page.pane = SettingsPane::Remote;
+                    root.remote_request(
+                        true,
+                        move |client| {
+                            pending.store(true, std::sync::atomic::Ordering::SeqCst);
+                            if fail {
+                                Err(runner_core::protocol::ClientError::msg(
+                                    "late startup error",
+                                ))
+                            } else {
+                                client.remote_enroll_start(None, false)
+                            }
+                        },
+                        cx,
+                    );
+                    assert!(root.settings_page.remote.busy);
+                    assert!(root.settings_page.remote.opening);
+                })
+                .unwrap();
+            for _ in 0..100 {
+                if completed.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                assert!(cx.dispatcher.tick(true));
+            }
+            assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+            window
+                .update(&mut cx, |root, _, cx| {
+                    assert!(root.settings_page.remote.busy);
+                    let generation = root.settings_page.remote.request_generation;
+                    root.remote_cancel_start(cx);
+                    assert!(!root.settings_page.remote.busy);
+                    assert!(!root.settings_page.remote.opening);
+                    assert_eq!(root.settings_page.remote.request_generation, generation + 1);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(
+                cx.opened_url().is_none(),
+                "abandoned start must not open a browser"
+            );
+            window
+                .read_with(&cx, |root, _| {
+                    assert!(!root.settings_page.remote.busy);
+                    assert!(root.settings_page.remote.error.is_none());
+                })
+                .unwrap();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            assert!(visual.debug_bounds("REMOTE_CANCEL_START").is_none());
+            let sign_in = visual.debug_bounds("REMOTE_SIGN_IN").unwrap();
+            visual.simulate_click(sign_in.center(), Default::default());
+            visual.run_until_parked();
+            assert!(
+                cx.opened_url().is_some(),
+                "Sign in must be usable after Cancel"
+            );
+        }
+    }
+
+    #[test]
+    fn immediate_sign_in_waits_for_abandoned_start_cleanup_and_skips_undispatched_start() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for dispatch_first in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            cx.run_until_parked();
+            store.update(&mut cx, |store, _| store.settings.local_only = false);
+            let window = switch_window(&mut cx, &store, temp.path(), "cancel-restart");
+            let requests = std::sync::Arc::new(RemoteRequests::default());
+            store.update(&mut cx, |store, _| {
+                store.client = DaemonClient::new(requests.clone())
+            });
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.route = crate::AppRoute::Settings;
+                    root.settings_page.pane = SettingsPane::Remote;
+                    root.remote_connect(cx);
+                })
+                .unwrap();
+            if dispatch_first {
+                for _ in 0..100 {
+                    if !requests.calls.lock().unwrap().is_empty() {
+                        break;
+                    }
+                    assert!(cx.dispatcher.tick(true));
+                }
+                assert_eq!(*requests.calls.lock().unwrap(), ["sign in"]);
+            }
+            window
+                .update(&mut cx, |root, _, cx| {
+                    assert!(root.settings_page.remote.busy);
+                    root.remote_cancel_start(cx);
+                    assert!(!root.settings_page.remote.busy);
+                    assert!(!root.settings_page.remote.opening);
+                    root.remote_connect(cx);
+                    assert!(root.settings_page.remote.busy);
+                })
+                .unwrap();
+            // Both cleanup and the second Start are queued before background work resumes.
+            cx.run_until_parked();
+            assert_eq!(
+                *requests.calls.lock().unwrap(),
+                if dispatch_first {
+                    vec!["sign in", "sign out", "sign in"]
+                } else {
+                    vec!["sign in"]
+                }
+            );
+            assert!(matches!(
+                requests.status.lock().unwrap().state,
+                RemoteState::Enrolling { .. }
+            ));
+            assert!(cx.opened_url().is_some());
+            window
+                .read_with(&cx, |root, _| assert!(!root.settings_page.remote.busy))
+                .unwrap();
         }
     }
 

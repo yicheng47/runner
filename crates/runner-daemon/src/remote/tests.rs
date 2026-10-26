@@ -952,6 +952,130 @@ async fn startup_failures_cannot_hold_shutdown_or_daemon_requests() {
     }
 }
 
+#[tokio::test]
+async fn startup_failure_logs_reason_rejects_requests_and_never_replays_them() {
+    struct StartupLogs(std::sync::Mutex<Vec<String>>);
+    impl log::Log for StartupLogs {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() == "runner_daemon::remote" && record.level() == log::Level::Error {
+                self.0.lock().unwrap().push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+    static LOGS: StartupLogs = StartupLogs(std::sync::Mutex::new(Vec::new()));
+    log::set_logger(&LOGS).unwrap();
+    log::set_max_level(log::LevelFilter::Error);
+
+    struct FailingStore {
+        failing: std::sync::atomic::AtomicBool,
+        panic: bool,
+        saved: store::MemoryStore,
+        block_recovery: std::sync::atomic::AtomicBool,
+        recovering: tokio::sync::Notify,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl SecretStore for FailingStore {
+        fn get(&self, name: &str) -> store::StoreResult<Option<Vec<u8>>> {
+            if self.failing.load(Ordering::SeqCst) {
+                assert!(!self.panic, "startup test panic rhc_secret_canary");
+                return Err("startup test store inaccessible rhc_secret_canary");
+            }
+            if self.block_recovery.swap(false, Ordering::SeqCst) {
+                self.recovering.notify_one();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            self.saved.get(name)
+        }
+        fn put(&self, name: &str, bytes: &[u8]) -> store::StoreResult<()> {
+            self.saved.put(name, bytes)
+        }
+        fn delete(&self, name: &str) -> store::StoreResult<()> {
+            self.saved.delete(name)
+        }
+    }
+    for panic in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let store = Arc::new(FailingStore {
+            failing: true.into(),
+            panic,
+            saved: store::MemoryStore::default(),
+            block_recovery: true.into(),
+            recovering: tokio::sync::Notify::new(),
+            release: std::sync::Mutex::new(blocked),
+        });
+        let events = crate::events::EventChannel::new();
+        let mut snapshots = events.subscribe();
+        let handle = spawn_with_store(root.path().into(), store.clone(), events);
+        let start = handle.start(Some("http://127.0.0.1:1".into()), false);
+        let cancel = handle.logout();
+        tokio::pin!(start, cancel);
+        assert!(futures_util::poll!(&mut start).is_pending());
+        assert!(futures_util::poll!(&mut cancel).is_pending());
+        let (started, cancelled) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(start, cancel)
+        })
+        .await
+        .expect("queued requests must receive the startup error promptly");
+        let error = started.unwrap_err();
+        assert!(error.contains(if panic {
+            "Remote startup worker failed:"
+        } else {
+            "startup test store inaccessible"
+        }));
+        assert!(error.contains("[redacted]"));
+        assert!(!error.contains("rhc_secret_canary"));
+        assert_eq!(cancelled.unwrap_err(), error);
+        assert_eq!(handle.status().last_error.as_ref(), Some(&error));
+        assert!(LOGS.0.lock().unwrap().iter().any(|line| {
+            line.contains("remote task ended unexpectedly:")
+                && line.contains(&error)
+                && !line.contains("rhc_secret_canary")
+        }));
+        let event = snapshots.recv().await.unwrap();
+        assert_eq!(event.name, "remote/status");
+        assert_eq!(event.payload["last_error"], error);
+        let new = tokio::time::timeout(std::time::Duration::from_secs(1), handle.cancel())
+            .await
+            .expect("new requests must fail during backoff and startup");
+        assert!(new.unwrap_err().contains("startup test"));
+
+        store.failing.store(false, Ordering::SeqCst);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            store.recovering.notified(),
+        )
+        .await
+        .expect("retry must reach preparation");
+        let during_retry = tokio::time::timeout(std::time::Duration::from_secs(1), handle.cancel())
+            .await
+            .expect("requests must fail while retry preparation is pending");
+        assert!(during_retry.unwrap_err().contains("startup test"));
+        release.send(()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            until(&handle, |status| status.last_error.is_none()),
+        )
+        .await
+        .expect("remote task must recover when its secret store recovers");
+        assert!(store.saved.get(store::IDENTITY_NAME).unwrap().is_none());
+        assert!(matches!(handle.status().state, RemoteState::Off));
+        assert!(handle
+            .set_pin(remote::Secret("001234".into()))
+            .await
+            .is_ok());
+        handle.shutdown().await;
+    }
+}
+
 struct CallGate {
     entered: tokio::sync::Notify,
     release: tokio::sync::Semaphore,
