@@ -133,7 +133,7 @@ class NightlyTests(unittest.TestCase):
         (self.win / (self.env['SETUP_NAME'] + '.sig')).write_bytes(b'installer signature fixture')
         self.linux = self.root / 'nightly-artifacts/linux'
         self.linux.mkdir(parents=True, exist_ok=True)
-        self.linux_names = [f'Runner-{VERSION}-linux-{arch}.{ext}' for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+        self.linux_names = [f'Runner-{VERSION}-linux-{arch}.{ext}' for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb']]
         self.linux_names += [name + ".sig" for name in self.linux_names]
         for name in self.linux_names:
             (self.linux / name).write_bytes(b'Linux package fixture')
@@ -246,17 +246,16 @@ class NightlyTests(unittest.TestCase):
                 finally:
                     removed.with_suffix('.saved').rename(removed)
 
-    def test_linux_retention_keeps_two_stamps_and_does_not_prune_other_platforms(self):
+    def test_linux_retention_keeps_one_stamp_and_does_not_prune_other_platforms(self):
         self.env['PLATFORM'] = 'linux'
         old = [f'Runner-nightly.abc1234.202608{day:02}.0100-linux-{arch}.{ext}'
-               for day in [1, 2, 3] for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb', 'rpm']]
+               for day in [1, 2] for arch in ['x86_64', 'aarch64'] for ext in ['tar.gz', 'deb']]
         old += [name + ".sig" for name in old]
         foreign = ['unrelated.txt', 'appcast.xml', 'Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner-Setup-nightly.abc1234.20260801.0100-x64.exe']
         self.assets(old + foreign)
         result = self.publish()
         self.assertEqual(result.returncode, 0, result.stderr)
-        keep = {name for name in old if '.20260803.0100-' in name}
-        self.assertEqual(self.published_assets(), keep | set(self.linux_names) | set(foreign))
+        self.assertEqual(self.published_assets(), set(self.linux_names) | set(foreign))
 
     def test_preparation_identifies_the_commit_without_reading_an_official_version(self):
         stub = self.root / 'script/bundle-mac'

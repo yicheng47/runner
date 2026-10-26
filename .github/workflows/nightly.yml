@@ -371,7 +371,7 @@ jobs:
 
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
             for arch in x86_64 aarch64; do
-              for format in tar.gz deb rpm; do
+              for format in tar.gz deb; do
                 test -s "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format"
                 test -s "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig"
               done
@@ -443,7 +443,7 @@ jobs:
         if: inputs.platform == 'all' || inputs.platform == 'linux'
         run: |
           for arch in x86_64 aarch64; do
-            for format in tar.gz deb rpm; do
+            for format in tar.gz deb; do
               gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format" --clobber
               gh release upload "$NIGHTLY_RELEASE" "nightly-artifacts/linux/Runner-$NIGHTLY_VERSION-linux-$arch.$format.sig" --clobber
             done
@@ -470,7 +470,7 @@ jobs:
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "linux" ]]; then
             assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
             for arch in x86_64 aarch64; do
-              for format in tar.gz deb rpm; do
+              for format in tar.gz deb; do
                 name="Runner-$NIGHTLY_VERSION-linux-$arch.$format"
                 printf '%s\n' "$assets" | grep -Fxq "$name"
                 printf '%s\n' "$assets" | grep -Fxq "$name.sig"
@@ -522,15 +522,15 @@ jobs:
             fi
           done <<< "$stale"
 
-      - name: Prune Linux nightlies to two stamps per architecture
+      - name: Prune Linux nightlies to one stamp per architecture
         if: inputs.platform == 'all' || inputs.platform == 'linux'
         run: |
           assets=$(gh release view "$NIGHTLY_RELEASE" --json assets --jq '.assets[].name')
           for arch in x86_64 aarch64; do
-            pattern="^Runner-nightly\\.[a-fA-F0-9]+\\.([0-9]{8})\\.([0-9]{4})-linux-$arch\\.(tar\\.gz|deb|rpm)$"
+            pattern="^Runner-nightly\\.[a-fA-F0-9]+\\.([0-9]{8})\\.([0-9]{4})-linux-$arch\\.(tar\\.gz|deb)$"
             stamps=$(printf '%s\n' "$assets" | while IFS= read -r name; do
               if [[ "$name" =~ $pattern ]]; then printf '%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; fi
-            done | sort -ru | sed -n '3,$p')
+            done | sort -ru | sed -n '2,$p')
             if printf '%s\n' "$stamps" | grep -Fxq "$BUILD_STAMP"; then echo 'error: refusing to prune current Linux packages' >&2; exit 1; fi
             while IFS= read -r name; do
               if [[ "$name" =~ $pattern ]]; then

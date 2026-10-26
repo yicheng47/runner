@@ -6,7 +6,7 @@ Linux support for ARM64 (`aarch64`) and x86_64 is being prepared in [#823](https
 
 Linux kernel 5.3 or later is required for retained pidfds during descendant cleanup. The app uses GPUI 0.3.7 with X11 and Wayland enabled, fontconfig, an EGL/Vulkan-capable graphics stack and a desktop notification service. Noto Sans CJK provides Chinese/Japanese/Korean fallback. A working Vulkan cube alone does not establish terminal/IME or app acceptance. Software Vulkan rendering (Mesa llvmpipe) may work but is not a performance guarantee. The CLI/daemon do not need a display or prior GUI launch.
 
-CI and release definitions build natively on x86_64 and ARM64 runners inside Ubuntu 22.04 containers, targeting glibc 2.35 or later. The current-main compatibility checks use this baseline on ARM64; see `docs/impls/982-linux-remote-compat.md` for automated results and remaining acceptance gaps. This automated coverage does not establish native desktop, installation or x86_64 acceptance. The bundler extracts the highest required GLIBC symbol from both executables and raises package dependency floors accordingly. Locally built Ubuntu 26 binaries can therefore require newer glibc. `lib/runner/build-platform.txt` records the actual floor and build distro. Debian C++ dependencies conservatively require the build host's installed libstdc++ package; RPM declares the required GLIBCXX symbol capability. Other distros need the equivalent runtime libraries and graphics drivers; package metadata is not a substitute for native validation.
+CI and release definitions build natively on x86_64 and ARM64 runners inside Ubuntu 22.04 containers, targeting glibc 2.35 or later. The current-main compatibility checks use this baseline on ARM64; see `docs/impls/982-linux-remote-compat.md` for automated results and remaining acceptance gaps. This automated coverage does not establish native desktop, installation or x86_64 acceptance. The bundler extracts the highest required GLIBC symbol from both executables and raises package dependency floors accordingly. Locally built Ubuntu 26 binaries can therefore require newer glibc. `lib/runner/build-platform.txt` records the actual floor and build distro. Debian C++ dependencies conservatively require the build host's installed libstdc++ package. Other distros need the equivalent runtime libraries and graphics drivers; package metadata is not a substitute for native validation.
 
 ## Local development
 
@@ -37,7 +37,7 @@ successful caches only on `main`, matching macOS/Windows. Cargo chooses concurre
 from the available CPUs. Tests
 run as an ordinary user with `C.UTF-8` inside an init-enabled container. PR CI does
 not build release binaries or installation packages; the release and nightly
-workflows build and verify tar.gz, deb and rpm packages before uploading them.
+workflows build and verify tar.gz and deb packages before uploading them.
 
 ## Window controls and initial bounds
 
@@ -68,7 +68,7 @@ Build on a matching Linux architecture. The bundler always builds both inputs wi
 python3 script/linux/test-packaging.py --packages target/linux-packages
 ```
 
-Outputs are `Runner-<version>-linux-<x86_64|aarch64>.tar.gz`, `.deb` and `.rpm`. Nightlies substitute `nightly.<sha>.<UTC stamp>` for the version label. Debian/RPM metadata keeps the UTC stamp before the commit for upgrade ordering. Debian metadata uses `amd64`/`arm64`, RPM uses `x86_64`/`aarch64`; ELF machine validation prevents mislabelling. All formats share one staging tree and include the app, sidecar, real same-byte `runnerd`, desktop entry, icon and user service. Packaging uses `dpkg-deb` and `rpmbuild`, without nfpm or a runtime download. Local packaging alone does not sign artifacts. Release/nightly builds run `script/linux/sign-updates` and publish a detached `.sig` for each package using the existing updater signing key.
+Outputs are `Runner-<version>-linux-<x86_64|aarch64>.tar.gz` and `.deb`. Nightlies substitute `nightly.<sha>.<UTC stamp>` for the version label. Debian metadata keeps the UTC stamp before the commit for upgrade ordering. Debian metadata uses `amd64`/`arm64`; ELF machine validation prevents mislabelling. Both formats share one staging tree and include the app, sidecar, real same-byte `runnerd`, desktop entry, icon and user service. Packaging uses `dpkg-deb`, without nfpm or a runtime download. Local packaging alone does not sign artifacts. Release/nightly builds run `script/linux/sign-updates` and publish a detached `.sig` for each package using the existing updater signing key.
 
 The tarball installs per user:
 
@@ -87,7 +87,7 @@ The user-installed desktop icon is an owned relative link into `lib/runner`, so 
 
 `--prefix /absolute/user/prefix` supports isolated/custom installs; add its `bin` to PATH. The installer refuses foreign commands, desktop entries, icons and units before changing files. Upgrades replace executable inodes, preserving already running processes until normal daemon replacement. The installer never runs or enables a service. Uninstall stops no sessions and retains data; stop/disable the optional service first. Do not install a tarball into `/usr` or `/usr/local`.
 
-Install a `.deb` with `sudo apt install ./Runner-…-linux-….deb`, or an `.rpm` with your distro's package manager. System packages install payloads to `/usr/lib/runner` and expose `/usr/bin/runner`, `runnerd` and `runner-app` through ownership-checked lifecycle scripts; the tarball uses the same layout under its prefix. Headless `runner` starts a local daemon and installs the per-user shim target on first use. Settings recognizes package-managed commands and directs removal to the installer/package manager; it cannot delete package-owned links. An earlier unrelated executable on PATH remains visible as a shadowing warning. The aliases are not ordinary package payload files: install/upgrade refuses foreign existing commands, and remove/purge preserves replacements. RPM upgrade keeps aliases until the new package post-install step; erase removes only exact owned links. No package operation traverses user homes or deletes their databases.
+Install a `.deb` with `sudo apt install ./Runner-…-linux-….deb`; other distros, including RPM-based ones, use the tarball. System packages install payloads to `/usr/lib/runner` and expose `/usr/bin/runner`, `runnerd` and `runner-app` through ownership-checked lifecycle scripts; the tarball uses the same layout under its prefix. Headless `runner` starts a local daemon and installs the per-user shim target on first use. Settings recognizes package-managed commands and directs removal to the installer/package manager; it cannot delete package-owned links. An earlier unrelated executable on PATH remains visible as a shadowing warning. The aliases are not ordinary package payload files: install/upgrade refuses foreign existing commands, and remove/purge preserves replacements. No package operation traverses user homes or deletes their databases.
 
 ## Optional systemd user service
 
@@ -148,13 +148,12 @@ that root-owned, non-writable executable through `pkexec` in its narrow
 `--runner-install-update` mode. It starts no GUI, daemon, agents or user database
 as root. The authorized process copies package/signature inputs into root-owned
 staging and rechecks the compiled-in trust key, version, channel, architecture
-and runner package metadata before invoking APT/DNF. Neither shell command text
-nor arbitrary executable paths come from a feed. DNF checks repository dependency
-signatures; only the already Runner-verified local RPM uses the detached trust
-chain instead of RPM signing. APT refuses a transaction requiring removals.
+and runner package metadata before invoking APT. Neither shell command text
+nor arbitrary executable paths come from a feed. APT refuses a transaction
+requiring removals.
 
 Polkit/pkexec and an interactive desktop authentication agent are required for
-system packages; RPM automatic install currently requires DNF. A failed or
+system packages. A failed or
 cancelled authorization/transaction keeps the current GUI running, with log and
 retry access. Successful install marks the existing update-quit lifecycle and
 relaunches the installed application as the original user after the old GUI
@@ -173,4 +172,4 @@ The app, CLI and systemd user manager must use the same `XDG_DATA_HOME` to share
 
 Linux uses Ctrl for PIN paste and app shortcuts. Ctrl+C copies a terminal selection; with no selection it reaches the terminal's interrupt path. Remote terminal paste accepts text, and input is dropped while disconnected or controlled elsewhere. Pairing attempts desktop notification delivery and also shows an actionable in-app toast, because Linux cannot query whether the desktop delivered the notification. Native clipboard/browser, X11/Wayland chrome, pairing notification and systemd/linger behavior still need checks on real Linux machines.
 
-Nightly publication uses one `nightly` release, one stamp and one SHA across macOS, Windows and both Linux architectures. The default `all` includes every platform; `linux` selects both Linux architectures, and legacy `both` remains macOS+Windows. Six Linux packages and six signatures are validated and publicly checked before pruning. Nightly does not wait for main CI; production release publication retains its CI gate and draft-release handoff.
+Nightly publication uses one `nightly` release, one stamp and one SHA across macOS, Windows and both Linux architectures. The default `all` includes every platform; `linux` selects both Linux architectures, and legacy `both` remains macOS+Windows. Four Linux packages and four signatures are validated and publicly checked before pruning, which keeps only the newest Linux build per architecture. Nightly does not wait for main CI; production release publication retains its CI gate and draft-release handoff.

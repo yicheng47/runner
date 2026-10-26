@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build native Linux binaries and package one staged tree as tar.gz, deb and rpm."""
+"""Build native Linux binaries and package one staged tree as tar.gz and deb."""
 import argparse
 import datetime
 import os
@@ -13,7 +13,7 @@ import tempfile
 import json
 
 ROOT = Path(__file__).resolve().parent.parent
-ARCHES = {'x86_64': ('amd64', 'x86_64', 62), 'aarch64': ('arm64', 'aarch64', 183)}
+ARCHES = {'x86_64': ('amd64', 62), 'aarch64': ('arm64', 183)}
 
 
 def run(*args, **kwargs):
@@ -23,7 +23,7 @@ def run(*args, **kwargs):
 def verify_elf(path, arch):
     with path.open('rb') as binary:
         header = binary.read(20)
-    if len(header) < 20 or header[:6] != b'\x7fELF\x02\x01' or struct.unpack('<H', header[18:20])[0] != ARCHES[arch][2]:
+    if len(header) < 20 or header[:6] != b'\x7fELF\x02\x01' or struct.unpack('<H', header[18:20])[0] != ARCHES[arch][1]:
         raise SystemExit(f'{path} is not a Linux ELF64 executable for {arch}')
 
 
@@ -39,8 +39,7 @@ def package_identity(version, channel, stamp, sha):
     label = version if channel == 'production' else f'{channel}.{sha[:7]}.{stamp}'
     metadata_channel = channel.replace('-', '.')
     deb_version = version if channel == 'production' else f'{version}~{metadata_channel}.{stamp}.{sha[:7]}'
-    rpm_release = '1' if channel == 'production' else f'0.{metadata_channel}.{stamp}.{sha[:7]}'
-    return label, deb_version, rpm_release
+    return label, deb_version
 
 
 def main():
@@ -48,13 +47,13 @@ def main():
     parser.add_argument('--channel', choices=['production', 'nightly'], default='production')
     parser.add_argument('--arch', choices=ARCHES, default=platform.machine())
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'target/linux-packages')
-    parser.add_argument('--formats', default='tar,deb,rpm')
+    parser.add_argument('--formats', default='tar,deb')
     args = parser.parse_args()
     if args.arch not in ARCHES:
         parser.error('Only Linux x86_64 and aarch64 are supported')
     formats = args.formats.split(',')
-    if not formats or set(formats) - {'tar', 'deb', 'rpm'}:
-        parser.error('--formats must select tar,deb,rpm')
+    if not formats or set(formats) - {'tar', 'deb'}:
+        parser.error('--formats must select tar,deb')
     metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version', '1', '--no-deps'], cwd=ROOT))
     version = next(package['version'] for package in metadata['packages'] if package['name'] == 'runner-app').split('-')[0]
     stamp = os.environ.get('RUNNER_BUILD_STAMP', datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d.%H%M'))
@@ -62,7 +61,7 @@ def main():
     import re
     if not re.fullmatch(r'\d{8}\.\d{4}', stamp) or not re.fullmatch(r'[0-9a-fA-F]{7,40}', sha):
         parser.error('Invalid build stamp or SHA')
-    label, package_version, rpm_release = package_identity(version, args.channel, stamp, sha)
+    label, package_version = package_identity(version, args.channel, stamp, sha)
     if platform.system() != 'Linux' or platform.machine() != args.arch:
         parser.error('Build and package on a native matching Linux host')
     target = f'{args.arch}-unknown-linux-gnu'
@@ -83,7 +82,6 @@ def main():
     if cxx and 'deb' in formats:
         installed_cxx = subprocess.check_output(['dpkg-query', '-W', '-f=${Version}', 'libstdc++6'], text=True).strip()
         deb_cxx = f', libstdc++6 (>= {installed_cxx})'
-    rpm_cxx = f', libstdc++.so.6(GLIBCXX_{cxx})(64bit)' if cxx else ''
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='runner-linux-', dir=out) as temp:
@@ -118,7 +116,7 @@ def main():
         shutil.copytree(tree / 'share', stage / 'usr/share')
         normalize_package_permissions(stage)
         aliases = (ROOT / 'packaging/linux/package-aliases.sh').read_text()
-        deb_arch, rpm_arch, _ = ARCHES[args.arch]
+        deb_arch = ARCHES[args.arch][0]
         if 'deb' in formats:
             control = stage / 'DEBIAN'
             control.mkdir()
@@ -144,46 +142,6 @@ Description: Local desktop cockpit for CLI coding agents
 ''')
             run('dpkg-deb', '--root-owner-group', '--build', str(stage), str(out / f'{tree.name}.deb'))
             shutil.rmtree(control)
-        if 'rpm' in formats:
-            top = temp / 'rpmbuild'
-            for directory in ['BUILD', 'BUILDROOT', 'RPMS', 'SOURCES', 'SPECS', 'SRPMS']:
-                (top / directory).mkdir(parents=True)
-            spec = top / 'SPECS/runner.spec'
-            spec.write_text(f'''Name: runner
-Version: {version}
-Release: {rpm_release}
-Summary: Local desktop cockpit for CLI coding agents
-License: MIT
-URL: https://github.com/yicheng47/runner
-BuildArch: {rpm_arch}
-AutoReqProv: no
-Requires: glibc >= {glibc}{rpm_cxx}, fontconfig, freetype, libxkbcommon, libxkbcommon-x11, wayland-libs, libxcb, libglvnd-egl, vulkan-loader, xdg-utils
-%description
-Native GPUI app, runner CLI and opt-in runnerd user service.
-%install
-mkdir -p %{{buildroot}}
-cp -a "{stage}/usr" %{{buildroot}}/
-%pre
-set -- check
-{aliases}
-%post
-set -- install
-{aliases}
-%preun
-if [ "$1" -ne 0 ]; then exit 0; fi
-set -- remove
-{aliases}
-%files
-/usr/lib/runner
-/usr/lib/systemd/user/runnerd.service
-/usr/share/applications/runner.desktop
-/usr/share/icons/hicolor/256x256/apps/runner.png
-''')
-            run('rpmbuild', '--define', f'_topdir {top}', '--define', '_build_id_links none', '--define', '__os_install_post %{nil}', '--target', rpm_arch, '-bb', str(spec))
-            built = list((top / 'RPMS').rglob('*.rpm'))
-            if len(built) != 1:
-                raise SystemExit('Expected exactly one RPM')
-            shutil.copy2(built[0], out / f'{tree.name}.rpm')
     print(f'Packages: {out} ({args.arch}; {label})')
 
 

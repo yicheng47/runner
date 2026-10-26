@@ -18,7 +18,6 @@ static RELAUNCH: Mutex<Option<PathBuf>> = Mutex::new(None);
 enum InstallKind {
     Tar,
     Deb,
-    Rpm,
 }
 
 impl InstallKind {
@@ -26,7 +25,6 @@ impl InstallKind {
         match self {
             Self::Tar => "tar.gz",
             Self::Deb => "deb",
-            Self::Rpm => "rpm",
         }
     }
 
@@ -52,13 +50,6 @@ impl InstallKind {
                 })
             {
                 return Ok(Self::Deb);
-            }
-            if Command::new("/usr/bin/rpm")
-                .args(["-qf", "--queryformat", "%{NAME}", "/usr/lib/runner/Runner"])
-                .output()
-                .is_ok_and(|out| out.status.success() && out.stdout == b"runner")
-            {
-                return Ok(Self::Rpm);
             }
             bail!("Runner is not owned by the runner system package");
         }
@@ -96,7 +87,7 @@ fn trusted_system_executable(path: &Path) -> Result<()> {
 pub(super) fn installer_version(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("Runner-")?;
     let (label, platform) = rest.rsplit_once("-linux-")?;
-    let extension = ["tar.gz", "deb", "rpm"]
+    let extension = ["tar.gz", "deb"]
         .into_iter()
         .find_map(|ext| platform.strip_suffix(&format!(".{ext}")))?;
     if !matches!(extension, "aarch64" | "x86_64") {
@@ -422,22 +413,6 @@ fn install_tar(path: &Path, executable: &Path) -> Result<()> {
     Ok(())
 }
 
-fn package_fields(program: &str, args: &[&str], package: &Path) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .arg(package)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .output()?;
-    ensure!(
-        out.status.success(),
-        "Package metadata check failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(String::from_utf8(out.stdout)?.trim().into())
-}
-
 fn system_command(kind: InstallKind, package: &Path) -> Result<Command> {
     let (label, _) = installer_version(package.file_name().unwrap().to_str().unwrap())
         .context("Invalid package")?;
@@ -464,7 +439,7 @@ fn system_command(kind: InstallKind, package: &Path) -> Result<Command> {
             );
             let version = field("Version")?;
             ensure!(
-                package_version_matches(label, &version, None),
+                package_version_matches(label, &version),
                 "Deb version does not match update identity"
             );
             let mut command = Command::new("/usr/bin/apt-get");
@@ -479,47 +454,13 @@ fn system_command(kind: InstallKind, package: &Path) -> Result<Command> {
                 .arg(package);
             Ok(command)
         }
-        InstallKind::Rpm => {
-            ensure!(
-                package.extension().is_some_and(|ext| ext == "rpm"),
-                "Expected an rpm update"
-            );
-            let fields = package_fields(
-                "/usr/bin/rpm",
-                &[
-                    "-qp",
-                    "--queryformat",
-                    "%{NAME}\n%{ARCH}\n%{VERSION}\n%{RELEASE}",
-                ],
-                package,
-            )?;
-            let fields = fields.lines().collect::<Vec<_>>();
-            ensure!(
-                fields.len() == 4
-                    && fields[0] == "runner"
-                    && fields[1] == ARCH
-                    && package_version_matches(label, fields[2], Some(fields[3])),
-                "Unexpected rpm package identity"
-            );
-            let program = ["/usr/bin/dnf", "/usr/bin/dnf5"]
-                .into_iter()
-                .find(|path| Path::new(path).is_file())
-                .context("Installing RPM updates requires DNF")?;
-            let mut command = Command::new(program);
-            // Detached Runner signatures were verified before this point; repository
-            // dependency signatures remain checked by DNF.
-            command
-                .args(["-y", "--setopt=localpkg_gpgcheck=0", "install"])
-                .arg(package);
-            Ok(command)
-        }
         InstallKind::Tar => bail!("System installer cannot replace a user installation"),
     }
 }
 
-fn package_version_matches(label: &str, version: &str, release: Option<&str>) -> bool {
+fn package_version_matches(label: &str, version: &str) -> bool {
     if semver::Version::parse(label).is_ok() {
-        return version == label && release.is_none_or(|release| release == "1");
+        return version == label;
     }
     let Some(remainder) = label.strip_prefix("nightly.") else {
         return false;
@@ -528,13 +469,9 @@ fn package_version_matches(label: &str, version: &str, release: Option<&str>) ->
     let Some((sha, stamp)) = remainder.split_once('.') else {
         return false;
     };
-    if let Some(release) = release {
-        release == format!("0.{channel}.{stamp}.{sha}")
-    } else {
-        version.split_once('~').is_some_and(|(base, suffix)| {
-            semver::Version::parse(base).is_ok() && suffix == format!("{channel}.{stamp}.{sha}")
-        })
-    }
+    version.split_once('~').is_some_and(|(base, suffix)| {
+        semver::Version::parse(base).is_ok() && suffix == format!("{channel}.{stamp}.{sha}")
+    })
 }
 
 /// Handles only the narrow installation mode, before GPUI, SQLite or agents start.
@@ -697,7 +634,7 @@ mod tests {
             "Runner-0.17.10-linux-aarch64.deb",
             "Runner-0.17.10-linux-aarch64.deb.sig",
             "Runner-99.0.0-linux-x86_64.deb",
-            "Runner-99.0.0-linux-aarch64.rpm",
+            "Runner-99.0.0-linux-aarch64.tar.gz",
             "Runner-nightly.aaaaaaa.20261020.1700-linux-aarch64.deb",
         ]);
         let candidate = select_update(
@@ -769,9 +706,9 @@ mod tests {
         .is_none());
         for invalid in [
             "Runner-../../escape-linux-aarch64.deb",
-            "Runner-nightly.sha.bad-linux-x86_64.rpm",
+            "Runner-nightly.sha.bad-linux-x86_64.deb",
             "Runner-1.0.0-linux-ppc64le.deb",
-            "Runner-1.0.0+bad-linux-aarch64.rpm",
+            "Runner-1.0.0+bad-linux-aarch64.deb",
         ] {
             assert!(installer_version(invalid).is_none(), "{invalid}");
         }
@@ -779,27 +716,23 @@ mod tests {
 
     #[test]
     fn package_metadata_matches_release_channel_and_stamp() {
-        assert!(package_version_matches("1.2.3", "1.2.3", None));
-        assert!(!package_version_matches("1.2.3", "1.2.2", None));
+        assert!(package_version_matches("1.2.3", "1.2.3"));
+        assert!(!package_version_matches("1.2.3", "1.2.2"));
         assert!(package_version_matches(
             "nightly.aaaaaaa.20261020.1700",
-            "1.2.3~nightly.20261020.1700.aaaaaaa",
-            None
+            "1.2.3~nightly.20261020.1700.aaaaaaa"
         ));
         assert!(!package_version_matches(
             "remote-nightly.aaaaaaa.20261020.1700",
-            "1.2.3",
-            Some("0.remote.nightly.20261020.1700.aaaaaaa")
+            "1.2.3~remote.nightly.20261020.1700.aaaaaaa"
         ));
         assert!(!package_version_matches(
             "nightly.aaaaaaa.20261020.1700",
-            "1.2.3~remote.nightly.20261020.1700.aaaaaaa",
-            None
+            "1.2.3~remote.nightly.20261020.1700.aaaaaaa"
         ));
         assert!(!package_version_matches(
             "1.2.3",
-            "1.2.3",
-            Some("0.nightly.20261020.1700.aaaaaaa")
+            "1.2.3~nightly.20261020.1700.aaaaaaa"
         ));
     }
 

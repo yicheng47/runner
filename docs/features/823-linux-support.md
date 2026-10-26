@@ -13,15 +13,16 @@ descriptors, preserving existing marker, ambiguity, claim and timeout checks.
 A minimal systemd environment resolves the account login shell without assuming bash.
 
 All packages stage the same Runner and runner-agent-cli bytes, with runnerd selecting
-daemon mode from its executable name. The tarball installer and deb/rpm packages expose
+daemon mode from its executable name. The tarball installer and deb package expose
 a headless CLI, desktop entry, icon and opt-in user service. Installation never enables
 the service. Restart=no prevents service restart loops when the app replaces an old
 hash or another daemon owns the endpoint. Uninstall preserves application/user data.
 
-Build outputs are architecture-labelled tar.gz/deb/rpm. Release definitions use an
+Build outputs are architecture-labelled tar.gz/deb. RPM was dropped on 2026-10-26;
+RPM-based distros use the tarball. Release definitions use an
 older Ubuntu baseline for both architectures; native Ubuntu 26 ARM64 evidence alone
 makes no older-distro compatibility claim. WSL2 needs systemd for the optional service
-and WSLg/Vulkan for the app. Native x86_64 GUI, X11, WSL/WSLg and RPM-distro
+and WSLg/Vulkan for the app. Native x86_64 GUI, X11 and WSL/WSLg
 installation remain unverified. Hosted Ubuntu22 checks/tests cover both
 architectures; Ubuntu26 ARM64 user reports cover the window, input, zoom,
 OpenCode two-role startup, package/menu launch and corrected dock identity.

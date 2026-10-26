@@ -5,7 +5,7 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 folder=${1:?Usage: sign-updates PACKAGE_DIR PACKAGE_BASENAME}
 name=${2:?Usage: sign-updates PACKAGE_DIR PACKAGE_BASENAME}
-for format in tar.gz deb rpm; do
+for format in tar.gz deb; do
   package="$folder/$name.$format"
   test -s "$package"
   npx --yes @tauri-apps/cli@2.10.1 signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$package"

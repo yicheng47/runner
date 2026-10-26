@@ -84,8 +84,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(older[0], 'nightly.fffffff.20261016.2359')
         self.assertEqual(newer[0], 'nightly.aaaaaaa.20261017.0000')
         self.assertIn('nightly.20261017.0000.aaaaaaa', newer[1])
-        self.assertIn('nightly.20261017.0000.aaaaaaa', newer[2])
-        self.assertEqual(self.bundle.package_identity('0.16.2', 'production', '20261017.0000', 'aaaaaaa'), ('0.16.2', '0.16.2', '1'))
+        self.assertEqual(self.bundle.package_identity('0.16.2', 'production', '20261017.0000', 'aaaaaaa'), ('0.16.2', '0.16.2'))
 
     def test_retired_remote_nightly_channel_is_refused_before_building(self):
         result = run_captured([sys.executable, str(ROOT / 'script/bundle-linux'), '--channel', 'remote-nightly'], check=False)
@@ -109,7 +108,7 @@ class VersionTests(unittest.TestCase):
             packages = scratch / 'packages'
             packages.mkdir()
             name = 'Runner-99.0.0-linux-aarch64'
-            for ext in ['tar.gz', 'deb', 'rpm']:
+            for ext in ['tar.gz', 'deb']:
                 (packages / f'{name}.{ext}').write_bytes((fixtures / 'installer.txt').read_bytes())
             env = dict(os.environ, PATH=str(tool.parent) + os.pathsep + os.environ['PATH'],
                        TAURI_SIGNING_PRIVATE_KEY='test-only-placeholder',
@@ -118,13 +117,13 @@ class VersionTests(unittest.TestCase):
             command = ['bash', str(script), str(packages), name]
             result = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(len(list(packages.glob('*.sig'))), 3)
+            self.assertEqual(len(list(packages.glob('*.sig'))), 2)
             shutil.copy2(ROOT / 'packaging/windows-update-public-key', key)
             result = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('does not match', result.stderr)
             shutil.copy2(fixtures / 'public-key', key)
-            (packages / f'{name}.rpm').unlink()
+            (packages / f'{name}.deb').unlink()
             self.assertNotEqual(subprocess.run(command, env=env, capture_output=True).returncode, 0)
 
     def test_package_modes_do_not_inherit_a_group_writable_umask(self):
@@ -179,14 +178,6 @@ class VersionTests(unittest.TestCase):
     def test_debian_later_stamp_upgrades_even_when_sha_sorts_lower(self):
         older, newer = self.identities()
         subprocess.run(['dpkg', '--compare-versions', older[1], 'lt', newer[1]], check=True)
-
-    @unittest.skipUnless(shutil.which('rpm'), 'requires rpm on Linux package host')
-    def test_rpm_later_stamp_upgrades_even_when_sha_sorts_lower(self):
-        older, newer = self.identities()
-        expression = "%{lua: print(rpm.vercmp('" + older[2] + "', '" + newer[2] + "'))}"
-        with tempfile.TemporaryDirectory(prefix='r823-rpm-', dir=ROOT / 'target') as database:
-            result = run_captured(['rpm', '--dbpath', database, '--eval', expression])
-            self.assertEqual(result.stdout.strip(), '-1')
 
 
 class NativeAliasTests(unittest.TestCase):
@@ -453,15 +444,9 @@ def check_packages(directory):
                 listing = subprocess.check_output(['dpkg-deb', '--contents', str(package)], text=True)
                 subprocess.run(['dpkg-deb', '--extract', str(package), str(scratch / 'extract')], check=True)
                 check_deb_lifecycle(package, scratch)
-            elif package.suffix == '.rpm':
-                database = scratch / 'rpm-db'
-                database.mkdir()
-                metadata = run_captured(['rpm', '--dbpath', str(database), '-qip', str(package)])
-                print(metadata.stdout, end='')
-                listing = run_captured(['rpm', '--dbpath', str(database), '-qlp', str(package)]).stdout
             else:
                 continue
-            if package.suffix in ['.deb', '.rpm']:
+            if package.suffix == '.deb':
                 for expected in ['usr/lib/runner/Runner', 'usr/lib/runner/runner-agent-cli', 'usr/lib/runner/runnerd', 'usr/lib/systemd/user/runnerd.service', 'usr/share/applications/runner.desktop']:
                     if expected not in listing:
                         raise SystemExit(f'{package}: missing {expected}')

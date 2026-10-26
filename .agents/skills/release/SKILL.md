@@ -5,7 +5,7 @@ description: Cut a Runner production release — bump the workspace version, tag
 
 # Release
 
-A production release is a `vX.Y.Z` tag on a `main` commit whose workspace version is exactly `X.Y.Z`. `release.yml` builds the signed, notarized macOS DMG with its one-item Sparkle appcast and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb/rpm packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
+A production release is a `vX.Y.Z` tag on a `main` commit whose workspace version is exactly `X.Y.Z`. `release.yml` builds the signed, notarized macOS DMG with its one-item Sparkle appcast and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
 
 An explicit request to `run` authorizes the bump commit, the push, the tag, and editing the draft's notes; after the user publishes, it also authorizes the sweep's docs commit and push. An explicit `sweep` request authorizes that commit and push on its own. Nothing in this skill publishes the draft, deletes a release, or moves an existing tag. Record only observed results.
 
@@ -51,9 +51,9 @@ Runner <version> is a <bug-fix | feature> release for macOS, Windows and Linux o
 - **macOS, Apple Silicon:** download `Runner-<version>-arm64.dmg`, or update through Sparkle. The app is signed and notarized.
 - **Windows x64, Windows 10 version 1809 or later:** download `Runner-Setup-<version>.<stamp>-x64.exe`. The installer, app, and CLI sidecars are Authenticode-signed by Open Source Developer Yicheng Wang. You can also update through Settings → Updates → Update, then choose Install and restart. Settings, chats, and missions are retained.
 
-- **Linux ARM64/x86_64:** use `Runner-<version>-linux-<aarch64|x86_64>.tar.gz`, `.deb` or `.rpm`; install/update through the same package installer. The opt-in user service is disabled on install, and uninstall retains user data. Each Linux package carries a matching minisign signature verified by the in-app updater.
+- **Linux ARM64/x86_64:** use `Runner-<version>-linux-<aarch64|x86_64>.tar.gz` or `.deb`; install/update through the same package installer. The opt-in user service is disabled on install, and uninstall retains user data. Each Linux package carries a matching minisign signature verified by the in-app updater.
 
-Windows ARM64 and Intel Macs are not supported. Linux ARM64/x86_64 downloads use tar/deb/rpm packages; signed in-app updates support managed tar installations and system-authorized APT/DNF installation. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
+Windows ARM64 and Intel Macs are not supported. Linux ARM64/x86_64 downloads use tar/deb packages; signed in-app updates support managed tar installations and system-authorized APT installation. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
 
 **Full changelog:** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
@@ -71,7 +71,7 @@ Runner <version> 是 macOS、Windows 和 Linux 上基于 <previous> 的<修复�
 ## 下载与升级
 ...
 
-Windows ARM64 和 Intel Mac 暂不支持。Linux ARM64/x86_64 提供 tar/deb/rpm 包及对应 minisign 签名，支持应用内验证更新：用户 tar 安装原子替换，系统包经授权由 APT/DNF 安装；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
+Windows ARM64 和 Intel Mac 暂不支持。Linux ARM64/x86_64 提供 tar/deb 包及对应 minisign 签名，支持应用内验证更新：用户 tar 安装原子替换，deb 包经授权由 APT 安装；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
 
 **完整变更记录：** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
