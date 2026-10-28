@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1012 — Run Codex sessions on Codex's app-server](./1012-codex-app-server.md) — Codex TUIs attach with `--remote` to a shared app-server that Runner also connects to, giving Remote Control, status from Codex's own events and input that never touches the composer; draft for discussion ([#1012](https://github.com/yicheng47/runner/issues/1012)).
 - [873 — Remove the mission lead](./873-remove-mission-lead.md) — every mission runs like a **No crew** mission: one member prompt, the goal shared with every member, and no lead in crews, the CLI or the app ([#873](https://github.com/yicheng47/runner/issues/873)).
 - [748 — Mission updates reach the starting chat](./748-mission-watch-delivery.md) — the return path for delegation; on hold after #826 since 2026-10-17, because Jason rejected Runner typing updates into a normal chat, and the spec keeps the refreshed proposal for the redesign ([#748](https://github.com/yicheng47/runner/issues/748)).
 - [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
