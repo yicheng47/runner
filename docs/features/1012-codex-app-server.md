@@ -1,8 +1,8 @@
 # 1012 — Run Codex sessions on Codex's app-server
 
-> Tracking issue: [#1012](https://github.com/yicheng47/runner/issues/1012). Priority: P2, needs design.
-> Status: draft for discussion, 2026-10-28; nothing built. The core mechanism was tested by hand against Codex 0.165.0 ([test record](../tests/1012-codex-app-server.md)).
-> Related: [#1046](https://github.com/yicheng47/runner/issues/1046) (inbox delivery), which builds on this; [#861](https://github.com/yicheng47/runner/issues/861) and [#1051](https://github.com/yicheng47/runner/issues/1051) (status); [#940](https://github.com/yicheng47/runner/issues/940) and [#1018](https://github.com/yicheng47/runner/issues/1018) (draft holds); [748](./748-mission-watch-delivery.md).
+> Tracking issue: [#1012](https://github.com/yicheng47/runner/issues/1012). Priority: P0, milestone 0.18.
+> Status: draft for discussion, 2026-10-28; revised 2026-10-30 after reading Codex 0.165.0's source (below), which splits the work into two stages; nothing built. The core mechanism was tested by hand against Codex 0.165.0 ([test record](../tests/1012-codex-app-server.md)).
+> Related: [#1046](https://github.com/yicheng47/runner/issues/1046) (inbox delivery), which builds stage 2; [#861](https://github.com/yicheng47/runner/issues/861) and [#1051](https://github.com/yicheng47/runner/issues/1051) (status); [#940](https://github.com/yicheng47/runner/issues/940) and [#1018](https://github.com/yicheng47/runner/issues/1018) (draft holds); [748](./748-mission-watch-delivery.md).
 
 ## Problem
 
@@ -12,7 +12,10 @@
 
 ## Proposal
 
-Codex's TUI is a client of an app-server. Instead of the embedded one, every Runner Codex session attaches its TUI to a shared app-server with `--remote`, and Runner opens one client connection to the same server.
+Codex's TUI is a client of an app-server. Instead of the embedded one, every Runner Codex session attaches its TUI to Codex's shared app-server with `--remote unix://`, which is the server the phone's Remote Control uses. The work comes in two stages:
+
+1. **Stage 1 (#1012).** The TUI attaches with `--remote`. Status comes from the OSC 7501 reports the TUI already writes to its terminal, and the thread id from the terminal title. Codex sessions in this mode drop the status hooks, and Runner opens no connection to the server.
+2. **Stage 2 (#1046).** Runner opens one client connection to the same server, for `turn/start` delivery without the composer and for the mission folder as a workspace root.
 
 ```mermaid
 flowchart LR
@@ -22,18 +25,18 @@ flowchart LR
     end
     subgraph Proposed
         R2[Runner] -->|PTY| T2["codex --remote: TUI only"]
-        R2 -->|one connection| S[app-server: every thread]
-        T2 --> S
+        T2 -->|OSC 7501, title| R2
+        T2 --> S[shared app-server: every thread]
         P[Phone Remote Control] --> S
+        R2 -.->|stage 2: one connection| S
     end
 ```
 
-Through that connection Runner gets:
+Stage 1 alone fixes #1012. Stage 2's connection adds:
 
-- **Status from Codex's own events:** `turn/started`, `turn/completed` and item events for every thread it subscribes to.
 - **Input without the composer:** `turn/start` runs a turn on a thread and leaves the person's draft alone. #1046 uses this for Codex.
-- **Thread identity:** thread ids come from the server, not from scanning rollout files.
-- **Remote Control:** a session on Codex's shared daemon is one the phone can continue.
+- **Mission folder:** `runtimeWorkspaceRoots` on `thread/resume` replaces `--add-dir`, which `--remote` rejects.
+- **A second status source:** `turn/started`, `turn/completed` and approval requests for every thread Runner subscribes to.
 
 ## Findings (2026-10-28)
 
@@ -56,6 +59,47 @@ Read from Codex source at [`bea47c0`](https://github.com/openai/codex/tree/bea47
 - `--add-dir` and `sandbox_workspace_write.writable_roots` overrides are rejected with `--remote`; `thread/resume` takes `runtimeWorkspaceRoots`.
 - `--remote` and `turn/start` were already in Codex 0.152.
 
+## Findings (2026-10-30)
+
+Read from Codex source at `rust-v0.165.0`, not run. The question was whether adding `--remote` to today's launch, hooks and flags unchanged, would be enough. It is not.
+
+### Today's launch flags under `--remote`
+
+- A `--remote` TUI forwards only an allowlist of its `-c` overrides to the server (`config_request_overrides_from_config` in `tui/src/app_server_session.rs`): `features`, `shell_environment_policy`, the permission and sandbox keys, `personality`, `allow_login_shell` and `suppress_unstable_features_warning`, plus reasoning effort, summary, verbosity and web search. Model, service tier and working directory travel as thread parameters, and `--dangerously-bypass-hook-trust` as `bypass_hook_trust`.
+- `hooks.*` and `mcp_servers.*` are not on the list, so Runner's hooks and its `runner_hooks` MCP server never reach the server, and nothing reports an error. Codex's startup delivery expects the `SessionStart` hook (`startup_delivery_uses_hooks`), so a session would wait for reports that never arrive.
+- Even if they reached it, the hook MCP server takes `RUNNER_HOOK_ENDPOINT`, `RUNNER_HOOK_SESSION` and `RUNNER_HOOK_GENERATION` from the environment of the process that starts it. On the shared daemon that is the daemon's environment, not the session's, so reports could not be matched to a session.
+- `--add-dir` with `--remote` is a startup error (`tui/src/startup_orchestration.rs`), so a mission launch fails.
+- Commands run in the server, so the session's `RUNNER_*` environment reaches them only through `-c shell_environment_policy.set.<NAME>=<value>`, which is on the allowlist.
+- `check_for_update_on_startup` and `tui.terminal_title` are read by the TUI itself and keep working.
+
+### Codex's OSC 7501 reports
+
+The TUI writes OSC 7501 reports to its terminal (`tui/src/terminal_program_status.rs`), so they reach Runner under `--remote` as they do today.
+
+| Report | Codex sends it when |
+| --- | --- |
+| `working` | A turn is running or about to start, or background commands are still running |
+| `done` | A turn completed |
+| `error` | A turn failed, including API errors |
+| `idle` | At startup, after an interrupt, and once a finished result has been seen |
+| `blocked` with `kind` | Codex waits on the person: `permission`, `question` or `auth` |
+
+Codex 0.163 sent only `blocked`, without a kind; `done`, `error` and the kinds arrived in 0.164. That is why Runner today uses Codex's OSC 7501 only for Needs you and leaves work, completion, interruption and identity to hooks. Reports describe the thread the TUI shows, which for a Runner session is its own thread. `error` also covers the API failures that run no `Stop` hook and that Runner now finds by tailing the transcript.
+
+What the hooks give that OSC 7501 does not:
+
+- **Conversation identity** for Resume. The terminal title's `thread-id` replaces it; the rollout scan remains the fallback.
+- **Startup readiness**, the `SessionStart` hook that gates the first delivery. The `idle` report at startup should replace it; to verify.
+
+## Status hooks after OSC 7501
+
+Runner's hooks exist for status detection. With OSC 7501, status for an agent that reports it can come from the terminal stream instead, which raises whether the hooks are still needed at all.
+
+- **Codex 0.164+, Claude Code 2.1.295+ and pi 1.1.0+** report OSC 7501. For them the hooks can shrink to identity: Claude Code's and pi's `SessionStart` rekey after `/clear` and `/resume`, and Codex's thread id until the terminal title replaces it. #1051 owns that switch and the hook-versus-OSC comparison for Claude Code and pi; with the findings above, Codex 0.164+ belongs in it too.
+- **Agents that do not report OSC 7501**, such as Copilot, Grok and OpenCode, keep their hooks as their only semantic status. Without them they fall back to terminal activity.
+
+So the hook machinery (the bridge, the queue and `runner hook serve`) stays for now. What shrinks is the set of hooked events for each agent that reports OSC 7501. Stage 1 is the first case: Codex on `--remote` runs with no status hooks.
+
 ## Which server
 
 One app-server process can host many threads and many clients.
@@ -70,57 +114,66 @@ Recommendation: Codex's shared daemon, because it is what #1012 asks for and add
 
 ## Session lifecycle
 
+Stage 1:
+
 1. **Start.** Launch `codex --remote unix:// …` in the session's PTY, with the per-session settings below. The TUI creates its thread.
-2. **Identify.** Read the thread id from the terminal title, which Runner already parses, then subscribe with `thread/resume` on Runner's connection. That call also sets the mission folder as a workspace root through `runtimeWorkspaceRoots`, replacing `--add-dir`.
-3. **Run.** Take status from the connection's events. Deliver inbox notices with `turn/start` (#1046).
-4. **Resume.** Launch `codex resume --remote unix:// <id>`, then subscribe again.
-5. **Fork.** Call `thread/fork` on the connection, then attach a TUI to the new thread with `resume`.
+2. **Identify.** Read the thread id from the terminal title, which Runner already parses; the title gains `thread-id`.
+3. **Run.** Take status from OSC 7501. Inbox notices are typed into the composer as today, with today's draft holds.
+4. **Resume.** Launch `codex resume --remote unix:// <id>`.
+5. **Fork.** Today's headless `codex exec fork` writes the new thread's rollout; the TUI then resumes it with `--remote`. To verify.
+
+Stage 2 adds Runner's connection: after step 2 it subscribes with `thread/resume`, setting the mission folder through `runtimeWorkspaceRoots`; step 3 delivers inbox notices with `turn/start` (#1046); step 5 can use `thread/fork`.
 
 ### What each launch setting becomes
 
-| Today | On the app-server |
+| Today | Stage 1 |
 | --- | --- |
-| `-c model`, `model_reasoning_effort`, `service_tier` | Same flags on the TUI, which forwards them to its thread as per-thread config |
+| `-c model`, `model_reasoning_effort`, `service_tier` | Same flags on the TUI, which sends them with the thread |
 | `-c check_for_update_on_startup=false`, `-c tui.terminal_title=…` | Stay on the TUI. The title gains `thread-id`. |
 | Per-session environment (`RUNNER_*`) in the Codex process | `-c shell_environment_policy.set.<NAME>=<value>` on the TUI, because commands now run in the server process |
-| `--enable hooks`, `--dangerously-bypass-hook-trust`, `mcp_servers.runner_hooks`, `hooks.*` | Dropped. Status comes from the connection. |
-| `--add-dir <mission folder>` | `runtimeWorkspaceRoots` on Runner's `thread/resume` |
+| `--enable hooks`, `--dangerously-bypass-hook-trust`, `mcp_servers.runner_hooks`, `hooks.*` | Dropped. Status comes from OSC 7501. |
+| `--add-dir <mission folder>` | Rejected with `--remote`. Missions keep today's launch until stage 2 sets `runtimeWorkspaceRoots`, unless open question 8 shows they need no extra root. |
 | Positional first prompt | Unchanged on the TUI |
 | `codex resume <id>` | `codex resume --remote unix:// <id>` |
-| Headless `codex exec fork` | `thread/fork` on the connection |
-| Rollout scan for the conversation key | Thread id from the terminal title and the connection |
+| Headless `codex exec fork` | Unchanged, then resumed with `--remote`; stage 2 can use `thread/fork` |
+| Rollout scan for the conversation key | Thread id from the terminal title, with the scan as fallback |
 
 ### Status
 
-- `turn/started` → Working.
-- `turn/completed` → Idle, with completed, interrupted or failed as the outcome.
-- Approvals and questions arrive as server requests. Runner treats them as Needs you and never answers them; the TUI or the phone does.
-- The TUI still reports OSC 7501, which stays a second source as #861 built it.
+Runner's reducer already maps OSC 7501's states to status and outcomes (#861). For Codex:
 
-For Codex sessions on the app-server this replaces hook status, transcript tailing and rollout scanning.
+- `working` → Working.
+- `done` → Idle, completed.
+- `error` → Idle, failed.
+- `idle` straight after `working`, with no `done` → Idle, interrupted. Codex sends nothing else for an interrupt, so this inference is new; to verify against open question 7.
+- `blocked` → Needs you. Its `kind` can tell an approval from a question or a sign-in, which Runner's Codex Needs you does not do today.
+
+What changes is ownership. A Codex session on `--remote` has no live hook bridge, so OSC 7501 holds status authority, and Codex's runtime-owned parser publishes every report instead of overlaying only `blocked`. Hook status, transcript tailing and the rollout scan as the primary key source stop for these sessions. Stage 2's connection events become a second source.
 
 ### Failure
 
-- **The server restarts or stops:** every Codex session on it loses its server. Runner marks them unavailable, reconnects, subscribes again to `thread/loaded/list`, and resumes any TUI that exited. The shared daemon restarts on Codex's schedule, not Runner's.
-- **Runner's connection drops:** reconnect and subscribe again. The TUIs are unaffected.
+- **The server restarts or stops:** every Codex session on it loses its server. Runner marks them unavailable and resumes any TUI that exited; in stage 2 it also reconnects and subscribes again through `thread/loaded/list`. The shared daemon restarts on Codex's schedule, not Runner's.
+- **Runner's connection drops (stage 2):** reconnect and subscribe again. The TUIs are unaffected.
 
 ## Rollout
 
-An opt-in Codex setting first, as #1012's acceptance asks, with today's launch unchanged when it is off. It becomes the default after macOS, Windows and Linux validation. Runner checks the Codex version and keeps today's launch for versions without `--remote`.
+An opt-in Codex setting first, as #1012's acceptance asks, with today's launch unchanged when it is off. It becomes the default after macOS, Windows and Linux validation. The mode needs Codex 0.164 or later, for `--remote` and the full set of OSC 7501 reports; Runner checks the version and keeps today's launch for older Codex.
 
 ## Affected guide pages
 
-[Supported agents](../guide/reference/supported-agents.md): the Codex column's status, resume and fork rows, plus Remote Control. [Roles](../guide/concepts/roles.md): the new Codex setting. Both have zh-CN copies.
+[Supported agents](../guide/reference/supported-agents.md): the Codex column's status, Needs-input, resume and fork rows, plus Remote Control. [Roles](../guide/concepts/roles.md): the new Codex setting. Both have zh-CN copies.
 
 ## Out of scope
 
-Inbox delivery itself, which #1046 builds on this; other runtimes; Codex cloud threads.
+Stage 2's connection, which #1046 builds with inbox delivery; status hooks for other agents (#1051); Codex cloud threads.
 
 ## Open questions
 
 1. **Shared daemon or a Runner-started server by default?** The recommendation is the shared daemon. Does Runner start it when it is missing (`codex app-server daemon`), or does `--remote unix://` start it?
 2. **Opt-in or default?** Opt-in first; when does it become the default?
 3. **When the server restarts,** does the TUI exit, wait or reconnect?
-4. **Approvals with several clients.** Does Runner's connection receive approval requests, and is the first answer from the TUI or the phone final?
+4. **Approvals with several clients.** Is the first answer from the TUI or the phone final, and in stage 2 does Runner's connection receive approval requests?
 5. **Windows and Linux.** Does `unix://` work for the TUI and the shared daemon on Windows?
 6. **Remote Control end to end.** A Runner chat continued from the phone while the desktop stays attached, and resumed. This needs Jason's paired phone.
+7. **OSC 7501 on a `--remote` TUI.** Record the reports through startup, a turn, an interrupt, an approval and a failed turn on Codex 0.165.0. Does the startup `idle` arrive reliably enough to replace the `SessionStart` readiness?
+8. **Missions without `--add-dir`.** Do mission agents need the mission folder as an extra workspace root, or can missions also run on `--remote` in stage 1?
