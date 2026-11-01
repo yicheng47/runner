@@ -131,6 +131,7 @@ impl SessionManager {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
+                manager_t.expire_submit_busy(&session_id, &stop, events.as_ref());
                 #[cfg(windows)]
                 // recv_timeout also drives the first-turn deadline when output is silent.
                 if first_turn_pending {
@@ -1086,6 +1087,9 @@ impl SessionManager {
             }
             state.output_seq += 1;
             let seq = state.output_seq;
+            state
+                .model
+                .apply(SessionEvent::Output, crate::session::clock::state_now());
             Self::push_frame(
                 &mut state,
                 runner_core::protocol::terminal::TerminalFrame::Output {

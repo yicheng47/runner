@@ -254,6 +254,9 @@ impl SessionState {
                 _ => R::Drafting,
             };
         }
+        if self.model.unconfirmed_busy() {
+            return R::Unconfirmed;
+        }
         R::Ready {
             idle: self.model.activity() == Some(SessionActivityState::Idle),
         }

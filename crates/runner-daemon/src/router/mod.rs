@@ -127,6 +127,9 @@ pub enum DeliveryReadiness {
     Ready {
         idle: bool,
     },
+    /// Busy on a submit or delivery alone: its agent has reported no turn. The session manager
+    /// withdraws such a busy within seconds, so one that lasts is stuck.
+    Unconfirmed,
     Pending,
     Starting,
     Drafting,

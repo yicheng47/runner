@@ -761,7 +761,7 @@ fn an_ignored_delivery_enter_is_resubmitted_at_turn_end_instead_of_holding_as_a_
         advance(crate::router::dispatch::CONFIRM_WINDOW);
         assert!(matches!(
             readiness(Duration::ZERO),
-            DeliveryReadiness::Ready { .. }
+            DeliveryReadiness::Ready { .. } | DeliveryReadiness::Unconfirmed
         ));
         fixture
             .manager
@@ -975,6 +975,7 @@ fn generated_submissions_accept_rotating_placeholders_and_deliver_later_backlogs
         assert!(matches!(
             crate::session::clock::at(now, 0, || fixture.manager.delivery_readiness("session")),
             crate::router::DeliveryReadiness::Ready { .. }
+                | crate::router::DeliveryReadiness::Unconfirmed
         ));
         assert_eq!(terminal.input_reset_guard(), revision);
         crate::session::clock::at(now, 0, || fixture.queue("second"));
@@ -1124,5 +1125,261 @@ fn generated_submit_cannot_publish_over_a_newer_composition_observation() {
         for worker in workers {
             worker.join().unwrap();
         }
+    }
+}
+
+#[test]
+fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
+    for runtime in [Runtime::ClaudeCode, Runtime::Codex] {
+        let fixture = StartupFixture::new();
+        let output = fixture.launch(runtime.key(), false, Instant::now());
+        fixture.event(runtime, AgentEvent::StartupReady);
+        let stop = output.stop_flag();
+        let events = Capture::default();
+        let start = *fixture.now.lock().unwrap();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        let advance_to = |secs: u64| {
+            *fixture.now.lock().unwrap() = at(secs);
+            crate::session::clock::at(at(secs), 0, || fixture.drive());
+        };
+        let activity = || fixture.manager.activity_snapshot()["session"];
+        let notices = || {
+            fixture
+                .fake
+                .inputs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|input| matches!(input, FakeInput::Bytes { bytes, .. } if String::from_utf8_lossy(bytes).contains("new message")))
+                .count()
+        };
+        let statuses = || -> Vec<(String, String)> {
+            fixture
+                .log
+                .read_from(0)
+                .unwrap()
+                .into_iter()
+                .filter(|entry| {
+                    entry.event.signal_type.as_ref().map(SignalType::as_str)
+                        == Some("session_status")
+                })
+                .map(|entry| {
+                    (
+                        entry.event.payload["state"].as_str().unwrap().to_owned(),
+                        entry.event.payload["source"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect()
+        };
+
+        // Return on an empty composer, from the keyboard rather than the router.
+        crate::session::clock::at(at(0), 0, || {
+            fixture
+                .manager
+                .inject_direct_stdin("session", b"\r", &events)
+                .unwrap()
+        });
+        assert_eq!(activity(), SessionActivityState::Busy, "{runtime:?}");
+        if runtime == Runtime::Codex {
+            // Codex repaints its composer on an Enter it ignores; that is not a turn.
+            fixture.manager.ingest_output_chunk(
+                "session",
+                Some("mission"),
+                b"\x1b[2;1H\xe2\x80\xba Ask Codex",
+                &events,
+            );
+        }
+        advance_to(3);
+        crate::session::clock::at(at(3), 0, || fixture.queue("hello"));
+        assert_eq!(
+            crate::session::clock::at(at(3), 0, || fixture.manager.delivery_readiness("session")),
+            crate::router::DeliveryReadiness::Unconfirmed,
+            "{runtime:?}"
+        );
+        assert_eq!(notices(), 0, "{runtime:?}");
+
+        crate::session::clock::at(at(9), 0, || {
+            fixture
+                .manager
+                .expire_submit_busy("session", &stop, &events)
+        });
+        advance_to(9);
+        assert_eq!(activity(), SessionActivityState::Busy, "{runtime:?}");
+        assert_eq!(notices(), 0, "{runtime:?}");
+
+        crate::session::clock::at(at(11), 0, || {
+            fixture
+                .manager
+                .expire_submit_busy("session", &stop, &events)
+        });
+        assert_eq!(activity(), SessionActivityState::Idle, "{runtime:?}");
+        advance_to(11);
+        assert_eq!(notices(), 1, "{runtime:?}: the queued notice is delivered");
+        assert!(
+            statuses().contains(&("idle".to_owned(), "input-timeout".to_owned())),
+            "{runtime:?}: {:?}",
+            statuses()
+        );
+        let published = events.status.lock().unwrap();
+        assert!(
+            published
+                .iter()
+                .any(|event| event.state == SessionActivityState::Idle
+                    && event.source.as_str() == "input-timeout"),
+            "{runtime:?}"
+        );
+    }
+}
+
+#[test]
+fn a_turn_that_reports_in_time_is_never_reverted_and_a_late_one_returns_to_busy() {
+    for late in [false, true] {
+        let fixture = StartupFixture::new();
+        let output = fixture.launch("claude-code", false, Instant::now());
+        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        let stop = output.stop_flag();
+        let events = Capture::default();
+        let start = *fixture.now.lock().unwrap();
+        let at = |secs: u64| start + Duration::from_secs(secs);
+        let activity = || fixture.manager.activity_snapshot()["session"];
+        crate::session::clock::at(at(0), 0, || {
+            fixture
+                .manager
+                .inject_direct_stdin("session", b"\r", &events)
+                .unwrap()
+        });
+        let expire = |secs: u64| {
+            crate::session::clock::at(at(secs), 0, || {
+                fixture
+                    .manager
+                    .expire_submit_busy("session", &stop, &events)
+            })
+        };
+        if !late {
+            crate::session::clock::at(at(2), 0, || {
+                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+            });
+        }
+        expire(11);
+        if late {
+            assert_eq!(activity(), SessionActivityState::Idle);
+            crate::session::clock::at(at(14), 0, || {
+                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+            });
+        }
+        assert_eq!(activity(), SessionActivityState::Busy, "late={late}");
+        assert_eq!(
+            fixture.manager.agent_status("session").observation.activity,
+            Activity::Working,
+            "late={late}"
+        );
+        crate::session::clock::at(at(40), 0, || {
+            fixture.event(
+                Runtime::ClaudeCode,
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Completed,
+                },
+            )
+        });
+        assert_eq!(activity(), SessionActivityState::Idle, "late={late}");
+        expire(60);
+        assert_eq!(activity(), SessionActivityState::Idle, "late={late}");
+    }
+}
+
+#[test]
+fn the_forwarder_loop_withdraws_a_submit_busy_that_outlived_its_window() {
+    let fixture = StartupFixture::new();
+    let output = fixture.launch("claude-code", false, Instant::now());
+    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    let events = Arc::new(Capture::default());
+    // The forwarder reads the real clock, so the Return goes in a window ago.
+    let past = Instant::now() - crate::session::state::SUBMIT_TURN_START_WINDOW;
+    crate::session::clock::at(past, 0, || {
+        fixture
+            .manager
+            .inject_direct_stdin("session", b"\r", events.as_ref())
+            .unwrap()
+    });
+    assert_eq!(
+        fixture.manager.activity_snapshot()["session"],
+        SessionActivityState::Busy
+    );
+    let rt_session = fixture.manager.live_runtime_session("session").unwrap();
+    let app_data = tempfile::tempdir().unwrap();
+    let forwarder = fixture.manager.start_forwarder_thread(
+        "session".into(),
+        String::new(),
+        Some("mission".into()),
+        rt_session,
+        output,
+        pool_with_schema(),
+        events.clone(),
+        role("fake", &[]),
+        None,
+        true,
+        None,
+        app_data.path().to_path_buf(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fixture.manager.activity_snapshot()["session"] != SessionActivityState::Idle {
+        assert!(
+            Instant::now() < deadline,
+            "the forwarder never withdrew the busy"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(events
+        .status
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.state == SessionActivityState::Idle
+            && event.source.as_str() == "input-timeout"));
+    fixture.manager.kill("session").unwrap();
+    forwarder.join().unwrap();
+}
+
+#[test]
+fn output_after_a_return_leaves_an_output_only_session_to_its_idle_detector() {
+    for output_follows in [false, true] {
+        let fixture = StartupFixture::new();
+        let output = fixture.launch("opencode", false, Instant::now());
+        let stop = output.stop_flag();
+        let events = Capture::default();
+        assert!(fixture.manager.note_forwarder_transition(
+            "session",
+            SessionActivityState::Idle,
+            StatusSource::Forwarder
+        ));
+        let start = *fixture.now.lock().unwrap();
+        crate::session::clock::at(start, 0, || {
+            fixture
+                .manager
+                .inject_direct_stdin("session", b"\r", &events)
+                .unwrap()
+        });
+        if output_follows {
+            fixture.manager.ingest_output_chunk(
+                "session",
+                Some("mission"),
+                b"working\r\n",
+                &events,
+            );
+        }
+        crate::session::clock::at(start + Duration::from_secs(11), 0, || {
+            fixture
+                .manager
+                .expire_submit_busy("session", &stop, &events)
+        });
+        assert_eq!(
+            fixture.manager.activity_snapshot()["session"],
+            if output_follows {
+                SessionActivityState::Busy
+            } else {
+                SessionActivityState::Idle
+            },
+            "output_follows={output_follows}"
+        );
     }
 }

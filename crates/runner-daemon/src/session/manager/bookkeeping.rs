@@ -296,7 +296,9 @@ impl SessionManager {
                 delivery.in_flight = true;
                 D::Ready(delivery.generation)
             }
-            R::Ready { idle: false } | R::Pending | R::Unavailable => D::Unavailable,
+            R::Ready { idle: false } | R::Unconfirmed | R::Pending | R::Unavailable => {
+                D::Unavailable
+            }
             R::Starting => D::Starting,
             R::NeedsYou => D::HumanInteraction,
             R::InFlight => D::InFlight,

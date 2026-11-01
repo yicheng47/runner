@@ -332,6 +332,32 @@ impl SessionManager {
             .collect()
     }
 
+    /// A submit or delivery marks the session busy before its agent has said anything. If no turn
+    /// shows within the window the busy is withdrawn, so a Return that started nothing cannot
+    /// hold the session undeliverable. A turn that starts later puts the session back to busy.
+    pub(super) fn expire_submit_busy(
+        &self,
+        session_id: &str,
+        launch: &Arc<AtomicBool>,
+        events: &dyn SessionEvents,
+    ) {
+        let due = self.session_state(session_id).is_some_and(|session| {
+            session
+                .lock()
+                .unwrap()
+                .model
+                .submit_busy_due(super::super::clock::now())
+        });
+        if due {
+            self.publish_model_event_for_launch(
+                session_id,
+                SessionEvent::SubmitTimeout { live: true },
+                Some(launch),
+                events,
+            );
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn publish_agent_event(
         &self,
@@ -400,6 +426,7 @@ impl SessionManager {
             match &mut event {
                 SessionEvent::Agent { live, .. }
                 | SessionEvent::BridgeFailed { live }
+                | SessionEvent::SubmitTimeout { live }
                 | SessionEvent::CodexAttention { live, .. } => *live = is_live,
                 SessionEvent::ProgramStatus { live, .. } => *live = is_live,
                 _ => {}

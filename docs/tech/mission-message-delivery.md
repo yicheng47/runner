@@ -109,13 +109,16 @@ The dispatcher uses the `StdinInjector` port implemented by `SessionManager`. Re
 | `Drafting` | Composer observations or pending local input require preserving a draft. |
 | `Unsent` | The composer's tracked input still contains Runner's own unsubmitted notice. |
 | `RecentlyTyping` | Recent local input requires a timed hold. |
-| `Ready { idle }` | An attempt may start only with `idle: true`, including for a new message. |
+| `Unconfirmed` | Marked Busy by a submit or a confirmed delivery, but the agent has reported no turn. The session manager withdraws such a Busy 10 seconds after it was set, so one that lasts is stuck. |
+| `Ready { idle }` | An attempt may start only with `idle: true`, including for a new message. `idle: false` is a member whose agent is reporting a turn. |
 
 [`StartupDelivery`](../../crates/runner-daemon/src/session/manager/startup.rs) uses suitable hook ready/idle evidence, with an outcome required when an initial turn is pending. Output-only fallback requires output to have begun, a ten-second startup grace and the normal quiet interval. A short pause during initialization is insufficient.
 
 Draft holds come from [`SessionModel::draft_hold`](../../crates/runner-daemon/src/session/state/mod.rs), using native input observations when available, otherwise terminal observations and local-input tracking. [`InputTracker`](../../crates/runner-terminal/src/input_state.rs) interprets the runtime's composer. Recent local input holds delivery for up to two seconds. A screen-observed `Drafting` holds only while `last_local_input_at` is less than ten minutes old; no keystroke since attach means no draft hold. Every input-method composition update refreshes that time, even if its reported state stays unchanged. Pi’s native `EditorDraft` remains uncapped, as does Runner’s own `Unsent` notice. An unknown composer with no pending local input or recent typing does not itself create a hold; draft protection depends on the evidence these paths can observe.
 
-Every new attempt requires `Ready { idle: true }`, checked by the dispatcher and again at reservation. A message posted during a turn stays queued; the existing Idle transition requests delivery when the turn ends.
+Every new attempt requires `Ready { idle: true }`, checked by the dispatcher and again at reservation. A message posted during a turn stays queued; the existing Idle transition requests delivery when the turn ends. The dispatcher logs the wait as a hold, as it does the others, and posts the feed warning after two minutes only for `Unconfirmed`. A long turn is not a stall.
+
+A Return pressed in an idle member's pane marks it Busy before its agent has said anything. If no turn shows within ten seconds, `SessionModel` returns it to the state its hooks last reported and publishes Idle with source `input-timeout`, which requests delivery of the queued notice. The same applies to a confirmed delivery whose turn never reports. A turn that starts after that publishes Busy again.
 
 ## 6. Typing, submitting and confirming
 

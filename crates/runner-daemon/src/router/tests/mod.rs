@@ -344,6 +344,71 @@ fn new_messages_wait_for_the_working_members_idle_transition() {
 }
 
 #[test]
+fn a_working_members_wait_is_a_logged_hold_that_never_warns() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Ready { idle: false });
+    assert_eq!(f.dispatcher.hold_reason("worker"), None);
+    f.backlog(1);
+    assert_eq!(
+        f.dispatcher.hold_reason("worker"),
+        Some(DeliveryReadiness::Ready { idle: false })
+    );
+    f.after(Duration::from_secs(10 * 60));
+    f.after(Duration::from_secs(10 * 60));
+    assert!(f.writes().is_empty());
+    assert!(
+        f.warnings().is_empty(),
+        "a long turn is not a stall: {:?}",
+        f.warnings()
+    );
+    f.readiness(DeliveryReadiness::Ready { idle: true });
+    f.session(SessionDeliveryEvent::Idle);
+    assert_eq!(f.notices(), 1);
+    assert_eq!(f.dispatcher.hold_reason("worker"), None);
+}
+
+#[test]
+fn a_busy_nothing_confirms_warns_once_after_the_backoff_and_delivers_on_release() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Unconfirmed);
+    f.backlog(1);
+    assert_eq!(
+        f.dispatcher.hold_reason("worker"),
+        Some(DeliveryReadiness::Unconfirmed)
+    );
+    f.after(Duration::from_secs(119));
+    assert!(f.warnings().is_empty());
+    f.after(Duration::from_secs(1));
+    f.after(Duration::from_secs(300));
+    assert_eq!(
+        f.warnings(),
+        ["delivery to @worker is held: it shows busy but its agent has not reported a turn"]
+    );
+    assert!(f.writes().is_empty());
+    f.readiness(DeliveryReadiness::Ready { idle: true });
+    f.session(SessionDeliveryEvent::Idle);
+    assert_eq!(f.notices(), 1);
+    assert_eq!(f.warnings().len(), 1);
+    assert_eq!(f.dispatcher.hold_reason("worker"), None);
+}
+
+#[test]
+fn a_busy_that_the_agent_confirms_in_time_does_not_warn() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Unconfirmed);
+    f.backlog(1);
+    f.after(Duration::from_secs(100));
+    f.readiness(DeliveryReadiness::Ready { idle: false });
+    f.backlog(1);
+    f.after(Duration::from_secs(10 * 60));
+    assert!(f.warnings().is_empty(), "{:?}", f.warnings());
+    assert_eq!(
+        f.dispatcher.hold_reason("worker"),
+        Some(DeliveryReadiness::Ready { idle: false })
+    );
+}
+
+#[test]
 fn cursor_input_keeps_a_seen_notice_paused_past_the_draft_cap_without_enter() {
     let mut f = Fixture::new();
     leave_unsent_notice(&mut f, Leftover::UnsubmittedThenMoved);
