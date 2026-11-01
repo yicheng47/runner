@@ -254,9 +254,17 @@ impl SessionState {
                 _ => R::Drafting,
             };
         }
-        R::Ready {
-            idle: self.model.activity() == Some(SessionActivityState::Idle),
+        let idle = self.model.activity() == Some(SessionActivityState::Idle);
+        if !idle
+            && runner_core::protocol::runtime_metadata::for_key(&self.delivery_runtime)
+                .queues_input_mid_turn()
+        {
+            return R::Working;
         }
+        if self.model.unconfirmed_busy() {
+            return R::Unconfirmed;
+        }
+        R::Ready { idle }
     }
 
     fn is_empty(&self) -> bool {

@@ -13,6 +13,9 @@ pub const CTRL_C_INTERRUPT: u8 = 1;
 pub const ESCAPE_INTERRUPT: u8 = 2;
 const RECENT_LOCAL_INPUT_WINDOW: Duration = Duration::from_secs(2);
 const OBSERVED_DRAFT_HOLD_CAP: Duration = Duration::from_secs(10 * 60);
+/// How long a busy that rests on a submit alone waits for evidence of a turn before it reverts to
+/// idle. A hook arrives within a second of a real submit; the margin covers a loaded machine.
+pub(crate) const SUBMIT_TURN_START_WINDOW: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusSource {
@@ -30,6 +33,8 @@ pub enum StatusSource {
     ProgramStatus,
     #[serde(rename = "input-submit")]
     InputSubmit,
+    #[serde(rename = "input-timeout")]
+    InputTimeout,
     #[serde(rename = "input-interrupt")]
     InputInterrupt,
     #[serde(rename = "input-escape")]
@@ -58,6 +63,7 @@ impl StatusSource {
             Self::CodexAttention => "codex-attention",
             Self::ProgramStatus => "program-status",
             Self::InputSubmit => "input-submit",
+            Self::InputTimeout => "input-timeout",
             Self::InputInterrupt => "input-interrupt",
             Self::InputEscape => "input-escape",
             Self::Hook => "hook",
@@ -159,6 +165,12 @@ pub(crate) enum SessionEvent {
         class: Option<LocalInputClass>,
         submitted: bool,
     },
+    /// Terminal output reached the session.
+    Output,
+    /// The window for a submit-busy to show a turn has run out.
+    SubmitTimeout {
+        live: bool,
+    },
     #[cfg(test)]
     DraftInput(Option<LocalInputClass>),
     InputWriteFailed(InputCheckpoint),
@@ -192,8 +204,20 @@ pub(crate) struct Effects {
     pub persist_key: Option<PersistKey>,
 }
 
+/// A busy that rests on a submit or a delivery alone, until the agent shows a turn.
+#[derive(Clone, Debug)]
+struct SubmitBusy {
+    since: Instant,
+    /// The busy it armed; any later change of activity supersedes it.
+    revision: u64,
+    /// What the submit overwrote, where the agent reports no status of its own.
+    observation: Option<AgentObservation>,
+    completion: bool,
+}
+
 pub(crate) struct InputCheckpoint {
     activity: Option<SessionActivityState>,
+    submit_busy: Option<SubmitBusy>,
     status: AgentStatus,
     suppression: bool,
     pending: bool,
@@ -211,6 +235,7 @@ pub(crate) struct SessionModel {
     suppress_local_input_busy: bool,
     hook_status_armed: bool,
     provisional_idle: bool,
+    submit_busy: Option<SubmitBusy>,
     local_input_pending: bool,
     observed_input: Option<ObservedInput>,
     native_input: Option<ObservedInput>,
@@ -268,6 +293,41 @@ impl SessionModel {
         self.activity_revision
     }
 
+    /// Busy because a submit or delivery said so, with no turn reported by the agent.
+    pub fn unconfirmed_busy(&self) -> bool {
+        self.activity == Some(SessionActivityState::Busy)
+            && self.status.observation.activity != Activity::Working
+            && !self.status.observation.needs_you()
+    }
+
+    /// Whether an armed Busy that nothing has superseded has outlived its window.
+    pub fn submit_busy_due(&self, now: Instant) -> bool {
+        self.submit_busy.as_ref().is_some_and(|submit| {
+            self.activity == Some(SessionActivityState::Busy)
+                && self.activity_revision == submit.revision
+                && now.saturating_duration_since(submit.since) >= SUBMIT_TURN_START_WINDOW
+        })
+    }
+
+    #[cfg(test)]
+    pub fn submit_armed(&self) -> bool {
+        self.submit_busy.is_some()
+    }
+
+    fn arm_submit_busy(
+        &mut self,
+        now: Instant,
+        observation: Option<AgentObservation>,
+        completion: bool,
+    ) {
+        self.submit_busy = Some(SubmitBusy {
+            since: now,
+            revision: self.activity_revision,
+            observation,
+            completion,
+        });
+    }
+
     pub fn is_empty(&self) -> bool {
         self.activity.is_none()
             && self.status.error_since.is_none()
@@ -276,6 +336,7 @@ impl SessionModel {
             && !self.suppress_local_input_busy
             && !self.hook_status_armed
             && !self.provisional_idle
+            && self.submit_busy.is_none()
             && !self.local_input_pending
             && self.observed_input.is_none()
             && self.native_input.is_none()
@@ -287,6 +348,7 @@ impl SessionModel {
     pub fn input_checkpoint(&self) -> InputCheckpoint {
         InputCheckpoint {
             activity: self.activity,
+            submit_busy: self.submit_busy.clone(),
             status: self.status.clone(),
             suppression: self.suppress_local_input_busy,
             pending: self.local_input_pending,
@@ -500,6 +562,7 @@ impl SessionModel {
                 self.baseline_activity = None;
                 self.hook_status_armed = false;
                 self.provisional_idle = false;
+                self.submit_busy = None;
                 self.activity_revision = self.activity_revision.wrapping_add(1);
             }
             SessionEvent::Detached { stopped } => {
@@ -515,6 +578,7 @@ impl SessionModel {
                 self.suppress_local_input_busy = false;
                 self.hook_status_armed = false;
                 self.provisional_idle = false;
+                self.submit_busy = None;
                 self.local_input_pending = false;
                 self.observed_input = None;
                 self.native_input = None;
@@ -586,13 +650,16 @@ impl SessionModel {
                 effects = self.publish_snapshot(fallback, live, now);
             }
             SessionEvent::Input { class, submitted } => {
+                let completion_before = self.completion_armed;
                 if self.activity.is_some() && submitted {
                     self.suppress_local_input_busy = false;
                     if self.activity == Some(SessionActivityState::Idle) {
                         self.activity = Some(SessionActivityState::Busy);
+                        let mut overwritten = None;
                         if !self.hook_status_armed
                             && self.status.observation.program_status.is_none()
                         {
+                            overwritten = Some(self.status.observation.clone());
                             self.status.observation.activity = Activity::Working;
                             self.status.observation.source = ObservationSource::Baseline;
                             self.status.observation.outcome = None;
@@ -600,6 +667,18 @@ impl SessionModel {
                         effects.publication =
                             Some((SessionActivityState::Busy, StatusSource::InputSubmit));
                         self.activity_revision = self.activity_revision.wrapping_add(1);
+                        self.arm_submit_busy(now.monotonic, overwritten, completion_before);
+                    } else {
+                        // A second Return while the first has shown no turn restarts the wait for
+                        // its turn. A Busy the agent confirmed has no armed submit to restart.
+                        let revision = self.activity_revision;
+                        if let Some(submit) = self
+                            .submit_busy
+                            .as_mut()
+                            .filter(|submit| submit.revision == revision)
+                        {
+                            submit.since = now.monotonic;
+                        }
                     }
                 } else if self.activity == Some(SessionActivityState::Idle) {
                     self.suppress_local_input_busy = true;
@@ -615,6 +694,7 @@ impl SessionModel {
             }
             SessionEvent::InputWriteFailed(previous) => {
                 self.activity = previous.activity;
+                self.submit_busy = previous.submit_busy;
                 self.status = previous.status;
                 self.suppress_local_input_busy = previous.suppression;
                 self.local_input_pending = previous.pending;
@@ -644,9 +724,48 @@ impl SessionModel {
             }
             SessionEvent::Delivered { revision } => {
                 if self.activity_revision == revision {
+                    let was_idle = self.activity == Some(SessionActivityState::Idle);
                     self.activity = Some(SessionActivityState::Busy);
                     self.activity_revision = self.activity_revision.wrapping_add(1);
+                    if was_idle {
+                        self.arm_submit_busy(now.monotonic, None, self.completion_armed);
+                    }
                 }
+            }
+            SessionEvent::Output => {
+                // Output-only runtimes have no other evidence of a turn: from here the idle
+                // detector returns them to idle once the output falls silent. Under hooks or a
+                // native status report the output proves nothing, since Codex redraws its
+                // composer on an Enter it ignores.
+                if !self.hook_status_armed && self.status.observation.program_status.is_none() {
+                    self.submit_busy = None;
+                }
+            }
+            SessionEvent::SubmitTimeout { live } => {
+                let Some(submit) = &self.submit_busy else {
+                    return effects;
+                };
+                if self.activity != Some(SessionActivityState::Busy)
+                    || self.activity_revision != submit.revision
+                {
+                    self.submit_busy = None;
+                    return effects;
+                }
+                if !self.submit_busy_due(now.monotonic) {
+                    return effects;
+                }
+                let submit = self.submit_busy.take().expect("checked above");
+                if !live || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error) {
+                    return effects;
+                }
+                if let Some(observation) = submit.observation {
+                    self.status.observation = observation;
+                }
+                self.completion_armed = submit.completion;
+                self.activity = Some(SessionActivityState::Idle);
+                self.activity_revision = self.activity_revision.wrapping_add(1);
+                effects.publication =
+                    Some((SessionActivityState::Idle, StatusSource::InputTimeout));
             }
             SessionEvent::ArmCompletion => self.completion_armed = true,
             SessionEvent::TakeCompletion => {
@@ -683,6 +802,7 @@ impl SessionModel {
                 self.program_status_wait = None;
                 self.status.observation.program_status = None;
                 self.hook_status_armed = false;
+                self.submit_busy = None;
                 self.status.observation.interactions.clear();
             }
             SessionEvent::ConversationChanged(report) => effects.persist_key = Some(report),

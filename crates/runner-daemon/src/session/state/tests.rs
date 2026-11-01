@@ -811,6 +811,7 @@ fn status_sources_keep_their_wire_strings() {
         StatusSource::Resume,
         StatusSource::Forwarder,
         StatusSource::InputSubmit,
+        StatusSource::InputTimeout,
         StatusSource::InputInterrupt,
         StatusSource::InputEscape,
         StatusSource::Hook,
@@ -1152,4 +1153,350 @@ fn process_exit_clears_program_status_and_rejects_late_reports() {
     assert!(program(&mut model, 1, Some(P::Working))
         .publication
         .is_some());
+}
+
+fn later(at: Now, window: Duration) -> Now {
+    Now {
+        monotonic: at.monotonic + window,
+        wall_millis: at.wall_millis,
+    }
+}
+
+fn submit(model: &mut SessionModel, at: Now) -> Effects {
+    model.apply(
+        SessionEvent::Input {
+            class: Some(LocalInputClass::ClearPending),
+            submitted: true,
+        },
+        at,
+    )
+}
+
+fn expire(model: &mut SessionModel, at: Now) -> Effects {
+    model.apply(SessionEvent::SubmitTimeout { live: true }, at)
+}
+
+fn hook_idle(at: Now) -> SessionModel {
+    let mut model = SessionModel::default();
+    observe(&mut model, hook(Activity::Ready), at);
+    assert_eq!(model.activity(), Some(SessionActivityState::Idle));
+    model
+}
+
+const IDLE: Option<SessionActivityState> = Some(SessionActivityState::Idle);
+const BUSY: Option<SessionActivityState> = Some(SessionActivityState::Busy);
+
+#[test]
+fn a_submit_that_starts_no_turn_returns_to_the_last_hook_state_after_the_window() {
+    let start = now();
+    let mut model = hook_idle(start);
+    let hooked = model.status().clone();
+    assert!(!model.completion_armed());
+    assert_eq!(
+        submit(&mut model, start).publication,
+        Some((SessionActivityState::Busy, StatusSource::InputSubmit))
+    );
+    assert!(model.unconfirmed_busy());
+    assert!(model.completion_armed());
+
+    let almost = later(start, SUBMIT_TURN_START_WINDOW - Duration::from_secs(1));
+    assert!(!model.submit_busy_due(almost.monotonic));
+    assert!(expire(&mut model, almost).publication.is_none());
+    assert_eq!(model.activity(), BUSY);
+
+    let due = later(start, SUBMIT_TURN_START_WINDOW);
+    assert!(model.submit_busy_due(due.monotonic));
+    let revision = model.revision();
+    assert_eq!(
+        expire(&mut model, due).publication,
+        Some((SessionActivityState::Idle, StatusSource::InputTimeout))
+    );
+    assert_eq!(model.activity(), IDLE);
+    assert_ne!(model.revision(), revision);
+    assert_eq!(model.status(), &hooked, "the hook's state is what remains");
+    assert!(!model.unconfirmed_busy());
+    assert!(
+        !model.completion_armed(),
+        "no turn ran, so none may complete"
+    );
+
+    assert!(!model.submit_busy_due(due.monotonic));
+    assert!(expire(&mut model, due).publication.is_none());
+}
+
+#[test]
+fn a_turn_that_starts_in_time_stays_busy_and_a_late_one_restores_busy() {
+    let start = now();
+    let due = later(start, SUBMIT_TURN_START_WINDOW);
+
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    let working = observe(
+        &mut model,
+        hook(Activity::Working),
+        later(start, Duration::from_secs(2)),
+    );
+    assert_eq!(
+        working.publication,
+        Some((SessionActivityState::Busy, StatusSource::Hook))
+    );
+    assert!(
+        !model.unconfirmed_busy(),
+        "a reported turn confirms the busy"
+    );
+    assert!(expire(&mut model, due).publication.is_none());
+    assert_eq!(model.activity(), BUSY);
+    observe(
+        &mut model,
+        hook(Activity::Ready),
+        later(due, Duration::from_secs(60)),
+    );
+    assert_eq!(model.activity(), IDLE);
+    assert!(
+        expire(&mut model, later(due, Duration::from_secs(120)))
+            .publication
+            .is_none(),
+        "a finished turn is not reverted again"
+    );
+    assert_eq!(model.activity(), IDLE);
+
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    assert!(expire(&mut model, due).publication.is_some());
+    let late = observe(
+        &mut model,
+        hook(Activity::Working),
+        later(due, Duration::from_secs(4)),
+    );
+    assert_eq!(
+        late.publication,
+        Some((SessionActivityState::Busy, StatusSource::Hook))
+    );
+    assert_eq!(model.activity(), BUSY);
+    assert!(model.completion_armed(), "the late turn completes normally");
+}
+
+#[test]
+fn output_proves_a_turn_only_to_sessions_with_no_other_status() {
+    let start = now();
+    let due = later(start, SUBMIT_TURN_START_WINDOW);
+    let silent = |model: &mut SessionModel| {
+        submit(model, start);
+        expire(model, due)
+    };
+
+    let baseline = || {
+        let mut model = SessionModel::default();
+        transition(
+            &mut model,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        model
+    };
+    let mut model = baseline();
+    let before = model.status().clone();
+    let effects = silent(&mut model);
+    assert_eq!(
+        effects.publication,
+        Some((SessionActivityState::Idle, StatusSource::InputTimeout))
+    );
+    assert_eq!(
+        model.status(),
+        &before,
+        "the submit's estimate is withdrawn"
+    );
+
+    let mut model = baseline();
+    submit(&mut model, start);
+    model.apply(SessionEvent::Output, later(start, Duration::from_secs(1)));
+    assert!(
+        expire(&mut model, due).publication.is_none(),
+        "the idle detector owns the way back once output has flowed"
+    );
+    assert_eq!(model.activity(), BUSY);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+
+    // Codex redraws its composer on an Enter it ignores, so output means nothing under hooks.
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    model.apply(SessionEvent::Output, later(start, Duration::from_secs(1)));
+    assert!(expire(&mut model, due).publication.is_some());
+    assert_eq!(model.activity(), IDLE);
+
+    use runner_terminal::program_status::State as P;
+    let mut model = SessionModel::default();
+    transition(
+        &mut model,
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    program(&mut model, 1, Some(P::Done));
+    assert_eq!(model.activity(), IDLE);
+    submit(&mut model, start);
+    model.apply(SessionEvent::Output, later(start, Duration::from_secs(1)));
+    assert!(expire(&mut model, due).publication.is_some());
+    assert_eq!(model.activity(), IDLE);
+}
+
+#[test]
+fn a_confirmed_delivery_without_a_turn_reverts_but_never_at_a_stale_revision() {
+    let start = now();
+    let due = later(start, SUBMIT_TURN_START_WINDOW);
+    let mut model = hook_idle(start);
+    let hooked = model.status().clone();
+    let stale = model.revision();
+    submit(&mut model, start);
+    expire(&mut model, due);
+    model.apply(SessionEvent::Delivered { revision: stale }, due);
+    assert_eq!(model.activity(), IDLE, "an older reservation does not land");
+    assert!(!model.submit_busy_due(later(due, SUBMIT_TURN_START_WINDOW).monotonic));
+
+    let revision = model.revision();
+    model.apply(SessionEvent::Delivered { revision }, due);
+    assert_eq!(model.activity(), BUSY);
+    assert!(model.unconfirmed_busy());
+    assert_eq!(model.status(), &hooked);
+    assert!(expire(&mut model, later(due, SUBMIT_TURN_START_WINDOW))
+        .publication
+        .is_some());
+    assert_eq!(model.activity(), IDLE);
+    assert_eq!(model.status(), &hooked);
+
+    let mut unknown = SessionModel::default();
+    let revision = unknown.revision();
+    unknown.apply(SessionEvent::Delivered { revision }, start);
+    assert_eq!(unknown.activity(), BUSY);
+    assert!(
+        expire(&mut unknown, due).publication.is_none(),
+        "an unknown state has no idle to return to"
+    );
+}
+
+#[test]
+fn a_failed_write_withdraws_the_busy_it_armed() {
+    let start = now();
+    let mut model = hook_idle(start);
+    let before = model.status().clone();
+    let checkpoint = model.input_checkpoint();
+    submit(&mut model, start);
+    model.apply(SessionEvent::InputWriteFailed(checkpoint), start);
+    assert_eq!(model.activity(), IDLE);
+    assert_eq!(model.status(), &before);
+    assert!(!model.submit_busy_due(later(start, SUBMIT_TURN_START_WINDOW).monotonic));
+    assert!(expire(&mut model, later(start, SUBMIT_TURN_START_WINDOW))
+        .publication
+        .is_none());
+}
+
+#[test]
+fn detach_attach_and_exit_drop_the_armed_busy() {
+    let start = now();
+    let due = later(start, SUBMIT_TURN_START_WINDOW);
+    for (name, event) in [
+        ("detached", SessionEvent::Detached { stopped: false }),
+        ("attached", SessionEvent::Attached),
+        (
+            "exited",
+            SessionEvent::Exited {
+                code: Some(0),
+                crashed: false,
+            },
+        ),
+    ] {
+        let mut model = hook_idle(start);
+        submit(&mut model, start);
+        model.apply(event, start);
+        assert!(!model.submit_armed(), "{name}");
+        assert!(expire(&mut model, due).publication.is_none(), "{name}");
+    }
+
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    assert!(
+        model
+            .apply(SessionEvent::SubmitTimeout { live: false }, due)
+            .publication
+            .is_none(),
+        "a dead launch publishes nothing"
+    );
+    assert!(!model.submit_armed());
+}
+
+#[test]
+fn a_second_return_restarts_the_wait_while_no_turn_has_shown() {
+    let start = now();
+    let second = later(start, Duration::from_millis(9_900));
+    let first_due = later(start, SUBMIT_TURN_START_WINDOW);
+    let second_due = later(second, SUBMIT_TURN_START_WINDOW);
+
+    // The genuine prompt's hook lands inside the second window, after the first one ran out.
+    let mut model = hook_idle(start);
+    let hooked = model.status().clone();
+    submit(&mut model, start);
+    assert!(
+        submit(&mut model, second).publication.is_none(),
+        "the Busy is already published"
+    );
+    assert!(!model.submit_busy_due(first_due.monotonic));
+    assert!(expire(&mut model, first_due).publication.is_none());
+    assert_eq!(model.activity(), BUSY);
+    let working = observe(
+        &mut model,
+        hook(Activity::Working),
+        later(first_due, Duration::from_secs(5)),
+    );
+    assert_eq!(
+        working.publication,
+        Some((SessionActivityState::Busy, StatusSource::Hook))
+    );
+    assert!(expire(&mut model, second_due).publication.is_none());
+    assert_eq!(model.activity(), BUSY);
+
+    // With no turn the new deadline reverts to the baseline of the first submit.
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    submit(&mut model, second);
+    assert!(model.submit_busy_due(second_due.monotonic));
+    assert_eq!(
+        expire(&mut model, second_due).publication,
+        Some((SessionActivityState::Idle, StatusSource::InputTimeout))
+    );
+    assert_eq!(model.status(), &hooked);
+    assert!(
+        !model.completion_armed(),
+        "the baseline is the first submit's, not the second's"
+    );
+
+    // A Busy the hook confirmed has no armed submit, so a Return in it arms nothing.
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    observe(
+        &mut model,
+        hook(Activity::Working),
+        later(start, Duration::from_secs(1)),
+    );
+    submit(&mut model, later(start, Duration::from_secs(2)));
+    assert!(!model.submit_busy_due(later(start, Duration::from_secs(600)).monotonic));
+    assert!(expire(&mut model, later(start, Duration::from_secs(600)))
+        .publication
+        .is_none());
+    assert_eq!(model.activity(), BUSY);
+}
+
+#[test]
+fn a_failed_second_write_keeps_the_first_deadline() {
+    let start = now();
+    let second = later(start, Duration::from_millis(9_900));
+    let first_due = later(start, SUBMIT_TURN_START_WINDOW);
+    let mut model = hook_idle(start);
+    submit(&mut model, start);
+    let checkpoint = model.input_checkpoint();
+    submit(&mut model, second);
+    assert!(!model.submit_busy_due(first_due.monotonic));
+    model.apply(SessionEvent::InputWriteFailed(checkpoint), second);
+    assert_eq!(model.activity(), BUSY, "the first submit still stands");
+    assert!(model.submit_busy_due(first_due.monotonic));
+    assert!(expire(&mut model, first_due).publication.is_some());
+    assert_eq!(model.activity(), IDLE);
 }

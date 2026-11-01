@@ -292,11 +292,13 @@ impl SessionManager {
         let session = session.lock().unwrap();
         let now = crate::session::clock::now();
         Ok(match session.delivery_readiness(&delivery, now) {
-            R::Ready { idle: true } => {
+            R::Ready { idle: true } | R::Working => {
                 delivery.in_flight = true;
                 D::Ready(delivery.generation)
             }
-            R::Ready { idle: false } | R::Pending | R::Unavailable => D::Unavailable,
+            R::Ready { idle: false } | R::Unconfirmed | R::Pending | R::Unavailable => {
+                D::Unavailable
+            }
             R::Starting => D::Starting,
             R::NeedsYou => D::HumanInteraction,
             R::InFlight => D::InFlight,

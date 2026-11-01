@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1103 — Deliver inbox notices to working members on runtimes that queue mid-turn input](./1103-mid-turn-delivery.md) — a working Claude Code member is ready for delivery again; Codex and the other runtimes stay idle-only ([#1103](https://github.com/yicheng47/runner/issues/1103)).
 - [748 — Link a chat to the missions it starts](./748-mission-link.md) — Runner records the chat that starts a mission and shows that mission's state on the chat, so the agent no longer watches the feed; draft spec, design before implementation ([#748](https://github.com/yicheng47/runner/issues/748)).
 - [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).

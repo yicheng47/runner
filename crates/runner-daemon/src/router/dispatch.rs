@@ -82,6 +82,15 @@ impl Dispatcher {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn hold_reason(&self, handle: &str) -> Option<DeliveryReadiness> {
+        self.subscribers
+            .get(handle)?
+            .hold
+            .as_ref()
+            .map(|hold| hold.reason)
+    }
+
     /// All timing is driven by the caller's clock. Port calls never hold router state.
     pub(crate) fn advance(
         &mut self,
@@ -354,7 +363,12 @@ impl Dispatcher {
                     || (state == ProbeState::Unknown
                         && unsent.seen
                         && subscriber.input_cleared
-                        && matches!(readiness, DeliveryReadiness::Ready { .. }));
+                        && matches!(
+                            readiness,
+                            DeliveryReadiness::Ready { .. }
+                                | DeliveryReadiness::Working
+                                | DeliveryReadiness::Unconfirmed
+                        ));
                 if !gone && (unsent.seen || tracked) {
                     // Typing again would stack a second notice on this one (#753).
                     let opportunity = subscriber.retry.is_none()
@@ -366,6 +380,8 @@ impl Dispatcher {
                         && matches!(
                             readiness,
                             DeliveryReadiness::Ready { .. }
+                                | DeliveryReadiness::Working
+                                | DeliveryReadiness::Unconfirmed
                                 | DeliveryReadiness::Unsent
                                 | DeliveryReadiness::Drafting
                         )
@@ -441,6 +457,18 @@ impl Dispatcher {
                 match router.injector.delivery_readiness(&subscriber.session_id) {
                     DeliveryReadiness::Ready { idle } => {
                         subscriber.wanted = idle;
+                        Self::hold(
+                            router,
+                            handle,
+                            subscriber,
+                            (!idle).then_some(DeliveryReadiness::Ready { idle }),
+                            unread,
+                            now,
+                        );
+                        Self::blocked(router, handle, subscriber, unread, None);
+                    }
+                    DeliveryReadiness::Working => {
+                        subscriber.wanted = false;
                         Self::hold(router, handle, subscriber, None, unread, now);
                         Self::blocked(router, handle, subscriber, unread, None);
                     }
@@ -469,7 +497,11 @@ impl Dispatcher {
                 router,
                 handle,
                 subscriber,
-                (!matches!(readiness, DeliveryReadiness::Ready { .. })).then_some(readiness),
+                (!matches!(
+                    readiness,
+                    DeliveryReadiness::Ready { idle: true } | DeliveryReadiness::Working
+                ))
+                .then_some(readiness),
                 unread,
                 now,
             );
@@ -481,7 +513,7 @@ impl Dispatcher {
                 blocked_reason(readiness),
             );
             match readiness {
-                DeliveryReadiness::Ready { idle: true } => {
+                DeliveryReadiness::Ready { idle: true } | DeliveryReadiness::Working => {
                     match router.injector.reserve_delivery(&subscriber.session_id) {
                         Ok(DeliveryReservation::Ready(token)) => {
                             let unread = router
@@ -565,7 +597,7 @@ impl Dispatcher {
     }
 
     /// Log each change of the reason delivery is held, and warn once a hold with unread messages
-    /// outlasts the redelivery backoff.
+    /// outlasts the redelivery backoff. A working member is a hold that never warns.
     fn hold(
         router: &Router,
         handle: &str,
@@ -613,9 +645,11 @@ impl Dispatcher {
             DeliveryReadiness::NeedsYou => "it is waiting for a response to its prompt",
             DeliveryReadiness::RecentlyTyping(_) => "someone keeps typing in its terminal",
             DeliveryReadiness::InFlight => "earlier input to its terminal has not finished",
-            // An unavailable session has its own queued warning, and a hooked first turn
-            // stays Starting until it ends, so a long one is not a stall.
+            DeliveryReadiness::Unconfirmed => "it shows busy but its agent has not reported a turn",
+            // A working member's long turn is not a stall. An unavailable session has its own
+            // queued warning, and a hooked first turn stays Starting until it ends.
             DeliveryReadiness::Ready { .. }
+            | DeliveryReadiness::Working
             | DeliveryReadiness::Unavailable
             | DeliveryReadiness::Pending
             | DeliveryReadiness::Starting => return,
