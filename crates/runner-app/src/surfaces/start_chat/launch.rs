@@ -20,6 +20,10 @@ impl NativeRoot {
         });
         match result {
             Ok(session_id) => {
+                self.reveal_started_scope(
+                    &ProjectScope::or_root(self.active_tab_project_id(cx)),
+                    cx,
+                );
                 self.start_chat_modal = None;
                 self.error = None;
                 self.remember_active_role(cx);

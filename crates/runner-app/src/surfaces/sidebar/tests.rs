@@ -9,9 +9,7 @@ use super::elements::sidebar_fork_menu_target;
 use super::elements::sidebar_icon_color;
 use super::elements::tab_label_live;
 use super::menus::mission_menu_entries;
-use super::menus::project_create_menu_entries;
 use super::menus::project_menu_entries;
-use super::menus::sidebar_create_menu_entries;
 use super::menus::sidebar_tab_icon;
 use super::menus::tab_menu_entries;
 use super::rows_render::project_header_icon;
@@ -826,7 +824,7 @@ fn menu_labels(entries: &[(UiMenuItem, SidebarMenuAction)]) -> Vec<&str> {
 }
 
 #[test]
-fn workspace_starts_with_a_non_selectable_new_chat_action() {
+fn workspace_new_chat_is_selected_on_the_launcher_page() {
     assert_eq!(
         WORKSPACE_ENTRIES,
         [
@@ -835,12 +833,10 @@ fn workspace_starts_with_a_non_selectable_new_chat_action() {
             WorkspaceEntry::Crew,
         ]
     );
-    assert!(!WorkspaceEntry::NewTab.selectable());
+    assert!(WorkspaceEntry::NewTab.selected(&AppRoute::Launcher));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Roles));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Crews));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Settings));
-    assert!(WorkspaceEntry::Role.selectable());
-    assert!(WorkspaceEntry::Crew.selectable());
 }
 
 #[test]
@@ -863,41 +859,7 @@ fn shortcut_pills_use_the_platform_primary_modifier_alone() {
 }
 
 #[test]
-fn project_create_menu_uses_short_labels_and_project_targets() {
-    let root_entries = sidebar_create_menu_entries(&keymap::KeymapOverrides::new());
-    assert_eq!(
-        menu_labels(&root_entries),
-        ["New chat", "New mission", "New terminal"]
-    );
-    assert_eq!(
-        root_entries
-            .iter()
-            .map(|(_, action)| action.clone())
-            .collect::<Vec<_>>(),
-        [
-            SidebarMenuAction::NewChat(ProjectScope::Root),
-            SidebarMenuAction::NewMission(ProjectScope::Root),
-            SidebarMenuAction::NewTerminal(ProjectScope::Root),
-        ]
-    );
-
-    let entries = project_create_menu_entries("project-1", &keymap::KeymapOverrides::new());
-    assert_eq!(
-        menu_labels(&entries),
-        ["New chat", "New mission", "New terminal"]
-    );
-    assert_eq!(
-        entries
-            .iter()
-            .map(|(_, action)| action.clone())
-            .collect::<Vec<_>>(),
-        [
-            SidebarMenuAction::NewChat(ProjectScope::Project("project-1".into())),
-            SidebarMenuAction::NewMission(ProjectScope::Project("project-1".into())),
-            SidebarMenuAction::NewTerminal(ProjectScope::Project("project-1".into())),
-        ]
-    );
-
+fn project_menu_has_rename_and_delete() {
     let project_entries = project_menu_entries("project-1".into(), "Runner".into());
     assert_eq!(
         menu_labels(&project_entries),
@@ -1523,30 +1485,6 @@ fn creating_routes_highlight_their_workspace_entry() {
     assert!(!WorkspaceEntry::Crew.selected(&AppRoute::NewRole));
     assert!(WorkspaceEntry::Crew.selected(&AppRoute::NewCrew));
     assert!(!WorkspaceEntry::Role.selected(&AppRoute::NewCrew));
-}
-
-#[test]
-fn both_create_menus_show_effective_bindings_and_omit_unbound_keys() {
-    let mut overrides = keymap::KeymapOverrides::new();
-    overrides.insert(
-        "new-chat".into(),
-        Some(keymap::entry("command-palette").unwrap().default.clone()),
-    );
-    overrides.insert("new-terminal".into(), None);
-    for entries in [
-        sidebar_create_menu_entries(&overrides),
-        project_create_menu_entries("project-1", &overrides),
-    ] {
-        assert_eq!(
-            entries[0].0.shortcut.as_deref(),
-            Some(keymap::format_combo(&keymap::entry("command-palette").unwrap().default).as_str())
-        );
-        assert_eq!(
-            entries[1].0.shortcut.as_deref(),
-            Some(keymap::format_combo(&keymap::entry("new-mission").unwrap().default).as_str())
-        );
-        assert!(entries[2].0.shortcut.is_none());
-    }
 }
 
 #[cfg(debug_assertions)]

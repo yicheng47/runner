@@ -3,7 +3,6 @@ use super::*;
 impl NativeRoot {
     fn clear_remote_transients(&mut self) {
         self.start_chat_modal = None;
-        self.start_mission_modal = None;
         self.chat_rename_modal = None;
         self.pane_rename = None;
         self.fork_confirm = None;
@@ -76,7 +75,6 @@ impl NativeRoot {
     pub(crate) fn select_remote_item(&mut self, item: RemoteItem, cx: &mut Context<Self>) {
         if self.remote_client.select_remote_item(item) {
             self.start_chat_modal = None;
-            self.start_mission_modal = None;
         }
         self.sync_remote_state(cx);
         self.remote_client.mark_remote_stopped_sessions_viewed(cx);

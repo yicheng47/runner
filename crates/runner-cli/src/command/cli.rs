@@ -315,9 +315,9 @@ pub(super) enum MissionCommand {
         /// Read the mission goal from a file, or - for stdin.
         #[arg(long, conflicts_with = "goal")]
         goal_file: Option<PathBuf>,
-        /// Mission title; defaults from the goal or crew name.
+        /// Mission title.
         #[arg(long)]
-        title: Option<String>,
+        title: String,
         /// Project ID or exact name whose directory the mission uses.
         #[arg(long, conflicts_with = "cwd")]
         project: Option<String>,

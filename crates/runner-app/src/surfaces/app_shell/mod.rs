@@ -48,6 +48,7 @@ const SIDEBAR_PREVIEW_DWELL_MS: u64 = 200;
 pub(crate) enum AppRoute {
     #[default]
     Chat,
+    Launcher,
     Roles,
     NewRole,
     RoleDetail(String),
@@ -130,10 +131,6 @@ impl NativeRoot {
             .start_chat_modal
             .is_some()
             .then(|| self.render_start_chat_modal(window, cx));
-        let mission_modal = self
-            .start_mission_modal
-            .is_some()
-            .then(|| self.render_start_mission_modal(cx));
         let chat_rename_modal = (self.remote_client.is_active() || self.route == AppRoute::Chat)
             .then_some(self.chat_rename_modal.as_ref())
             .flatten()
@@ -195,6 +192,7 @@ impl NativeRoot {
                     (!matches!(
                         self.route,
                         AppRoute::Chat
+                            | AppRoute::Launcher
                             | AppRoute::ArchivedChat
                             | AppRoute::Mission(_)
                             | AppRoute::Settings
@@ -258,7 +256,6 @@ impl NativeRoot {
             .children(self.render_window_top_margin_drag_area(cx))
             .children(self.render_window_navigation(window, cx))
             .children(modal)
-            .children(mission_modal)
             .children(settings_confirm)
             .children(command_palette)
             .children(computer_picker)

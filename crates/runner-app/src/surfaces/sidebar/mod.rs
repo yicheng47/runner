@@ -213,8 +213,6 @@ impl Render for SidebarNodeDrag {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum SidebarMenuAction {
     NewChat(ProjectScope),
-    NewTerminal(ProjectScope),
-    NewMission(ProjectScope),
     TogglePin {
         node_id: String,
         pinned: bool,
@@ -249,16 +247,9 @@ const WORKSPACE_ENTRIES: [WorkspaceEntry; 3] = [
 ];
 
 impl WorkspaceEntry {
-    fn selectable(self) -> bool {
-        !matches!(self, Self::NewTab)
-    }
-
     fn selected(self, route: &AppRoute) -> bool {
-        if !self.selectable() {
-            return false;
-        }
         match self {
-            Self::NewTab => unreachable!(),
+            Self::NewTab => *route == AppRoute::Launcher,
             Self::Role => matches!(
                 route,
                 AppRoute::Roles | AppRoute::NewRole | AppRoute::RoleDetail(_)
@@ -282,8 +273,6 @@ pub(crate) struct Sidebar {
     store_revisions: StoreRevisions,
     scroll: ScrollHandle,
     scrollbar: Entity<Scrollbar>,
-    create_menu: Entity<PopoverMenu>,
-    create_actions: Vec<SidebarMenuAction>,
     context_menu: Option<Entity<ContextMenu>>,
     rename: Option<SidebarRename>,
     live_titles: HashMap<String, String>,

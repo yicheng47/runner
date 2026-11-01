@@ -13,18 +13,22 @@
 
 ## 启动任务
 
-1. 按 **⇧⌘M** / **Ctrl+Shift+M** ，或从小队页面启动任务。
-2. 选择 **Pair coding crew** 。对话框会显示成员列表和智能体设置。
-3. 输入标题，例如“介绍项目”。
-4. 输入具体的 **目标（Goal）** ，例如：
+1. 按 **⇧⌘M** / **Ctrl+Shift+M**，或在启动器页面选择 **任务（Mission）**。页面进入小队步骤，不创建标签页：搜索框中出现 **任务** 标签，下方按最近使用列出你的小队。在小队页面点击 **启动任务（Start mission）** 会选好该小队，直接进入下一步。
+2. 选择 **Pair coding crew**。搜索框变为目标输入框，并带有该小队的标签；下方列出各槽位及其角色和模型。
+3. 输入具体的目标，例如：
 
    ```text
    Create a short PROJECT-TOUR.md explaining the top-level folders in this repository. Inspect the files before writing. The reviewer should check every claim against the repository and send corrections to the coder. Make no code changes, commits, pushes or pull requests. Leave the final diff for me to inspect.
    ```
 
-5. 选择 **项目（Project）**，或选择 **无项目（No project）** 将任务归入最近记录。检查下方的 **工作目录（Working directory）**：选择项目会填入其目录，目录位于其他项目内时，离开字段后项目选择会随之更新。点击 **启动任务（Start mission）**，或按 **⌘Enter** / **Ctrl+Enter**。
+   **⇧Enter** / **Shift+Enter** 换行；输入框最多增高到六行，之后滚动。
 
-每个成员都会收到目标、角色指令和团队约定。coder 开始实现；reviewer 按约定等待 coder 交接。目标可以留空，以便先建立任务，但第一次尝试时在启动前写好目标更容易跟进。
+4. 检查目标下方的项目和文件夹。项目选择器和 **更改** 的用法与聊天相同；选择 **无项目（No project）** 可将任务归入最近记录。
+5. 按 **Enter** 或点击 **启动任务**。Runner 此时才创建任务标签页，并选中所选项目或最近记录中的任务条目。
+
+每个成员都会收到目标、角色指令和团队约定。coder 开始实现；reviewer 按约定等待 coder 交接。任务标题取目标的第一个非空行（最多 60 个字符）；没有目标时为小队名称加日期，之后可在任务菜单中重命名。目标可以留空，以便先建立任务，但第一次尝试时在启动前写好目标更容易跟进。
+
+在小队步骤中，按 Esc、在空输入框中按 Backspace 或点击标签上的 × 回到默认启动器页。在目标步骤中，按 Esc、在空输入框中按 Backspace 或点击小队标签上的 × 回到小队列表。在默认页按 Esc 返回之前的标签页或页面。启动器页面没有窗格标题栏或关闭窗格按钮。没有角色的小队以灰色显示并标注“暂无角色”；选择它会打开小队页面。
 
 ## 跟进工作
 

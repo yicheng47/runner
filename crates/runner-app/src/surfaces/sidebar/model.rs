@@ -1,4 +1,3 @@
-use super::menus::sidebar_create_menu_entries;
 use super::*;
 use crate::surfaces::front_page::model::{MissionFields, ProjectDisplay};
 use runner_core::companion::{MissionState, Status};
@@ -22,7 +21,6 @@ impl Sidebar {
             self.remote_settings = Some(settings);
         }
         self.front_page = client;
-        self.refresh_create_menu(cx);
         cx.notify();
     }
 
@@ -252,13 +250,7 @@ impl Sidebar {
             return true;
         }
         match action {
-            SidebarMenuAction::NewChat(_) => self.front_page.supports(&["catalog", "startChat"]),
-            SidebarMenuAction::NewTerminal(_) => {
-                self.front_page.supports(&["startShell", "layout"])
-            }
-            SidebarMenuAction::NewMission(_) => {
-                self.front_page.supports(&["catalog", "startMission"])
-            }
+            SidebarMenuAction::NewChat(_) => self.front_page.supports(&["layout"]),
             SidebarMenuAction::TogglePin { .. } => self.front_page.supports(&["pin"]),
             SidebarMenuAction::Rename(_) => self.front_page.supports(&["rename"]),
             SidebarMenuAction::ForkChat(id) => {
@@ -290,17 +282,6 @@ impl Sidebar {
             SidebarMenuAction::ResumeMission(_) => self.front_page.supports(&["resumeMission"]),
             SidebarMenuAction::DeleteProject(_) => self.front_page.supports(&["deleteProject"]),
         }
-    }
-
-    pub(super) fn refresh_create_menu(&mut self, cx: &mut Context<Self>) {
-        let entries = sidebar_create_menu_entries(&self.settings(cx).keymap_overrides)
-            .into_iter()
-            .filter(|(_, action)| self.menu_action_supported(action, cx))
-            .collect::<Vec<_>>();
-        self.create_actions = entries.iter().map(|(_, action)| action.clone()).collect();
-        self.create_menu.update(cx, |menu, cx| {
-            menu.set_items(entries.into_iter().map(|(item, _)| item).collect(), cx)
-        });
     }
 }
 

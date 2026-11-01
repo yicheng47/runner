@@ -105,6 +105,7 @@ pub(crate) fn sidebar_item_row(
 pub(crate) fn workspace_new_chat_row(
     shortcut: Option<String>,
     enabled: bool,
+    selected: bool,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     div()
@@ -119,6 +120,10 @@ pub(crate) fn workspace_new_chat_row(
         .rounded_sm()
         .border_1()
         .border_color(gpui::transparent_black())
+        .when(selected, |row| {
+            row.bg(theme::chrome_selected())
+                .border_color(theme::chrome_selected_border())
+        })
         .when(!enabled, |row| row.opacity(0.35))
         .when(enabled, |row| {
             row.cursor_pointer().hover(|row| {

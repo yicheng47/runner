@@ -13,9 +13,9 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
 | New window | ⇧⌘N | Ctrl+Shift+N |
-| Open/focus the chat launcher in an empty pane or new tab | ⌘N | Ctrl+N |
+| Show the launcher page without creating a tab | ⌘N | Ctrl+N |
 | New terminal; fill the focused empty pane or create a tab | ⌘T | Ctrl+Shift+T |
-| New mission | ⇧⌘M | Ctrl+Shift+M |
+| New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
 | Command palette | ⌘K | Ctrl+K |
 | Toggle sidebar | ⌘S | Ctrl+S |
 | Toggle mission terminal drawer | ⌥F12 | Alt+F12 |
@@ -48,9 +48,9 @@ On Windows and Linux, **Ctrl+C** copies when terminal text is selected; otherwis
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
-| Start a mission or add a role in its dialog | ⌘Enter | Ctrl+Enter |
+| Add a role to a running mission in its dialog | ⌘Enter | Ctrl+Enter |
 
-The dialog confirmation binding is fixed. In the launcher, ↑/↓ select rows, Enter starts the selected row, 1–4 start ranked rows while search is empty, and Esc clears a non-empty search. Digits type normally during a search. The command palette shortcut also works from the launcher's search field, unlike other text fields; closing the palette returns to the search.
+The dialog confirmation binding is fixed. In the launcher, ↑/↓ select rows, Enter starts the selected row, 1–4 start ranked rows while search is empty, and Esc on the default page returns to the previous tab/view. In a split pane, Esc clears a non-empty search. On the launcher's crew step, ⇧Enter starts an Empty mission, and Esc leaves the step even during a search; Backspace leaves it when the field is empty. On its goal step, Enter starts the mission, ⇧Enter adds a line, and Esc returns to the crews. Digits type normally during a search. The command palette shortcut also works from the launcher's search field, unlike other text fields; closing the palette returns to the search.
 
 ## Appearance and window controls
 

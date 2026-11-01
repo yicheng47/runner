@@ -195,19 +195,18 @@ impl Sidebar {
         self.open_sidebar_context_menu(position, entries, window, cx);
     }
 
-    pub(super) fn open_project_create_menu(
+    /// A sidebar +: the launcher page in `scope`, where chats, terminals and
+    /// missions start.
+    pub(crate) fn open_launcher_in(
         &mut self,
-        project_id: String,
-        anchor: gpui::Bounds<gpui::Pixels>,
+        scope: ProjectScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_sidebar_menu(
-            MenuOrigin::Button(anchor),
-            project_create_menu_entries(&project_id, &self.settings(cx).keymap_overrides),
-            window,
-            cx,
-        );
+        let action = SidebarMenuAction::NewChat(scope);
+        if self.menu_action_supported(&action, cx) {
+            self.handle_sidebar_menu_action(action, window, cx);
+        }
     }
 
     pub(super) fn open_project_menu(
@@ -282,52 +281,10 @@ impl Sidebar {
         match action {
             SidebarMenuAction::NewChat(scope) => {
                 self.set_active_project(scope.project_id().map(str::to_owned), cx);
-                if let Some(project_id) = scope.project_id() {
-                    let project_id = project_id.to_owned();
-                    self.update_app_settings(cx, true, move |settings| {
-                        settings.sidebar_projects_open = true;
-                        settings.sidebar_collapsed_projects.remove(&project_id);
-                        true
-                    });
-                }
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
                             shell.open_sidebar_chat_modal(scope, window, shell_cx)
-                        });
-                    });
-                }
-            }
-            SidebarMenuAction::NewTerminal(scope) => {
-                self.set_active_project(scope.project_id().map(str::to_owned), cx);
-                if let Some(project_id) = scope.project_id() {
-                    let project_id = project_id.to_owned();
-                    self.update_app_settings(cx, true, move |settings| {
-                        settings.sidebar_projects_open = true;
-                        settings.sidebar_collapsed_projects.remove(&project_id);
-                        true
-                    });
-                }
-                if let Some(shell) = self.shell.upgrade() {
-                    window.defer(cx, move |window, cx| {
-                        shell.update(cx, |shell, shell_cx| {
-                            shell.new_terminal_tab(scope, window, shell_cx)
-                        });
-                    });
-                }
-            }
-            SidebarMenuAction::NewMission(scope) => {
-                self.set_active_project(scope.project_id().map(str::to_owned), cx);
-                let client = self.front_page.clone();
-                if let Some(shell) = self.shell.upgrade() {
-                    window.defer(cx, move |window, cx| {
-                        shell.update(cx, |shell, shell_cx| {
-                            if !client.valid()
-                                || shell.front_page_client(shell_cx).target != client.target
-                            {
-                                return;
-                            }
-                            shell.open_start_mission_modal(None, scope, window, shell_cx)
                         });
                     });
                 }
@@ -622,54 +579,6 @@ pub(super) fn mission_menu_entries(
             SidebarMenuAction::ArchiveMission(mission_id.to_owned()),
         ),
     ]
-}
-
-pub(super) fn project_create_menu_entries(
-    project_id: &str,
-    overrides: &keymap::KeymapOverrides,
-) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    create_menu_entries(ProjectScope::Project(project_id.to_owned()), overrides)
-}
-
-pub(super) fn sidebar_create_menu_entries(
-    overrides: &keymap::KeymapOverrides,
-) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    create_menu_entries(ProjectScope::Root, overrides)
-}
-
-fn create_menu_entries(
-    scope: ProjectScope,
-    overrides: &keymap::KeymapOverrides,
-) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    [
-        (
-            "new-chat",
-            crate::i18n::message("ui.new_chat"),
-            "message-square-plus.svg",
-            SidebarMenuAction::NewChat(scope.clone()),
-        ),
-        (
-            "new-mission",
-            crate::i18n::message("ui.new_mission"),
-            "flag.svg",
-            SidebarMenuAction::NewMission(scope.clone()),
-        ),
-        (
-            "new-terminal",
-            crate::i18n::message("ui.new_terminal"),
-            "square-terminal.svg",
-            SidebarMenuAction::NewTerminal(scope),
-        ),
-    ]
-    .into_iter()
-    .map(|(id, label, icon, action)| {
-        let mut item = UiMenuItem::new(label).icon(icon);
-        if let Some(combo) = keymap::effective_binding(id, overrides) {
-            item = item.shortcut(keymap::format_combo(&combo));
-        }
-        (item, action)
-    })
-    .collect()
 }
 
 pub(super) fn project_menu_entries(

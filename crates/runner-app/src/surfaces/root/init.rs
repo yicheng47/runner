@@ -268,7 +268,6 @@ impl NativeRoot {
             sidebar,
             launchers: HashMap::new(),
             start_chat_modal: None,
-            start_mission_modal: None,
             project_modal: None,
             project_delete_confirm: None,
             project_delete_busy: false,
@@ -402,7 +401,7 @@ impl NativeRoot {
                 root.enter_settings_pane(SettingsPane::General, window, cx);
                 window.focus(&root.root_focus, cx);
             }
-            AppRoute::Chat | AppRoute::ArchivedChat => {}
+            AppRoute::Chat | AppRoute::Launcher | AppRoute::ArchivedChat => {}
         }
         root.sync_window_activation(window, cx);
         if root.route == AppRoute::Chat {

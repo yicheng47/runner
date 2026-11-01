@@ -380,16 +380,16 @@ pub(crate) fn crew_summary(slots: usize) -> String {
 /// What a slot runs once its overrides apply, and which values it overrides.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SlotSetup {
-    pub(super) runtime: String,
+    pub(crate) runtime: String,
     /// The slot pins a runtime, even one matching the role's: a pin keeps the
     /// slot on it when the role's runtime changes.
     pub(super) runtime_overridden: bool,
     /// The slot runs its role's runtime, so it inherits the role's model and
     /// effort.
     pub(super) own_runtime: bool,
-    pub(super) model: Option<String>,
+    pub(crate) model: Option<String>,
     pub(super) model_overridden: bool,
-    pub(super) effort: Option<String>,
+    pub(crate) effort: Option<String>,
     pub(super) effort_overridden: bool,
     pub(super) speed: Option<runner_core::protocol::model::CodexSpeed>,
     pub(super) speed_overridden: bool,

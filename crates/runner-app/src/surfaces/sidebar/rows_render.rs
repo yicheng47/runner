@@ -425,11 +425,10 @@ impl Sidebar {
                         "plus.svg",
                         12.,
                         crate::i18n::text("ui.new_in_project"),
-                        move |anchor, window, cx| {
+                        move |_, window, cx| {
                             create_menu_root.update(cx, |this, cx| {
-                                this.open_project_create_menu(
-                                    create_project_id.clone(),
-                                    anchor,
+                                this.open_launcher_in(
+                                    ProjectScope::Project(create_project_id.clone()),
                                     window,
                                     cx,
                                 )

@@ -116,7 +116,6 @@ use surfaces::{pane_close_behavior, PaneCloseBehavior};
 use surfaces::{
     AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace, PaneKey, ProjectModal,
     RoleSurfaces, SettingsPane, SettingsState, Sidebar, SplitMenuKey, StartChatModal,
-    StartMissionModalState,
 };
 
 actions!(
@@ -141,7 +140,6 @@ actions!(
         NewTerminal,
         NewMission,
         ConfirmStartChat,
-        ConfirmStartMission,
         NewWindow,
         OpenSettings,
         Quit,

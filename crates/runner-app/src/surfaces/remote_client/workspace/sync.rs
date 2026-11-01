@@ -185,7 +185,7 @@ impl RemoteClient {
                 Some(Item::Mission(id)) => {
                     overview.missions.iter().any(|mission| &mission.id == id)
                 }
-                Some(Item::Roles | Item::Crews) | None => true,
+                Some(Item::Launcher | Item::Roles | Item::Crews) | None => true,
             };
             if !valid {
                 remote.active = None;

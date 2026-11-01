@@ -2,11 +2,10 @@ use super::*;
 
 #[test]
 fn mission_spawn_cwd_prefers_mission_over_role_working_dir() {
-    // Regression guard for #101: the per-mission cwd typed into the
-    // Start-mission modal must beat the role template's
-    // `working_dir` default. Before the fix the role override
-    // silently won, so StartMissionModal's helper text ("Each
-    // role's PTY starts in this directory") was a lie.
+    // Regression guard for #101: the per-mission cwd chosen at
+    // mission start must beat the role template's `working_dir`
+    // default. Before the fix the role override silently won, so
+    // every slot ignored the folder the person picked.
     //
     // Exercises the resolver at the spawn site by inspecting the
     // SpawnSpec FakeRuntime captures. The contended both-set case

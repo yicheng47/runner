@@ -217,6 +217,7 @@ impl NativeRoot {
 
         let Some(layout) = self.front_page_layout().cloned() else {
             return div()
+                .debug_selector(|| "LAUNCHER_PAGE".into())
                 .track_focus(&self.chat_focus)
                 .flex_1()
                 .min_h(px(0.))
@@ -234,26 +235,6 @@ impl NativeRoot {
                 )
                 .children(error_banner)
                 .children(warning_banner)
-                .child(
-                    div()
-                        .h(rems(40. / 16.))
-                        .flex_none()
-                        .px(rems(14. / 16.))
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            svg()
-                                .path("plus.svg")
-                                .size(rems(15. / 16.))
-                                .text_color(theme::muted()),
-                        )
-                        .child(
-                            div()
-                                .text_size(theme::text_ui())
-                                .child(crate::i18n::text("launcher.new")),
-                        ),
-                )
                 .child(self.render_launcher(None, true, window, cx))
                 .into_any_element();
         };

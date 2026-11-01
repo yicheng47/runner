@@ -1465,9 +1465,30 @@ mod tests {
             }
         }
         assert!(Cli::try_parse_from([
-            "runner", "mission", "start", "--crew", "Peer", "--goal", "Ship"
+            "runner", "mission", "start", "--crew", "Peer", "--goal", "Ship", "--title", "Ship"
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn mission_start_requires_an_explicit_title_with_or_without_a_crew_or_goal() {
+        for options in [
+            vec![],
+            vec!["--goal", "Ship"],
+            vec!["--crew", "Peer"],
+            vec!["--crew", "Peer", "--goal", "Ship"],
+        ] {
+            let mut args = vec!["runner", "mission", "start"];
+            args.extend(options);
+            let error = Cli::try_parse_from(&args).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+            assert!(error.to_string().contains("--title <TITLE>"));
+            args.extend(["--title", "Explicit title"]);
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
     }
 
     #[test]
@@ -2209,7 +2230,9 @@ mod tests {
             &["crew", "order", "Peer", "lead", "impl"],
             &["mission", "list", "--crew", "Peer"],
             &["mission", "show", "01M"],
-            &["mission", "start", "--crew", "Peer", "--goal", "ship"],
+            &[
+                "mission", "start", "--crew", "Peer", "--goal", "ship", "--title", "Ship",
+            ],
             &["mission", "stop", "01M"],
             &["mission", "resume", "01M"],
             &["mission", "archive", "01M"],

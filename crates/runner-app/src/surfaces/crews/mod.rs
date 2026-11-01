@@ -1,5 +1,4 @@
-pub(crate) use logic::{crew_picture, slot_setup, SlotSetup};
-pub(crate) use slots::slot_setup_line;
+pub(crate) use logic::{crew_picture, slot_setup};
 mod add_slot;
 mod create;
 mod editor;

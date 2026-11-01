@@ -20,6 +20,6 @@ For example, the default pair asks the coder to implement on a feature branch, t
 
 ## Crew versus mission
 
-The crew is the reusable starting configuration. The [mission](missions.md) owns the live work, goal, feed and membership. Adding or removing a member from a mission does not edit the saved crew. A mission can also start with **No crew**, then receive members one at a time.
+The crew is the reusable starting configuration. The [mission](missions.md) owns the live work, goal, feed and membership. Adding or removing a member from a mission does not edit the saved crew. A mission can also start as an **Empty mission**, then receive members one at a time.
 
 Follow [Build a crew](../guides/build-a-crew.md) to make your own team.

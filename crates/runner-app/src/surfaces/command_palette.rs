@@ -1475,7 +1475,7 @@ mod remote_isolation_tests {
                 );
                 palette.select(0, window, cx);
             });
-            assert!(shell.read(cx).start_mission_modal.is_some());
+            assert!(shell.read(cx).mission_launcher_open(cx));
         });
         visual.run_until_parked();
         assert!(!palette.read_with(&visual, |palette, _| palette.open));

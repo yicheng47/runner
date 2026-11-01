@@ -132,7 +132,7 @@ A crew mission ends in an open pull request by default. The crew works on its ow
 
 An explicit merge request includes GitHub's configured automatic deletion of the merged remote branch; no separate confirmation is needed. Local branch and worktree cleanup still requires explicit authorization; see Post-mission cleanup.
 
-A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
+A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --title <title> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
 
 A program that runs on an umbrella branch, such as #645's `feat/645-runnerd`, creates each mission's worktree from the umbrella instead of `origin/main` and opens the mission's PR against the umbrella. The umbrella follows `main` by merging `main` in between missions and reaches `main` as one PR when the program's gate passes; see the program's plan in `docs/impls/`.
 

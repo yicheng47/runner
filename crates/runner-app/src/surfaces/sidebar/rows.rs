@@ -7,8 +7,6 @@ use runner_core::protocol::node::NodeType;
 
 impl Sidebar {
     pub(super) fn dismiss_transients(&mut self, cx: &mut Context<Self>) {
-        self.create_menu
-            .update(cx, |menu, menu_cx| menu.close(menu_cx));
         let had_context_menu = self.context_menu.take().is_some();
         self.rename = None;
         self._rename_focus_subscription = None;
@@ -28,7 +26,7 @@ impl Sidebar {
         self.set_active_project(project_id, cx);
     }
 
-    pub(super) fn set_active_project(
+    pub(crate) fn set_active_project(
         &mut self,
         project_id: Option<String>,
         cx: &mut Context<Self>,
