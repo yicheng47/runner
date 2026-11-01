@@ -389,6 +389,8 @@ The router asks `StdinInjector`, implemented by `SessionManager`. Readiness is c
 | `Drafting` | Draft observations indicate text should be preserved. |
 | `RecentlyTyping` | Local input is still within the typing hold. |
 | `Unavailable` | No current live handle; keep the backlog until resume. |
+| `Working` | Busy on a runtime that queues input typed during a turn (Claude Code); a new message may be attempted, redelivery waits for idle. |
+| `Unconfirmed` | Busy on a submit or delivery alone, with no agent report; withdrawn by the session manager within seconds. |
 | `Ready { idle }` | Can attempt notification now. `idle` controls periodic redelivery eligibility. |
 
 Startup is its own gate in [`manager/startup.rs`](../../crates/runner-daemon/src/session/manager/startup.rs). Hook-backed startup waits for suitable ready/idle evidence, including an outcome when an initial turn is pending. Output fallback requires output to have begun, a startup grace, and a quiet interval. Brief startup silence alone must not insert a message into an agent that is still initializing.

@@ -127,6 +127,9 @@ pub enum DeliveryReadiness {
     Ready {
         idle: bool,
     },
+    /// Busy, on a runtime whose composer queues input typed during a turn. A new message may be
+    /// typed now; redelivery of an old backlog still waits for idle.
+    Working,
     /// Busy on a submit or delivery alone: its agent has reported no turn. The session manager
     /// withdraws such a busy within seconds, so one that lasts is stuck.
     Unconfirmed,

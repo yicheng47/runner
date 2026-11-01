@@ -365,7 +365,9 @@ impl Dispatcher {
                         && subscriber.input_cleared
                         && matches!(
                             readiness,
-                            DeliveryReadiness::Ready { .. } | DeliveryReadiness::Unconfirmed
+                            DeliveryReadiness::Ready { .. }
+                                | DeliveryReadiness::Working
+                                | DeliveryReadiness::Unconfirmed
                         ));
                 if !gone && (unsent.seen || tracked) {
                     // Typing again would stack a second notice on this one (#753).
@@ -378,6 +380,7 @@ impl Dispatcher {
                         && matches!(
                             readiness,
                             DeliveryReadiness::Ready { .. }
+                                | DeliveryReadiness::Working
                                 | DeliveryReadiness::Unconfirmed
                                 | DeliveryReadiness::Unsent
                                 | DeliveryReadiness::Drafting
@@ -464,6 +467,11 @@ impl Dispatcher {
                         );
                         Self::blocked(router, handle, subscriber, unread, None);
                     }
+                    DeliveryReadiness::Working => {
+                        subscriber.wanted = false;
+                        Self::hold(router, handle, subscriber, None, unread, now);
+                        Self::blocked(router, handle, subscriber, unread, None);
+                    }
                     DeliveryReadiness::Unavailable => {}
                     readiness => {
                         Self::hold(router, handle, subscriber, Some(readiness), unread, now);
@@ -489,7 +497,11 @@ impl Dispatcher {
                 router,
                 handle,
                 subscriber,
-                (readiness != DeliveryReadiness::Ready { idle: true }).then_some(readiness),
+                (!matches!(
+                    readiness,
+                    DeliveryReadiness::Ready { idle: true } | DeliveryReadiness::Working
+                ))
+                .then_some(readiness),
                 unread,
                 now,
             );
@@ -501,7 +513,7 @@ impl Dispatcher {
                 blocked_reason(readiness),
             );
             match readiness {
-                DeliveryReadiness::Ready { idle: true } => {
+                DeliveryReadiness::Ready { idle: true } | DeliveryReadiness::Working => {
                     match router.injector.reserve_delivery(&subscriber.session_id) {
                         Ok(DeliveryReservation::Ready(token)) => {
                             let unread = router
@@ -637,6 +649,7 @@ impl Dispatcher {
             // A working member's long turn is not a stall. An unavailable session has its own
             // queued warning, and a hooked first turn stays Starting until it ends.
             DeliveryReadiness::Ready { .. }
+            | DeliveryReadiness::Working
             | DeliveryReadiness::Unavailable
             | DeliveryReadiness::Pending
             | DeliveryReadiness::Starting => return,

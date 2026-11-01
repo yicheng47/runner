@@ -43,7 +43,7 @@ impl StdinInjector for Fake {
     fn reserve_delivery(&self, session: &str) -> Result<DeliveryReservation> {
         if matches!(
             self.delivery_readiness(session),
-            DeliveryReadiness::Ready { .. }
+            DeliveryReadiness::Ready { .. } | DeliveryReadiness::Working
         ) {
             let ack = {
                 let mut state = self.0.lock().unwrap();
@@ -406,6 +406,60 @@ fn a_busy_that_the_agent_confirms_in_time_does_not_warn() {
         f.dispatcher.hold_reason("worker"),
         Some(DeliveryReadiness::Ready { idle: false })
     );
+}
+
+#[test]
+fn a_working_mid_turn_member_gets_each_new_message_at_once_but_no_redelivery() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Working);
+    f.backlog(1);
+    assert_eq!(f.notices(), 1);
+    assert!(f.writes()[0].contains("1 new messages"));
+    f.after(SUBMIT_DELAY);
+    assert_eq!(f.writes()[1], "\r");
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.port.0.lock().unwrap().busy, 1);
+    f.after(Duration::from_secs(10 * 60));
+    f.session(SessionDeliveryEvent::Idle);
+    assert_eq!(
+        f.writes().len(),
+        2,
+        "an unread backlog is not retyped mid-turn"
+    );
+    assert_eq!(f.dispatcher.hold_reason("worker"), None);
+    assert!(f.warnings().is_empty(), "{:?}", f.warnings());
+    f.backlog(2);
+    assert_eq!(f.notices(), 2);
+    assert!(f.writes().last().unwrap().contains("2 new messages"));
+}
+
+#[test]
+fn confirmation_and_unsent_detection_hold_for_a_working_target() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Working);
+    f.backlog(1);
+    f.after(SUBMIT_DELAY);
+    assert_eq!(f.port.0.lock().unwrap().busy, 0);
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(
+        f.port.0.lock().unwrap().busy,
+        1,
+        "a cleared composer confirms the notice"
+    );
+
+    let mut f = Fixture::new();
+    f.port.0.lock().unwrap().sticky = true;
+    f.readiness(DeliveryReadiness::Working);
+    f.backlog(1);
+    f.after(SUBMIT_DELAY);
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.writes().len(), 3, "one more Enter for an ignored one");
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.block_reason().as_deref(), Some("unsubmitted"));
+    assert_eq!(f.port.0.lock().unwrap().busy, 0);
+    f.backlog(2);
+    f.after(Duration::from_secs(10 * 60));
+    assert_eq!(f.notices(), 1, "a leftover notice is never retyped over");
 }
 
 #[test]

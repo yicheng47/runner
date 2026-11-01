@@ -831,6 +831,24 @@ impl RuntimeMetadata {
     pub fn catalog(&self) -> Option<RuntimeCatalog> {
         catalog_for(self.0)
     }
+    /// Whether the composer reliably accepts and submits input typed during a turn, which the
+    /// agent then reads at its next tool call. Only a runtime shown to do so may be sent a
+    /// mission notice while it works; every other one waits for idle, because a notice typed
+    /// into a busy composer can sit unsubmitted there (#753, #1075).
+    pub fn queues_input_mid_turn(&self) -> bool {
+        match self.0 {
+            Runtime::ClaudeCode => true,
+            Runtime::Codex
+            | Runtime::Antigravity
+            | Runtime::Copilot
+            | Runtime::Pi
+            | Runtime::Trae
+            | Runtime::Cursor
+            | Runtime::Grok
+            | Runtime::OpenCode
+            | Runtime::Shell => false,
+        }
+    }
     pub fn permissions(&self) -> &'static Permissions {
         match self.0 {
             Runtime::Codex => &codex::PERMISSIONS,
@@ -957,6 +975,25 @@ mod input_tests {
             for windows in [true, false] {
                 assert_eq!(super::for_key(key).image_paste_shortcut(windows), b"\x16");
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod mid_turn_tests {
+    use super::*;
+
+    #[test]
+    fn only_claude_code_is_marked_for_mid_turn_delivery() {
+        for runtime in Runtime::ALL {
+            assert_eq!(
+                for_key(runtime.key()).queues_input_mid_turn(),
+                runtime == Runtime::ClaudeCode,
+                "{runtime:?}"
+            );
+        }
+        for key in ["shell", "unknown", ""] {
+            assert!(!for_key(key).queues_input_mid_turn(), "{key}");
         }
     }
 }
