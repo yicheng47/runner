@@ -380,7 +380,7 @@ impl NativeRoot {
                                         .on_press(move |window, cx| {
                                             let crew_id = start_crew_id.clone();
                                             start_root.update(cx, |this, cx| {
-                                                this.open_start_mission_modal(
+                                                this.open_mission_launcher(
                                                     Some(crew_id),
                                                     runner_core::protocol::project::ProjectScope::or_root(this.active_project_id(cx)),
                                                     window,

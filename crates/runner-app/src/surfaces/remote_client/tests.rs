@@ -1101,7 +1101,6 @@ fn shared_remote_sidebar_controls_do_not_open_local_creation_or_change_local_sta
                 assert!(root.remote_client.is_active());
                 assert!(root.route == original.0);
                 assert!(root.start_chat_modal.is_none());
-                assert!(root.start_mission_modal.is_none());
                 assert!(root.project_modal.is_none());
                 assert_eq!(
                     root.tabs
@@ -5105,7 +5104,7 @@ fn remote_libraries_show_host_rows_without_management_or_local_requests() {
     visual.run_until_parked();
     window
         .read_with(&visual, |root, _| {
-            assert!(root.start_mission_modal.is_none());
+            assert!(!root.launcher_page_visible());
             assert_eq!(root.route, original_route);
             assert!(root.remote_client.workspace().unwrap().active == Some(Item::Crews));
         })

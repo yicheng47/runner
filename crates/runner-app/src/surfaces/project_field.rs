@@ -1,9 +1,9 @@
-//! The Project field of New chat and New mission: the project new work is
-//! filed under, kept in step with its working directory.
+//! The launcher's project picker: the project new work is filed under, kept
+//! in step with its start folder.
 
 use gpui::prelude::*;
-use gpui::{div, rems, svg, App, Entity, FocusHandle};
-use runner_app::ui::{Field, SelectHandler, SelectLeading, SelectOption, StyledSelect};
+use gpui::{div, rems, svg, App, Entity};
+use runner_app::ui::{SelectHandler, SelectLeading, SelectOption, StyledSelect};
 use runner_core::companion::Catalog;
 use runner_core::protocol::project::{deepest_folder_of, ProjectRow, ProjectScope};
 
@@ -41,43 +41,12 @@ impl ProjectChoice {
     }
 }
 
-/// What the working directory field says under it while a project is chosen.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DirectoryHint {
-    /// The project's folder, or a folder inside it the menu left alone.
-    Project,
-    /// The directory chose this project.
-    Inside(String),
-    /// The directory lies outside the chosen project, which still wins.
-    Outside(String),
-}
-
-impl DirectoryHint {
-    pub(crate) fn apply(self, field: Field) -> Field {
-        match self {
-            Self::Project => field.subtitle(crate::i18n::text(
-                "ui.starts_in_the_project_s_folder_change_it_for_a_worktree_or_subfolder",
-            )),
-            Self::Inside(project) => field.subtitle(crate::i18n::tf(
-                "format.inside_project_so_it_is_filed_there",
-                &[("project", project)],
-            )),
-            Self::Outside(project) => field.warning(crate::i18n::tf(
-                "format.outside_project_s_folder_it_is_still_filed_under_project",
-                &[("project", project)],
-            )),
-        }
-    }
-}
-
 pub(crate) struct ProjectField {
     choices: Vec<ProjectChoice>,
     /// Paths on this computer, compared as they exist; a remote computer's
     /// are compared as written.
     local: bool,
     chosen: Option<String>,
-    /// Whether the working directory, not the menu, made the current choice.
-    from_directory: bool,
     committed_directory: String,
     /// A pane's chat files with its tab.
     locked: bool,
@@ -119,7 +88,6 @@ impl ProjectField {
             choices,
             local,
             chosen,
-            from_directory: false,
             committed_directory,
             locked,
             select,
@@ -128,10 +96,6 @@ impl ProjectField {
 
     pub(crate) fn select(&self) -> Entity<StyledSelect> {
         self.select.clone()
-    }
-
-    pub(crate) fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.select.read(cx).focus_handle()
     }
 
     pub(crate) fn scope(&self) -> ProjectScope {
@@ -151,7 +115,6 @@ impl ProjectField {
             return None;
         }
         self.chosen = (!id.is_empty()).then(|| id.to_owned());
-        self.from_directory = false;
         let replacement = self
             .chosen()
             .and_then(|project| (!self.holds(project, directory)).then(|| project.path.clone()));
@@ -190,7 +153,6 @@ impl ProjectField {
             select.set_value(id.clone(), select_cx)
         });
         self.chosen = Some(id);
-        self.from_directory = true;
         true
     }
 
@@ -199,23 +161,7 @@ impl ProjectField {
         self.follow(directory, cx);
     }
 
-    /// The hint under the working directory, or `None` for the dialog's own
-    /// when no project is chosen.
-    pub(crate) fn directory_hint(&self, directory: &str) -> Option<DirectoryHint> {
-        let project = self.chosen()?;
-        let directory = directory.trim();
-        Some(if directory.is_empty() {
-            DirectoryHint::Project
-        } else if !self.holds(project, directory) {
-            DirectoryHint::Outside(project.name.clone())
-        } else if self.from_directory {
-            DirectoryHint::Inside(project.name.clone())
-        } else {
-            DirectoryHint::Project
-        })
-    }
-
-    /// A remote computer's projects arrive after the dialog opens.
+    /// A remote computer's projects arrive after the launcher opens.
     pub(crate) fn set_choices(&mut self, choices: Vec<ProjectChoice>, cx: &mut App) {
         if self.choices == choices {
             return;
@@ -234,13 +180,6 @@ impl ProjectField {
         self.select.update(cx, |select, select_cx| {
             select.set_options(options, select_cx);
             select.set_value(value, select_cx);
-        });
-    }
-
-    pub(crate) fn set_disabled(&self, disabled: bool, cx: &mut App) {
-        let disabled = disabled || self.locked;
-        self.select.update(cx, |select, select_cx| {
-            select.set_disabled(disabled, select_cx)
         });
     }
 
@@ -370,10 +309,6 @@ mod tests {
             assert!(field.follow("/repos/yicheng47/runner-web/src", cx));
             assert_eq!(field.scope(), ProjectScope::Project("web".into()));
             assert_eq!(field.select.read(cx).value(), "web");
-            assert_eq!(
-                field.directory_hint("/repos/yicheng47/runner-web/src"),
-                Some(DirectoryHint::Inside("runner-web".into()))
-            );
             assert!(field.follow("/repos/yicheng47/runner/.worktrees/x", cx));
             assert_eq!(field.scope(), ProjectScope::Project("runner".into()));
             assert!(field.follow("/repos/yicheng47/notes", cx));
@@ -385,36 +320,12 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_hint_names_where_the_work_is_filed(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            let mut field = project_field(Some("runner"), false, cx);
-            assert_eq!(field.directory_hint(""), Some(DirectoryHint::Project));
-            assert_eq!(
-                field.directory_hint("/repos/yicheng47/runner/src"),
-                Some(DirectoryHint::Project)
-            );
-            assert_eq!(
-                field.directory_hint("/tmp/scratch"),
-                Some(DirectoryHint::Outside("runner".into()))
-            );
-            field.choose("", "/tmp/scratch");
-            assert_eq!(field.directory_hint("/tmp/scratch"), None);
-        });
-    }
-
-    #[gpui::test]
     fn a_locked_field_keeps_its_project(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let mut field = project_field(Some("runner"), true, cx);
             assert!(field.select.read(cx).is_disabled());
             assert!(!field.follow("/repos/yicheng47/quill", cx));
             assert_eq!(field.scope(), ProjectScope::Project("runner".into()));
-            assert_eq!(
-                field.directory_hint("/repos/yicheng47/quill"),
-                Some(DirectoryHint::Outside("runner".into()))
-            );
-            field.set_disabled(false, cx);
-            assert!(field.select.read(cx).is_disabled());
         });
     }
 

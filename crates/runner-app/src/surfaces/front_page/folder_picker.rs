@@ -76,7 +76,6 @@ pub(crate) struct FolderPicker {
     loading: bool,
     failed: bool,
     generation: u64,
-    validation: u64,
     pub(crate) path_error: Option<String>,
 }
 
@@ -112,7 +111,6 @@ impl FolderPicker {
             loading: false,
             failed: false,
             generation: 0,
-            validation: 0,
             path_error: None,
         }
     }
@@ -178,7 +176,6 @@ impl FolderPicker {
         {
             return;
         }
-        self.validation = self.validation.wrapping_add(1);
         self.input.update(cx, |input, cx| {
             input.reset(path, cx);
             input.set_validation(runner_app::ui::FieldValidation::Valid, cx);
@@ -233,52 +230,6 @@ impl FolderPicker {
         })
         .detach();
         cx.notify();
-    }
-
-    pub(crate) fn validate(&mut self, cx: &mut Context<Self>) {
-        if self.open || !self.client.supports(&["folders"]) {
-            return;
-        }
-        self.validation = self.validation.wrapping_add(1);
-        let validation = self.validation;
-        let path = self.input.read(cx).text().to_owned();
-        self.path_error = None;
-        if path.trim().is_empty() {
-            self.input.update(cx, |input, cx| {
-                input.set_validation(runner_app::ui::FieldValidation::Valid, cx)
-            });
-            cx.notify();
-            return;
-        }
-        let client = self.client.clone();
-        let request = path.clone();
-        let work = cx.background_spawn(async move { client.folders(Some(request)) });
-        cx.spawn(async move |weak, cx| {
-            let result = work.await;
-            let _ = weak.update(cx, |picker, cx| {
-                if picker.validation != validation
-                    || picker.input.read(cx).text() != path
-                    || !picker.client.valid()
-                {
-                    return;
-                }
-                picker.path_error = result.err().map(|_| {
-                    crate::surfaces::remote_client::label("client.folder_invalid", &picker.computer)
-                });
-                picker.input.update(cx, |input, cx| {
-                    input.set_validation(
-                        picker
-                            .path_error
-                            .clone()
-                            .map(runner_app::ui::FieldValidation::error)
-                            .unwrap_or_default(),
-                        cx,
-                    )
-                });
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     pub(crate) fn anchor(owner: Entity<Self>) -> AnyElement {

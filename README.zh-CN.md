@@ -111,6 +111,7 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
       <pre><code>runner crew list
 runner mission start \
   --crew "Pair coding crew" \
+  --title "Fix the login bug" \
   --goal-file brief.md
 runner mission feed &lt;mission-id&gt; --follow
 runner help agents</code></pre>

@@ -24,19 +24,19 @@ The start-and-watch instructions in this section are for external operators laun
 Write a UTF-8 `brief.md` containing the task, directory assumptions, validation and authorized Git actions. In a macOS shell, run:
 
 ```sh
-mission=$(runner mission start --crew "Pair coding crew" --cwd /absolute/path/to/project --goal-file brief.md -q)
+mission=$(runner mission start --crew "Pair coding crew" --title "Fix the login bug" --cwd /absolute/path/to/project --goal-file brief.md -q)
 runner mission feed "$mission" --follow --json
 ```
 
 In Windows PowerShell:
 
 ```powershell
-$mission = runner mission start --crew "Pair coding crew" --cwd 'C:\Users\you\src\project' --goal-file brief.md -q
+$mission = runner mission start --crew "Pair coding crew" --title "Fix the login bug" --cwd 'C:\Users\you\src\project' --goal-file brief.md -q
 if ($LASTEXITCODE -ne 0) { throw 'Mission start failed' }
 runner mission feed $mission --follow --json
 ```
 
-Replace the crew name and directory with yours. `--goal-file -` reads standard input; a file path avoids shell-specific input-redirection differences. Use `--project "My app"` instead of `--cwd` when the project already names the folder.
+Replace the crew name, title and directory with yours. `--goal-file -` reads standard input; a file path avoids shell-specific input-redirection differences. Use `--project "My app"` instead of `--cwd` when the project already names the folder.
 
 The follower displays new events until the mission ends or all its sessions exit. Pressing **Ctrl+C** ends your follower; it does not stop the mission. Leave it running in one terminal and use another for commands.
 

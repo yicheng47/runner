@@ -100,7 +100,7 @@ EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   runner mission add-role "$mission" <role> --task-file - < task.md
   # Or start from a reusable crew:
   runner crew list --json
-  mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+  mission=$(runner mission start --crew <crew> --title <title> --goal-file - -q < brief.md)
   runner mission feed "$mission" --follow --json
   runner mission add-role "$mission" <role> --task-file - < task.md
   runner mission remove-role "$mission" <handle>

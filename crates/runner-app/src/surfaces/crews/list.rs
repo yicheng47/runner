@@ -669,7 +669,7 @@ impl NativeRoot {
                     Some(crate::surfaces::remote_client::RemoteItem::Crews)
                 ) =>
             {
-                self.open_start_mission_modal(
+                self.open_mission_launcher(
                     Some(crew.id),
                     runner_core::protocol::project::ProjectScope::or_root(
                         self.active_project_id(cx),
@@ -683,7 +683,7 @@ impl NativeRoot {
     }
 
     fn start_crew_mission(&mut self, crew_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_start_mission_modal(
+        self.open_mission_launcher(
             Some(crew_id),
             runner_core::protocol::project::ProjectScope::or_root(self.active_project_id(cx)),
             window,
@@ -958,19 +958,18 @@ mod project_tests {
         for chosen in [Some(projects[0].id.clone()), None] {
             harness.act(|root, window, cx| {
                 root.start_chat_modal = None;
-                root.start_mission_modal = None;
+                root.set_route(crate::surfaces::AppRoute::Crews, cx);
                 root.front_page_sidebar().update(cx, |sidebar, cx| {
                     sidebar.test_set_active_project(chosen.clone(), cx)
                 });
                 root.start_crew_mission("crew".into(), window, cx);
+                assert_eq!(root.route, crate::surfaces::AppRoute::Launcher);
                 assert_eq!(
-                    root.start_mission_modal
-                        .as_ref()
-                        .unwrap()
-                        .test_project()
-                        .scope(),
+                    ProjectScope::or_root(root.active_project_id(cx)),
                     ProjectScope::or_root(chosen)
                 );
+                assert!(root.tabs.tabs().is_empty());
+                assert!(root.mission_launcher_open(cx));
             });
         }
     }

@@ -2,13 +2,15 @@
 
 A mission holds agents working on one goal, their terminals, and a shared record of messages and questions. Start from a saved crew, or create an empty mission and add members as needed.
 
+Start a mission from the launcher page: **⇧⌘M** / **Ctrl+Shift+M**, the launcher's **Mission** row, **New mission** in the command palette and **Start mission** on a crew's page all lead there. Pick a crew, or **Empty mission** with **⇧Enter** / **Shift+Enter**, then type the goal and press **Enter**. The mission uses the launcher's project and start folder, and creates its tab only when it starts. Its title is the goal's first non-empty line, up to 60 characters, else the crew's name and the date, else “Mission” and the date; rename it from the mission's menu. Typing a crew's name on the launcher's default page also finds it, listed after agents and roles. A split pane's launcher has no Mission row, because a mission takes a whole tab; **⇧⌘M** from a split shows the launcher page without creating a tab.
+
 A mission tab has one island for its header, member tabs, feed and composer, beside a full-height Sessions/Info side panel island. The terminal drawer opens as its own island below the mission, with shell tabs, + and a hide button in its header. The expanded sidebar, side panel and drawer are separated by 6 px resize gutters. The drawer keeps its saved height; focusing its shell brightens its border and leaves the mission border at rest. Collapse a panel or hide the drawer to give the mission more room.
 
 ## Goal and membership
 
 For a crew mission, Runner starts a session per slot and delivers the goal to every member, together with their role instructions, team conventions and coordination instructions. Members act on their own part and wait for any required handoff. The mission captures its own roster, so the crew remains a reusable template.
 
-With **No crew**, the mission starts without sessions. Add a role from the mission and give it a task. Each joins as a member and receives the shared mission context. The person controlling the mission can add or remove any member while it runs. Removing a member stops its session but keeps the mission's history.
+An **Empty mission** starts without sessions. Empty missions are available on this computer; a remote mission requires a crew. Add a role from the mission and give it a task. Each joins as a member and receives the shared mission context. The person controlling the mission can add or remove any member while it runs. Removing a member stops its session but keeps the mission's history.
 
 The mission's working directory is shared by its members when supplied. Runner does not make branches, worktrees or copies of your repository. Set up any isolation you need before launch and describe it in the goal.
 

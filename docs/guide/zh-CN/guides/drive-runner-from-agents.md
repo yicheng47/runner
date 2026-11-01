@@ -24,19 +24,19 @@ runner role list --json
 编写 UTF-8 编码的 `brief.md`，包含任务、目录假设、验证要求与授权的 Git 操作。在 macOS Shell 中运行：
 
 ```sh
-mission=$(runner mission start --crew "Pair coding crew" --cwd /absolute/path/to/project --goal-file brief.md -q)
+mission=$(runner mission start --crew "Pair coding crew" --title "Fix the login bug" --cwd /absolute/path/to/project --goal-file brief.md -q)
 runner mission feed "$mission" --follow --json
 ```
 
 Windows PowerShell：
 
 ```powershell
-$mission = runner mission start --crew "Pair coding crew" --cwd 'C:\Users\you\src\project' --goal-file brief.md -q
+$mission = runner mission start --crew "Pair coding crew" --title "Fix the login bug" --cwd 'C:\Users\you\src\project' --goal-file brief.md -q
 if ($LASTEXITCODE -ne 0) { throw 'Mission start failed' }
 runner mission feed $mission --follow --json
 ```
 
-将小队名和目录替换为自己的值。`--goal-file -` 从标准输入读取；使用文件路径可避免不同 Shell 的输入重定向差异。如果项目已指定文件夹，可用 `--project "My app"` 替代 `--cwd`。
+将小队名、标题和目录替换为自己的值。`--goal-file -` 从标准输入读取；使用文件路径可避免不同 Shell 的输入重定向差异。如果项目已指定文件夹，可用 `--project "My app"` 替代 `--cwd`。
 
 跟随命令会显示新事件，直到任务结束或所有会话退出。按 **Ctrl+C** 只结束跟随，不会停止任务。可以在一个终端中保持跟随，另开终端运行其他命令。
 

@@ -13,18 +13,22 @@ Choose a small repository or a disposable project for the first task. Runner sta
 
 ## Start a mission
 
-1. Press **⇧⌘M** / **Ctrl+Shift+M**, or start a mission from the crew's page.
-2. Select **Pair coding crew**. The dialog shows its roster and agent settings.
-3. Give it a title such as “Explain the project.”
-4. Enter a concrete **Goal**, for example:
+1. Press **⇧⌘M** / **Ctrl+Shift+M**, or choose **Mission** on the launcher page. The page shows its crew step without creating a tab: a **Mission** chip in the search field and your crews, most recently used first. **Start mission** on a crew’s page skips to the next step with that crew picked.
+2. Pick **Pair coding crew**. The search field becomes the goal, with the crew's chip; its slots are listed below with each role and model.
+3. Type a concrete goal, for example:
 
    ```text
    Create a short PROJECT-TOUR.md explaining the top-level folders in this repository. Inspect the files before writing. The reviewer should check every claim against the repository and send corrections to the coder. Make no code changes, commits, pushes or pull requests. Leave the final diff for me to inspect.
    ```
 
-5. Choose **Project**, or **No project** to list the mission under Recents. Check **Working directory** below it; choosing a project fills its folder, and a directory inside another project updates the selection when you leave the field. Click **Start mission** or press **⌘Enter** / **Ctrl+Enter**.
+   **⇧Enter** / **Shift+Enter** adds a line; the field grows to six lines, then scrolls.
 
-Every member receives the goal, its role and the team conventions. The coder starts implementation; the reviewer waits for the coder’s handoff as the conventions require. An optional blank goal is useful for setting up a mission first, but a first task is easier to follow with the goal written at launch.
+4. Check the project and folder line below the goal. The project picker and **Change** work as they do for a chat; choose **No project** to list the mission under Recents.
+5. Press **Enter** or click **Start mission**. Runner creates the mission tab and selects its row under the chosen project, or Recents.
+
+Every member receives the goal, its role and the team conventions. The coder starts implementation; the reviewer waits for the coder’s handoff as the conventions require. The mission's title is the goal's first non-empty line, up to 60 characters, or the crew's name and the date when there is no goal; rename it later from the mission's menu. A blank goal is useful for setting up a mission first, but a first task is easier to follow with the goal written at launch.
+
+On the crew step, Esc, Backspace in an empty field or the chip’s × returns to the default launcher page. On the goal step, Esc, empty-field Backspace or the crew chip’s × goes back to the crews. Esc on the default page returns to your previous tab/view. The page has no pane header or pane-close button. A crew with no roles is dimmed with “No roles yet”; picking it opens its page.
 
 ## Follow the work
 

@@ -6,16 +6,16 @@ The sidebar defaults to Projects. The list-filter button beside Search switches 
 
 Create a project from the sidebar and choose its directory. New chats and missions started in that project use its directory. You can still supply a different working directory when starting work.
 
-The default chat launcher and **Start mission** start with the active project, or **No project**. A project’s **+ → New chat** opens a new launcher tab with that project selected. On the launcher’s default page, the inline project picker and **Change** set the folder for the next start. A split pane has no project or folder control: its chat uses the tab’s project and starts in a neighbouring session’s folder.
+The launcher page starts with the active project, or **No project**, for chats, terminals and missions alike. A project’s **+** shows that page with the project selected; the **+** beside Recents selects **No project**. No tab or project-tree row exists while the launcher is empty: **New chat** is selected in navigation. Starting creates a tab and selected row under the chosen project, or Recents. The project picker and **Change** set the next start’s folder. A real empty pane inside a split has no project/folder control: its chat uses the tab’s project and a neighbouring session’s folder, and its × closes that pane.
 
-Choosing a project fills its folder unless the current folder is already inside it, such as a worktree. **No project** keeps the current folder. Choosing a folder inside another project follows the deepest matching project. A role with its own working directory uses it unless you explicitly choose a folder with **Change**. Start mission retains its directory field and project hints.
+Choosing a project fills its folder unless the current folder is already inside it, such as a worktree. **No project** keeps the current folder. Choosing a folder inside another project follows the deepest matching project. A role with its own working directory uses it unless you explicitly choose a folder with **Change**. A mission's members start in the launcher's folder.
 
 The CLI can create the same association:
 
 ```sh
 runner project create "My app" --path /absolute/path/to/my-app
 runner chat start --runtime codex --project "My app"
-runner mission start --crew "Pair coding crew" --project "My app" --goal "Review the README for accuracy."
+runner mission start --crew "Pair coding crew" --project "My app" --title "README review" --goal "Review the README for accuracy."
 ```
 
 On Windows, use an absolute Windows path such as `C:\Users\you\src\my-app`. Quote paths containing spaces.

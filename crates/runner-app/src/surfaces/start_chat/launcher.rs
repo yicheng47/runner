@@ -1,4 +1,6 @@
-use super::launcher_model::{self as model, EntryKey, KeyResult, RecentStore, SearchEntry};
+use super::launcher_model::{
+    self as model, CrewEntry, EntryKey, KeyResult, RecentStore, SearchEntry, SlotLine,
+};
 use super::*;
 use crate::surfaces::front_page::folder_picker::{FolderChosen, FolderPicker};
 use crate::surfaces::front_page::{
@@ -7,11 +9,33 @@ use crate::surfaces::front_page::{
 };
 use gpui::{canvas, Render, SharedString, WeakEntity};
 
+mod mission;
+pub(crate) use mission::LauncherOrigin;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Choice {
     Chat(EntryKey),
     Terminal,
     Mission,
+    Crew(String),
+    EmptyMission,
+}
+
+impl Choice {
+    /// Rows pinned below the ranked ones, which keep their shortcut while
+    /// searching.
+    fn pinned(&self) -> bool {
+        matches!(self, Self::Terminal | Self::Mission | Self::EmptyMission)
+    }
+}
+
+/// The launcher's page: agents and roles, a mission's crews, or its goal
+/// once a crew (or none, for an Empty mission) is picked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    Start,
+    Crews,
+    Goal(Option<String>),
 }
 
 struct Row {
@@ -20,7 +44,9 @@ struct Row {
     detail: String,
     runtime: Option<String>,
     avatar: Option<String>,
+    crew: Option<Vec<SharedString>>,
     unavailable: bool,
+    dimmed: bool,
     used_at: Option<i64>,
     previously_used: bool,
 }
@@ -44,7 +70,7 @@ pub(crate) struct ChatLauncher {
     app_data_dir: PathBuf,
     recents: RecentStore,
     recent_revision: u64,
-    catalog_revisions: (u64, u64),
+    catalog_revisions: (u64, u64, u64),
     host_account: Option<String>,
     loading: bool,
     catalog_requested: bool,
@@ -53,6 +79,12 @@ pub(crate) struct ChatLauncher {
     started: Option<(EntryKey, String)>,
     error: Option<String>,
     folder_picker: Option<Entity<FolderPicker>>,
+    step: Step,
+    crews: Vec<CrewEntry>,
+    goal: Entity<TextField>,
+    slots: Option<Vec<SlotLine>>,
+    origin: Option<LauncherOrigin>,
+    store: Entity<AppStore>,
     subscriptions: Vec<Subscription>,
 }
 
@@ -144,10 +176,10 @@ fn computer_key(target: &FrontPageTarget) -> String {
 }
 
 static RECENT_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RECENT_WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn record_launcher_use(directory: &Path, target: &FrontPageTarget, key: EntryKey) {
-    static WRITER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _writer = WRITER.lock().unwrap();
+    let _writer = RECENT_WRITER.lock().unwrap();
     let mut store = RecentStore::load(directory);
     store.record(&computer_key(target), key, chrono::Utc::now().timestamp());
     match store.save(directory) {
@@ -173,8 +205,18 @@ impl ChatLauncher {
         }
     }
 
+    /// The field that takes the launcher's keys: the goal on the goal step,
+    /// else the search.
+    fn field(&self) -> &Entity<TextField> {
+        if matches!(self.step, Step::Goal(_)) {
+            &self.goal
+        } else {
+            &self.query
+        }
+    }
+
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.query.read(cx).focus_handle().focus(window, cx);
+        self.field().read(cx).focus_handle().focus(window, cx);
     }
     fn new(
         root: &NativeRoot,
@@ -206,8 +248,9 @@ impl ChatLauncher {
                 })
             })
             .flatten();
-        let (runtimes, roles, choices, default_runtime, cwd_value, error) = if remote {
+        let (runtimes, roles, crews, choices, default_runtime, cwd_value, error) = if remote {
             (
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -243,6 +286,7 @@ impl ChatLauncher {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
+                mission::local_crews(&root.app_store.read(cx).crews),
                 choices,
                 root.settings(cx).default_runtime.clone(),
                 cwd.unwrap_or_default(),
@@ -261,6 +305,20 @@ impl ChatLauncher {
             input
         });
         let cwd = cx.new(|cx| TextField::new(cx.focus_handle(), cwd_value, "", true));
+        let goal = cx.new(|input_cx| {
+            let mut input = TextField::textarea(
+                input_cx.focus_handle(),
+                "",
+                crate::i18n::message("ui.describe_what_to_do"),
+                1,
+                false,
+            )
+            .auto_grow(6)
+            .text_size(theme::text_body());
+            input.set_bare(true, input_cx);
+            input.set_right_padding(0., input_cx);
+            input
+        });
         let project_owner = entity.downgrade();
         let project = ProjectField::new(
             "launcher-project",
@@ -306,7 +364,7 @@ impl ChatLauncher {
             app_data_dir,
             recents,
             recent_revision,
-            catalog_revisions: (revisions.roles, revisions.projects),
+            catalog_revisions: (revisions.roles, revisions.projects, revisions.crews),
             host_account: None,
             loading: remote,
             catalog_requested: false,
@@ -315,6 +373,12 @@ impl ChatLauncher {
             started: None,
             error,
             folder_picker: None,
+            step: Step::Start,
+            crews,
+            goal,
+            slots: None,
+            origin: None,
+            store: root.app_store.clone(),
             subscriptions: vec![subscription],
         };
         if remote {
@@ -373,6 +437,8 @@ impl ChatLauncher {
                             .iter()
                             .filter_map(RuntimeChoice::remote)
                             .collect();
+                        this.crews = mission::host_crews(&catalog);
+                        this.settle_goal_crew(cx);
                         this.host_account = catalog
                             .accounts
                             .iter()
@@ -414,6 +480,11 @@ impl ChatLauncher {
     }
 
     fn rows(&self, cx: &App) -> (Vec<Row>, usize) {
+        match self.step {
+            Step::Goal(_) => return (Vec::new(), 0),
+            Step::Crews => return (self.crew_rows(cx), self.crews.len()),
+            Step::Start => {}
+        }
         let mut entries = Vec::new();
         let chat = self.client.supports(&["catalog", "startChat", "layout"]);
         if chat {
@@ -480,7 +551,9 @@ impl ChatLauncher {
                     detail,
                     runtime: Some(entry.runtime.clone()),
                     avatar: role.map(|role| role.handle.clone()),
+                    crew: None,
                     unavailable,
+                    dimmed: unavailable,
                     previously_used: recent.iter().any(|recent| recent.key == entry.key),
                     used_at: recent
                         .iter()
@@ -489,35 +562,25 @@ impl ChatLauncher {
                 }
             })
             .collect::<Vec<_>>();
-        if self.client.supports(&["startShell", "layout"]) {
-            rows.push(Row {
-                choice: Choice::Terminal,
-                name: crate::i18n::text("launcher.terminal").into(),
-                detail: String::new(),
-                runtime: None,
-                avatar: None,
-                unavailable: false,
-                used_at: None,
-                previously_used: false,
-            });
+        if self.offers_missions() && !query.is_empty() {
+            rows.extend(self.typed_crew_rows(query, cx));
         }
-        if self.default_page && self.client.supports(&["catalog", "startMission"]) {
-            rows.push(Row {
-                choice: Choice::Mission,
-                name: crate::i18n::text("launcher.mission").into(),
-                detail: crate::i18n::text("ui.work_with_a_crew_of_agents").into(),
-                runtime: None,
-                avatar: None,
-                unavailable: false,
-                used_at: None,
-                previously_used: false,
-            });
+        if self.client.supports(&["startShell", "layout"]) {
+            rows.push(Row::pinned(
+                Choice::Terminal,
+                crate::i18n::text("launcher.terminal"),
+                "",
+            ));
+        }
+        if self.offers_missions() {
+            rows.push(Row::pinned(
+                Choice::Mission,
+                crate::i18n::text("launcher.mission"),
+                crate::i18n::text("ui.work_with_a_crew_of_agents"),
+            ));
         }
         if let (false, Some(height)) = (self.default_page, self.height) {
-            let ranked = rows
-                .iter()
-                .filter(|row| matches!(row.choice, Choice::Chat(_)))
-                .count();
+            let ranked = rows.iter().filter(|row| !row.choice.pinned()).count();
             let (keep_ranked, keep_pinned) = model::fit_rows(height, ranked, rows.len() - ranked);
             let pinned = rows.split_off(ranked);
             rows.truncate(keep_ranked);
@@ -532,25 +595,49 @@ impl ChatLauncher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.query.read(cx).is_composing()
+        if self.field().read(cx).is_composing()
             || event.keystroke.modifiers.platform
             || event.keystroke.modifiers.control
             || event.keystroke.modifiers.alt
         {
             return false;
         }
+        let key = event.keystroke.key.as_str();
+        let shift = event.keystroke.modifiers.shift;
+        let empty = self.field().read(cx).text().is_empty();
+        match (&self.step, key) {
+            (Step::Start, "escape") if self.pane.is_none() => {
+                self.leave_page(window, cx);
+                return true;
+            }
+            (Step::Goal(_), "enter") if !shift => {
+                self.start_mission(window, cx);
+                return true;
+            }
+            (Step::Goal(_), "escape") => {
+                self.open_step(Step::Crews, window, cx);
+                return true;
+            }
+            (Step::Goal(_), "backspace") if empty => {
+                self.open_step(Step::Crews, window, cx);
+                return true;
+            }
+            (Step::Goal(_), _) => return false,
+            (Step::Crews, "enter") if shift => {
+                if self.offers_empty_missions() {
+                    self.start(Choice::EmptyMission, false, window, cx);
+                }
+                return true;
+            }
+            (Step::Crews, "escape" | "backspace") if key == "escape" || empty => {
+                self.leave_crews(window, cx);
+                return true;
+            }
+            _ => {}
+        }
         let (rows, _) = self.rows(cx);
-        let ranked = rows
-            .iter()
-            .filter(|row| matches!(row.choice, Choice::Chat(_)))
-            .count();
-        match model::key_result(
-            &event.keystroke.key,
-            self.query.read(cx).text().is_empty(),
-            self.selected,
-            ranked,
-            rows.len() - ranked,
-        ) {
+        let ranked = rows.iter().filter(|row| !row.choice.pinned()).count();
+        match model::key_result(key, empty, self.selected, ranked, rows.len() - ranked) {
             KeyResult::Select(index) => {
                 self.selected = index;
                 cx.notify();
@@ -580,6 +667,17 @@ impl ChatLauncher {
         if self.pending.is_some() || unavailable || !self.client.valid() {
             return;
         }
+        match choice {
+            Choice::Mission => return self.open_step(Step::Crews, window, cx),
+            Choice::EmptyMission => {
+                if self.offers_empty_missions() {
+                    self.open_step(Step::Goal(None), window, cx);
+                }
+                return;
+            }
+            Choice::Crew(id) => return self.pick_crew(id, window, cx),
+            Choice::Chat(_) | Choice::Terminal => {}
+        }
         let Some(root) = self.root.upgrade() else {
             return;
         };
@@ -590,14 +688,7 @@ impl ChatLauncher {
         let pane = self.pane.clone();
         let launcher = cx.entity();
         match choice {
-            Choice::Mission => {
-                self.pending = None;
-                window.defer(cx, move |window, cx| {
-                    root.update(cx, |root, cx| {
-                        root.open_start_mission_modal(None, scope, window, cx)
-                    })
-                });
-            }
+            Choice::Mission | Choice::EmptyMission | Choice::Crew(_) => {}
             Choice::Terminal => {
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
@@ -750,13 +841,11 @@ impl Render for ChatLauncher {
         let (rows, total) = self.rows(cx);
         let query = self.query.read(cx).text().to_owned();
         self.selected = self.selected.min(rows.len().saturating_sub(1));
-        let ranked_count = rows
-            .iter()
-            .filter(|row| matches!(row.choice, Choice::Chat(_)))
-            .count();
+        let ranked_count = rows.iter().filter(|row| !row.choice.pinned()).count();
         let overrides = self.keymap_overrides.clone();
         let split = !self.default_page;
-        let hide_card = split && rows.is_empty() && !self.loading && total > 0;
+        let goal_step = matches!(self.step, Step::Goal(_));
+        let hide_card = goal_step || (split && rows.is_empty() && !self.loading && total > 0);
         let tight = split && self.height.is_some_and(model::search_is_tight);
         let mut card = div()
             .flex()
@@ -769,7 +858,11 @@ impl Render for ChatLauncher {
         if self.loading {
             card = card.child(div().p_3().child(crate::i18n::text("ui.loading")));
         }
-        if total == 0 && !self.loading && self.client.supports(&["catalog", "startChat"]) {
+        if self.step == Step::Start
+            && total == 0
+            && !self.loading
+            && self.client.supports(&["catalog", "startChat"])
+        {
             card = card.child(
                 div()
                     .p_3()
@@ -798,20 +891,22 @@ impl Render for ChatLauncher {
             }
             let selected = index == self.selected;
             let pending = self.pending.as_ref() == Some(&row.choice);
-            let badge_width = if matches!(row.choice, Choice::Chat(_)) {
-                18.
-            } else {
-                40.
-            };
-            let badge = match row.choice {
+            let badge_width = if row.choice.pinned() { 40. } else { 18. };
+            let badge = match &row.choice {
                 Choice::Chat(_) => query.is_empty().then(|| (index + 1).to_string()),
+                Choice::Crew(_) => {
+                    (self.step == Step::Crews && query.is_empty()).then(|| (index + 1).to_string())
+                }
                 Choice::Terminal => keymap::effective_binding("new-terminal", &overrides)
                     .map(|key| keymap::format_combo(&key)),
                 Choice::Mission => keymap::effective_binding("new-mission", &overrides)
                     .map(|key| keymap::format_combo(&key)),
+                Choice::EmptyMission => Some(mission::SHIFT_ENTER.into()),
             };
             let mark_size = 20.;
-            let mark = if let Some(seed) = row.avatar {
+            let mark = if let Some(handles) = &row.crew {
+                crate::surfaces::crews::crew_picture(handles, mark_size)
+            } else if let Some(seed) = row.avatar {
                 RoleAvatar::new(seed, mark_size).into_any_element()
             } else if let Some(runtime) = &row.runtime {
                 runtime_mark(runtime, mark_size)
@@ -825,10 +920,10 @@ impl Render for ChatLauncher {
                     .justify_center()
                     .child(
                         svg()
-                            .path(if row.choice == Choice::Terminal {
-                                "terminal.svg"
-                            } else {
-                                "users.svg"
+                            .path(match row.choice {
+                                Choice::Terminal => "terminal.svg",
+                                Choice::EmptyMission => "plus.svg",
+                                _ => "users.svg",
                             })
                             .size(rems((mark_size - 8.) / 16.))
                             .text_color(theme::muted()),
@@ -849,7 +944,7 @@ impl Render for ChatLauncher {
                     .gap(rems(8. / 16.))
                     .rounded(rems(6. / 16.))
                     .when(selected, |row| row.bg(theme::sidebar_selected()))
-                    .when(unavailable, |row| row.opacity(0.45))
+                    .when(row.dimmed, |row| row.opacity(0.45))
                     .cursor_pointer()
                     .hover(|row| row.bg(theme::sidebar_selected()))
                     .children(badge.map(|badge| {
@@ -958,6 +1053,70 @@ impl Render for ChatLauncher {
                 )
                 .child(change)
         });
+        let field = if goal_step {
+            self.render_goal_field(window, cx)
+        } else {
+            div()
+                .h(rems(model::COMPACT_SEARCH / 16.))
+                .debug_selector(|| "LAUNCHER_SEARCH".into())
+                .key_context("LauncherSearch")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.focus(window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .px(rems(12. / 16.))
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(rems(8. / 16.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .child(
+                    svg()
+                        .path("search.svg")
+                        .size(rems(1.))
+                        .text_color(theme::muted()),
+                )
+                .children((self.step == Step::Crews).then(|| self.render_mission_chip(cx)))
+                .child(div().flex_1().min_w(px(0.)).child(self.query.clone()))
+                .into_any_element()
+        };
+        // The mark stays on every step, so a tab reads as the same tab throughout.
+        let brand = self.default_page.then(|| {
+            div()
+                .debug_selector(|| "LAUNCHER_BRAND".into())
+                .flex_none()
+                .pb(rems(12. / 16.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(rems(12. / 16.))
+                .child(
+                    div()
+                        .w(rems(52. / 16.))
+                        .h(rems(40. / 16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path("brand-mark.svg")
+                                .size(rems(70. / 16.))
+                                .text_color(theme::accent()),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(theme::text_body())
+                        .text_color(theme::muted())
+                        .child(crate::i18n::text("ui.start_something_new")),
+                )
+        });
         let launcher = cx.entity().downgrade();
         div()
             .debug_selector({
@@ -971,7 +1130,7 @@ impl Render for ChatLauncher {
                 }
             })
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.query.read(cx).focus_handle().is_focused(window)
+                if this.field().read(cx).focus_handle().is_focused(window)
                     && this.on_key(event, window, cx)
                 {
                     cx.stop_propagation();
@@ -996,7 +1155,6 @@ impl Render for ChatLauncher {
                 } / 16.,
             ))
             .overflow_hidden()
-            .bg(theme::bg())
             .child(
                 div()
                     .id("launcher-column")
@@ -1009,39 +1167,16 @@ impl Render for ChatLauncher {
                     .flex()
                     .flex_col()
                     .gap(rems(if split { model::COMPACT_GAP } else { 12. } / 16.))
-                    .child(
-                        div()
-                            .h(rems(model::COMPACT_SEARCH / 16.))
-                            .debug_selector(|| "LAUNCHER_SEARCH".into())
-                            .key_context("LauncherSearch")
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    this.focus(window, cx);
-                                    cx.stop_propagation();
-                                }),
-                            )
-                            .px(rems(12. / 16.))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .rounded(rems(8. / 16.))
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::panel())
-                            .child(
-                                svg()
-                                    .path("search.svg")
-                                    .size(rems(1.))
-                                    .text_color(theme::muted()),
-                            )
-                            .child(div().flex_1().min_w(px(0.)).child(self.query.clone())),
-                    )
+                    .children(brand)
+                    .child(field)
                     .children(location)
                     .children(self.error.as_ref().map(|error| {
                         runner_app::ui::notice_banner(error.clone(), runner_app::ui::Tone::Danger)
                     }))
-                    .when(!hide_card, |column| column.child(card)),
+                    .when(!hide_card, |column| column.child(card))
+                    .when(goal_step, |column| {
+                        column.children(self.render_goal_body(cx))
+                    }),
             )
             .children(self.folder_picker.clone())
             .child(
@@ -1148,46 +1283,16 @@ impl NativeRoot {
         {
             return false;
         }
-        if let Some(launcher) = self.launchers.values().find(|launcher| {
-            let launcher = launcher.read(cx);
-            launcher.client.target == target && launcher.pane == pane
-        }) {
-            let focus = launcher.read(cx).query.read(cx).focus_handle();
-            focus.focus(window, cx);
-            return true;
-        }
-        false
-    }
-
-    pub(crate) fn start_launcher_mission(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.front_page_is_chat() {
-            return false;
-        }
-        if self
-            .front_page_layout()
-            .is_some_and(|layout| layout.focused_session_id().is_some())
-        {
-            return false;
-        }
-        let target = self.front_page_client(cx).target;
-        let pane = self
-            .front_page_layout()
-            .map(|layout| PaneKey::new(&layout.id, &layout.focused_pane_id));
-        let launcher = self
+        if let Some(launcher) = self
             .launchers
             .values()
             .find(|launcher| {
                 let launcher = launcher.read(cx);
-                launcher.client.target == target && launcher.default_page && launcher.pane == pane
+                launcher.client.target == target && launcher.pane == pane
             })
-            .cloned();
-        if let Some(launcher) = launcher {
-            let scope = launcher.read(cx).scope();
-            self.open_start_mission_modal(None, scope, window, cx);
+            .cloned()
+        {
+            launcher.update(cx, |launcher, cx| launcher.focus(window, cx));
             return true;
         }
         false
@@ -1303,6 +1408,16 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ChatLauncher> {
+        self.cached_launcher(pane, default_page, window, cx)
+    }
+
+    fn cached_launcher(
+        &mut self,
+        pane: Option<PaneKey>,
+        default_page: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ChatLauncher> {
         let default_page = pane
             .as_ref()
             .and_then(|pane| {
@@ -1351,7 +1466,7 @@ impl NativeRoot {
             let computer = self.remote_client.computer().cloned();
             let overrides = self.settings(cx).keymap_overrides.clone();
             let revisions = self.app_store.read(cx).revisions;
-            let catalog_revisions = (revisions.roles, revisions.projects);
+            let catalog_revisions = (revisions.roles, revisions.projects, revisions.crews);
             let catalogs = (!launcher.read(cx).client.is_remote()
                 && launcher.read(cx).catalog_revisions != catalog_revisions)
                 .then(|| {
@@ -1364,6 +1479,7 @@ impl NativeRoot {
                             .map(Into::into)
                             .collect::<Vec<RoleChoice>>(),
                         ProjectChoice::local(&store.projects),
+                        mission::local_crews(&store.crews),
                     )
                 });
             let recent_revision = RECENT_REVISION.load(std::sync::atomic::Ordering::Acquire);
@@ -1371,10 +1487,14 @@ impl NativeRoot {
                 if launcher.recent_revision != recent_revision {
                     launcher.reload_recents(cx);
                 }
-                if let Some((roles, projects)) = catalogs {
+                if let Some((roles, projects, crews)) = catalogs {
                     if launcher.roles != roles {
                         launcher.roles = roles;
                         launcher.selected = 0;
+                        cx.notify();
+                    }
+                    if launcher.crews != crews {
+                        launcher.crews = crews;
                         cx.notify();
                     }
                     launcher.project.set_choices(projects, cx);
@@ -1399,43 +1519,68 @@ impl NativeRoot {
         launcher
     }
 
-    pub(crate) fn open_launcher_tab(
+    pub(crate) fn open_launcher_page(
         &mut self,
         scope: ProjectScope,
+        step: Step,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.create_modal_open() || !self.front_page_client(cx).supports(&["layout"]) {
+        if self.create_modal_open() || self.launcher_start_pending(cx) {
             return;
         }
-        let mut layout = PaneLayout::single(None, &[]);
-        layout.id = runner_core::event_log::UlidGen::new()
-            .next()
-            .expect("new tab ULID");
-        layout.parent_id = scope.project_id().map(str::to_owned);
-        let id = layout.id.clone();
-        let saved = if self.remote_client.is_local() {
-            self.front_page_client(cx)
-                .launcher_layout(&layout, scope.project_id().map(str::to_owned))
-                .map_err(anyhow::Error::from)
+        let visible = self.launcher_page_visible();
+        let origin = if self.remote_client.is_active() {
+            LauncherOrigin::Remote(self.remote_client.active_item().cloned())
         } else {
-            self.save_workspace_layout(layout, true, cx)
-        };
-        if let Err(error) = saved {
-            self.chat_error = Some(error.to_string().into());
-            return;
-        }
-        if self.remote_client.is_local() {
-            if let Err(error) = self.reload_tabs(cx) {
-                self.chat_error = Some(error.to_string().into());
-                return;
+            LauncherOrigin::Local {
+                route: self.route.clone(),
+                tab: self.tabs.active_tab_id().map(str::to_owned),
             }
-            self.tabs.activate(&id);
-            self.set_route(AppRoute::Chat, cx);
-            self.sync_active_project_from_active_tab(cx);
+        };
+        if self.remote_client.is_active() {
+            self.select_remote_item(crate::surfaces::remote_client::RemoteItem::Launcher, cx);
+        } else {
+            self.set_route(AppRoute::Launcher, cx);
         }
-        window.focus(&self.chat_focus, cx);
+        if !visible {
+            let target = self.front_page_client(cx).target;
+            self.launchers.retain(|_, launcher| {
+                let launcher = launcher.read(cx);
+                launcher.client.target != target || launcher.pane.is_some()
+            });
+            self.front_page_sidebar().update(cx, |sidebar, cx| {
+                sidebar.set_active_project(scope.project_id().map(str::to_owned), cx)
+            });
+        }
+        let launcher = self.render_launcher(None, true, window, cx);
+        launcher.update(cx, |launcher, cx| {
+            if !visible {
+                launcher.origin = Some(origin);
+            }
+            launcher.initial_project = scope.project_id().map(str::to_owned);
+            if visible {
+                let project = scope.project_id().unwrap_or_default();
+                launcher.project.select().update(cx, |select, cx| {
+                    select.set_value(project, cx);
+                });
+                launcher.choose_project(project, cx);
+            }
+            launcher.open_step(step, window, cx);
+        });
         cx.notify();
+    }
+
+    pub(crate) fn launcher_page_visible(&self) -> bool {
+        if self.remote_client.is_active() {
+            matches!(
+                self.remote_client.active_item(),
+                Some(crate::surfaces::remote_client::RemoteItem::Launcher)
+            ) || (self.remote_client.active_item().is_none() && self.front_page_layout().is_none())
+        } else {
+            self.route == AppRoute::Launcher
+                || (self.route == AppRoute::Chat && self.tabs.active().is_none())
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1577,7 +1722,14 @@ impl NativeRoot {
                         }
                         cx.notify();
                     });
+                    let reveal_remote = remote
+                        && result.is_ok()
+                        && action.client.valid()
+                        && root.front_page_client(cx).target == action.client.target;
                     let result = WorkspaceAction::complete(root, action, result, |done| done, cx);
+                    if reveal_remote {
+                        root.reveal_started_scope(&scope, cx);
+                    }
                     if !remote {
                         if let Some(Ok(done)) = result {
                             if let Some(session) = done.session {
@@ -1594,6 +1746,9 @@ impl NativeRoot {
                                         cx.notify();
                                     });
                                 } else {
+                                    if root.remote_client.is_local() {
+                                        root.reveal_started_scope(&scope, cx);
+                                    }
                                     root.launchers.retain(|_, cached| cached != &launcher);
                                     root.mark_active_tab_viewed(window, cx);
                                     root.sync_active_chat_detail(cx);
@@ -1689,6 +1844,7 @@ impl NativeRoot {
                             cx,
                         );
                         root.sync_remote_state(cx);
+                        root.reveal_started_scope(&scope, cx);
                     }
                 } else {
                     launcher.update(cx, |launcher, cx| {
@@ -1717,11 +1873,35 @@ impl NativeRoot {
 
 #[cfg(test)]
 impl NativeRoot {
+    pub(crate) fn test_open_empty_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut layout = PaneLayout::single(None, &[]);
+        layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+        self.front_page_client(cx)
+            .launcher_layout(&layout, None)
+            .unwrap();
+        self.reload_tabs(cx).unwrap();
+        self.tabs.activate(&layout.id);
+        self.set_route(AppRoute::Chat, cx);
+        self.render_launcher(
+            Some(PaneKey::new(&layout.id, &layout.focused_pane_id)),
+            true,
+            window,
+            cx,
+        );
+    }
+
+    /// Whether a mission entry point reached the crew or goal step.
+    pub(crate) fn mission_launcher_open(&self, cx: &App) -> bool {
+        self.launchers
+            .values()
+            .any(|launcher| launcher.read(cx).step != Step::Start)
+    }
+
     pub(crate) fn launcher_search_focused(&self, window: &Window, cx: &App) -> bool {
         self.launchers.values().any(|launcher| {
             launcher
                 .read(cx)
-                .query
+                .field()
                 .read(cx)
                 .focus_handle()
                 .is_focused(window)
@@ -1845,61 +2025,72 @@ mod tests {
     }
 
     #[test]
-    fn new_chat_entries_create_launchers_and_shortcut_reuses_focused_empty_pane() {
+    fn new_chat_entries_show_a_page_without_saving_a_tab() {
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
         let projects = project_fixture(&mut harness);
         harness.act(|root, window, cx| {
             root.start_chat_modal = None;
-            root.set_route(AppRoute::Chat, cx);
             root.open_new_tab_modal(&NewTab, window, cx);
-            let first = root.tabs.active().unwrap().id.clone();
             root.open_new_tab_modal(&NewTab, window, cx);
-            assert_eq!(root.tabs.active().unwrap().id, first);
-            assert_eq!(root.tabs.tabs().len(), 1);
-            assert!(root.start_chat_modal.is_none());
+            assert_eq!(root.route, AppRoute::Launcher);
+            assert!(root.tabs.tabs().is_empty());
+            assert!(root
+                .core(cx)
+                .node_list()
+                .unwrap()
+                .iter()
+                .all(|node| node.node_type != runner_core::protocol::node::NodeType::Tab));
             root.open_sidebar_chat_modal(ProjectScope::Project(projects[0].id.clone()), window, cx);
-            let layout = root.tabs.active().unwrap().clone();
+            let launcher = root.render_launcher(None, true, window, cx);
             assert_eq!(
-                root.active_tab_project_id(cx).as_deref(),
-                Some(projects[0].id.as_str())
-            );
-            assert_eq!(root.tabs.tabs().len(), 2);
-            let launcher = root.render_launcher(
-                Some(PaneKey::new(&layout.id, &layout.focused_pane_id)),
-                true,
-                window,
-                cx,
-            );
-            assert_eq!(launcher.read(cx).cwd.read(cx).text(), projects[0].cwd);
-            root.front_page_client(cx)
-                .launcher_layout(&layout, Some(projects[1].id.clone()))
-                .unwrap();
-            root.reload_tabs(cx).unwrap();
-            assert_eq!(root.active_tab_project_id(cx), Some(projects[1].id.clone()));
-            root.front_page_client(cx)
-                .launcher_layout(&layout, None)
-                .unwrap();
-            root.reload_tabs(cx).unwrap();
-            assert_eq!(root.active_tab_project_id(cx), None);
-            root.front_page_client(cx)
-                .launcher_layout(&layout, Some(projects[0].id.clone()))
-                .unwrap();
-            root.reload_tabs(cx).unwrap();
-            root.split_pane(&layout.focused_pane_id, SplitOrientation::Row, window, cx);
-            let layout = root.tabs.active().unwrap().clone();
-            assert_eq!(layout.root.leaves().len(), 2);
-            let launcher = root.render_launcher(
-                Some(PaneKey::new(&layout.id, &layout.focused_pane_id)),
-                false,
-                window,
-                cx,
-            );
-            assert!(!launcher.read(cx).default_page);
-            assert_eq!(
-                launcher.read(cx).project.scope(),
+                launcher.read(cx).scope(),
                 ProjectScope::Project(projects[0].id.clone())
             );
+            assert_eq!(launcher.read(cx).cwd.read(cx).text(), projects[0].cwd);
+            assert!(root.tabs.tabs().is_empty());
         });
+    }
+
+    #[test]
+    fn sidebar_plus_keeps_reused_page_project_picker_and_start_scope_in_sync() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.open_new_tab_modal(&NewTab, window, cx);
+        });
+        for (step, project) in [
+            (Step::Start, Some(projects[0].id.clone())),
+            (Step::Crews, Some(projects[1].id.clone())),
+            (Step::Goal(None), None),
+        ] {
+            harness.act(|root, window, cx| {
+                let launcher = root.render_launcher(None, true, window, cx);
+                launcher.update(cx, |launcher, cx| launcher.open_step(step, window, cx));
+                root.open_sidebar_chat_modal(ProjectScope::or_root(project.clone()), window, cx);
+            });
+            harness.act(|root, window, cx| {
+                let launcher = root.render_launcher(None, true, window, cx);
+                let launcher = launcher.read(cx);
+                assert_eq!(launcher.step, Step::Start);
+                assert_eq!(launcher.scope(), ProjectScope::or_root(project.clone()));
+                assert_eq!(
+                    launcher.project.select().read(cx).value(),
+                    project.as_deref().unwrap_or_default()
+                );
+                if let Some(project) = &project {
+                    assert_eq!(
+                        launcher.cwd.read(cx).text(),
+                        projects
+                            .iter()
+                            .find(|entry| &entry.id == project)
+                            .unwrap()
+                            .cwd
+                    );
+                }
+                assert!(root.tabs.tabs().is_empty());
+            });
+        }
     }
 
     #[test]
@@ -1910,7 +2101,7 @@ mod tests {
             harness.act(|root, window, cx| {
                 root.start_chat_modal = None;
                 root.set_route(AppRoute::Chat, cx);
-                root.open_new_tab_modal(&NewTab, window, cx);
+                root.test_open_empty_tab(window, cx);
                 let original = root.tabs.active().unwrap().clone();
                 let key = PaneKey::new(&original.id, &original.focused_pane_id);
                 let first = root.render_launcher(Some(key.clone()), true, window, cx);
@@ -2017,7 +2208,7 @@ mod tests {
                     store.client = runner_core::protocol::DaemonClient::new(transport.clone())
                 });
                 trace = Some(transport);
-                root.open_new_tab_modal(&NewTab, window, cx);
+                root.test_open_empty_tab(window, cx);
                 let first = root.front_page_layout().unwrap().focused_pane_id.clone();
                 if split {
                     root.split_pane(&first, SplitOrientation::Row, window, cx);
@@ -2297,7 +2488,12 @@ mod tests {
         harness.act(|root, window, cx| {
             root.start_chat_modal = None;
             root.set_route(AppRoute::Chat, cx);
-            let view = root.render_launcher(None, true, window, cx);
+            root.test_open_empty_tab(window, cx);
+            let first = root.tabs.active().unwrap().focused_pane_id.clone();
+            root.split_pane(&first, SplitOrientation::Row, window, cx);
+            let layout = root.front_page_layout().unwrap();
+            let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
+            let view = root.render_launcher(Some(pane), false, window, cx);
             view.update(cx, |launcher, cx| {
                 launcher.roles = vec![role()];
                 launcher.runtimes.clear();
@@ -2378,9 +2574,7 @@ mod tests {
             root.start_chat_modal = None;
             root.set_route(AppRoute::Chat, cx);
             root.open_new_tab_modal(&NewTab, window, cx);
-            let layout = root.front_page_layout().unwrap().clone();
-            let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
-            let view = root.render_launcher(Some(pane), true, window, cx);
+            let view = root.render_launcher(None, true, window, cx);
             view.update(cx, |launcher, cx| {
                 launcher.runtimes = vec![agent()];
                 launcher.roles = vec![role()];
@@ -2413,9 +2607,7 @@ mod tests {
             root.start_chat_modal = None;
             root.set_route(AppRoute::Chat, cx);
             root.open_new_tab_modal(&NewTab, window, cx);
-            let layout = root.front_page_layout().unwrap().clone();
-            let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
-            let view = root.render_launcher(Some(pane), true, window, cx);
+            let view = root.render_launcher(None, true, window, cx);
             view.update(cx, |launcher, cx| launcher.focus(window, cx));
             launcher = Some(view);
         });
@@ -2488,13 +2680,16 @@ mod tests {
                     ""
                 )
             });
-            harness.visual.simulate_keystrokes("q 1 escape");
+            harness.visual.simulate_keystrokes("q 1");
             harness.visual.run_until_parked();
             harness.act(|_, _, cx| {
                 assert_eq!(
                     launcher.as_ref().unwrap().read(cx).query.read(cx).text(),
-                    ""
-                )
+                    "q1"
+                );
+                launcher.as_ref().unwrap().update(cx, |launcher, cx| {
+                    launcher.query.update(cx, |query, cx| query.reset("", cx))
+                });
             });
         }
     }
@@ -2520,13 +2715,7 @@ mod tests {
                 )
                 .unwrap();
             root.open_sidebar_chat_modal(ProjectScope::Project(projects[0].id.clone()), window, cx);
-            let layout = root.front_page_layout().unwrap();
-            launcher = Some(root.render_launcher(
-                Some(PaneKey::new(&layout.id, &layout.focused_pane_id)),
-                true,
-                window,
-                cx,
-            ));
+            launcher = Some(root.render_launcher(None, true, window, cx));
         });
         for zoom in [1., 1.3] {
             harness.act(|root, window, cx| root.set_zoom(zoom, window, cx));
@@ -2583,6 +2772,7 @@ mod tests {
                 launcher.as_ref().unwrap().read(cx).scope(),
                 ProjectScope::Project(projects[1].id.clone())
             );
+            root.test_open_empty_tab(window, cx);
             let pane = root.front_page_layout().unwrap().focused_pane_id.clone();
             root.split_pane(&pane, SplitOrientation::Row, window, cx);
         });
@@ -2608,7 +2798,7 @@ mod tests {
         harness.act(|root, window, cx| {
             root.start_chat_modal = None;
             root.set_route(AppRoute::Chat, cx);
-            root.open_new_tab_modal(&NewTab, window, cx);
+            root.test_open_empty_tab(window, cx);
             let first = root.front_page_layout().unwrap().focused_pane_id.clone();
             root.split_pane(&first, SplitOrientation::Column, window, cx);
             let layout = root.front_page_layout().unwrap().clone();

@@ -169,7 +169,7 @@ EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   runner mission add-role "$mission" <role> --task-file - < task.md
   # Or start from a reusable crew:
   runner crew list --json
-  mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+  mission=$(runner mission start --crew <crew> --title <title> --goal-file - -q < brief.md)
   runner mission feed "$mission" --follow --json
   runner mission add-role "$mission" <role> --task-file - < task.md
   runner mission remove-role "$mission" <handle>
@@ -951,7 +951,7 @@ Options:
 ```text
 Start a mission
 
-Usage: runner mission start [OPTIONS]
+Usage: runner mission start [OPTIONS] --title <TITLE>
 
 Options:
       --crew <CREW>            Crew ID or exact name
@@ -959,7 +959,7 @@ Options:
       --goal <GOAL>            Mission goal text
   -q                           Print only result IDs
       --goal-file <GOAL_FILE>  Read the mission goal from a file, or - for stdin
-      --title <TITLE>          Mission title; defaults from the goal or crew name
+      --title <TITLE>          Mission title
       --project <PROJECT>      Project ID or exact name whose directory the mission uses
       --cwd <CWD>              Mission directory; defaults to the current directory
   -h, --help                   Print help

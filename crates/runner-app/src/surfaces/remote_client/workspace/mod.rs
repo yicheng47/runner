@@ -18,6 +18,7 @@ use std::sync::Mutex;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Item {
+    Launcher,
     Roles,
     Crews,
     Tab(String),
@@ -107,7 +108,7 @@ impl RemoteWindow {
                     ids
                 })
                 .unwrap_or_default(),
-            None | Some(Item::Roles | Item::Crews) => Vec::new(),
+            None | Some(Item::Launcher | Item::Roles | Item::Crews) => Vec::new(),
         }
     }
 }

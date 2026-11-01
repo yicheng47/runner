@@ -300,7 +300,7 @@ impl NativeRoot {
             self.route.clone()
         };
         match route {
-            AppRoute::Chat => self.render_active_tab(window, cx),
+            AppRoute::Chat | AppRoute::Launcher => self.render_active_tab(window, cx),
             AppRoute::Roles => self.render_roles_page(window, cx),
             AppRoute::NewRole | AppRoute::RoleDetail(_) => self.render_role_detail(window, cx),
             AppRoute::Crews | AppRoute::NewCrew | AppRoute::CrewEditor(_) => {

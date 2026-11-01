@@ -171,6 +171,11 @@ impl NativeRoot {
                 }
                 cx.notify();
             }
+            AppRoute::Launcher => {
+                self.set_route(AppRoute::Launcher, cx);
+                self.focus_visible_launcher(window, cx);
+                cx.notify();
+            }
             AppRoute::Roles => self.open_roles(window, cx),
             AppRoute::NewRole => self.open_create_role(window, cx),
             AppRoute::RoleDetail(handle) => self.open_role_detail(handle, window, cx),

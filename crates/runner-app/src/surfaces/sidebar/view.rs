@@ -265,7 +265,14 @@ impl Sidebar {
             );
 
             let chats_open = self.settings(cx).sidebar_chats_open;
-            let create_menu = self.create_menu.clone();
+            let create_root = cx.entity();
+            let create = IconButton::new("sidebar-create", "plus.svg")
+                .size(IconButtonSize::Sm)
+                .on_press(move |window, cx| {
+                    create_root.update(cx, |this, cx| {
+                        this.open_launcher_in(ProjectScope::Root, window, cx)
+                    });
+                });
             scroll = scroll.child(
                 div()
                     .mt_5()
@@ -287,7 +294,7 @@ impl Sidebar {
                                     cx,
                                 )
                             }))
-                            .child(create_menu)
+                            .child(create)
                             .into_any_element(),
                         cx.listener(|this, _, _, cx| {
                             let open = !this.settings(cx).sidebar_chats_open;
@@ -379,6 +386,9 @@ impl Sidebar {
                     matches!(
                         (entry, &self.remote_selection),
                         (
+                            WorkspaceEntry::NewTab,
+                            Some(crate::surfaces::remote_client::RemoteItem::Launcher)
+                        ) | (
                             WorkspaceEntry::Role,
                             Some(crate::surfaces::remote_client::RemoteItem::Roles)
                         ) | (
@@ -389,6 +399,12 @@ impl Sidebar {
                 } else {
                     entry.selected(&route)
                 };
+                let active = active
+                    || (entry == WorkspaceEntry::NewTab
+                        && self
+                            .shell
+                            .upgrade()
+                            .is_some_and(|shell| shell.read(cx).launcher_page_visible()));
                 match entry {
                     WorkspaceEntry::NewTab => {
                         let shell = self.shell.clone();
@@ -397,12 +413,16 @@ impl Sidebar {
                             &self.app_store.read(cx).settings.keymap_overrides,
                         )
                         .map(|combo| keymap::format_combo(&combo));
-                        workspace_new_chat_row(shortcut, true, move |window, cx| {
+                        workspace_new_chat_row(shortcut, true, active, move |window, cx| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, shell_cx| {
                                     let scope =
                                         ProjectScope::or_root(shell.active_project_id(shell_cx));
-                                    shell.open_sidebar_chat_modal(scope, window, shell_cx)
+                                    if shell.launcher_page_visible() {
+                                        shell.open_new_tab_modal(&NewTab, window, shell_cx);
+                                    } else {
+                                        shell.open_sidebar_chat_modal(scope, window, shell_cx);
+                                    }
                                 });
                             }
                         })

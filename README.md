@@ -111,6 +111,7 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
       <pre><code>runner crew list
 runner mission start \
   --crew "Pair coding crew" \
+  --title "Fix the login bug" \
   --goal-file brief.md
 runner mission feed &lt;mission-id&gt; --follow
 runner help agents</code></pre>

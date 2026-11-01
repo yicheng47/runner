@@ -7,13 +7,12 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Hide, HideOthers, Quit, QuitAndStopSessions};
 
 use crate::{
-    CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, ConfirmStartMission, Copy,
-    FocusNextPane, FocusPreviousPane, Minimize, MissionTabNext, MissionTabPrevious,
-    NavigateNextPage, NavigatePreviousPage, NewMission, NewTab, NewTerminal, NewWindow,
-    OpenSettings, Paste, ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4,
-    SelectTab5, SelectTab6, SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight,
-    StopFocusedSession, ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
-    ZoomReset,
+    CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FocusNextPane,
+    FocusPreviousPane, Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage,
+    NavigatePreviousPage, NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste,
+    ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
+    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
+    ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -959,10 +958,10 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
         combo.meta || (cfg!(any(windows, target_os = "linux")) && combo == &entry.default);
     match entry.id {
         // The launcher's search is focused on every Start page.
-        "command-palette" if modified => Some("!(TextInput && !LauncherSearch) && !Settings"),
-        "new-chat" | "command-palette" | "page-previous" | "page-next" if modified => {
-            Some("!TextInput && !Settings")
+        "new-chat" | "command-palette" if modified => {
+            Some("!(TextInput && !LauncherSearch) && !Settings")
         }
+        "page-previous" | "page-next" if modified => Some("!TextInput && !Settings"),
         "new-chat" | "command-palette" | "page-previous" | "page-next" => {
             Some("!TextInput && !Settings && !Terminal")
         }
@@ -1069,18 +1068,11 @@ pub(crate) fn install_bindings(
 
 fn install_modal_bindings(cx: &mut App) {
     // Double negation checks the whole context stack at the focused control's depth; loading last wins ties with user bindings.
-    cx.bind_keys([
-        KeyBinding::new(
-            &platform_default("cmd-enter"),
-            ConfirmStartChat,
-            Some("!(!StartChat)"),
-        ),
-        KeyBinding::new(
-            &platform_default("cmd-enter"),
-            ConfirmStartMission,
-            Some("!(!StartMission)"),
-        ),
-    ]);
+    cx.bind_keys([KeyBinding::new(
+        &platform_default("cmd-enter"),
+        ConfirmStartChat,
+        Some("!(!StartChat)"),
+    )]);
 }
 
 #[cfg(test)]
@@ -1310,10 +1302,7 @@ mod tests {
                     Some(default_combo("cmd-enter", None, false)),
                 )]);
                 install_bindings(cx, &overrides, false);
-                for (context, action) in [
-                    ("StartChat", &ConfirmStartChat as &dyn gpui::Action),
-                    ("StartMission", &ConfirmStartMission),
-                ] {
+                for (context, action) in [("StartChat", &ConfirmStartChat as &dyn gpui::Action)] {
                     for nested in [false, true] {
                         let mut contexts = vec![
                             gpui::KeyContext::parse("Root").unwrap(),
@@ -1381,9 +1370,7 @@ mod tests {
             install_bindings(cx, &KeymapOverrides::new(), true);
             let bindings = cx.key_bindings();
             let bindings = bindings.borrow();
-            for action in [&ConfirmStartChat as &dyn gpui::Action, &ConfirmStartMission] {
-                assert_eq!(bindings.bindings_for_action(action).count(), 1);
-            }
+            assert_eq!(bindings.bindings_for_action(&ConfirmStartChat).count(), 1);
             assert!(entries()
                 .iter()
                 .all(|entry| !entry.id.starts_with("confirm-")
@@ -1912,7 +1899,7 @@ mod tests {
             let entry = entry(id).unwrap();
             assert_eq!(
                 binding_context(entry, &entry.default),
-                Some(if id == "command-palette" {
+                Some(if matches!(id, "new-chat" | "command-palette") {
                     "!(TextInput && !LauncherSearch) && !Settings"
                 } else {
                     "!TextInput && !Settings"

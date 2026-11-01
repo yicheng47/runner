@@ -45,20 +45,6 @@ pub(super) async fn run_mission(
                 None => None,
             };
             let goal = read_text(goal.as_deref(), goal_file.as_deref(), "goal")?;
-            let title = title
-                .clone()
-                .or_else(|| {
-                    goal.as_deref()
-                        .and_then(|goal| goal.lines().find(|line| !line.trim().is_empty()))
-                        .map(str::trim)
-                        .map(str::to_owned)
-                })
-                .or_else(|| {
-                    crew.as_ref().map(|crew| {
-                        format!("{} {}", crew.name, chrono::Local::now().format("%Y-%m-%d"))
-                    })
-                })
-                .ok_or_else(|| CliError::usage("an empty mission needs --title or --goal"))?;
             let project_id = match project {
                 Some(project) => Some(
                     resolve_named(client, "project", "project_list", project)

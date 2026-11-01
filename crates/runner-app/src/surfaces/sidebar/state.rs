@@ -1,5 +1,3 @@
-use super::menus::sidebar_create_menu_entries;
-
 use super::*;
 use crate::*;
 use gpui::WeakEntity;
@@ -14,30 +12,6 @@ impl Sidebar {
         let scroll = ScrollHandle::new();
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
-        let root = cx.entity();
-        let menu_store = app_store.clone();
-        let create_menu = cx.new(move |menu_cx| {
-            let action_root = root.clone();
-            let entries =
-                sidebar_create_menu_entries(&menu_store.read(menu_cx).settings.keymap_overrides);
-            PopoverMenu::new(
-                "sidebar-create",
-                menu_cx.focus_handle(),
-                entries.into_iter().map(|(item, _)| item).collect(),
-                Rc::new(move |index, window, cx| {
-                    action_root.update(cx, |this, cx| {
-                        if let Some(action) = this.create_actions.get(index).cloned() {
-                            this.handle_sidebar_menu_action(action, window, cx);
-                        }
-                    });
-                }),
-                menu_cx,
-            )
-            .min_width(px(220.))
-            .trigger_size(IconButtonSize::Sm)
-            .trigger_icon("plus.svg")
-            .without_trigger_tooltip()
-        });
         let store_revisions = app_store.read(cx).revisions;
         Self {
             front_page: crate::surfaces::front_page::FrontPageClient::local(
@@ -52,13 +26,6 @@ impl Sidebar {
             store_revisions,
             scroll,
             scrollbar,
-            create_menu,
-            create_actions: sidebar_create_menu_entries(
-                &app_store.read(cx).settings.keymap_overrides,
-            )
-            .into_iter()
-            .map(|(_, action)| action)
-            .collect(),
             context_menu: None,
             rename: None,
             live_titles: HashMap::new(),
@@ -78,7 +45,6 @@ impl Sidebar {
             tab_index_by_node: HashMap::new(),
             _rename_focus_subscription: None,
             _store_subscription: cx.observe(&app_store, |this, _, cx| {
-                this.refresh_create_menu(cx);
                 this.handle_store_update(cx);
             }),
         }

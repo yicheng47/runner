@@ -3,6 +3,22 @@ use crate::surfaces::*;
 use crate::*;
 
 impl NativeRoot {
+    pub(crate) fn reveal_started_scope(&mut self, scope: &ProjectScope, cx: &mut Context<Self>) {
+        let project = scope.project_id().map(str::to_owned);
+        self.front_page_sidebar().update(cx, |sidebar, cx| {
+            sidebar.update_app_settings(cx, true, |settings| {
+                if let Some(project) = project {
+                    settings.sidebar_projects_open = true;
+                    settings.sidebar_collapsed_projects.remove(&project);
+                } else {
+                    settings.sidebar_chats_open = true;
+                }
+                true
+            });
+            cx.notify();
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn tab_label(&self, layout: &PaneLayout, cx: &App) -> String {
         self.tab_label_source(layout, cx).resolve().to_string()

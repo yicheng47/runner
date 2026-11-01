@@ -64,13 +64,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.create_modal_open() || self.launcher_start_pending(cx) {
-            return;
-        }
-        if self.start_launcher_mission(window, cx) {
-            return;
-        }
-        self.open_start_mission_modal(
+        self.open_mission_launcher(
             None,
             ProjectScope::or_root(self.active_project_id(cx)),
             window,

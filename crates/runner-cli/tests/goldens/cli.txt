@@ -319,7 +319,7 @@ $ runner mission show mission-fixture --json
 exit 0
 {"mission":{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null},"crew":{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},"sessions":[{"id":"session-mission","mission_id":"mission-fixture","role_id":"role-coder","slot_id":"slot-coder","cwd":"<ROOT>","status":"stopped","pid":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","live_title":null,"handle":"coder","role_handle":"coder","runtime":"codex","lead":false,"agent_session_key":null}],"latest_session_status_by_handle":{"coder":{"state":"idle","event_id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","source":"fixture"}},"pending_asks":[{"question_id":"01K5ZCJNP00000000000000002","asker":"coder","prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder","event_id":"01K5ZCJNP00000000000000002","ts":"2026-09-18T10:20:30Z"}],"pending_ask_count":1,"live_session_count":0,"stopped_session_count":1,"crashed_session_count":0,"recent_warnings":[],"last_event_id":"01K5ZCJNP00000000000000003","last_event_offset":692,"skipped_event_count":0}
 
-$ runner mission start --crew Peer --goal ship --cwd not-a-directory
+$ runner mission start --crew Peer --title ship --goal ship --cwd not-a-directory
 exit 0
 ID       <ULID_1>
 TITLE    ship
@@ -329,7 +329,7 @@ PROJECT  project-fixture
 CWD      <ROOT>/not-a-directory
 STARTED  <TIMESTAMP>
 
-$ runner mission start --crew Peer --goal ship --cwd not-a-directory --json
+$ runner mission start --crew Peer --title ship --goal ship --cwd not-a-directory --json
 exit 0
 {"mission":{"id":"<ULID_1>","crew_id":"crew-fixture","project_id":"project-fixture","title":"ship","status":"running","goal_override":"ship","cwd":"<ROOT>/not-a-directory","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":"ship"}
 
@@ -347,29 +347,25 @@ $ runner mission start --title 'Empty mission' --json
 exit 0
 {"mission":{"id":"<ULID_1>","crew_id":null,"project_id":"project-fixture","title":"Empty mission","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":""}
 
-$ runner mission start --goal 'Shared goal'
-exit 0
-ID       <ULID_1>
-TITLE    Shared goal
-STATUS   running
-CREW     -
-PROJECT  project-fixture
-CWD      <ROOT>
-STARTED  <TIMESTAMP>
-
-$ runner mission start --goal 'Shared goal' --json
-exit 0
-{"mission":{"id":"<ULID_1>","crew_id":null,"project_id":"project-fixture","title":"Shared goal","status":"running","goal_override":"Shared goal","cwd":"<ROOT>","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":"Shared goal"}
-
-$ runner mission start
+$ runner mission start --crew Peer --goal 'Shared goal'
 exit 2
 [stderr]
-an empty mission needs --title or --goal
+error: the following required arguments were not provided:
+  --title <TITLE>
 
-$ runner mission start --json
+Usage: runner mission start --title <TITLE> --crew <CREW> --goal <GOAL>
+
+For more information, try '--help'.
+
+$ runner mission start --crew Peer --goal 'Shared goal' --json
 exit 2
 [stderr]
-an empty mission needs --title or --goal
+error: the following required arguments were not provided:
+  --title <TITLE>
+
+Usage: runner mission start --title <TITLE> --crew <CREW> --goal <GOAL> --json
+
+For more information, try '--help'.
 
 $ runner mission add-role mission-running reviewer --handle reviewer-2 --task 'Review the change'
 exit 0
@@ -1132,7 +1128,7 @@ EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   runner mission add-role "$mission" <role> --task-file - < task.md
   # Or start from a reusable crew:
   runner crew list --json
-  mission=$(runner mission start --crew <crew> --goal-file - -q < brief.md)
+  mission=$(runner mission start --crew <crew> --title <title> --goal-file - -q < brief.md)
   runner mission feed "$mission" --follow --json
   runner mission add-role "$mission" <role> --task-file - < task.md
   runner mission remove-role "$mission" <handle>
@@ -1992,7 +1988,7 @@ $ runner mission start --help
 exit 0
 Start a mission
 
-Usage: runner mission start [OPTIONS]
+Usage: runner mission start [OPTIONS] --title <TITLE>
 
 Options:
       --crew <CREW>            Crew ID or exact name
@@ -2000,7 +1996,7 @@ Options:
       --goal <GOAL>            Mission goal text
   -q                           Print only result IDs
       --goal-file <GOAL_FILE>  Read the mission goal from a file, or - for stdin
-      --title <TITLE>          Mission title; defaults from the goal or crew name
+      --title <TITLE>          Mission title
       --project <PROJECT>      Project ID or exact name whose directory the mission uses
       --cwd <CWD>              Mission directory; defaults to the current directory
   -h, --help                   Print help
