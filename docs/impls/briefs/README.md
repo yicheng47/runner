@@ -44,3 +44,5 @@ The 0.18.2 release sweep pruned three merged Linux briefs: the original local su
 The 0.18.3 release sweep pruned 14 merged mission briefs, covering #873, #861, #968, #1047, #1075, Codex input attention, the Chinese guide, CI speed and the six merged #977 cleanup missions. The three examples remain; #977's plans and test records stay while that issue is open. Linux's closed #823 records are archived without turning native gaps into passes.
 
 The 0.19.0 release sweep pruned five merged mission briefs: #1044, #1046, #1083, #1086 and #1092. Their validation records are in [the test archive](../../tests/README.md); #1083 had none of its own. The three examples remain.
+
+The 0.19.1 release sweep pruned the #1097 mission launcher and #1102/#1103 submit-recovery briefs. Their validation records are in [the test archive](../../tests/README.md). The three examples remain.
