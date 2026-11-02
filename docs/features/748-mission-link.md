@@ -1,7 +1,7 @@
 # 748 — Link a chat to the missions it starts
 
 > Tracking issue: [#748](https://github.com/yicheng47/runner/issues/748). Priority: P1, milestone 0.19. Platforms: macOS, Windows and Linux.
-> Status: draft, rewritten 2026-11-02 after Jason chose reports typed into the chat. The same day he chose the linked group (option E) for the sidebar, the Agents list (option H) for the Active view, and linking by hand. Its details and the remaining decisions need sign-off before implementation; see [Sidebar](#sidebar) and [Decisions to confirm](#decisions-to-confirm).
+> Status: draft, rewritten 2026-11-02 after Jason chose reports typed into the chat. The same day he chose the linked group (option E) for the sidebar, the Agents list (option H) for the Active view and linking by hand, and settled the remaining decisions. The design is signed off and the spec is ready for implementation; see [Decisions](#decisions).
 > Replaces the 2026-10-27 draft, in which the chat heard about its missions only when the person asked (last at `e42ec525`), and the 2026-10-20 side-panel options A–C in the design file; see [Superseded designs](#superseded-designs).
 > Related: #686's watch contract ([test record](../tests/archive/686-watch-cli-started-missions.md)), which this retires; [704](https://github.com/yicheng47/runner/issues/704), which first specified `RUNNER_SESSION_ID` and closed unbuilt; [#701](https://github.com/yicheng47/runner/issues/701)'s desktop notifications; [873](https://github.com/yicheng47/runner/blob/2a22742e0b89e1a8711c858c0b11532cb04497f4/docs/features/873-remove-mission-lead.md), which removed the mission lead; [#916](https://github.com/yicheng47/runner/issues/916)'s verbs; [#1108](https://github.com/yicheng47/runner/issues/1108)'s delivery setting for working agents.
 
@@ -59,7 +59,7 @@ The daemon derives one state per live mission from what the app's notifications 
 | **Needs you** | A `human_question` is pending, or a member waits for input or approval. | Yes |
 | **Failed** | A member crashed or exited with an error. Other members may still be running. | Yes |
 | **Working** | A member is working. | No |
-| **Settled** | Every member has been idle for the settle window, 60 seconds, and nothing is pending: done or stuck. | Yes |
+| **Settled** | Every member has been idle for the settle window, 30 seconds, and nothing is pending: done or stuck. | Yes |
 
 The first state that applies wins, top to bottom. Runner does not try to tell done from stuck: the chat reads the feed and decides. A stopped mission, or one whose sessions have all exited, leaves the chat's group as Ended; an archived mission leaves it entirely.
 
@@ -128,18 +128,20 @@ Desktop notifications keep their current triggers, settings and targets. Clickin
 - **Architecture:** `docs/arch/arch.md` §8.5 adds report delivery beside the inbox dispatcher, §9.4 documents `RUNNER_SESSION_ID` and the link, §9.6 replaces the skill's start-and-watch contract, and §10.1 adds the two columns.
 - **Regression:** [MIS-WATCH-01 and MIS-WATCH-02](../tests/regression/missions.md) retire, replaced by rows for the link, a report reaching an idle chat, a report held by a draft, and the agent that does not watch.
 
-## Decisions to confirm
+## Decisions
 
-Settled on 2026-11-02: the linked group, option E, in Projects; the Agents list, option H, in Active; and linking by hand, by drag, menu and CLI.
+Jason settled these on 2026-11-02:
 
-1. **Reports fire on Needs you, Failed and Settled** (recommended), not on Working or member handoffs.
-2. **Reports are on by default** for a mission a chat starts, with `--no-report` to turn them off (recommended). The alternative is opt-in with `--report`.
-3. **The settle window is 60 seconds** of every member idle with nothing pending.
-4. **Only a direct agent chat can be linked**, automatically or by hand. A mission slot that starts another mission links nothing, and a terminal pane cannot be linked.
-5. **The group follows the chat** when the chat's pane moves to another tab (recommended), rather than staying with the original tab.
-6. **A group whose missions have all settled stays expanded** until the person collapses it (recommended), rather than collapsing on its own.
-7. **A chat and a mission link only within one project** (recommended), so a group never pulls a mission out of its project.
-8. **Linking by hand sends the chat one report** of the mission's current state (recommended), unless the chat's own CLI made the link.
+- **Sidebar:** the linked group, option E, in Projects; the Agents list, option H, in Active.
+- **Linking by hand** by drag, by a searchable Link to chat submenu and by `mission link`.
+- **Reports fire on Needs you, Failed and Settled**, not on Working or handoffs between members.
+- **Reports are on by default** for a mission a chat starts or is linked to, with `--no-report` to turn them off.
+- **The settle window is 30 seconds** of every member idle with nothing pending.
+- **Only a direct agent chat can be linked**, automatically or by hand. A mission slot that starts another mission links nothing, and a terminal pane cannot be linked.
+- **The group follows the chat** when the chat's pane moves to another tab.
+- **A group whose missions have all settled stays expanded** until the person collapses it.
+- **A chat and a mission link only within one project**, so a group never pulls a mission out of its project.
+- **Linking by hand sends the chat one report** of the mission's current state, unless the chat's own CLI made the link.
 
 ## Out of scope
 
@@ -166,7 +168,7 @@ Settled on 2026-11-02: the linked group, option E, in Projects; the Agents list,
 4. **CLI, skill and docs.** `--no-report`, `mission link` and `unlink`, the JSON fields, the `STARTED BY` and `LINKED TO` lines, `--linked-here`, the skill and help rules, the guide, arch and regression rows.
 5. **Live checks**, under the standing development-app authorization in `AGENTS.md`; see Verification.
 
-After the design is signed off, the phases are one `codex-trio` mission, since reports and the sidebar need live checks by its QA slot. The change touches the daemon's delivery, the protocol and a migration, so its PR takes `core-review` and `risk-high`.
+The phases are one `codex-trio` mission, since reports and the sidebar need live checks by its QA slot. The change touches the daemon's delivery, the protocol and a migration, so its PR takes `core-review` and `risk-high`.
 
 ## Verification
 
