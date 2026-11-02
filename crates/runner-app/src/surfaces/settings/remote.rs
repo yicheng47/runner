@@ -2616,6 +2616,7 @@ mod tests {
                                         paired_at: now,
                                         last_seen_at: now,
                                         connected: index == 0,
+                                        kind: Default::default(),
                                     })
                                     .collect(),
                             });

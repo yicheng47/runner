@@ -6,7 +6,7 @@ use gpui::{AppContext, Context, Entity};
 use runner_core::{
     companion::{NeedsYouReason, Overview, SessionStatus, Status, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
-    remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
+    remote::{Computer, DeviceKind, PairedDevice, RemoteStatus, RemoteTrust},
 };
 use std::sync::Arc;
 
@@ -774,7 +774,7 @@ pub(crate) fn incoming_devices<'a>(
     let devices: Vec<_> = trust
         .devices
         .iter()
-        .filter(|device| device.name == name)
+        .filter(|device| device.kind != DeviceKind::Phone && device.name == name)
         .collect();
     if devices.len() == 1 {
         devices

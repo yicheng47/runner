@@ -11,7 +11,10 @@ use runner_core::{
         },
         ClientError, ClientEvent, EventError, EventSubscription, Request, Response, Transport,
     },
-    remote::{PairedDevice, RemoteAccount, RemoteState, RemoteStatus, RemoteTerminal, StopReason},
+    remote::{
+        DeviceKind, PairedDevice, RemoteAccount, RemoteState, RemoteStatus, RemoteTerminal,
+        StopReason,
+    },
 };
 use std::{
     future::Future,
@@ -598,6 +601,7 @@ fn device(name: &str, fingerprint: &str) -> PairedDevice {
         paired_at: chrono::Utc::now(),
         last_seen_at: chrono::Utc::now(),
         connected: true,
+        kind: Default::default(),
     }
 }
 
@@ -638,6 +642,34 @@ fn account_rows_keep_self_all_access_directions_and_unmatched_devices() {
         ..Default::default()
     };
     assert!(model::computer_rows(&[long_computer], &trust)[0].access == Access::Incoming);
+}
+
+#[test]
+fn a_phone_never_matches_an_account_computer_by_name() {
+    let computers = computers();
+    let phone = PairedDevice {
+        kind: DeviceKind::Phone,
+        ..device("Studio", "phone-key")
+    };
+    let trust = RemoteTrust {
+        devices: vec![phone.clone()],
+        ..Default::default()
+    };
+    let rows = model::computer_rows(&computers, &trust);
+    assert!(rows[1].access == Access::Outgoing);
+    assert!(rows[1].devices.is_empty());
+    assert!(rows[2].computer.is_none());
+    assert_eq!(rows[2].devices[0].fingerprint, "phone-key");
+    assert!(model::incoming_devices(&computers[1], &computers, &trust).is_empty());
+
+    let trust = RemoteTrust {
+        devices: vec![phone, device("Studio", "host-client")],
+        ..Default::default()
+    };
+    let rows = model::computer_rows(&computers, &trust);
+    assert!(rows[1].access == Access::Both);
+    assert_eq!(rows[1].devices[0].fingerprint, "host-client");
+    assert_eq!(rows[2].devices[0].fingerprint, "phone-key");
 }
 
 #[test]
