@@ -6,6 +6,8 @@
 
 远程访问是可选的。未登录时，Runner 只在这台电脑上使用：其他电脑无法访问它，侧边栏也没有电脑选择器。
 
+设置将 **账号（Account）** 和 **远程访问（Remote access）** 一起列在 **云端（Cloud）** 下，因为两者都依赖 Runner 的服务器：账号是你在服务器上的登录，远程访问则通过它的中继连接你的电脑。
+
 ## 从 Runner 登录
 
 1. 打开 **设置 → 账号（Settings → Account）** 选择 **登录（Sign in）** ，或在 **设置 → 远程访问** 的 **通过 Runner 中继（Through Runner’s relay）** 下选择 **登录 Runner（Sign in to Runner）** 。

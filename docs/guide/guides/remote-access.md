@@ -6,6 +6,8 @@ Request an invite code in the [Runner Discord](https://discord.gg/6BrfZdHKNf) or
 
 Remote access is optional. Signed out, Runner works on this computer alone: nothing on it can be reached from another computer, and the sidebar has no computer picker.
 
+Settings lists **Account** and **Remote access** together under **Cloud** because both depend on Runner’s server: Account is your sign-in there, and Remote access connects your computers through its relay.
+
 ## Sign in from Runner
 
 1. Open **Settings → Account** and choose **Sign in**, or open **Settings → Remote access** and choose **Sign in to Runner** under **Through Runner’s relay**.
