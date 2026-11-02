@@ -29,6 +29,7 @@ fn every_delete_leaves_foreign_key_check_empty_on_a_real_database() {
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     let expected = [
+        ("missions", "linked_session_id", "sessions", "SET NULL"),
         ("missions", "project_id", "projects", "SET NULL"),
         ("nodes", "parent_id", "nodes", "RESTRICT"),
         ("session_attention", "session_id", "sessions", "RESTRICT"),
@@ -76,7 +77,8 @@ fn every_delete_leaves_foreign_key_check_empty_on_a_real_database() {
                  '2026-07-01T01:00:00Z', NULL, NULL, NULL),
                 ('chat-of-project', NULL, 'r-kept', NULL, 'stopped',
                  '2026-07-01T01:00:00Z', '{p}', NULL, NULL),
-                ('terminal', NULL, NULL, NULL, 'stopped', NULL, NULL, 'shell', '/bin/zsh');",
+                ('terminal', NULL, NULL, NULL, 'stopped', NULL, NULL, 'shell', '/bin/zsh');
+         UPDATE missions SET linked_session_id = 'chat-deleted' WHERE id = 'm-kept';",
         p = project.id
     ))
     .unwrap();
@@ -161,6 +163,13 @@ fn every_delete_leaves_foreign_key_check_empty_on_a_real_database() {
         row_count(
             &conn,
             "SELECT COUNT(*) FROM missions WHERE project_id IS NOT NULL"
+        ),
+        0
+    );
+    assert_eq!(
+        row_count(
+            &conn,
+            "SELECT COUNT(*) FROM missions WHERE linked_session_id IS NOT NULL"
         ),
         0
     );

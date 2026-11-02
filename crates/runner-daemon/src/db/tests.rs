@@ -1956,7 +1956,7 @@ fn migration_0028_preserves_every_row_column_and_mission_link() {
          INSERT INTO session_attention VALUES ('direct', NULL, NULL);",
     ).unwrap();
     let before = snapshot(&conn);
-    run_migrations(&mut conn).unwrap();
+    run_migrations_up_to(&mut conn, 28).unwrap();
     assert_eq!(snapshot(&conn), before);
     assert_eq!(
         conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
@@ -1976,4 +1976,42 @@ fn migration_0028_preserves_every_row_column_and_mission_link() {
         assert!(conn.execute(sql, []).is_err(), "{sql}");
     }
     conn.execute("INSERT INTO missions (id, title, status, started_at) VALUES ('empty', 'Empty', 'running', '2026-10-15T00:00:00Z')", []).unwrap();
+}
+
+#[test]
+fn migration_0029_leaves_missions_unlinked_and_deleting_the_chat_clears_a_link() {
+    fn link(conn: &Connection) -> (Option<String>, i64) {
+        conn.query_row(
+            "SELECT linked_session_id, report_to_chat FROM missions WHERE id = 'm'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+    let mut conn = Connection::open_in_memory().unwrap();
+    super::init_connection(&mut conn).unwrap();
+    run_migrations_up_to(&mut conn, 28).unwrap();
+    conn.execute_batch(
+        "INSERT INTO missions (id, title, status, started_at) VALUES ('m', 'Mission', 'running', '2026-11-02T00:00:00Z');
+         INSERT INTO sessions (id, status) VALUES ('chat', 'running');",
+    )
+    .unwrap();
+    run_migrations(&mut conn).unwrap();
+    assert_eq!(link(&conn), (None, 1));
+
+    assert!(conn
+        .execute(
+            "UPDATE missions SET linked_session_id = 'missing' WHERE id = 'm'",
+            []
+        )
+        .is_err());
+    conn.execute(
+        "UPDATE missions SET linked_session_id = 'chat' WHERE id = 'm'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(link(&conn), (Some("chat".into()), 1));
+    conn.execute("DELETE FROM sessions WHERE id = 'chat'", [])
+        .unwrap();
+    assert_eq!(link(&conn), (None, 1));
 }
