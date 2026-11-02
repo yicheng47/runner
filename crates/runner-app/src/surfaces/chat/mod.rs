@@ -487,11 +487,37 @@ impl NativeRoot {
         }
     }
 
+    fn panel_session_id(&mut self, cx: &App) -> Option<String> {
+        let layout = self.front_page_layout()?;
+        let tab_id = layout.id.clone();
+        let focused = layout.focused_session_id().map(str::to_owned);
+        let chats = layout
+            .session_ids()
+            .into_iter()
+            .filter(|id| {
+                !self
+                    .front_page_session(id, cx)
+                    .and_then(|entry| Runtime::parse(&entry.agent_runtime))
+                    .is_some_and(Runtime::is_shell)
+            })
+            .collect::<Vec<_>>();
+        if let Some(focused) = focused.as_ref().filter(|id| chats.contains(id)) {
+            self.panel_chat_by_tab.insert(tab_id, focused.clone());
+            return Some(focused.clone());
+        }
+        self.panel_chat_by_tab
+            .get(&tab_id)
+            .filter(|id| chats.contains(id))
+            .or_else(|| chats.first())
+            .cloned()
+            .or(focused)
+    }
+
     pub(crate) fn sync_active_chat_detail(&mut self, cx: &mut Context<Self>) {
         if self.remote_client.is_active() {
             return;
         }
-        let selected = self.active_focused_session_id();
+        let selected = self.panel_session_id(cx);
         let Some(session_id) = selected else {
             return;
         };
@@ -508,7 +534,7 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             return;
         }
-        let active = self.active_focused_session_id();
+        let active = self.panel_session_id(cx);
         let loaded = self
             .active_chat_detail
             .as_ref()

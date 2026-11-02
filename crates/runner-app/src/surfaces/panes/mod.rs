@@ -276,8 +276,8 @@ fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'s
     }
 }
 
-fn side_panel_open(setting_open: bool, focused_shell: bool) -> bool {
-    setting_open && !focused_shell
+fn side_panel_open(setting_open: bool, terminal_tab: bool) -> bool {
+    setting_open && !terminal_tab
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1031,6 +1031,93 @@ mod tests {
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
         visual.run_until_parked();
         assert_fill(&mut visual, "DRAWER_HEADER", None);
+    }
+
+    #[test]
+    fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
+        use crate::{AppRoute, NativeRoot};
+        use gpui::{TestAppContext, VisualTestContext};
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let core = store.test_core.clone();
+            let conn = core.db.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (id, role_id, mission_id, slot_id, status, agent_runtime, agent_command)
+                 VALUES ('second-agent', 'test-shell-role', NULL, NULL, 'stopped', 'codex', 'codex');
+                 UPDATE sessions SET status = 'stopped' WHERE mission_id IS NULL;",
+            )
+            .unwrap();
+            let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
+            let second = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&second, "second-agent").unwrap();
+            let shell = layout.split(&second, SplitOrientation::Row).unwrap();
+            layout.assign_session(&shell, "busy-shell").unwrap();
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            store.settings.chat_panel_open = true;
+        });
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "side-panel-terminal-split".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session("direct-agent"));
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(900.)));
+        let focus = |session_id: &str, visual: &mut VisualTestContext| {
+            host.update(visual, |root, _, cx| {
+                assert!(root.tabs.active_mut().unwrap().focus_session(session_id));
+                cx.notify();
+            })
+            .unwrap();
+            visual.run_until_parked();
+            host.read_with(visual, |root, _| {
+                (
+                    root.chat_panel_visibility.target,
+                    root.active_chat_detail
+                        .as_ref()
+                        .map(|detail| detail.session_id.clone()),
+                )
+            })
+            .unwrap()
+        };
+
+        for (focused, described) in [
+            ("direct-agent", "direct-agent"),
+            ("busy-shell", "direct-agent"),
+            ("second-agent", "second-agent"),
+            ("busy-shell", "second-agent"),
+        ] {
+            assert_eq!(
+                focus(focused, &mut visual),
+                (1., Some(described.to_owned())),
+                "focused {focused}"
+            );
+            assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_some());
+        }
+
+        store.update(&mut visual, |store, _| {
+            store.settings.chat_panel_open = false
+        });
+        assert_eq!(focus("busy-shell", &mut visual).0, 0.);
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
     }
 
     #[test]

@@ -368,6 +368,7 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_panel_visibility: SidebarVisibilityTransition,
     pub(crate) chat_panel_prompt_session: Option<String>,
     pub(crate) chat_panel_prompt_expanded: bool,
+    pub(crate) panel_chat_by_tab: HashMap<String, String>,
     pub(crate) command_palette: Entity<CommandPaletteState>,
     pub(crate) sidebar_preview_open: bool,
     pub(crate) sidebar_preview_peeking: bool,

@@ -7,14 +7,14 @@ impl NativeRoot {
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let focused_shell = layout
-            .focused_session_id()
-            .and_then(|id| self.front_page_session(id, cx))
-            .is_some_and(|entry| entry.agent_runtime == "shell");
+        let terminal_tab = super::super::chat::tab_is_terminal(layout, |id| {
+            self.front_page_session(id, cx)
+                .and_then(|entry| Runtime::parse(&entry.agent_runtime))
+        });
         if !self.remote_client.is_local()
             || start_surface_visible(Some(layout))
             || self.settings(cx).chat_panel_open
-            || focused_shell
+            || terminal_tab
             || top_right_pane(&layout.root).id != pane_id
         {
             return None;
@@ -22,6 +22,9 @@ impl NativeRoot {
         let root = cx.entity();
         Some(
             div()
+                .when(cfg!(test), |toggle| {
+                    toggle.debug_selector(|| "CHAT_PANEL_TOGGLE".into())
+                })
                 .flex_none()
                 .flex()
                 .items_center()
