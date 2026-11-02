@@ -13,7 +13,7 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
 | New window | ⇧⌘N | Ctrl+Shift+N |
-| Show the launcher page without creating a tab | ⌘N | Ctrl+N |
+| New tab: show the launcher page; the tab is created when something starts | ⌘N | Ctrl+N |
 | New terminal; fill the focused empty pane or create a tab | ⌘T | Ctrl+Shift+T |
 | New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
 | Command palette | ⌘K | Ctrl+K |
@@ -34,7 +34,7 @@ In Projects, number shortcuts follow the visible tabs and missions. In Active, t
 | Next chat pane | ⌘] | Ctrl+] |
 | Split right | ⌘D | Ctrl+D |
 | Split down | ⇧⌘D | Ctrl+Shift+D |
-| Hide focused mission drawer, close focused pane, or close chat tab | ⌘W | Ctrl+Shift+W |
+| Hide focused mission drawer, close focused pane, close chat tab, or close the launcher page | ⌘W | Ctrl+Shift+W |
 | Stop focused chat or mission slot | ⇧⌘X | Ctrl+Shift+X |
 | Resume focused stopped chat or mission slot | ⇧⌘R | Ctrl+Shift+R |
 | Previous mission feed/session tab | ⌘[ | Ctrl+[ |

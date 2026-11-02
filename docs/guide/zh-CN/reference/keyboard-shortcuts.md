@@ -13,7 +13,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 操作 | macOS | Windows / Linux |
 | --- | --- | --- |
 | 新建窗口 | ⇧⌘N | Ctrl+Shift+N |
-| 显示启动器页面，不创建标签页 | ⌘N | Ctrl+N |
+| 新建标签页：显示启动器页面，开始后才创建标签页 | ⌘N | Ctrl+N |
 | 新建终端；填入焦点空窗格或创建标签页 | ⌘T | Ctrl+Shift+T |
 | 新建任务：显示启动器页面的小队步骤，不创建标签页 | ⇧⌘M | Ctrl+Shift+M |
 | 命令面板 | ⌘K | Ctrl+K |
@@ -34,7 +34,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 下一个聊天窗格 | ⌘] | Ctrl+] |
 | 向右拆分 | ⌘D | Ctrl+D |
 | 向下拆分 | ⇧⌘D | Ctrl+Shift+D |
-| 隐藏焦点任务抽屉、关闭焦点窗格或聊天标签页 | ⌘W | Ctrl+Shift+W |
+| 隐藏焦点任务抽屉、关闭焦点窗格、聊天标签页或启动器页面 | ⌘W | Ctrl+Shift+W |
 | 停止焦点聊天或任务成员 | ⇧⌘X | Ctrl+Shift+X |
 | 恢复焦点已停止聊天或任务成员 | ⇧⌘R | Ctrl+Shift+R |
 | 上一个任务消息流/会话标签页 | ⌘[ | Ctrl+[ |

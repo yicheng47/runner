@@ -1,6 +1,7 @@
 use super::elements::empty_sidebar_label;
+use super::elements::launcher_tab_row;
 use super::elements::section_title;
-use super::elements::workspace_new_chat_row;
+use super::elements::workspace_new_tab_row;
 use super::elements::workspace_row;
 
 use super::*;
@@ -65,6 +66,41 @@ pub(crate) fn sidebar_contents(
 }
 
 impl Sidebar {
+    /// Where the launcher page's row is drawn. With nowhere visible to draw it,
+    /// the Active view or a collapsed project, New tab keeps the selection.
+    pub(crate) fn launcher_row_scope(&self, cx: &App) -> Option<ProjectScope> {
+        let shell = self.shell.upgrade()?;
+        let shell = shell.read(cx);
+        if !shell.launcher_page_visible() {
+            return None;
+        }
+        let scope = shell
+            .launcher_page_scope(cx)
+            .unwrap_or_else(|| ProjectScope::or_root(self.active_project_id.clone()));
+        let settings = self.settings(cx);
+        let drawn = !settings.sidebar_active_only
+            && match &scope {
+                ProjectScope::Project(id) => {
+                    settings.sidebar_projects_open
+                        && !settings.sidebar_collapsed_projects.contains(id)
+                        && self
+                            .source_projects(cx)
+                            .iter()
+                            .any(|project| &project.id == id)
+                }
+                _ => settings.sidebar_chats_open,
+            };
+        drawn.then_some(scope)
+    }
+
+    pub(super) fn launcher_row(&self, cx: &App) -> AnyElement {
+        let closable = self
+            .shell
+            .upgrade()
+            .is_some_and(|shell| shell.read(cx).launcher_page_closable(cx));
+        launcher_tab_row(closable.then(|| self.shell.clone()))
+    }
+
     pub(crate) fn render_sidebar_contents(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.drop_marker.is_some()
             && !indicator_visible(self.drop_marker.as_deref(), cx.has_active_drag())
@@ -89,6 +125,7 @@ impl Sidebar {
             .map(|shell| shell.read(cx).route.clone())
             .unwrap_or_default();
         let active_only = self.settings(cx).sidebar_active_only;
+        let launcher_row = self.launcher_row_scope(cx);
         let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll).when(
             !active_only,
             |scroll| {
@@ -248,6 +285,7 @@ impl Sidebar {
                                             attention,
                                             visible_projects.clone(),
                                             &tab_index_by_node,
+                                            launcher_row.as_ref(),
                                             cx,
                                         ))
                                     })
@@ -311,6 +349,7 @@ impl Sidebar {
                             .map(|row| row.node().id.clone())
                             .collect::<Vec<_>>();
                         let has_rows = !root_rows.is_empty();
+                        let launcher_here = launcher_row == Some(ProjectScope::Root);
                         div()
                             .id("root-chat-scope")
                             .flex_1()
@@ -319,7 +358,10 @@ impl Sidebar {
                             .flex()
                             .flex_col()
                             .gap(rems(2. / 16.))
-                            .children(if root_rows.is_empty() {
+                            .children(launcher_here.then(|| self.launcher_row(cx)))
+                            .children(if launcher_here && root_rows.is_empty() {
+                                Vec::new()
+                            } else if root_rows.is_empty() {
                                 vec![empty_sidebar_label(crate::i18n::text("ui.no_chats_yet"))]
                             } else {
                                 root_rows
@@ -350,10 +392,8 @@ impl Sidebar {
                                         this.open_sidebar_context_menu(
                                             event.position,
                                             vec![(
-                                                UiMenuItem::new(crate::i18n::message(
-                                                    "ui.new_chat",
-                                                ))
-                                                .icon("message-square-plus.svg"),
+                                                UiMenuItem::new(crate::i18n::message("ui.new_tab"))
+                                                    .icon("message-square-plus.svg"),
                                                 SidebarMenuAction::NewChat(ProjectScope::Root),
                                             )],
                                             window,
@@ -399,12 +439,16 @@ impl Sidebar {
                 } else {
                     entry.selected(&route)
                 };
-                let active = active
-                    || (entry == WorkspaceEntry::NewTab
-                        && self
+                let active = if entry == WorkspaceEntry::NewTab {
+                    (active
+                        || self
                             .shell
                             .upgrade()
-                            .is_some_and(|shell| shell.read(cx).launcher_page_visible()));
+                            .is_some_and(|shell| shell.read(cx).launcher_page_visible()))
+                        && launcher_row.is_none()
+                } else {
+                    active
+                };
                 match entry {
                     WorkspaceEntry::NewTab => {
                         let shell = self.shell.clone();
@@ -413,7 +457,7 @@ impl Sidebar {
                             &self.app_store.read(cx).settings.keymap_overrides,
                         )
                         .map(|combo| keymap::format_combo(&combo));
-                        workspace_new_chat_row(shortcut, true, active, move |window, cx| {
+                        workspace_new_tab_row(shortcut, true, active, move |window, cx| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, shell_cx| {
                                     let scope =

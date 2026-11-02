@@ -2483,10 +2483,10 @@ mod localization_tests {
         let before = serde_json::to_value(&overrides).unwrap();
         let binding = keymap::effective_binding("new-chat", &overrides).unwrap();
         with_locale(Locale::SimplifiedChinese, || {
-            let rows = shortcut_rows("新建对话", &overrides);
+            let rows = shortcut_rows("新建标签页", &overrides);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].id(), "new-chat");
-            assert_eq!(rows[0].title(), "新建对话");
+            assert_eq!(rows[0].title(), "新建标签页");
             assert_eq!(
                 keymap::effective_binding("new-chat", &overrides),
                 Some(binding)

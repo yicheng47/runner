@@ -490,7 +490,19 @@ pub(super) mod tests {
                 .unwrap()
         }
 
-        fn bounds(&mut self, selector: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        pub(in crate::surfaces) fn read_root<R>(
+            &self,
+            f: impl FnOnce(&NativeRoot, &App) -> R,
+        ) -> R {
+            self.host
+                .read_with(&self.visual, |host, cx| f(host.0.read(cx), cx))
+                .unwrap()
+        }
+
+        pub(in crate::surfaces) fn bounds(
+            &mut self,
+            selector: &str,
+        ) -> Option<gpui::Bounds<gpui::Pixels>> {
             self.visual
                 .debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
         }
