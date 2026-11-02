@@ -68,6 +68,7 @@ pub enum ConnectError {
     NotRunning,
     Blocked,
     Mismatch(wire::Welcome),
+    InUse(wire::Welcome),
     Protocol(String),
 }
 impl std::fmt::Display for ConnectError {
@@ -76,6 +77,11 @@ impl std::fmt::Display for ConnectError {
             Self::NotRunning => f.write_str("runnerd is not running"),
             Self::Blocked => f.write_str("runnerd connection was denied"),
             Self::Mismatch(_) => f.write_str("runnerd build mismatch"),
+            Self::InUse(welcome) => write!(
+                f,
+                "Another Runner build is using this data through runnerd (PID {}). Quit that Runner, then try again.",
+                welcome.pid
+            ),
             Self::Protocol(message) => f.write_str(message),
         }
     }
@@ -398,8 +404,19 @@ impl SocketTransport {
             .map_err(|error| ClientError::msg(format!("runnerd writer: {error}")))
     }
     pub fn shutdown(&self, stop_sessions: bool) -> Result<(), ClientError> {
-        let mut frame =
-            Frame::json(wire::SHUTDOWN, &wire::Shutdown { stop_sessions }).map_err(client_error)?;
+        self.send_shutdown(wire::Shutdown {
+            stop_sessions,
+            takeover: false,
+        })
+    }
+    pub fn take_over(&self) -> Result<(), ClientError> {
+        self.send_shutdown(wire::Shutdown {
+            stop_sessions: true,
+            takeover: true,
+        })
+    }
+    fn send_shutdown(&self, shutdown: wire::Shutdown) -> Result<(), ClientError> {
+        let mut frame = Frame::json(wire::SHUTDOWN, &shutdown).map_err(client_error)?;
         let deadline = Instant::now() + self.timeout;
         loop {
             if self.is_closed() {
@@ -745,6 +762,7 @@ mod tests {
                     exe_sha256: "hash".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
             )
             .unwrap()
@@ -808,6 +826,7 @@ mod tests {
                         exe_sha256: "hash".into(),
                         pid: 1,
                         started_at: "now".into(),
+                        app_clients: 0,
                     },
                 )
                 .unwrap()
@@ -855,6 +874,7 @@ mod tests {
                     exe_sha256: "hash".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
             )
             .unwrap()
@@ -913,6 +933,7 @@ mod tests {
                     exe_sha256: "hash".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
             )
             .unwrap()

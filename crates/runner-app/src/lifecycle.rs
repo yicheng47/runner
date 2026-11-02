@@ -190,6 +190,7 @@ pub fn crash_recovery_message(count: usize) -> crate::i18n::Text {
 pub enum DaemonNotice {
     Stopped,
     Repeated,
+    InUse,
 }
 
 #[cfg(test)]

@@ -425,6 +425,7 @@ mod tests {
                     exe_sha256: String::new(),
                     pid: 1,
                     started_at: String::new(),
+                    app_clients: 0,
                 },
             )
             .unwrap(),

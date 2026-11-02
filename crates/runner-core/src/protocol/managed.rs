@@ -10,6 +10,7 @@ use crate::daemon_process::{system_is_shutting_down, wait_unlocked, Launch, DAEM
 
 pub const RESTART_LIMIT_NOTICE: &str =
     "Runner's background service keeps crashing. Sessions are stopped until it runs again.";
+pub const IN_USE_NOTICE: &str = "Another Runner build is using this data. Quit it, then try again.";
 
 pub struct ManagedTransport {
     active: Mutex<Arc<SocketTransport>>,
@@ -19,6 +20,7 @@ pub struct ManagedTransport {
     stopping: AtomicBool,
     restart_notice: Mutex<Option<usize>>,
     recovery_paused: AtomicBool,
+    in_use: AtomicBool,
     manual_recovery: Mutex<()>,
     resume_recovery: mpsc::Sender<mpsc::Sender<Result<(), ClientError>>>,
 }
@@ -41,6 +43,7 @@ impl ManagedTransport {
             stopping: AtomicBool::new(false),
             restart_notice: Mutex::new(restart_notice),
             recovery_paused: AtomicBool::new(false),
+            in_use: AtomicBool::new(false),
             manual_recovery: Mutex::new(()),
             resume_recovery,
         });
@@ -170,6 +173,7 @@ impl ManagedTransport {
                                     }
                                 }
                                 *owner.active.lock().unwrap() = active;
+                                owner.in_use.store(false, Ordering::Release);
                                 owner.recovery_paused.store(false, Ordering::Release);
                                 owner.emit(ClientEvent {
                                     name: "daemon/reconnected".into(),
@@ -194,14 +198,18 @@ impl ManagedTransport {
                                     "runnerd reconnect failed: {error}; log: {}",
                                     owner.launch.paths.log_dir.join("runnerd.log").display()
                                 );
+                                let in_use =
+                                    matches!(error, super::socket::ConnectError::InUse(_));
+                                let was_in_use = owner.in_use.swap(in_use, Ordering::AcqRel);
                                 owner.recovery_paused.store(true, Ordering::Release);
-                                if let Some(reply) = reply {
-                                    let _ = reply.send(Err(ClientError::msg(error.to_string())));
-                                } else {
+                                if reply.is_none() || in_use != was_in_use {
                                     owner.emit(ClientEvent {
                                         name: "daemon/disconnected".into(),
-                                        payload: serde_json::json!({"restart_limit":true}),
+                                        payload: serde_json::json!({"restart_limit":true,"in_use":in_use}),
                                     });
+                                }
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(Err(ClientError::msg(error.to_string())));
                                 }
                             }
                         }
@@ -217,7 +225,11 @@ impl ManagedTransport {
     fn connected(&self) -> Result<Arc<SocketTransport>, ClientError> {
         let active = self.active();
         if active.is_closed() && self.recovery_paused.load(Ordering::Acquire) {
-            return Err(ClientError::msg(RESTART_LIMIT_NOTICE));
+            return Err(ClientError::msg(if self.in_use.load(Ordering::Acquire) {
+                IN_USE_NOTICE
+            } else {
+                RESTART_LIMIT_NOTICE
+            }));
         }
         Ok(active)
     }

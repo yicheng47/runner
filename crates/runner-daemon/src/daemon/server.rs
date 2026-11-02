@@ -231,9 +231,11 @@ async fn serve_with_listener(
         exe_sha256: hash,
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339(),
+        app_clients: 0,
     };
     let mut connections = tokio::task::JoinSet::new();
     let window_owners = Arc::new(Mutex::new(HashMap::new()));
+    let apps = Arc::new(AppGate::default());
     let mut next_connection = 0;
     let mut ownership = tokio::time::interval(Duration::from_secs(2));
     let signal = os_shutdown(
@@ -252,12 +254,12 @@ async fn serve_with_listener(
             accepted = sentinel.accept() => discard_sentinel_connection(accepted).await,
             accepted = listener.accept() => {
                 if let Some(stream) = accept_client_connection(accepted).await {
-                    let core = core.clone(); let welcome = welcome.clone(); let cancel = cancel.clone();
+                    let core = core.clone(); let welcome = welcome.clone(); let apps = apps.clone(); let cancel = cancel.clone();
                     let isolated = config.isolated;
                     let resume_report = resume_rx.clone();
                     next_connection += 1;
                     let windows = Arc::new(ConnectionWindows { core: core.clone(), owners: window_owners.clone(), id: next_connection, closed: CancellationToken::new() });
-                    connections.spawn(async move { if let Err(error) = connection(stream, core, welcome, cancel, isolated, windows, resume_report).await { log::debug!("runnerd client: {error}"); } });
+                    connections.spawn(async move { if let Err(error) = connection(stream, core, welcome, apps, cancel, isolated, windows, resume_report).await { log::debug!("runnerd client: {error}"); } });
                 }
             }
         }
@@ -400,6 +402,42 @@ async fn discard_sentinel_connection(accepted: std::io::Result<IpcStream>) {
 
 struct Connected {
     core: AppCore,
+}
+/// Connected app clients. Admission and a replacing app's takeover share one
+/// lock, so a takeover never disconnects an app it did not count.
+#[derive(Default)]
+struct AppGate(Mutex<AppCount>);
+#[derive(Default)]
+struct AppCount {
+    connected: u32,
+    closing: bool,
+}
+impl AppGate {
+    fn connected(&self) -> u32 {
+        self.0.lock().unwrap().connected
+    }
+    fn admit(self: &Arc<Self>) -> Option<AppClient> {
+        let mut count = self.0.lock().unwrap();
+        if count.closing {
+            return None;
+        }
+        count.connected += 1;
+        Some(AppClient(self.clone()))
+    }
+    fn take_over(&self) -> Result<(), u32> {
+        let mut count = self.0.lock().unwrap();
+        if count.connected > 0 {
+            return Err(count.connected);
+        }
+        count.closing = true;
+        Ok(())
+    }
+}
+struct AppClient(Arc<AppGate>);
+impl Drop for AppClient {
+    fn drop(&mut self) {
+        self.0 .0.lock().unwrap().connected -= 1;
+    }
 }
 impl Drop for Connected {
     fn drop(&mut self) {
@@ -689,10 +727,12 @@ fn response_frame(id: u64, response: Response) -> std::io::Result<Frame> {
         ),
     }
 }
+#[allow(clippy::too_many_arguments)]
 async fn connection(
     stream: IpcStream,
     core: AppCore,
     welcome: wire::Welcome,
+    apps: Arc<AppGate>,
     shutdown: CancellationToken,
     _isolated: bool,
     windows: Arc<ConnectionWindows>,
@@ -707,6 +747,15 @@ async fn connection(
     }
     let hello: wire::Hello = hello.decode()?;
     let matches = hello.exe_sha256.is_empty() || hello.exe_sha256 == welcome.exe_sha256;
+    // An app is counted before its welcome, so a takeover cannot slip in between.
+    let _app = match (matches && hello.client == "app").then(|| apps.admit()) {
+        Some(None) => return Ok(()),
+        admitted => admitted.flatten(),
+    };
+    let welcome = wire::Welcome {
+        app_clients: apps.connected(),
+        ..welcome
+    };
     write_frame(
         &mut write,
         Frame::json(
@@ -867,7 +916,19 @@ async fn connection(
                 received = incoming.recv() => {
                     let frame = received.context("client reader closed")??;
                     match frame.kind {
-                        wire::SHUTDOWN => { if frame.decode::<wire::Shutdown>()?.stop_sessions { shutdown.cancel(); break; } }
+                        wire::SHUTDOWN => {
+                            let request: wire::Shutdown = frame.decode()?;
+                            if !request.stop_sessions { continue; }
+                            if request.takeover {
+                                if let Err(connected) = apps.take_over() {
+                                    let refused = wire::Event { event: Some(runner_core::protocol::ClientEvent { name: wire::TAKEOVER_REFUSED.into(), payload: serde_json::json!({"app_clients":connected}) }), lagged: None };
+                                    write_frame(&mut write, Frame::json(wire::EVENT, &refused)?).await?;
+                                    continue;
+                                }
+                            }
+                            shutdown.cancel();
+                            break;
+                        }
                         wire::REQUEST => {
                             let call: wire::Call = match frame.decode() {
                                 Ok(call) => call,
@@ -1079,7 +1140,9 @@ pub(crate) async fn remote_test_connection(
             exe_sha256: "remote-test".into(),
             pid: 1,
             started_at: "now".into(),
+            app_clients: 0,
         },
+        Default::default(),
         cancel,
         true,
         windows,
@@ -1205,7 +1268,9 @@ mod tests {
                     exe_sha256: "hash".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
+                Default::default(),
                 server_shutdown,
                 true,
                 windows,
@@ -1327,7 +1392,9 @@ mod tests {
                     exe_sha256: "hash".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
+                Default::default(),
                 server_shutdown,
                 true,
                 windows,
