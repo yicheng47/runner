@@ -863,3 +863,108 @@ fn leading_address_tokens_accept_one_colon_or_comma_and_stop_at_other_text() {
     }
     assert_eq!(f.read_log().len(), cases.len());
 }
+
+const MULTI_PARAGRAPH: &str = "第一段“引用”\n\n1. two\n2. three\n\nlast 100%PATH% & ^ line";
+
+fn stage_cli(app_data: &Path) -> PathBuf {
+    let bin = app_data.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let cli = bin.join(runner_core::cli_install::AGENT_DEST_BIN_NAME);
+    std::fs::copy(runner_bin(), &cli).unwrap();
+    cli
+}
+
+#[test]
+fn exe_shim_forwards_whole_arguments_identity_and_exit_code() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let app_data = tempfile::tempdir().unwrap();
+    let shim_dir = app_data.path().join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let config = runner_core::cli_install::SessionShimConfig {
+        runner: stage_cli(app_data.path()),
+        env: std::collections::BTreeMap::from([
+            ("RUNNER_CREW_ID".to_owned(), None),
+            ("RUNNER_MISSION_ID".to_owned(), Some("M".to_owned())),
+            ("RUNNER_HANDLE".to_owned(), Some("lead".to_owned())),
+            (
+                "RUNNER_EVENT_LOG".to_owned(),
+                Some(f.events_log.display().to_string()),
+            ),
+        ]),
+    };
+    runner_daemon::cli_install::install_exe_shim(&shim_dir, &config).unwrap();
+    let shim = |args: &[&str]| {
+        Command::new(shim_dir.join(runner_core::cli_install::AGENT_DEST_BIN_NAME))
+            .args(args)
+            .env("RUNNER_CREW_ID", "stale")
+            .env("RUNNER_HANDLE", "impl")
+            .output()
+            .unwrap()
+    };
+
+    let posted = shim(&["msg", "post", MULTI_PARAGRAPH]);
+    assert!(
+        posted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&posted.stderr)
+    );
+    let events = f.read_log();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["text"], MULTI_PARAGRAPH);
+    assert_eq!(events[0].from, "lead");
+    assert_eq!(events[0].crew_id, None);
+
+    let rejected = shim(&["msg", "post", "hi", "--to", "ghost"]);
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("valid handles:"));
+    assert_eq!(f.line_count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn powershell_member_posts_multi_paragraph_text_whole() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let app_data = tempfile::tempdir().unwrap();
+    stage_cli(app_data.path());
+    let shim_dir = runner_daemon::cli_install::install_session_runner_shim(
+        app_data.path(),
+        Some("C"),
+        "M",
+        "lead",
+        &f.events_log,
+        None,
+    )
+    .unwrap();
+    assert!(!shim_dir.join("runner.cmd").exists());
+    let path = std::env::join_paths(
+        std::iter::once(shim_dir.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let out = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("runner msg post '{MULTI_PARAGRAPH}'"),
+        ])
+        .env("PATH", path)
+        .env_remove("RUNNER_CREW_ID")
+        .env_remove("RUNNER_MISSION_ID")
+        .env_remove("RUNNER_HANDLE")
+        .env_remove("RUNNER_EVENT_LOG")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let events = f.read_log();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["text"], MULTI_PARAGRAPH);
+    assert_eq!(events[0].from, "lead");
+}

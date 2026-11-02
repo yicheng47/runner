@@ -73,9 +73,49 @@ fn daemon(args: DaemonArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn forward_session_shim(exe: &std::path::Path) -> Option<i32> {
+    use runner_core::cli_install::{SessionShimConfig, SESSION_SHIM_CONFIG_NAME};
+
+    let path = exe.parent()?.join(SESSION_SHIM_CONFIG_NAME);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!("runner: failed to read {}: {error}", path.display());
+            return Some(2);
+        }
+    };
+    let config: SessionShimConfig = match serde_json::from_slice(&bytes) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("runner: invalid {}: {error}", path.display());
+            return Some(2);
+        }
+    };
+    let mut command = std::process::Command::new(&config.runner);
+    command.args(std::env::args_os().skip(1));
+    for (name, value) in &config.env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    match command.status() {
+        Ok(status) => Some(status.code().unwrap_or(1)),
+        Err(error) => {
+            eprintln!(
+                "runner: failed to start {}: {error}",
+                config.runner.display()
+            );
+            Some(2)
+        }
+    }
+}
+
 fn main() {
-    if std::env::current_exe()
-        .ok()
+    let exe = std::env::current_exe().ok();
+    if exe
+        .as_ref()
         .and_then(|path| {
             path.file_stem()
                 .map(|stem| stem.to_string_lossy().eq_ignore_ascii_case("runnerd"))
@@ -87,6 +127,9 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if let Some(code) = exe.as_deref().and_then(forward_session_shim) {
+        std::process::exit(code);
     }
     std::process::exit(command::run(command::Cli::parse()));
 }
