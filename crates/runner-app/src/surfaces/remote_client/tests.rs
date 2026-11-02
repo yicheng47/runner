@@ -3529,6 +3529,273 @@ fn forgetting_locally_closes_the_mirror_and_uses_plain_pairing_copy_despite_late
     }
 }
 
+fn two_tab_overview() -> Overview {
+    let mut data = overview();
+    let mut tab = data.tabs[0].clone();
+    tab.id = "tab-b".into();
+    tab.name = "Tab B".into();
+    tab.panes = runner_core::companion::Pane::Leaf {
+        session: Some("b".into()),
+    };
+    data.tabs.push(tab);
+    let mut session = data.sessions["s"].clone();
+    session.title = "Session B".into();
+    data.sessions.insert("b".into(), session);
+    data
+}
+
+#[test]
+fn switching_remote_tabs_keeps_hidden_chats_attached_until_they_close_stop_or_disconnect() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    fake.set_overview(two_tab_overview());
+    cx.run_until_parked();
+    let window = add_window(&mut cx, &store, temp.path(), "remote-tab-switch");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let select = |cx: &mut TestAppContext, item: Item| {
+        window
+            .update(cx, |root, _, cx| root.select_remote_item(item, cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
+    let mirror = |cx: &mut TestAppContext, id: &str| {
+        window
+            .read_with(cx, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .unwrap()
+                    .terminals
+                    .get(id)
+                    .map(|pane| pane.attachment.terminal.clone())
+            })
+            .unwrap()
+    };
+    let attached = |fake: &Fake| {
+        fake.attaches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|config| (config.session.clone(), config.take_control))
+            .collect::<Vec<_>>()
+    };
+    // The host answers each size push with a Resized frame; until it does, a
+    // drawn pane keeps pushing. Let the window's sidebar transition finish so
+    // the measured size is final, then acknowledge it like the host would.
+    let mut seq = 100;
+    let mut settle = |cx: &mut TestAppContext| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        window.update(cx, |_, window, _| window.refresh()).unwrap();
+        cx.run_until_parked();
+        let attaches = fake.attaches.lock().unwrap().clone();
+        let sizes = fake.sizes.lock().unwrap().clone();
+        for (index, config) in attaches.iter().enumerate() {
+            let address = config.address();
+            let Some(&(_, cols, rows)) = sizes.iter().rev().find(|size| size.0 == address) else {
+                continue;
+            };
+            seq += 1;
+            fake.frame_senders.lock().unwrap()[index]
+                .send(Ok(TerminalFrame::Resized {
+                    seq,
+                    cols,
+                    rows,
+                    controller: TerminalController::Desktop,
+                }))
+                .unwrap();
+            let terminal = mirror(cx, &config.session).unwrap();
+            for _ in 0..400 {
+                if terminal.size() == (cols, rows) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(terminal.size(), (cols, rows));
+        }
+        cx.run_until_parked();
+    };
+    let a = mirror(&mut cx, "s").expect("the first tab attaches");
+    settle(&mut cx);
+    select(&mut cx, Item::Tab("tab-b".into()));
+    let b = mirror(&mut cx, "b").expect("switching attaches the second tab");
+    settle(&mut cx);
+    assert_eq!(
+        attached(&fake),
+        vec![("s".to_owned(), true), ("b".to_owned(), true)]
+    );
+    let sizes = fake.sizes.lock().unwrap().len();
+
+    for item in [
+        Item::Tab("remote-tab".into()),
+        Item::Tab("tab-b".into()),
+        Item::Mission("remote-mission".into()),
+        Item::Tab("remote-tab".into()),
+    ] {
+        select(&mut cx, item);
+    }
+    assert_eq!(attached(&fake).len(), 2, "switching back never re-attaches");
+    assert!(fake.takes.lock().unwrap().is_empty());
+    assert_eq!(
+        fake.sizes.lock().unwrap().len(),
+        sizes,
+        "a hidden or re-shown pane sends no size"
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), 0);
+    assert!(Arc::ptr_eq(&a, &mirror(&mut cx, "s").unwrap()));
+    assert!(Arc::ptr_eq(&b, &mirror(&mut cx, "b").unwrap()));
+
+    fake.set_overview(overview());
+    cx.run_until_parked();
+    assert!(
+        mirror(&mut cx, "b").is_none(),
+        "closing a tab detaches its chat"
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), 1);
+
+    fake.set_overview(two_tab_overview());
+    cx.run_until_parked();
+    assert!(
+        mirror(&mut cx, "b").is_none(),
+        "an unvisited tab stays detached"
+    );
+    select(&mut cx, Item::Tab("tab-b".into()));
+    assert!(mirror(&mut cx, "b").is_some());
+    let mut stopped = two_tab_overview();
+    stopped.sessions.get_mut("s").unwrap().status.status = Status::Stopped;
+    fake.set_overview(stopped.clone());
+    cx.run_until_parked();
+    assert!(
+        mirror(&mut cx, "s").is_none(),
+        "a stopped hidden chat detaches"
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), 2);
+
+    select(&mut cx, Item::Mission("remote-mission".into()));
+    assert!(mirror(&mut cx, "b").is_some());
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"disconnected","error":"route closed"}),
+    );
+    cx.run_until_parked();
+    assert!(
+        mirror(&mut cx, "b").is_none(),
+        "a dropped connection detaches hidden chats"
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), 3);
+    assert_eq!(attached(&fake).len(), 3);
+}
+
+#[test]
+fn hidden_remote_chats_recover_without_taking_control() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    fake.set_overview(two_tab_overview());
+    cx.run_until_parked();
+    let window = add_window(&mut cx, &store, temp.path(), "remote-tab-recovery");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let select = |cx: &mut TestAppContext, item: Item| {
+        window
+            .update(cx, |root, _, cx| root.select_remote_item(item, cx))
+            .unwrap();
+        cx.run_until_parked();
+    };
+    let attached = |fake: &Fake| {
+        fake.attaches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|config| (config.session.clone(), config.take_control))
+            .collect::<Vec<_>>()
+    };
+    let has_mirror = |cx: &mut TestAppContext, id: &str| {
+        window
+            .read_with(cx, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .unwrap()
+                    .terminals
+                    .contains_key(id)
+            })
+            .unwrap()
+    };
+    select(&mut cx, Item::Tab("tab-b".into()));
+    assert_eq!(
+        attached(&fake),
+        vec![("s".to_owned(), true), ("b".to_owned(), true)]
+    );
+
+    fake.emit("daemon/disconnected", serde_json::Value::Null);
+    fake.emit("daemon/reconnected", serde_json::Value::Null);
+    cx.run_until_parked();
+    assert_eq!(attached(&fake)[2..], [("b".to_owned(), false)]);
+    assert!(!has_mirror(&mut cx, "s"));
+    select(&mut cx, Item::Mission("remote-mission".into()));
+    select(&mut cx, Item::Tab("remote-tab".into()));
+    assert_eq!(
+        attached(&fake)[3..],
+        [("s".to_owned(), false)],
+        "a chat hidden during daemon recovery reattaches without taking control"
+    );
+    select(&mut cx, Item::Tab("tab-b".into()));
+    assert_eq!(attached(&fake).len(), 4);
+
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"disconnected","error":"route closed"}),
+    );
+    cx.run_until_parked();
+    assert!(!has_mirror(&mut cx, "s"));
+    assert!(has_mirror(&mut cx, "b"));
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"connected","error":""}),
+    );
+    cx.run_until_parked();
+    select(&mut cx, Item::Mission("remote-mission".into()));
+    select(&mut cx, Item::Tab("remote-tab".into()));
+    assert_eq!(
+        attached(&fake)[4..],
+        [("s".to_owned(), false)],
+        "a chat hidden during a route reconnect reattaches without taking control"
+    );
+
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"disconnected","error":"route closed"}),
+    );
+    cx.run_until_parked();
+    assert!(!has_mirror(&mut cx, "b"));
+    let mut stopped = two_tab_overview();
+    stopped.sessions.get_mut("b").unwrap().status.status = Status::Stopped;
+    fake.set_overview(stopped);
+    cx.run_until_parked();
+    fake.set_overview(two_tab_overview());
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"connected","error":""}),
+    );
+    cx.run_until_parked();
+    select(&mut cx, Item::Tab("tab-b".into()));
+    assert_eq!(
+        attached(&fake)[5..],
+        [("b".to_owned(), true)],
+        "a chat that stopped and restarted opens fresh"
+    );
+}
+
 #[test]
 fn mission_members_use_the_shared_workspace_and_empty_shells_draw_no_drawer() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
@@ -3638,6 +3905,7 @@ fn take_control_failure_is_visible_and_reselecting_current_computer_preserves_th
             cx.run_until_parked();
             let mut visual = VisualTestContext::from_window(window.into(), &cx);
             assert!(visual.debug_bounds("REMOTE_CONTROL_FAILED").is_some());
+            let attaches = fake.attaches.lock().unwrap().len();
             window
                 .update(&mut cx, |root, _, cx| {
                     root.select_remote_item(workspace::Item::Mission("remote-mission".into()), cx)
@@ -3652,10 +3920,25 @@ fn take_control_failure_is_visible_and_reselecting_current_computer_preserves_th
                 .unwrap();
             cx.run_until_parked();
             let mut visual = VisualTestContext::from_window(window.into(), &cx);
-            assert!(visual.debug_bounds("REMOTE_CONTROL_FAILED").is_none());
-            assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_none());
-            assert!(fake.attaches.lock().unwrap().last().unwrap().take_control);
-            let attaches = fake.attaches.lock().unwrap().len();
+            assert!(
+                visual.debug_bounds("REMOTE_CONTROL_FAILED").is_some(),
+                "a chat hidden by a mission keeps its pane"
+            );
+            assert!(
+                visual.debug_bounds("REMOTE_TAKEN_BACK").is_some(),
+                "switching back does not take control from the host desktop"
+            );
+            assert_eq!(fake.attaches.lock().unwrap().len(), attaches);
+            window
+                .read_with(&cx, |root, _| {
+                    assert!(Arc::ptr_eq(
+                        &original,
+                        &root.remote_client.workspace().unwrap().terminals["s"]
+                            .attachment
+                            .terminal
+                    ))
+                })
+                .unwrap();
             fake.emit("remote/connection", serde_json::json!({"computer":"host","state":"disconnected","error":"route closed"}));
             cx.run_until_parked();
             window
