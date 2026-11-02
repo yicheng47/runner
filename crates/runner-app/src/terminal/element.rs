@@ -1660,6 +1660,7 @@ mod tests {
 
     fn spawn_terminal(
         core: &AppCore,
+        runtime: &RecordingRuntime,
         role: &runner_daemon::model::Role,
         root: &std::path::Path,
     ) -> Arc<TerminalMirror> {
@@ -1686,8 +1687,31 @@ mod tests {
             Arc::new(|| {}),
         )
         .unwrap();
-        terminal.test_feed(1, b"\x1b[?1000h\x1b[?1006h");
+        emit_output(runtime, &terminal, b"\x1b[?1000h\x1b[?1006h", |terminal| {
+            terminal.mode().contains(TermMode::SGR_MOUSE)
+        });
         terminal
+    }
+
+    // Output goes through the host so the mirror keeps the host's frame
+    // sequence and accepts its resize acknowledgments.
+    fn emit_output(
+        runtime: &RecordingRuntime,
+        terminal: &TerminalMirror,
+        bytes: &[u8],
+        arrived: impl Fn(&TerminalMirror) -> bool,
+    ) {
+        runtime.outputs.lock().unwrap()[terminal.session_id()]
+            .send(RuntimeOutput::Stream(bytes.to_vec()))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !arrived(terminal) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "host output did not reach the mirror"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn wait_for_rows(terminal: &TerminalMirror, rows: u16) {
@@ -1801,11 +1825,15 @@ mod tests {
             },
         )
         .unwrap();
-        let left_terminal = spawn_terminal(&core, &role, temp.path());
-        let right_terminal = spawn_terminal(&core, &role, temp.path());
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
         for terminal in [&left_terminal, &right_terminal] {
-            terminal.test_feed(2, &"scrollback line\r\n".repeat(40).into_bytes());
-            assert!(terminal.scroll_state().history_lines > 0);
+            emit_output(
+                &runtime,
+                terminal,
+                &"scrollback line\r\n".repeat(40).into_bytes(),
+                |terminal| terminal.scroll_state().history_lines > 0,
+            );
         }
         let right_id = right_terminal.session_id().to_owned();
         let mut cx = TestAppContext::single();

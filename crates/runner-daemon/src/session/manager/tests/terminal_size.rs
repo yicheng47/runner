@@ -790,3 +790,112 @@ fn resize_settle_thread_persists_without_extra_ioctls() {
 
     mgr.kill(&id).unwrap();
 }
+
+fn resize_terminal_fixture(
+    temp: &tempfile::TempDir,
+    id: &str,
+) -> (
+    crate::AppCore,
+    Arc<FakeRuntime>,
+    runner_core::protocol::terminal::TerminalAttachment,
+) {
+    let mut core = crate::test_support::test_core_in(temp.path().to_owned());
+    let fake = fake_runtime();
+    core.sessions = mgr_with_fake(None, Arc::clone(&fake));
+    core.sessions.set_resize_settle_ms(3_600_000);
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+        .unwrap();
+    install_test_session_handle(&core.sessions, id);
+    let attachment = core.sessions.attach_terminal(id).unwrap();
+    (core, fake, attachment)
+}
+
+fn resized_frames_until_output(
+    core: &crate::AppCore,
+    id: &str,
+    attachment: &mut runner_core::protocol::terminal::TerminalAttachment,
+) -> Vec<(u16, u16)> {
+    let events = core.session_events();
+    core.sessions
+        .ingest_output_chunk(id, None, b"marker", &events);
+    let mut sizes = Vec::new();
+    loop {
+        match attachment.frames.recv().unwrap() {
+            runner_core::protocol::terminal::TerminalFrame::Resized { cols, rows, .. } => {
+                sizes.push((cols, rows))
+            }
+            runner_core::protocol::terminal::TerminalFrame::Output { .. } => return sizes,
+            runner_core::protocol::terminal::TerminalFrame::Resync => {
+                panic!("resize frames overflowed the subscriber")
+            }
+        }
+    }
+}
+
+#[test]
+fn unchanged_resize_reaches_neither_the_runtime_nor_the_mirrors() {
+    let temp = tempfile::tempdir().unwrap();
+    let id = "unchanged-resize";
+    let (core, fake, mut attachment) = resize_terminal_fixture(&temp, id);
+
+    core.sessions.resize(id, 80, 24, &core.db).unwrap();
+    core.sessions.resize(id, 100, 30, &core.db).unwrap();
+    core.sessions.resize(id, 100, 30, &core.db).unwrap();
+    core.sessions
+        .take_back_terminal(id, 100, 30, &core.db)
+        .unwrap();
+
+    assert_eq!(
+        resized_frames_until_output(&core, id, &mut attachment),
+        vec![(100, 30)]
+    );
+    assert_eq!(
+        fake.resizes.lock().unwrap().clone(),
+        vec![(id.to_owned(), 100, 30)]
+    );
+    assert_eq!(core.sessions.terminal_model(id).unwrap().size(), (100, 30));
+}
+
+#[test]
+fn alternating_remote_takes_resize_only_on_a_real_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let id = "alternating-takes";
+    let (core, fake, mut attachment) = resize_terminal_fixture(&temp, id);
+    let request = |channel: u64, (cols, rows): (u16, u16), take: bool, viewport: bool| {
+        let name = if channel == 1 { "First" } else { "Second" };
+        core.sessions
+            .browser_resize(id, channel, name, cols, rows, take, viewport, &core.db)
+            .unwrap();
+    };
+
+    request(1, (100, 30), true, false);
+    request(1, (100, 30), true, false);
+    request(1, (100, 30), false, true);
+    request(2, (120, 40), true, false);
+    request(1, (90, 30), false, true);
+    request(2, (120, 40), true, false);
+    request(2, (120, 40), false, true);
+    request(1, (100, 30), true, false);
+    request(2, (100, 30), true, false);
+
+    let expected = vec![(100, 30), (120, 40), (100, 30), (100, 30)];
+    assert_eq!(
+        resized_frames_until_output(&core, id, &mut attachment),
+        expected
+    );
+    assert_eq!(
+        fake.resizes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, cols, rows)| (*cols, *rows))
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert_eq!(
+        core.sessions.browser_controller(id, 2),
+        runner_core::companion::Controller::You
+    );
+}
