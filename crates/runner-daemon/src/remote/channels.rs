@@ -27,6 +27,7 @@ pub(super) enum Event {
     Authenticated {
         channel: u32,
         instance: u64,
+        kind: remote::DeviceKind,
     },
     Handshake {
         channel: u32,
@@ -419,7 +420,11 @@ impl Channels {
         events: &crate::events::EventChannel,
     ) -> Option<Message> {
         match event {
-            Event::Authenticated { channel, instance } => {
+            Event::Authenticated {
+                channel,
+                instance,
+                kind,
+            } => {
                 let entry = self
                     .entries
                     .get_mut(&channel)
@@ -432,6 +437,7 @@ impl Channels {
                     .find(|device| &device.fingerprint == fingerprint)?;
                 entry.ready = true;
                 device.last_seen_at = clock.now();
+                device.kind = kind;
                 if let Ok(permit) = self.writes.slots.clone().try_acquire_owned() {
                     let job = self.writes.job(machine.trust.clone(), root.to_path_buf());
                     tokio::spawn(async move {
@@ -788,6 +794,7 @@ async fn serve(
                         tx.send(Event::Authenticated {
                             channel: id,
                             instance,
+                            kind: remote::DeviceKind::from_client(&greeting.client),
                         })
                         .await
                         .map_err(|_| "route closed")?;

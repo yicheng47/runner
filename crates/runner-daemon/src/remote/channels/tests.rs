@@ -178,11 +178,41 @@ impl Relay {
         (Records::new(transport), host)
     }
     async fn hello(&mut self, id: u32, browser: &mut Records) -> Value {
-        browser
-            .queue(br#"{"type":"hello","versions":[1],"client":"test","build":"test"}"#.to_vec())
-            .unwrap();
+        self.hello_as(id, browser, "test").await
+    }
+    async fn hello_as(&mut self, id: u32, browser: &mut Records, client: &str) -> Value {
+        let hello =
+            serde_json::json!({"type":"hello","versions":[1],"client":client,"build":"test"});
+        browser.queue(serde_json::to_vec(&hello).unwrap()).unwrap();
         self.flush(id, browser);
         self.message(id, browser).await
+    }
+    async fn reconnect_as(&mut self, id: u32, host: &[u8], client: &str) {
+        let (connecting, connect) = BrowserConnect::start(
+            NoiseKeys {
+                private: &[1; 32],
+                fixed_ephemeral: None,
+            },
+            host,
+        )
+        .unwrap();
+        self.open(id);
+        self.feed(id, &connect);
+        let accept = self.frame(id).await;
+        let mut browser = Records::new(connecting.accept(&accept).unwrap());
+        assert_eq!(
+            self.hello_as(id, &mut browser, client).await["type"],
+            "welcome"
+        );
+    }
+    async fn saved_kind(&self, expected: remote::DeviceKind) {
+        for _ in 0..200 {
+            if Trust::load(self.root.path()).unwrap().devices[0].kind == expected {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the saved trust never recorded {expected:?}");
     }
     fn flush(&mut self, id: u32, browser: &mut Records) {
         while let Some(frame) = browser.next_frame().unwrap() {
@@ -567,6 +597,49 @@ async fn pairs_connects_welcomes_and_refuses_requests_over_the_relay() {
     relay.open(3);
     relay.feed(3, &connect);
     assert_eq!(relay.frame(3).await, Reject::UnknownDevice.frame());
+}
+
+#[tokio::test]
+async fn an_authenticated_hello_records_the_kind_its_client_names_and_saves_it() {
+    use remote::DeviceKind::{Computer, Phone, Unknown};
+    let mut relay = Relay::new();
+    let (mut browser, host) = relay.pair_finish(1, "012345").await;
+    relay.hello_as(1, &mut browser, "ios").await;
+    assert_eq!(relay.machine.trust.devices[0].kind, Phone);
+    relay.saved_kind(Phone).await;
+    for (id, client, kind) in [
+        (2, "runner", Computer),
+        (3, "something-new", Unknown),
+        (4, "ios", Phone),
+    ] {
+        relay.reconnect_as(id, &host, client).await;
+        assert_eq!(relay.machine.trust.devices[0].kind, kind);
+        relay.saved_kind(kind).await;
+    }
+}
+
+#[tokio::test]
+async fn an_ik_connect_without_a_hello_records_no_kind() {
+    let mut relay = Relay::new();
+    let (mut browser, host) = relay.pair_finish(1, "012345").await;
+    relay.hello_as(1, &mut browser, "ios").await;
+    relay.routes.as_mut().unwrap().closed(1);
+    relay.machine.trust.devices[0].kind = remote::DeviceKind::Unknown;
+    let (_, connect) = BrowserConnect::start(
+        NoiseKeys {
+            private: &[1; 32],
+            fixed_ephemeral: None,
+        },
+        &host,
+    )
+    .unwrap();
+    relay.open(2);
+    relay.feed(2, &connect);
+    relay.frame(2).await;
+    assert_eq!(
+        relay.machine.trust.devices[0].kind,
+        remote::DeviceKind::Unknown
+    );
 }
 
 #[tokio::test]

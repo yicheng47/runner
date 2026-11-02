@@ -6,7 +6,7 @@ use gpui::{AppContext, Context, Entity};
 use runner_core::{
     companion::{NeedsYouReason, Overview, SessionStatus, Status, StatusPush},
     protocol::{ClientEvent, DaemonClient, EventError},
-    remote::{Computer, PairedDevice, RemoteStatus, RemoteTrust},
+    remote::{Computer, DeviceKind, PairedDevice, RemoteStatus, RemoteTrust},
 };
 use std::sync::Arc;
 
@@ -731,6 +731,22 @@ pub(crate) fn device_name(name: &str) -> &str {
     &name[..end]
 }
 
+/// A paired device outside the account's computers is named by what it called itself when it paired.
+pub(crate) fn device_title(device: &PairedDevice) -> &str {
+    if device.name.is_empty() {
+        &device.fingerprint
+    } else {
+        &device.name
+    }
+}
+
+pub(crate) fn device_icon(device: &PairedDevice) -> &'static str {
+    match device.kind {
+        DeviceKind::Phone => "smartphone.svg",
+        DeviceKind::Computer | DeviceKind::Unknown => "monitor.svg",
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
     This,
@@ -774,7 +790,7 @@ pub(crate) fn incoming_devices<'a>(
     let devices: Vec<_> = trust
         .devices
         .iter()
-        .filter(|device| device.name == name)
+        .filter(|device| device.kind != DeviceKind::Phone && device.name == name)
         .collect();
     if devices.len() == 1 {
         devices

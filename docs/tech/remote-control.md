@@ -60,7 +60,7 @@ There are two separate gates. The service decides **whom it routes**: only an en
 | --- | --- | --- | --- |
 | Host identity key (X25519) | Host | OS secret store, with the PIN | The host's Noise static key; its fingerprint is shown at enrollment |
 | PIN, six digits | Host | The same secret-store item | CPace's password |
-| PIN failures, lock, device list | Host | `remote-trust.json` | Five failures lock PIN entry; each paired client's public key, name and times |
+| PIN failures, lock, device list | Host | `remote-trust.json` | Five failures lock PIN entry; each paired client's public key, name, times and kind (phone, computer or unknown, mapped from the `client` in its latest authenticated `Hello`; display only) |
 | Enrollment credential | Host | A separate secret-store item | Authenticates `/relay/host`; the account binding, not the channel |
 | Client's key for one host (X25519) | Client's `runnerd` | Beside its own host identity (*proposed*) | The client's Noise static key for that host |
 | The host's public key | Client's `runnerd` | Beside the client's key for it (*proposed*) | Pinned after pairing; checked on every later connect |

@@ -83,6 +83,26 @@ pub struct RemoteTrust {
     pub devices: Vec<PairedDevice>,
 }
 
+/// What a paired device says it is. The value is self-reported in the companion `Hello`, so it only
+/// chooses how a device is shown; it never decides what the device may do.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceKind {
+    #[default]
+    Unknown,
+    Phone,
+    Computer,
+}
+impl DeviceKind {
+    pub fn from_client(client: &str) -> Self {
+        match client {
+            "ios" => Self::Phone,
+            "runner" => Self::Computer,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PairedDevice {
     pub fingerprint: String,
@@ -92,4 +112,31 @@ pub struct PairedDevice {
     pub last_seen_at: DateTime<Utc>,
     #[serde(default)]
     pub connected: bool,
+    #[serde(default)]
+    pub kind: DeviceKind,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_names_map_to_kinds_and_anything_else_is_unknown() {
+        assert_eq!(DeviceKind::from_client("ios"), DeviceKind::Phone);
+        assert_eq!(DeviceKind::from_client("runner"), DeviceKind::Computer);
+        for client in ["", "iOS", "android", "test", "runner "] {
+            assert_eq!(DeviceKind::from_client(client), DeviceKind::Unknown);
+        }
+    }
+
+    #[test]
+    fn a_device_saved_before_kinds_existed_loads_as_unknown() {
+        let device: PairedDevice = serde_json::from_str(
+            r#"{"fingerprint":"ab","name":"Phone","public_key":"k",
+                "paired_at":"2026-10-01T00:00:00Z","last_seen_at":"2026-10-02T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(device.kind, DeviceKind::Unknown);
+        assert!(!device.connected);
+    }
 }
