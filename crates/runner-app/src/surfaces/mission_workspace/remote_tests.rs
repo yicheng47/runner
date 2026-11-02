@@ -172,14 +172,8 @@ fn mission_drawer_island_stacks_below_mission_with_full_height_rail() {
                     assert!((rail.left() - mission.right() - px(6. * zoom)).abs() < px(0.5));
                     assert_eq!(rail.right(), area.right());
                     assert_eq!((rail.top(), rail.bottom()), (area.top(), area.bottom()));
-                    assert_eq!(gutter.left(), mission.right());
-                    assert_eq!(gutter.right(), rail.left());
-                    for fraction in [0.01, 0.5, 0.99] {
-                        assert!(gutter.contains(&gpui::point(
-                            gutter.left() + gutter.size.width * fraction,
-                            gutter.center().y,
-                        )));
-                    }
+                    assert!((gutter.center().x - rail.left()).abs() < px(0.5));
+                    assert!((gutter.size.width - px(6. * zoom)).abs() < px(0.5));
                 } else {
                     assert_eq!(mission.right(), area.right());
                     assert!(visual.debug_bounds("MISSION_RAIL_GUTTER").is_none());

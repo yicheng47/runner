@@ -7,7 +7,7 @@ use gpui::{
     div, px, rems, AnyElement, App, DragMoveEvent, FontWeight, MouseButton, SharedString, Window,
     WindowControlArea,
 };
-use runner_app::ui::resize::{resize_strip, ResizeAxis};
+use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 use runner_app::ui::{
     Button, ButtonSize, IconButton, SessionControl, SessionControlKind, SessionControlVariant,
     SessionOverlay, SessionOverlayKind,
@@ -346,7 +346,8 @@ impl MissionWorkspace {
             .top_0()
             .right(px(self.settings(cx).mission_rail_width
                 * rail_visibility
-                * zoom))
+                * zoom
+                - resize_strip_inset(zoom)))
             .on_drag(
                 MissionRailResizeDrag,
                 |drag: &MissionRailResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),

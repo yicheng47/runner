@@ -18,7 +18,7 @@ use crate::*;
 
 use gpui::{canvas, quad, svg, BorderStyle, Div, FontWeight, Pixels, Point, Size};
 
-use runner_app::ui::resize::{resize_strip, ResizeAxis};
+use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 
 use runner_app::ui::{ButtonVariant, Modal, OverlayWidth, SessionOverlay, SessionOverlayKind};
 
@@ -1177,19 +1177,9 @@ mod tests {
                     if panel_open {
                         let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
                         let gutter = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap();
-                        assert!((gutter.left() - column.right()).abs() <= px(0.5));
-                        assert!((gutter.right() - panel.left()).abs() <= px(0.5));
+                        assert!((panel.left() - column.right() - px(6. * zoom)).abs() <= px(0.5));
+                        assert!((gutter.center().x - panel.left()).abs() <= px(0.5));
                         assert_eq!(gutter.size.width, px(6. * zoom));
-                        for fraction in [0.01, 0.5, 0.99] {
-                            let position = point(
-                                column.right() + (panel.left() - column.right()) * fraction,
-                                panel.center().y,
-                            );
-                            assert!(
-                                gutter.contains(&position),
-                                "gap point {position:?} outside {gutter:?}"
-                            );
-                        }
                     }
                 }
             }
