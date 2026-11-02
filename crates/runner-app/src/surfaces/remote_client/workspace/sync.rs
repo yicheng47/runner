@@ -479,7 +479,7 @@ impl RemoteClient {
             let wake = remote.wake.clone();
             let wake_id = address.clone();
             let task = cx.background_spawn(async move {
-                TerminalMirror::attach(
+                TerminalMirror::attach_remote(
                     client,
                     address,
                     Arc::new(move || {
