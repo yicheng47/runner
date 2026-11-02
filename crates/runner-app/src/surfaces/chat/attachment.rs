@@ -54,6 +54,13 @@ impl NativeRoot {
             .cloned()
             .chain(ended_ids)
             .collect::<HashSet<_>>();
+        // Leaving a tab closes find in its terminals, including the ended
+        // sessions kept attached below.
+        for (session_id, chat) in &self.attached {
+            if !active_ids.contains(session_id) {
+                chat.terminal_find.update(cx, |find, cx| find.leave(cx));
+            }
+        }
         self.attached
             .retain(|session_id, _| owned_ids.contains(session_id));
         for session_id in active_ids {

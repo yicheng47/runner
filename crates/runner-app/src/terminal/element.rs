@@ -599,6 +599,24 @@ fn viewport_edge_hit(
     }
 }
 
+/// Adds a find match's cell to its row's quad. Cells join by grid column
+/// and match: summed widths drift from `cell_width * col` at fractional
+/// cell widths, so comparing pixel edges would split one match into boxes.
+fn push_match_cell(
+    quads: &mut Vec<Bounds<Pixels>>,
+    end: &mut Option<(usize, usize, usize)>,
+    (found, row, col, cell_cols): (usize, usize, usize, usize),
+    cell: Bounds<Pixels>,
+) {
+    match (*end, quads.last_mut()) {
+        (Some(last_end), Some(last)) if last_end == (found, row, col) => {
+            last.size.width += cell.size.width;
+        }
+        _ => quads.push(cell),
+    }
+    *end = Some((found, row, col + cell_cols));
+}
+
 fn point_for_viewport(display_offset: usize, row: usize, column: usize) -> GridPoint {
     viewport_to_point(display_offset, GridPoint::new(row, Column(column)))
 }
@@ -694,6 +712,7 @@ pub struct TerminalElement {
     pub(super) scrollable: bool,
     pub(super) resize_owner: bool,
     pub(super) style: TerminalStyle,
+    pub(super) find: Option<Entity<super::TerminalFind>>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -723,11 +742,17 @@ impl TerminalElement {
             scrollable: false,
             resize_owner,
             style,
+            find: None,
         }
     }
 
     pub fn scrollable(mut self, scrollable: bool) -> Self {
         self.scrollable = scrollable;
+        self
+    }
+
+    pub(crate) fn find(mut self, find: Entity<super::TerminalFind>) -> Self {
+        self.find = Some(find);
         self
     }
 
@@ -846,6 +871,8 @@ impl TerminalElement {
 
 pub struct GridPrepaint {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
+    find_matches: Vec<Bounds<Pixels>>,
+    find_current: Vec<Bounds<Pixels>>,
     selections: Vec<Bounds<Pixels>>,
     procedural: Vec<ProceduralCell>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
@@ -964,6 +991,8 @@ impl Element for TerminalElement {
             SizePushVerdict::SuppressedUnplaced => {
                 return GridPrepaint {
                     backgrounds: Vec::new(),
+                    find_matches: Vec::new(),
+                    find_current: Vec::new(),
                     selections: Vec::new(),
                     procedural: Vec::new(),
                     lines: Vec::new(),
@@ -1034,6 +1063,11 @@ impl Element for TerminalElement {
         let mut backgrounds: Vec<(Bounds<Pixels>, Hsla)> = Vec::new();
         let mut selections: Vec<Bounds<Pixels>> = Vec::new();
         let mut selection_end = None;
+        let mut find_matches: Vec<Bounds<Pixels>> = Vec::new();
+        let mut find_current: Vec<Bounds<Pixels>> = Vec::new();
+        let mut find_match_end = None;
+        let mut find_current_end = None;
+        let find_text = theme::find_highlight().text;
         let mut procedural = Vec::new();
         let mut spans: Vec<(usize, StyledSpan)> = Vec::new();
         let mut cursor = None;
@@ -1053,6 +1087,14 @@ impl Element for TerminalElement {
             let overrides = content.colors;
             let selection = content.selection;
             let renderable_cursor = content.cursor;
+            let highlights = self
+                .find
+                .as_ref()
+                .and_then(|find| find.update(cx, |find, _| find.highlights(&term, rows as usize)));
+            let (highlighted, current_match) = highlights
+                .map(|highlights| (highlights.matches, highlights.current))
+                .unwrap_or_default();
+            let mut next_match = 0;
             marked_foreground = palette::resolve_for(
                 Color::Named(NamedColor::Foreground),
                 overrides,
@@ -1101,6 +1143,45 @@ impl Element for TerminalElement {
                         _ => selections.push(quad_bounds),
                     }
                     selection_end = Some((row, col + cell_cols));
+                }
+
+                while highlighted
+                    .get(next_match)
+                    .is_some_and(|found| *found.end() < indexed.point)
+                {
+                    next_match += 1;
+                }
+                let in_current = current_match
+                    .as_ref()
+                    .is_some_and(|found| found.contains(&indexed.point));
+                let in_match = in_current
+                    || highlighted
+                        .get(next_match)
+                        .is_some_and(|found| found.contains(&indexed.point));
+                if in_match && !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    let quad_bounds = Bounds::new(
+                        point(
+                            bounds.left() + cell_width * col as f32,
+                            bounds.top() + line_height * row as f32,
+                        ),
+                        size(cell_width * cell_cols as f32, line_height),
+                    );
+                    let cell_at = (next_match, row, col, cell_cols);
+                    if in_current {
+                        push_match_cell(
+                            &mut find_current,
+                            &mut find_current_end,
+                            cell_at,
+                            quad_bounds,
+                        );
+                    } else {
+                        push_match_cell(
+                            &mut find_matches,
+                            &mut find_match_end,
+                            cell_at,
+                            quad_bounds,
+                        );
+                    }
                 }
 
                 if cell
@@ -1165,7 +1246,11 @@ impl Element for TerminalElement {
                             col,
                             window.scale_factor(),
                         ),
-                        to_hsla(fg, 1.),
+                        if in_current {
+                            find_text
+                        } else {
+                            to_hsla(fg, 1.)
+                        },
                         to_hsla(bg, 1.),
                         font_size,
                     ) {
@@ -1198,14 +1283,16 @@ impl Element for TerminalElement {
                 } else {
                     base_font.clone()
                 };
-                if cell.flags.contains(Flags::BOLD) {
+                if cell.flags.contains(Flags::BOLD) || in_current {
                     cell_font = cell_font.bold();
                 }
                 if cell.flags.contains(Flags::ITALIC) {
                     cell_font = cell_font.italic();
                 }
                 let link_armed = link_underlined && link_modifier_held;
-                let text_color = if link_armed {
+                let text_color = if in_current {
+                    find_text
+                } else if link_armed {
                     theme::accent()
                 } else {
                     to_hsla(fg, 1.)
@@ -1384,6 +1471,8 @@ impl Element for TerminalElement {
 
         GridPrepaint {
             backgrounds,
+            find_matches,
+            find_current,
             selections,
             procedural,
             lines,
@@ -1416,6 +1505,23 @@ impl Element for TerminalElement {
         window.paint_quad(fill(bounds, to_hsla(self.style.palette.background, 1.)));
         for (quad_bounds, color) in &prepaint.backgrounds {
             window.paint_quad(fill(*quad_bounds, *color));
+        }
+        let highlight = theme::find_highlight();
+        let radius = px(2. * self.style.app_zoom);
+        for quad_bounds in &prepaint.find_matches {
+            window.paint_quad(fill(*quad_bounds, highlight.tint).corner_radii(radius));
+        }
+        for quad_bounds in &prepaint.find_current {
+            window.paint_quad(fill(*quad_bounds, highlight.current).corner_radii(radius));
+            window.paint_quad(
+                outline(
+                    quad_bounds.dilate(px(self.style.app_zoom)),
+                    highlight.outline,
+                    Default::default(),
+                )
+                .border_widths(px(self.style.app_zoom))
+                .corner_radii(radius + px(self.style.app_zoom)),
+            );
         }
         let selection_color = to_hsla(self.style.palette.selection, 1.);
         for quad_bounds in &prepaint.selections {
@@ -1564,8 +1670,8 @@ mod tests {
 
     use super::{
         accumulate_scroll, autoscroll_amount, cell_and_side, link_modifier, point_for_viewport,
-        text_presentation_font, viewport_cell, wants_text_presentation, TerminalElement,
-        TerminalGeometry, TerminalInput, TerminalInteraction, TerminalStyle,
+        push_match_cell, text_presentation_font, viewport_cell, wants_text_presentation,
+        TerminalElement, TerminalGeometry, TerminalInput, TerminalInteraction, TerminalStyle,
     };
     use alacritty_terminal::term::TermMode;
     use runner_terminal::mappings::encode_scroll;
@@ -1798,6 +1904,36 @@ mod tests {
                         ),
                 )
         }
+    }
+
+    #[test]
+    fn a_find_match_is_one_box_per_row_at_a_fractional_cell_width() {
+        use gpui::size;
+        let (left, cell_width, line_height) = (px(6.), px(10.4), px(20.8));
+        let mut quads = Vec::new();
+        let mut end = None;
+        let mut push = |found, row: usize, cols: std::ops::Range<usize>| {
+            for col in cols {
+                let cell = Bounds::new(
+                    point(left + cell_width * col as f32, line_height * row as f32),
+                    size(cell_width, line_height),
+                );
+                push_match_cell(&mut quads, &mut end, (found, row, col, 1), cell);
+            }
+        };
+        push(0, 1, 5..14);
+        push(1, 1, 14..16);
+        push(1, 2, 0..3);
+        let spans = quads
+            .iter()
+            .map(|quad| {
+                (
+                    ((quad.left() - left) / cell_width).round() as usize,
+                    (quad.size.width / cell_width).round() as usize,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(spans, [(5, 9), (14, 2), (0, 3)]);
     }
 
     #[test]

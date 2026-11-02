@@ -579,6 +579,7 @@ impl NativeRoot {
                 let terminal_scrollbar = chat.terminal_scrollbar.clone();
                 let terminal_input = chat.terminal_input.clone();
                 let terminal_focus = chat.terminal_focus.clone();
+                let terminal_find = chat.terminal_find.clone();
                 let resize_owner = scrollable
                     && !secondary_state.secondary
                     && layout.is_resize_owner(&pane_id, &session_id);
@@ -587,7 +588,7 @@ impl NativeRoot {
                 let paste_session_id = session_id.clone();
                 let drop_session_id = session_id.clone();
                 let drop_pane_id = pane_id.clone();
-                TerminalSurface {
+                let surface = TerminalSurface {
                     terminal,
                     interaction: terminal_interaction,
                     input: terminal_input,
@@ -597,46 +598,48 @@ impl NativeRoot {
                     interactive,
                     resize_owner,
                     scrollable,
-                }
-                .render()
-                .id(SharedString::from(format!("terminal-{session_id}")))
-                .opacity(match overlay {
-                    PaneOverlayState::Starting | PaneOverlayState::Resuming => 0.,
-                    PaneOverlayState::Ended { .. } => 0.45,
-                    PaneOverlayState::Archiving | PaneOverlayState::None => 1.,
-                })
-                .on_action(cx.listener(move |this, action: &Copy, window, cx| {
-                    this.on_terminal_copy(&copy_session_id, action, window, cx);
-                }))
-                .when(
-                    interactive
-                        || self
-                            .attached
-                            .get(&session_id)
-                            .is_some_and(|chat| !chat.terminal.control().desktop()),
-                    |surface| {
-                        surface
-                            .on_key_down(cx.listener(move |this, event, window, cx| {
-                                this.on_key_down(&key_session_id, event, window, cx);
-                            }))
-                            .on_action(cx.listener(move |this, action, window, cx| {
-                                this.on_paste(&paste_session_id, action, window, cx);
-                            }))
-                            .child(runner_app::ui::file_drop_target(
-                                &session_id,
-                                cx.listener(move |this, paths, window, cx| {
-                                    this.on_file_drop(
-                                        Some(&drop_pane_id),
-                                        &drop_session_id,
-                                        paths,
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                            ))
-                    },
-                )
-                .into_any_element()
+                    find: Some(terminal_find.clone()),
+                };
+                let surface = surface
+                    .render()
+                    .id(SharedString::from(format!("terminal-{session_id}")))
+                    .opacity(match overlay {
+                        PaneOverlayState::Starting | PaneOverlayState::Resuming => 0.,
+                        PaneOverlayState::Ended { .. } => 0.45,
+                        PaneOverlayState::Archiving | PaneOverlayState::None => 1.,
+                    })
+                    .on_action(cx.listener(move |this, action: &Copy, window, cx| {
+                        this.on_terminal_copy(&copy_session_id, action, window, cx);
+                    }))
+                    .when(
+                        interactive
+                            || self
+                                .attached
+                                .get(&session_id)
+                                .is_some_and(|chat| !chat.terminal.control().desktop()),
+                        |surface| {
+                            surface
+                                .on_key_down(cx.listener(move |this, event, window, cx| {
+                                    this.on_key_down(&key_session_id, event, window, cx);
+                                }))
+                                .on_action(cx.listener(move |this, action, window, cx| {
+                                    this.on_paste(&paste_session_id, action, window, cx);
+                                }))
+                                .child(runner_app::ui::file_drop_target(
+                                    &session_id,
+                                    cx.listener(move |this, paths, window, cx| {
+                                        this.on_file_drop(
+                                            Some(&drop_pane_id),
+                                            &drop_session_id,
+                                            paths,
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                ))
+                        },
+                    );
+                crate::terminal::find::with_find_bar(surface, &terminal_find)
             } else {
                 div()
                     .absolute()

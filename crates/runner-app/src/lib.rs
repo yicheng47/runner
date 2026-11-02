@@ -126,6 +126,7 @@ actions!(
         CloseWindow,
         CheckForUpdates,
         CommandPalette,
+        FindInTerminal,
         FocusNextPane,
         FocusPreviousPane,
         Hide,

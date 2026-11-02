@@ -26,6 +26,16 @@ Drag files from Finder or File Explorer onto a chat pane, a mission drawer termi
 
 For shell splits, Runner follows the shell's reported working directory. It installs that reporting for zsh and bash on macOS. Windows shells without their own directory-reporting prompt use the original launch directory for a split, even after `cd`.
 
+## Find in a terminal
+
+Press **⌘F** / **Ctrl+Shift+F** in a chat pane, a terminal, a mission slot or a mission drawer terminal to open the find bar over the terminal’s top-right corner; the terminal keeps its size. Text selected in the terminal fills the query, and pressing the shortcut again while the bar is open selects the query. Each pane has its own find bar, which keeps its query until you close it. On Windows and Linux, **Ctrl+F** still reaches the shell.
+
+Matches update as you type, across the output and its scrollback, including text that wraps onto the next line. A plain query ignores case; turn on **Aa** to match case and **.\*** to search with a regular expression. A plain query also ignores combining marks, emoji variation selectors and joiners, which the terminal keeps beside the character they modify, so selected or pasted text such as a decomposed é, ❤️ or a joined emoji is found. A decomposed e with a combining accent then also finds a plain e, while a precomposed é stays distinct, and a query of only such marks counts as empty. A regular expression cannot match the marks themselves. The count shows the current match and the total, up to 1000+. It reads **No results** or **Invalid regex** in red, and an invalid pattern keeps the last matches highlighted until it is valid again. Every visible match is tinted amber and the current one is solid amber.
+
+Matches are numbered from the newest output. Enter or **⌘G** / **F3** moves to the next, older match, and ⇧Enter or **⇧⌘G** / **Shift+F3** to the previous, newer one; both wrap at the ends. The terminal scrolls only to bring an off-screen match to the middle. While the bar is open, new output updates the matches and the count, the current match stays on its text, and once a match is selected the view stays where it is.
+
+Esc closes the find bar while it has focus; click the terminal to give it focus, and Esc then goes to the program. Closing with Esc or **×** clears the highlights and scrolls the terminal back to where it was before you opened find; switching to another tab or mission, or from a mission slot to another slot or the feed, closes find the same way. A mission drawer terminal stays on screen when you switch slots, so its find stays open. A program using the alternate screen, such as `less`, `vim` or a full-screen agent interface, has no scrollback there, so find searches only the visible screen and the bar says so.
+
 ## Organize the sidebar
 
 Use the sidebar context menus to rename and organize tabs, group them into folders, and pin work you return to often. [Projects](../concepts/projects.md) group work by directory; folders organize sidebar entries. Status markers show activity, attention and stopped sessions. Use them to find the terminal to inspect, rather than treating an idle marker as a completed review.

@@ -2,8 +2,10 @@
 
 pub(crate) mod control;
 pub(crate) mod element;
+pub(crate) mod find;
 pub(crate) mod glyphs;
 pub(crate) mod input;
 mod viewport;
 
 pub(crate) use element::{TerminalElement, TerminalInteraction};
+pub(crate) use find::TerminalFind;

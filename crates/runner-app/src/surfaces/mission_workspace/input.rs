@@ -103,6 +103,7 @@ impl MissionWorkspace {
                 });
             }
         }
+        self.leave_active_slot_find(&MissionTab::Feed, cx);
         self.active_tab = MissionTab::Feed;
         self.remote_navigation_changed(cx);
         if !self.presentation.is_remote() {
@@ -150,7 +151,9 @@ impl MissionWorkspace {
             });
         }
         self.feed_list.scrollbar_drag_ended();
-        self.active_tab = MissionTab::Session(session_id.to_owned());
+        let next = MissionTab::Session(session_id.to_owned());
+        self.leave_active_slot_find(&next, cx);
+        self.active_tab = next;
         let selected_handle = self
             .members()
             .iter()
@@ -166,6 +169,21 @@ impl MissionWorkspace {
         }
         self.focus_active_mission_terminal(window, cx);
         cx.notify();
+    }
+
+    /// Leaving a slot's tab closes find in its terminal, as leaving a chat tab
+    /// does; the slot stays attached, so dropping it would not. The drawer
+    /// stays on screen across tabs and keeps its find.
+    fn leave_active_slot_find(&self, next: &MissionTab, cx: &mut Context<Self>) {
+        let MissionTab::Session(session_id) = &self.active_tab else {
+            return;
+        };
+        if next == &self.active_tab {
+            return;
+        }
+        if let Some(chat) = self.attached.get(session_id) {
+            chat.terminal_find.update(cx, |find, cx| find.leave(cx));
+        }
     }
 
     pub(super) fn close_mission_session_tab(

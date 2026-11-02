@@ -134,6 +134,7 @@ pub(crate) struct TerminalSurface {
     pub(crate) interactive: bool,
     pub(crate) resize_owner: bool,
     pub(crate) scrollable: bool,
+    pub(crate) find: Option<Entity<crate::terminal::TerminalFind>>,
 }
 
 impl TerminalSurface {
@@ -149,6 +150,11 @@ impl TerminalSurface {
             .pl_3()
             .pr_1()
             .bg(background)
+            .when_some(self.find.clone(), |surface, find| {
+                surface.on_action(move |_: &crate::FindInTerminal, window, cx| {
+                    find.update(cx, |find, cx| find.open(window, cx));
+                })
+            })
             .child(
                 div()
                     .relative()
@@ -167,6 +173,10 @@ impl TerminalSurface {
                             self.style,
                         )
                         .scrollable(self.scrollable)
+                        .map(|element| match self.find {
+                            Some(find) => element.find(find),
+                            None => element,
+                        })
                         .cached(),
                     )
                     .child(self.scrollbar),

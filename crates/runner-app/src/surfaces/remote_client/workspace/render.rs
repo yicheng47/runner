@@ -305,6 +305,7 @@ impl RemoteClient {
                         interactive,
                         resize_owner: interactive,
                         scrollable: true,
+                        find: None,
                     }
                     .render()
                     .id(SharedString::from(format!("remote-terminal-{id}")))

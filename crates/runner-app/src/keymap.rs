@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{Hide, HideOthers, Quit, QuitAndStopSessions};
 
 use crate::{
-    CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FocusNextPane,
+    CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FindInTerminal, FocusNextPane,
     FocusPreviousPane, Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage,
     NavigatePreviousPage, NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste,
     ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
@@ -110,6 +110,8 @@ pub(crate) fn platform_default(macos: &str) -> String {
 fn windows_default(macos: &str) -> String {
     match macos {
         "ctrl-cmd-f" => "f11".into(),
+        // Ctrl+F still reaches the shell.
+        "cmd-f" => "ctrl-shift-f".into(),
         "cmd-w" => "ctrl-shift-w".into(),
         "cmd-t" => "ctrl-shift-t".into(),
         "shift-cmd-w" => "alt-f4".into(),
@@ -193,6 +195,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.toggle-terminal-drawer.description",
                 scope: KeymapScope::Mission,
                 default: default_combo("alt-f12", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "find-in-terminal",
+                title_key: "keymap.find-in-terminal.title",
+                description_key: "keymap.find-in-terminal.description",
+                scope: KeymapScope::Terminal,
+                default: default_combo("cmd-f", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -966,6 +976,8 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
             Some("!TextInput && !Settings && !Terminal")
         }
         "toggle-sidebar" => Some("!TextInput && !Settings"),
+        // The open find bar sits beside the terminal, outside its context.
+        "find-in-terminal" => Some("Terminal || TerminalFind"),
         _ => entry.scope.context(),
     }
 }
@@ -1035,6 +1047,7 @@ pub(crate) fn install_bindings(
                 "toggle-terminal-drawer" => {
                     KeyBinding::new(&binding, ToggleTerminalDrawer, context)
                 }
+                "find-in-terminal" => KeyBinding::new(&binding, FindInTerminal, context),
                 "open-settings" => KeyBinding::new(&binding, OpenSettings, context),
                 "page-previous" => KeyBinding::new(&binding, NavigatePreviousPage, context),
                 "page-next" => KeyBinding::new(&binding, NavigateNextPage, context),
@@ -1084,6 +1097,42 @@ mod tests {
     }
 
     #[test]
+    fn find_in_terminal_follows_toggle_terminal_drawer_and_reaches_the_open_bar() {
+        let ids = entries().iter().map(|entry| entry.id).collect::<Vec<_>>();
+        let drawer = ids
+            .iter()
+            .position(|id| *id == "toggle-terminal-drawer")
+            .unwrap();
+        assert_eq!(ids[drawer + 1], "find-in-terminal");
+        let entry = entry("find-in-terminal").unwrap();
+        assert_eq!(entry.scope, KeymapScope::Terminal);
+        assert!(!entry.fixed);
+        assert_eq!(binding_strings(&entry.default), [platform_default("cmd-f")]);
+        #[cfg(target_os = "macos")]
+        assert_eq!(format_combo(&entry.default), "⌘F");
+        assert!(find_conflict(&entry.default, entry.id, &KeymapOverrides::new()).is_none());
+        let predicate = gpui::KeyBindingContextPredicate::parse(
+            binding_context(entry, &entry.default).unwrap(),
+        )
+        .unwrap();
+        for (stack, reaches) in [
+            (&["Root", "Terminal"][..], true),
+            (&["Root", "TerminalFind", "TextInput"][..], true),
+            (&["Root", "TextInput"][..], false),
+        ] {
+            let contexts = stack
+                .iter()
+                .map(|context| gpui::KeyContext::parse(context).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                predicate.depth_of(&contexts).is_some(),
+                reaches,
+                "{stack:?}"
+            );
+        }
+    }
+
+    #[test]
     fn terminal_drawer_binding_is_only_available_in_missions() {
         let entry = entry("toggle-terminal-drawer").unwrap();
         assert_eq!(binding_context(entry, &entry.default), Some("Mission"));
@@ -1092,7 +1141,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 32);
+        assert_eq!(entries().len(), 33);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1659,6 +1708,10 @@ mod tests {
                 key_combo("F12", false, false, true, false, None, false),
             ),
             (
+                "find-in-terminal",
+                key_combo("KeyF", true, false, false, false, None, false),
+            ),
+            (
                 "open-settings",
                 key_combo("Comma", true, false, false, false, None, false),
             ),
@@ -1834,6 +1887,7 @@ mod tests {
             ("cmd-}", "ctrl-}"),
             ("cmd-left", "ctrl-left"),
             ("ctrl-cmd-f", "f11"),
+            ("cmd-f", "ctrl-shift-f"),
             ("alt-f12", "alt-f12"),
         ] {
             let actual = windows_default(macos);
@@ -1975,6 +2029,7 @@ mod tests {
             ("page-next", "Ctrl+Shift+]"),
             ("open-settings", "Ctrl+,"),
             ("zoom-in", "Ctrl++"),
+            ("find-in-terminal", "Ctrl+Shift+F"),
         ] {
             assert_eq!(format_combo(&entry(id).unwrap().default), hint);
         }
