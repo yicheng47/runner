@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, ErrorCode};
 
 use super::app_state::{
     login_shell_env_lkg, runtime_overrides, set_login_shell_env_lkg, set_runtime_override,
-    LoginShellEnvLkg,
+    set_usage_lkg, usage_lkg, LoginShellEnvLkg, UsageLkg,
 };
 use super::migrations::{run_migrations, run_migrations_up_to, MIGRATIONS};
 use super::seed::{
@@ -454,6 +454,27 @@ fn login_shell_lkg_round_trips_through_app_state() {
     assert_eq!(login_shell_env_lkg(&pool).unwrap(), None);
     set_login_shell_env_lkg(&pool, &snapshot).unwrap();
     assert_eq!(login_shell_env_lkg(&pool).unwrap(), Some(snapshot));
+}
+
+#[test]
+fn usage_lkg_round_trips_through_app_state() {
+    use runner_core::protocol::usage::{AgentUsage, UsageWindow};
+    let pool = open_in_memory().unwrap();
+    let usage = |percent| AgentUsage {
+        windows: vec![UsageWindow {
+            name: "Week".into(),
+            used_percent: percent,
+            resets_at: Some("2026-11-10T00:00:00.123456Z".parse().unwrap()),
+        }],
+        updated_at: "2026-11-03T08:15:00.5Z".parse().unwrap(),
+    };
+    let stored = UsageLkg {
+        runtimes: [(runner_core::Runtime::Codex, usage(27.5))].into(),
+        claude_accounts: BTreeMap::from([("work".into(), usage(64.))]),
+    };
+    assert_eq!(usage_lkg(&pool).unwrap(), None);
+    set_usage_lkg(&pool, &stored).unwrap();
+    assert_eq!(usage_lkg(&pool).unwrap(), Some(stored));
 }
 
 #[test]
