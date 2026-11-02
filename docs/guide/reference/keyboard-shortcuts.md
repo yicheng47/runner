@@ -44,6 +44,17 @@ In Projects, number shortcuts follow the visible tabs and missions. In Active, t
 
 On Windows and Linux, **Ctrl+C** copies when terminal text is selected; otherwise it reaches the terminal as an interrupt. **Ctrl+W** remains available to terminal programs; Runner uses **Ctrl+Shift+W** to close a pane or tab.
 
+## Find in terminal
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Find in terminal; with the find bar open, select its query | ⌘F | Ctrl+Shift+F |
+| Next (older) match | Enter or ⌘G | Enter or F3 |
+| Previous (newer) match | ⇧Enter or ⇧⌘G | Shift+Enter or Shift+F3 |
+| Close the find bar | Esc | Esc |
+
+Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys inside the find bar are fixed. On Windows and Linux, **Ctrl+F** still reaches the terminal. Esc closes the find bar only while the bar has focus; once the terminal has focus, Esc goes to the program. See [Find in a terminal](../guides/chats-and-windows.md#find-in-a-terminal).
+
 ## Dialogs
 
 | Action | macOS | Windows / Linux |

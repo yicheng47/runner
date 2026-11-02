@@ -16,6 +16,9 @@ impl TerminalViewport {
             cx.observe(&element.interaction, |_, _, cx| cx.notify()),
             cx.observe(&element.input, |_, _, cx| cx.notify()),
         ];
+        if let Some(find) = &element.find {
+            subscriptions.push(cx.observe(find, |_, _, cx| cx.notify()));
+        }
         if let Some(updates) = cx
             .try_global::<crate::app_store::GlobalAppStore>()
             .map(|store| store.0.read(cx).terminal_updates.clone())
@@ -87,8 +90,12 @@ impl Element for TerminalViewportElement {
                         || old.interactive != new.interactive
                         || old.scrollable != new.scrollable
                         || old.resize_owner != new.resize_owner
-                        || old.style != new.style;
-                    if old.interaction != new.interaction || old.input != new.input {
+                        || old.style != new.style
+                        || old.find != new.find;
+                    if old.interaction != new.interaction
+                        || old.input != new.input
+                        || old.find != new.find
+                    {
                         view._subscriptions = TerminalViewport::subscriptions(new, cx);
                     }
                     view.element = new.clone();

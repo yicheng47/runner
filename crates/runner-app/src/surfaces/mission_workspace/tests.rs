@@ -3939,3 +3939,166 @@ fn mission_lifecycle_entry_points_dispatch_once_for_both_targets() {
         }
     }
 }
+
+#[test]
+fn leaving_the_mission_closes_find_in_its_slot_and_follows_late_output() {
+    use crate::terminal::control::tests::attached;
+    use crate::terminal::find::tests::{count, injecting_mirror, needle_output, open_with_query};
+    use std::sync::atomic::Ordering;
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let core = store.read_with(&cx, |store, _| store.test_core.clone());
+    let (slot, armed) = injecting_mirror();
+    slot.test_feed(1, &needle_output());
+    let slot_terminal = slot.clone();
+    let window = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "find-mission-leave".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.route = AppRoute::Mission("test-mission".into());
+        root.mission_workspace.update(cx, |workspace, cx| {
+            workspace.active = true;
+            workspace.mission_id = Some("test-mission".into());
+            workspace.mission =
+                Some(runner_daemon::ops::mission::mission_get(&core, "test-mission").unwrap());
+            workspace.roster =
+                runner_daemon::ops::mission::mission_roster(&core, "test-mission").unwrap();
+            workspace.sessions =
+                runner_daemon::ops::session::session_list(&core, "test-mission").unwrap();
+            workspace.open_tabs = vec!["mission-shell".into()];
+            workspace
+                .attached
+                .insert("mission-shell".into(), attached(slot_terminal, cx, 80, 24));
+        });
+        root
+    });
+    let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let find = window
+        .update(&mut cx, |root, window, cx| {
+            let find = root.mission_workspace.read(cx).attached["mission-shell"]
+                .terminal_find
+                .clone();
+            open_with_query(&find, "needle", window, cx);
+            find
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 1"));
+    assert!(slot.scroll_state().display_offset > 0);
+    let mark = slot.scroll_mark();
+    let weak = find.downgrade();
+    drop(find);
+    armed.store(true, Ordering::SeqCst);
+    window
+        .update(&mut cx, |root, _, cx| root.set_route(AppRoute::Roles, cx))
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .read_with(&cx, |root, cx| {
+            assert!(root.mission_workspace.read(cx).attached.is_empty());
+        })
+        .unwrap();
+    assert!(weak.upgrade().is_none());
+    assert_eq!(mark.moved_since(slot.scroll_mark()), Some(3));
+    assert_eq!(slot.scroll_state().display_offset, 0);
+    window
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn leaving_a_slot_tab_closes_find_in_its_terminal() {
+    use crate::terminal::control::tests::attached;
+    use crate::terminal::find::tests::{count, injecting_mirror, needle_output, open_with_query};
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let core = store.read_with(&cx, |store, _| store.test_core.clone());
+    let (slot, _) = injecting_mirror();
+    slot.test_feed(1, &needle_output());
+    let (other, _) = injecting_mirror();
+    let (slot_terminal, other_terminal) = (slot.clone(), other.clone());
+    let window = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "find-slot-switch".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.route = AppRoute::Mission("test-mission".into());
+        root.mission_workspace.update(cx, |workspace, cx| {
+            workspace.active = true;
+            workspace.mission_id = Some("test-mission".into());
+            workspace.mission =
+                Some(runner_daemon::ops::mission::mission_get(&core, "test-mission").unwrap());
+            workspace.roster =
+                runner_daemon::ops::mission::mission_roster(&core, "test-mission").unwrap();
+            workspace.sessions =
+                runner_daemon::ops::session::session_list(&core, "test-mission").unwrap();
+            workspace.open_tabs = vec!["mission-shell".into(), "mission-agent".into()];
+            workspace.active_tab = MissionTab::Session("mission-shell".into());
+            workspace
+                .attached
+                .insert("mission-shell".into(), attached(slot_terminal, cx, 80, 24));
+            workspace
+                .attached
+                .insert("mission-agent".into(), attached(other_terminal, cx, 80, 24));
+        });
+        root
+    });
+    let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let (workspace, find) = window
+        .read_with(&cx, |root, cx| {
+            let workspace = root.mission_workspace.clone();
+            let find = workspace.read(cx).attached["mission-shell"]
+                .terminal_find
+                .clone();
+            (workspace, find)
+        })
+        .unwrap();
+
+    for leave_to_feed in [false, true] {
+        workspace.update_in(&mut visual, |workspace, window, cx| {
+            workspace.select_mission_session("mission-shell", window, cx);
+            open_with_query(&find, "needle", window, cx);
+        });
+        visual.run_until_parked();
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 1"));
+        assert!(slot.scroll_state().display_offset > 0);
+
+        workspace.update_in(&mut visual, |workspace, window, cx| {
+            if leave_to_feed {
+                workspace.select_mission_feed(window, cx);
+            } else {
+                workspace.select_mission_session("mission-agent", window, cx);
+            }
+        });
+        visual.run_until_parked();
+        workspace.read_with(&visual, |workspace, _| {
+            assert!(workspace.attached.contains_key("mission-shell"));
+        });
+        assert_eq!(count(&mut visual, &find), None);
+        assert_eq!(slot.scroll_state().display_offset, 0);
+    }
+    window
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+}

@@ -816,6 +816,8 @@ impl MissionWorkspace {
             let terminal_scrollbar = chat.terminal_scrollbar.clone();
             let terminal_input = chat.terminal_input.clone();
             let terminal_focus = chat.terminal_focus.clone();
+            let terminal_find = chat.terminal_find.clone();
+            let open_find = terminal_find.clone();
             let key_id = session_id.clone();
             let copy_id = session_id.clone();
             let paste_id = session_id.clone();
@@ -846,6 +848,9 @@ impl MissionWorkspace {
                         this.on_mission_terminal_copy(&copy_id, action, window, cx)
                     });
                 })
+                .on_action(move |_: &crate::FindInTerminal, window, cx| {
+                    open_find.update(cx, |find, cx| find.open(window, cx));
+                })
                 .child(
                     div()
                         .relative()
@@ -864,6 +869,7 @@ impl MissionWorkspace {
                                 terminal_style,
                             )
                             .scrollable(scrollable)
+                            .find(terminal_find.clone())
                             .cached(),
                         )
                         .child(terminal_scrollbar),
@@ -898,7 +904,7 @@ impl MissionWorkspace {
                         },
                     ));
             }
-            surface.into_any_element()
+            crate::terminal::find::with_find_bar(surface, &terminal_find)
         } else {
             div()
                 .absolute()

@@ -25,6 +25,7 @@ pub(crate) struct AttachedChat {
     pub(crate) _terminal_input_subscription: Subscription,
     pub(crate) _terminal_focus_subscription: Option<Subscription>,
     pub(crate) terminal_focus: FocusHandle,
+    pub(crate) terminal_find: Entity<crate::terminal::TerminalFind>,
 }
 
 #[derive(Clone)]

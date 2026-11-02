@@ -14,6 +14,9 @@ impl AttachedChat {
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));
         let terminal_interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&terminal)));
         let terminal_focus = cx.focus_handle();
+        let terminal_find = cx.new(|cx| {
+            crate::terminal::TerminalFind::new(Arc::clone(&terminal), terminal_focus.clone(), cx)
+        });
         let terminal_input = cx.new(|_| TerminalInput::new(Arc::clone(&terminal)));
         let terminal_input_subscription = cx.observe(&terminal_input, move |this, input, cx| {
             if let Some(result) = input.update(cx, |input, _| input.take_write_result()) {
@@ -30,6 +33,7 @@ impl AttachedChat {
             _terminal_input_subscription: terminal_input_subscription,
             _terminal_focus_subscription: None,
             terminal_focus,
+            terminal_find,
         }
     }
 

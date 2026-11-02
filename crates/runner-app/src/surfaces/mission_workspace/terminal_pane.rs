@@ -87,6 +87,8 @@ impl MissionWorkspace {
         let terminal_input = chat.terminal_input.clone();
         let terminal_focus = chat.terminal_focus.clone();
         let terminal_scrollbar = chat.terminal_scrollbar.clone();
+        let terminal_find = chat.terminal_find.clone();
+        let open_find = terminal_find.clone();
         let interactive = self.cached_mission_terminal_interactive(&session_id, cx);
         let key_id = session_id.clone();
         let copy_id = session_id.clone();
@@ -114,6 +116,9 @@ impl MissionWorkspace {
                     this.on_mission_terminal_copy(&copy_id, action, window, cx)
                 });
             })
+            .on_action(move |_: &crate::FindInTerminal, window, cx| {
+                open_find.update(cx, |find, cx| find.open(window, cx));
+            })
             .child(
                 div()
                     .relative()
@@ -132,6 +137,7 @@ impl MissionWorkspace {
                             self.terminal_style(cx),
                         )
                         .scrollable(interactive)
+                        .find(terminal_find.clone())
                         .cached(),
                     )
                     .child(terminal_scrollbar),
@@ -196,6 +202,7 @@ impl MissionWorkspace {
                 cx,
             ));
         }
+        pane = pane.child(crate::terminal::find::find_bar(&terminal_find));
         pane = match overlay {
             SlotOverlayState::Resuming => pane.child(SessionOverlay::transition(
                 SharedString::from(format!("mission-resuming-{session_id}")),

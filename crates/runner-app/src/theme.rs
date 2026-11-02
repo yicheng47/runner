@@ -408,6 +408,35 @@ pub fn warning() -> Hsla {
     color(colors().warn)
 }
 
+/// Find-in-terminal highlights are app colours, not terminal palette ones, so
+/// they read over any ANSI colour: a tint for every match and a solid fill,
+/// outline and text for the current one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FindHighlight {
+    pub tint: Hsla,
+    pub current: Hsla,
+    pub outline: Hsla,
+    pub text: Hsla,
+}
+
+pub fn find_highlight() -> FindHighlight {
+    if active_variant().is_light() {
+        FindHighlight {
+            tint: with_alpha(color(0xf2b544), 0.35),
+            current: color(0xf2b544),
+            outline: color(0xc27c0e),
+            text: color(0x1c1d22),
+        }
+    } else {
+        FindHighlight {
+            tint: with_alpha(color(0xffb020), 0.25),
+            current: color(0xffb020),
+            outline: color(0xffd27a),
+            text: color(0x15161b),
+        }
+    }
+}
+
 pub fn info() -> Hsla {
     color(colors().info)
 }
@@ -649,6 +678,53 @@ mod tests {
                 info: 0x0a8fb3,
             }
         );
+    }
+
+    #[test]
+    fn find_highlights_match_the_signed_off_tokens() {
+        let _scope = testing::scope();
+        for (variant, tint, current, outline, text) in [
+            (
+                ThemeVariant::Carbon,
+                (0xffb020, 0.25),
+                0xffb020,
+                0xffd27a,
+                0x15161b,
+            ),
+            (
+                ThemeVariant::CatppuccinMocha,
+                (0xffb020, 0.25),
+                0xffb020,
+                0xffd27a,
+                0x15161b,
+            ),
+            (
+                ThemeVariant::RunnerLight,
+                (0xf2b544, 0.35),
+                0xf2b544,
+                0xc27c0e,
+                0x1c1d22,
+            ),
+            (
+                ThemeVariant::CatppuccinLatte,
+                (0xf2b544, 0.35),
+                0xf2b544,
+                0xc27c0e,
+                0x1c1d22,
+            ),
+        ] {
+            set_active_variant(variant);
+            assert_eq!(
+                find_highlight(),
+                FindHighlight {
+                    tint: with_alpha(color(tint.0), tint.1),
+                    current: color(current),
+                    outline: color(outline),
+                    text: color(text),
+                },
+                "{variant:?}"
+            );
+        }
     }
 
     #[test]

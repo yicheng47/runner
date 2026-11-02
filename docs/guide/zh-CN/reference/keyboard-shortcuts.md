@@ -44,6 +44,17 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 
 Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制，否则作为中断送入终端。 **Ctrl+W** 留给终端程序；Runner 使用 **Ctrl+Shift+W** 关闭窗格或标签页。
 
+## 在终端中查找
+
+| 操作 | macOS | Windows / Linux |
+| --- | --- | --- |
+| 在终端中查找；查找栏已打开时选中查询内容 | ⌘F | Ctrl+Shift+F |
+| 下一个（更早的）匹配项 | Enter 或 ⌘G | Enter 或 F3 |
+| 上一个（更新的）匹配项 | ⇧Enter 或 ⇧⌘G | Shift+Enter 或 Shift+F3 |
+| 关闭查找栏 | Esc | Esc |
+
+可在 **设置 → 键盘快捷键** 中更改“在终端中查找”；查找栏内的按键固定不变。Windows 和 Linux 上， **Ctrl+F** 仍会送入终端。只有查找栏获得焦点时 Esc 才关闭查找栏；终端获得焦点后，Esc 会送给程序。参见[在终端中查找](../guides/chats-and-windows.md#在终端中查找)。
+
 ## 对话框
 
 | 操作 | macOS | Windows / Linux |
