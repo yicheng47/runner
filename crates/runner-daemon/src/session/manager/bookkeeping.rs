@@ -272,6 +272,41 @@ impl SessionManager {
             .map(|written| written.is_some())
     }
 
+    pub fn confirm_delivery(&self, session_id: &str, snapshot: &router::DeliverySnapshot) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let delivery = gate.state.lock().unwrap();
+        let Some(terminal) = session.lock().unwrap().terminal.clone() else {
+            return;
+        };
+        if delivery.generation != snapshot.generation
+            || delivery.next_ticket != snapshot.input_revision.0
+        {
+            return;
+        }
+        let observation = terminal.confirm_delivery(snapshot.input_revision.1);
+        drop(delivery);
+        terminal.publish_input(observation);
+    }
+
+    pub fn recheck_unsent(&self, session_id: &str) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let terminal = {
+            let session = session.lock().unwrap();
+            if session.model.activity() != Some(SessionActivityState::Idle) {
+                return;
+            }
+            session.terminal.clone()
+        };
+        if let Some(terminal) = terminal {
+            terminal.recheck_delivery();
+        }
+    }
+
     pub fn delivery_readiness(&self, session_id: &str) -> router::DeliveryReadiness {
         let Some(session) = self.raw_session_state(session_id) else {
             return router::DeliveryReadiness::Unavailable;
