@@ -399,7 +399,7 @@ impl NativeRoot {
             })
             .absolute()
             .top_0()
-            .right(px(panel_width))
+            .right(px(panel_width - resize_strip_inset(zoom)))
             .on_drag(
                 ChatPanelResizeDrag,
                 |drag: &ChatPanelResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
