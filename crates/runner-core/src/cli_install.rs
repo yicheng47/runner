@@ -1,5 +1,18 @@
 use crate::error::{Error, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Sits beside a mission slot's `runner.exe` shim. That shim is the CLI itself:
+/// finding this file beside its own executable makes it forward to `runner`.
+pub const SESSION_SHIM_CONFIG_NAME: &str = "runner-shim.json";
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionShimConfig {
+    pub runner: PathBuf,
+    /// `None` clears a variable the caller inherited.
+    pub env: BTreeMap<String, Option<String>>,
+}
 
 /// Source-side agent CLI artifact. Installed into app data as `runner`.
 pub const AGENT_SOURCE_BIN_NAME: &str = if cfg!(windows) {

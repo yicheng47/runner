@@ -850,7 +850,7 @@ Migrations live in `crates/runner-daemon/migrations/` (`0001_init.sql` … `0028
 ~/Library/Logs/com.wycstudios.runner/runner.log   # rotating app log + panic backtraces
 ```
 
-A mission's directory is fixed at start: `crews/<crew_id>/missions/<id>/` for a crew start, `missions/<id>/` for an empty start. Deleting a crew never moves its missions. Session shims stay under `missions/<id>/shims/<handle>/bin/`; crew-less sessions omit `RUNNER_CREW_ID` in both the PTY environment and the shim. `event_log::mission_dir` is the shared resolver.
+A mission's directory is fixed at start: `crews/<crew_id>/missions/<id>/` for a crew start, `missions/<id>/` for an empty start. Deleting a crew never moves its missions. Session shims stay under `missions/<id>/shims/<handle>/bin/`; crew-less sessions omit `RUNNER_CREW_ID` in both the PTY environment and the shim. On Windows that directory also holds `runner.exe`, a hard link to the CLI that forwards to the installed one with the variables in `runner-shim.json` beside it, because `cmd.exe` would cut a batch shim's arguments at the first line break ([#1107](https://github.com/yicheng47/runner/issues/1107)). `event_log::mission_dir` is the shared resolver.
 
 The data directory has been the same since the Tauri app, so every upgrade finds its roles, crews, missions and sessions in place. Startup removes the stale legacy bridge executable from `bin/` best-effort. Direct chats are off-disk beyond their row in `sessions`; mission sessions share their mission's directory, with `events.ndjson` and `roster.json` as durable artifacts. Screen state lives in memory (§5.8).
 
