@@ -51,6 +51,13 @@ pub trait StdinInjector: Send + Sync + 'static {
 
     fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()>;
 
+    /// The notice was submitted, so the session stops holding it as its own unsent text unless
+    /// input reached it after `snapshot`.
+    fn confirm_delivery(&self, session_id: &str, snapshot: &DeliverySnapshot);
+
+    /// Re-check an idle session's unsent notice against its composer.
+    fn recheck_unsent(&self, session_id: &str);
+
     fn register_delivery_listener(
         &self,
         session_id: &str,
@@ -111,6 +118,14 @@ impl StdinInjector for SessionManager {
 
     fn synthesize_wake_busy(&self, session_id: &str, draft: EventDraft) -> Result<()> {
         SessionManager::synthesize_wake_busy(self, session_id, draft)
+    }
+
+    fn confirm_delivery(&self, session_id: &str, snapshot: &DeliverySnapshot) {
+        SessionManager::confirm_delivery(self, session_id, snapshot)
+    }
+
+    fn recheck_unsent(&self, session_id: &str) {
+        SessionManager::recheck_unsent(self, session_id)
     }
 
     fn register_delivery_listener(

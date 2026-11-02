@@ -24,6 +24,9 @@ struct FakeState {
     turn_started: u64,
     extra_rows: usize,
     ack_on_reserve: Option<Weak<Router>>,
+    confirmed: usize,
+    rechecks: usize,
+    recheck_releases: bool,
 }
 #[derive(Default)]
 struct Fake(Mutex<FakeState>);
@@ -124,6 +127,18 @@ impl StdinInjector for Fake {
     fn synthesize_wake_busy(&self, _: &str, _: EventDraft) -> Result<()> {
         self.0.lock().unwrap().busy += 1;
         Ok(())
+    }
+    fn confirm_delivery(&self, _: &str, _: &DeliverySnapshot) {
+        self.0.lock().unwrap().confirmed += 1;
+    }
+    fn recheck_unsent(&self, session: &str) {
+        let mut state = self.0.lock().unwrap();
+        state.rechecks += 1;
+        if state.recheck_releases {
+            state
+                .readiness
+                .insert(session.into(), DeliveryReadiness::Ready { idle: true });
+        }
     }
     fn register_delivery_listener(&self, _: &str, _: Weak<dyn SessionDeliveryListener>) {}
 }
@@ -1068,6 +1083,8 @@ fn a_leftover_notice_is_resubmitted_when_the_turn_ends_and_never_retyped() {
         f.readiness(DeliveryReadiness::Ready { idle: false });
         f.after(dispatch::CONFIRM_WINDOW);
         assert_eq!(f.port.0.lock().unwrap().busy, 1, "{leftover:?}");
+        assert_eq!(f.port.0.lock().unwrap().confirmed, 1, "{leftover:?}");
+        assert_eq!(f.port.0.lock().unwrap().rechecks, 0, "{leftover:?}");
         assert_eq!(f.block_reason(), None, "{leftover:?}");
         assert_eq!(f.notices(), 1, "{leftover:?}");
         assert!(f.warnings().is_empty(), "{leftover:?}");
@@ -1202,11 +1219,53 @@ fn unsent_readiness_without_a_leftover_is_never_typed_over() {
     f.session(SessionDeliveryEvent::Idle);
     f.after(Duration::from_secs(150));
     assert!(f.writes().is_empty());
+    assert!(f.port.0.lock().unwrap().rechecks > 0);
     assert_eq!(f.block_reason().as_deref(), Some("unsubmitted"));
     assert_eq!(
         f.warnings(),
         ["delivery to @worker is held: its inbox notice is still unsubmitted in its terminal"]
     );
+}
+
+#[test]
+fn a_stale_unsent_hold_without_a_leftover_is_delivered_once_rechecked() {
+    for backlog_while_held in [true, false] {
+        let mut f = Fixture::new();
+        f.readiness(DeliveryReadiness::Unsent);
+        f.port.0.lock().unwrap().recheck_releases = true;
+        if backlog_while_held {
+            f.backlog(1);
+        } else {
+            // The turn ends with nothing unread; the next message arrives while it idles.
+            f.session(SessionDeliveryEvent::Idle);
+            assert_eq!(f.port.0.lock().unwrap().rechecks, 0);
+            f.backlog(1);
+        }
+        assert_eq!(f.port.0.lock().unwrap().rechecks, 1);
+        assert_eq!(f.notices(), 1, "backlog_while_held={backlog_while_held}");
+        assert_eq!(f.block_reason(), None);
+        f.after(SUBMIT_DELAY);
+        f.after(dispatch::CONFIRM_WINDOW);
+        assert_eq!(f.port.0.lock().unwrap().confirmed, 1);
+        assert!(f.warnings().is_empty());
+    }
+}
+
+#[test]
+fn only_a_confirmed_attempt_ends_the_sessions_ownership_of_its_notice() {
+    for sticky in [false, true] {
+        let mut f = Fixture::new();
+        f.port.0.lock().unwrap().sticky = sticky;
+        f.backlog(1);
+        f.after(SUBMIT_DELAY);
+        f.after(dispatch::CONFIRM_WINDOW);
+        f.after(dispatch::CONFIRM_WINDOW);
+        assert_eq!(
+            f.port.0.lock().unwrap().confirmed,
+            usize::from(!sticky),
+            "sticky={sticky}"
+        );
+    }
 }
 
 #[test]

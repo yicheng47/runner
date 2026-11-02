@@ -313,6 +313,11 @@ impl Dispatcher {
                         .unwrap_or("unknown");
                     log::info!("router attempt outcome={outcome} mission={} session={} handle=@{handle} runtime={runtime}", router.mission_id, subscriber.session_id);
                     if outcome == "Confirmed" {
+                        if let Some(snapshot) = &attempt.snapshot {
+                            router
+                                .injector
+                                .confirm_delivery(&subscriber.session_id, snapshot);
+                        }
                         let draft = EventDraft::signal(
                             router.crew_id.as_deref(),
                             &router.mission_id,
@@ -454,7 +459,7 @@ impl Dispatcher {
                 continue;
             }
             if reconcile && subscriber.attempt.is_none() && !subscriber.wanted && backoff_passed {
-                match router.injector.delivery_readiness(&subscriber.session_id) {
+                match Self::readiness(router, subscriber, unread) {
                     DeliveryReadiness::Ready { idle } => {
                         subscriber.wanted = idle;
                         Self::hold(
@@ -492,7 +497,7 @@ impl Dispatcher {
                 continue;
             }
             subscriber.retry = None;
-            let readiness = router.injector.delivery_readiness(&subscriber.session_id);
+            let readiness = Self::readiness(router, subscriber, unread);
             Self::hold(
                 router,
                 handle,
@@ -594,6 +599,21 @@ impl Dispatcher {
                 })
                 .fold(self.redelivery, Instant::min),
         )
+    }
+
+    /// An unsent notice that no unconfirmed attempt of ours left behind is re-checked against the
+    /// composer before it holds a member with unread messages.
+    fn readiness(router: &Router, subscriber: &Subscriber, unread: usize) -> DeliveryReadiness {
+        let readiness = router.injector.delivery_readiness(&subscriber.session_id);
+        if readiness != DeliveryReadiness::Unsent
+            || unread == 0
+            || subscriber.unsent.is_some()
+            || subscriber.attempt.is_some()
+        {
+            return readiness;
+        }
+        router.injector.recheck_unsent(&subscriber.session_id);
+        router.injector.delivery_readiness(&subscriber.session_id)
     }
 
     /// Log each change of the reason delivery is held, and warn once a hold with unread messages

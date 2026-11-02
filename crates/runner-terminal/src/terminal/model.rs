@@ -32,6 +32,7 @@ pub struct TerminalModel {
     scheme: Arc<SchemeState>,
     events: Sender<Event>,
     input_tracker: Mutex<InputTracker>,
+    publish_order: Mutex<()>,
     initial_observation: InputObservation,
     fixture_recorder: Option<FixtureRecorder>,
     cwd_reports: Option<Mutex<CwdReports>>,
@@ -97,7 +98,7 @@ impl TerminalModel {
         let scheme = Arc::new(SchemeState::default());
         let palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
         let now = Instant::now();
-        let mut input_tracker = InputTracker::new(now);
+        let mut input_tracker = InputTracker::for_session(session_id.clone(), now);
         let initial_observation = input_tracker.initial_observation(now);
         let fixture_recorder = match FixtureRecorder::from_env(&session_id, cols, rows) {
             Ok(recorder) => recorder,
@@ -120,6 +121,7 @@ impl TerminalModel {
             scheme: Arc::clone(&scheme),
             events,
             input_tracker: Mutex::new(input_tracker),
+            publish_order: Mutex::default(),
             initial_observation,
             fixture_recorder,
             cwd_reports: options.shell.then(Mutex::default),
@@ -352,10 +354,15 @@ impl TerminalModel {
         *self.pending_program_status.lock().unwrap() = None;
     }
 
+    /// Callers publish after releasing the tracker, so each publication reports the tracker's
+    /// latest observation in order: a delayed caller cannot replace a newer state with its own.
     pub fn publish_input(&self, observation: Option<InputObservation>) {
-        if let Some(observation) = observation {
-            self.host.report_input_state(&self.session_id, observation);
+        if observation.is_none() {
+            return;
         }
+        let _order = self.publish_order.lock().unwrap();
+        let latest = self.input_tracker.lock().unwrap().latest_observation();
+        self.host.report_input_state(&self.session_id, latest);
     }
 
     fn flush_sync_update(&self) -> Option<Instant> {
@@ -480,6 +487,20 @@ impl TerminalModel {
         let mut tracker = self.input_tracker.lock().unwrap();
         let term = self.term.lock_unfair();
         tracker.track_delivery_submit(Instant::now(), &term);
+    }
+    pub fn confirm_delivery(&self, revision: u64) -> Option<InputObservation> {
+        self.input_tracker
+            .lock()
+            .unwrap()
+            .confirm_delivery(revision, Instant::now())
+    }
+    pub fn recheck_delivery(&self) {
+        let observation = {
+            let mut tracker = self.input_tracker.lock().unwrap();
+            let term = self.term.lock_unfair();
+            tracker.recheck_delivery(Instant::now(), &term)
+        };
+        self.publish_input(observation);
     }
     pub fn input_reset_guard(&self) -> u64 {
         self.input_tracker.lock().unwrap().reset_guard()

@@ -82,29 +82,49 @@ struct ReportedState {
 }
 
 pub struct InputTracker {
+    session_id: String,
     state: TrackerState,
     composing: bool,
     reported: Option<ReportedState>,
     public_since: Instant,
     input_revision: u64,
     delivery_revision: Option<u64>,
+    delivery_text: String,
 }
 
 impl InputTracker {
     pub fn new(now: Instant) -> Self {
+        Self::for_session(String::new(), now)
+    }
+
+    pub fn for_session(session_id: String, now: Instant) -> Self {
         Self {
+            session_id,
             state: TrackerState::Idle,
             composing: false,
             reported: None,
             public_since: now,
             input_revision: 0,
             delivery_revision: None,
+            delivery_text: String::new(),
         }
     }
 
     pub fn initial_observation(&mut self, now: Instant) -> InputObservation {
-        self.emit_if_changed(now)
+        self.emit_if_changed(now, "start")
             .expect("a new tracker must report its initial idle state")
+    }
+
+    pub fn latest_observation(&self) -> InputObservation {
+        let reported = self
+            .reported
+            .expect("a tracker reports its initial observation first");
+        InputObservation {
+            state: reported.state,
+            since: self.public_since,
+            composing: reported.composing,
+            composer_visible: reported.composer_visible,
+        }
     }
 
     pub fn observe_input<T>(
@@ -138,7 +158,7 @@ impl InputTracker {
                 InputKind::Navigate | InputKind::Submit => {}
             },
         }
-        let observation = self.emit_if_changed(now);
+        let observation = self.emit_if_changed(now, "person input");
         if matches!(event, InputEvent::Composing { composing: true }) {
             observation.or_else(|| {
                 let current = self.current_reported_state();
@@ -156,8 +176,12 @@ impl InputTracker {
 
     pub fn track_delivery_input<T>(&mut self, text: &str, now: Instant, term: &Term<T>) {
         self.expire_probe(now);
-        if matches!(self.state, TrackerState::Idle) || self.delivery_owned() {
+        if matches!(self.state, TrackerState::Idle) {
             self.delivery_revision = Some(self.input_revision);
+            self.delivery_text = text.to_owned();
+        } else if self.delivery_owned() {
+            self.delivery_revision = Some(self.input_revision);
+            self.delivery_text.push_str(text);
         }
         self.observe_content(text, true, now, term);
     }
@@ -185,6 +209,41 @@ impl InputTracker {
 
     pub fn track_delivery_submit<T>(&mut self, now: Instant, term: &Term<T>) {
         self.submit(now, term, SubmitOrigin::Delivery);
+    }
+
+    /// The router saw its notice submitted, so a row that still repeats it is history. Input
+    /// observed after the router's `revision` keeps the composer as the person left it.
+    pub fn confirm_delivery(&mut self, revision: u64, now: Instant) -> Option<InputObservation> {
+        if self.input_revision != revision {
+            return None;
+        }
+        if self.delivery_owned() {
+            self.state = TrackerState::Idle;
+        }
+        self.delivery_revision = None;
+        self.emit_if_changed(now, "ownership cleared")
+    }
+
+    /// With no router attempt pending, keep the notice only where the input cursor still
+    /// sits on it or on the rows it wrapped onto, or once a person has used the terminal since.
+    pub fn recheck_delivery<T>(
+        &mut self,
+        now: Instant,
+        term: &Term<T>,
+    ) -> Option<InputObservation> {
+        let live = match &self.state {
+            TrackerState::Drafting(composer) | TrackerState::Submitted(composer) => {
+                composer.visible
+                    && self.unsent_notice(term)
+                    && cursor_in_notice(term, composer, &self.delivery_text)
+            }
+            _ => false,
+        };
+        if self.delivery_owned() && self.delivery_revision == Some(self.input_revision) && !live {
+            self.state = TrackerState::Idle;
+            self.delivery_revision = None;
+        }
+        self.emit_if_changed(now, "re-check")
     }
 
     pub fn observe_output<T>(&mut self, now: Instant, term: &Term<T>) -> Option<InputObservation> {
@@ -288,7 +347,7 @@ impl InputTracker {
         ) {
             self.state = TrackerState::Idle;
         }
-        self.emit_if_changed(now)
+        self.emit_if_changed(now, "composer changed")
     }
 
     pub fn reset_guard(&self) -> u64 {
@@ -302,7 +361,7 @@ impl InputTracker {
         self.state = TrackerState::Idle;
         self.composing = false;
         self.input_revision = self.input_revision.wrapping_add(1);
-        self.emit_if_changed(now)
+        self.emit_if_changed(now, "reset")
     }
 
     fn observe_content<T>(&mut self, text: &str, pasted: bool, now: Instant, term: &Term<T>) {
@@ -464,10 +523,30 @@ impl InputTracker {
         }
     }
 
-    fn emit_if_changed(&mut self, now: Instant) -> Option<InputObservation> {
+    fn emit_if_changed(&mut self, now: Instant, released_by: &str) -> Option<InputObservation> {
         let current = self.current_reported_state();
         if self.reported == Some(current) {
             return None;
+        }
+        let was_unsent = self
+            .reported
+            .is_some_and(|previous| previous.state == InputState::Unsent);
+        if current.state == InputState::Unsent && !was_unsent {
+            let reason = if current.composer_visible {
+                "row match"
+            } else {
+                "composer hidden"
+            };
+            log::info!(
+                "input tracker reports unsent session={} reason={reason}",
+                self.session_id
+            );
+        } else if was_unsent && current.state != InputState::Unsent {
+            log::info!(
+                "input tracker stopped reporting unsent session={} reason={released_by} state={:?}",
+                self.session_id,
+                current.state
+            );
         }
         if self
             .reported
@@ -786,6 +865,19 @@ fn cursor_at_empty_composer<T>(term: &Term<T>, composer: &Composer) -> bool {
     let current = row_to_string(term, cursor.line.0);
     (current.starts_with(&composer.prefix) || current.trim_end() == composer.prefix.trim_end())
         && composer_is_empty(term, row, &current, composer)
+}
+
+/// The cursor is on the composer row, or below it on rows that only continue the notice.
+fn cursor_in_notice<T>(term: &Term<T>, composer: &Composer, notice: &str) -> bool {
+    let Ok(cursor) = usize::try_from(term.grid().cursor.point.line.0) else {
+        return false;
+    };
+    cursor >= composer.row
+        && (composer.row + 1..=cursor).all(|row| {
+            let text = row_to_string(term, row as i32);
+            let text = text.trim();
+            !text.is_empty() && notice.contains(text)
+        })
 }
 
 fn composer_frame_border(rows: &[String], row: usize) -> Option<char> {
@@ -1739,6 +1831,150 @@ mod tests {
                 .unwrap();
             assert_eq!(observation.state, InputState::Drafting);
             assert!(!tracker.unsent_notice(&term));
+        }
+    }
+
+    const NOTICE: &str = "[inbox] 1 new messages — run `runner msg read` to view.";
+
+    /// The router types its notice into the composer at row 4 and presses Enter.
+    fn submitted_notice(
+        cols: u16,
+        echo: &str,
+    ) -> (
+        Instant,
+        Term<alacritty_terminal::event::VoidListener>,
+        InputTracker,
+    ) {
+        let start = Instant::now();
+        let mut term = new_term(cols, 8);
+        feed(&mut term, b"\x1b[5;1H> Try a task");
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.track_delivery_input(NOTICE, start, &term);
+        feed(&mut term, echo.as_bytes());
+        tracker.observe_output(start + Duration::from_millis(1), &term);
+        tracker.track_delivery_submit(start + Duration::from_millis(80), &term);
+        (start, term, tracker)
+    }
+
+    #[test]
+    fn a_confirmed_notice_is_not_unsent_where_a_history_row_repeats_it() {
+        let echo = format!("\x1b[5;1H\x1b[K> {NOTICE}");
+        let (start, mut term, mut tracker) = submitted_notice(80, &echo);
+        // The prompt stays in history at the composer row; the cursor is parked below the output.
+        let history =
+            format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K");
+        feed(&mut term, history.as_bytes());
+        tracker.observe_output(start + Duration::from_millis(100), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Unsent);
+
+        let revision = tracker.reset_guard();
+        assert_eq!(
+            tracker
+                .confirm_delivery(revision, start + Duration::from_millis(1600))
+                .unwrap()
+                .state,
+            InputState::Idle
+        );
+        feed(&mut term, history.as_bytes());
+        tracker.observe_output(start + Duration::from_secs(60), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+        assert!(!tracker.unsent_notice(&term));
+    }
+
+    #[test]
+    fn person_input_after_the_routers_revision_survives_confirmation_and_recheck() {
+        for input in [
+            InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            },
+            InputEvent::Paste {
+                text: "draft".into(),
+            },
+        ] {
+            let echo = format!("\x1b[5;1H\x1b[K> {NOTICE}");
+            let (start, mut term, mut tracker) = submitted_notice(80, &echo);
+            feed(
+                &mut term,
+                format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
+                    .as_bytes(),
+            );
+            tracker.observe_output(start + Duration::from_millis(100), &term);
+            let revision = tracker.reset_guard();
+            // A person types before the router's confirmation and before the echo.
+            tracker.observe_input(&input, start + Duration::from_millis(200), &term);
+            assert!(tracker
+                .confirm_delivery(revision, start + Duration::from_millis(1600))
+                .is_none());
+            feed(&mut term, b"\x1b[7;1H\x1b[K> draft");
+            tracker.observe_output(start + Duration::from_millis(1700), &term);
+            tracker.recheck_delivery(start + Duration::from_secs(60), &term);
+            assert_ne!(
+                tracker.current_reported_state().state,
+                InputState::Idle,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recheck_keeps_only_a_notice_under_the_input_cursor() {
+        let echo = format!("\x1b[5;1H\x1b[K> {NOTICE}");
+        let wrapped =
+            "\x1b[5;1H\x1b[K> [inbox] 1 new messages — run\r\n\x1b[K  `runner msg read` to view.";
+        for (case, cols, echo, after, unsent) in [
+            ("in the composer", 80, echo.as_str(), echo.clone(), true),
+            ("wrapped", 40, wrapped, wrapped.to_owned(), true),
+            (
+                "history above the live prompt",
+                80,
+                echo.as_str(),
+                format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[7;1H"),
+                false,
+            ),
+            (
+                "cursor on output below the notice",
+                80,
+                echo.as_str(),
+                format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[6;5H"),
+                false,
+            ),
+            (
+                "cursor parked below the live prompt",
+                80,
+                echo.as_str(),
+                format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H"),
+                false,
+            ),
+            (
+                "composer lost",
+                80,
+                echo.as_str(),
+                "\x1b[2J\x1b[5;1H⏺ Replied\x1b[7;1H> \x1b[8;1H".to_owned(),
+                false,
+            ),
+        ] {
+            let (start, mut term, mut tracker) = submitted_notice(cols, echo);
+            feed(&mut term, after.as_bytes());
+            tracker.observe_output(start + Duration::from_millis(100), &term);
+            assert_eq!(
+                tracker.current_reported_state().state,
+                InputState::Unsent,
+                "{case}"
+            );
+            tracker.recheck_delivery(start + Duration::from_secs(60), &term);
+            assert_eq!(
+                tracker.current_reported_state().state,
+                if unsent {
+                    InputState::Unsent
+                } else {
+                    InputState::Idle
+                },
+                "{case}"
+            );
+            assert_eq!(tracker.unsent_notice(&term), unsent, "{case}");
         }
     }
 

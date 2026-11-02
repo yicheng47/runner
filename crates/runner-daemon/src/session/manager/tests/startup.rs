@@ -779,6 +779,418 @@ fn an_ignored_delivery_enter_is_resubmitted_at_turn_end_instead_of_holding_as_a_
 }
 
 #[test]
+fn a_confirmed_notice_left_on_screen_never_holds_the_idle_member() {
+    // After the turn the input cursor sits below the output, off the live composer. Either the
+    // submitted prompt stays in history at the composer row the tracker followed (#1125), or that
+    // row now holds output and no prompt row is near it.
+    for history_at_composer_row in [true, false] {
+        let fixture = StartupFixture::new();
+        let _output = fixture.launch("claude-code", false, Instant::now());
+        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+        let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+        let terminal = fixture
+            .manager
+            .create_terminal("session", 80, 8, &pool, &events)
+            .unwrap();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal.clone());
+        let emit = |bytes: &[u8]| {
+            fixture
+                .manager
+                .ingest_output_chunk("session", Some("mission"), bytes, events.as_ref());
+        };
+        let now = || *fixture.now.lock().unwrap();
+        let advance = |duration| {
+            *fixture.now.lock().unwrap() += duration;
+            crate::session::clock::at(now(), 0, || fixture.drive());
+        };
+        let inputs = || fixture.fake.inputs.lock().unwrap().clone();
+        emit(b"\x1b[5;1H> ");
+        fixture.drive();
+        fixture.queue("first");
+        let body = match &inputs()[0] {
+            FakeInput::Bytes { bytes, .. } => String::from_utf8(bytes.clone()).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        emit(format!("\x1b[5;1H\x1b[K> {body}").as_bytes());
+        advance(Duration::from_millis(300));
+        assert!(
+            matches!(inputs().last(), Some(FakeInput::Key { key, .. }) if key == "Enter"),
+            "{:?}",
+            inputs()
+        );
+        crate::session::clock::at(now(), 0, || {
+            fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+        });
+        if history_at_composer_row {
+            emit(
+                format!("\x1b[5;1H\x1b[K> {body}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
+                    .as_bytes(),
+            );
+        } else {
+            emit(
+                "\x1b[2J\x1b[1;1H⏺ Read 1 message\x1b[5;1H⏺ Replied to @qa\x1b[7;1H> \x1b[8;1H"
+                    .as_bytes(),
+            );
+        }
+        advance(crate::router::dispatch::CONFIRM_WINDOW);
+        assert_eq!(fixture.fake.inputs.lock().unwrap().len(), 2);
+        crate::session::clock::at(now(), 0, || {
+            fixture.event(
+                Runtime::ClaudeCode,
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Completed,
+                },
+            )
+        });
+        advance(Duration::from_secs(60));
+        crate::session::clock::at(now(), 0, || fixture.queue("second"));
+        advance(Duration::from_millis(300));
+        let readiness =
+            crate::session::clock::at(now(), 0, || fixture.manager.delivery_readiness("session"));
+        let typed = inputs();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = None;
+        let workers = terminal.take_workers();
+        drop(terminal);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(
+            typed.iter().any(|input| matches!(input, FakeInput::Bytes { bytes, .. }
+                if String::from_utf8_lossy(bytes).contains("2 new messages"))),
+            "history_at_composer_row={history_at_composer_row} readiness={readiness:?} hold={:?} inputs={typed:?}",
+            fixture.dispatcher.lock().unwrap().hold_reason("tester")
+        );
+    }
+}
+
+#[test]
+fn an_output_observation_published_after_the_confirmation_cannot_restore_the_hold() {
+    use crate::router::DeliveryReadiness;
+
+    let fixture = StartupFixture::new();
+    let _output = fixture.launch("claude-code", false, Instant::now());
+    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+    let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+    let terminal = fixture
+        .manager
+        .create_terminal("session", 80, 8, &pool, &events)
+        .unwrap();
+    fixture
+        .manager
+        .session_state("session")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = Some(terminal.clone());
+    let emit = |bytes: &[u8]| {
+        fixture
+            .manager
+            .ingest_output_chunk("session", Some("mission"), bytes, events.as_ref());
+    };
+    let now = || *fixture.now.lock().unwrap();
+    let advance = |duration| {
+        *fixture.now.lock().unwrap() += duration;
+        crate::session::clock::at(now(), 0, || fixture.drive());
+    };
+    let readiness =
+        || crate::session::clock::at(now(), 0, || fixture.manager.delivery_readiness("session"));
+    emit(b"\x1b[5;1H> ");
+    fixture.drive();
+    fixture.queue("first");
+    let body = match &fixture.fake.inputs.lock().unwrap()[0] {
+        FakeInput::Bytes { bytes, .. } => String::from_utf8(bytes.clone()).unwrap(),
+        other => panic!("{other:?}"),
+    };
+    emit(format!("\x1b[5;1H\x1b[K> {body}").as_bytes());
+    advance(Duration::from_millis(300));
+    crate::session::clock::at(now(), 0, || {
+        fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+    });
+    // The output thread computes its observation, then the router confirms before it publishes.
+    let seq = fixture
+        .manager
+        .session_state("session")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .output_seq
+        + 1;
+    let late = terminal.feed_output(
+        seq,
+        format!("\x1b[5;1H\x1b[K> {body}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
+            .as_bytes(),
+    );
+    assert_eq!(late.map(|late| late.state), Some(InputState::Unsent));
+    advance(crate::router::dispatch::CONFIRM_WINDOW);
+    terminal.publish_input(late);
+    crate::session::clock::at(now(), 0, || {
+        fixture.event(
+            Runtime::ClaudeCode,
+            AgentEvent::TurnEnded {
+                outcome: TurnOutcome::Completed,
+            },
+        )
+    });
+    let idle = readiness();
+    crate::session::clock::at(now(), 0, || fixture.queue("second"));
+    advance(Duration::from_secs(1));
+    let typed = fixture.fake.inputs.lock().unwrap().clone();
+    fixture
+        .manager
+        .session_state("session")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = None;
+    let workers = terminal.take_workers();
+    drop(terminal);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert_eq!(idle, DeliveryReadiness::Ready { idle: true });
+    assert!(
+        typed
+            .iter()
+            .any(|input| matches!(input, FakeInput::Bytes { bytes, .. }
+            if String::from_utf8_lossy(bytes).contains("2 new messages"))),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn person_input_before_the_confirmation_keeps_its_draft_held() {
+    use crate::router::DeliveryReadiness;
+    use runner_terminal::input_state::InputEvent;
+    use runner_terminal::mappings::InputKind;
+
+    for paste in [false, true] {
+        let fixture = StartupFixture::new();
+        let _output = fixture.launch("claude-code", false, Instant::now());
+        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+        let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+        let terminal = fixture
+            .manager
+            .create_terminal("session", 80, 8, &pool, &events)
+            .unwrap();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal.clone());
+        let emit = |bytes: &[u8]| {
+            fixture
+                .manager
+                .ingest_output_chunk("session", Some("mission"), bytes, events.as_ref());
+        };
+        let now = || *fixture.now.lock().unwrap();
+        let advance = |duration| {
+            *fixture.now.lock().unwrap() += duration;
+            crate::session::clock::at(now(), 0, || fixture.drive());
+        };
+        let notices = || {
+            fixture
+                .fake
+                .inputs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|input| matches!(input, FakeInput::Bytes { bytes, .. } if String::from_utf8_lossy(bytes).contains("new messages")))
+                .count()
+        };
+        emit(b"\x1b[5;1H> ");
+        fixture.drive();
+        fixture.queue("first");
+        let body = match &fixture.fake.inputs.lock().unwrap()[0] {
+            FakeInput::Bytes { bytes, .. } => String::from_utf8(bytes.clone()).unwrap(),
+            other => panic!("{other:?}"),
+        };
+        emit(format!("\x1b[5;1H\x1b[K> {body}").as_bytes());
+        *fixture.now.lock().unwrap() += Duration::from_millis(300);
+        let snapshot = crate::session::clock::at(now(), 0, || {
+            fixture.drive();
+            fixture.manager.delivery_snapshot("session").unwrap()
+        });
+        crate::session::clock::at(now(), 0, || {
+            fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+        });
+        emit(
+            format!("\x1b[5;1H\x1b[K> {body}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
+                .as_bytes(),
+        );
+        // The router has decided to confirm; a person's input lands before its echo.
+        terminal.observe_input(&if paste {
+            InputEvent::Paste {
+                text: "draft".into(),
+            }
+        } else {
+            InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            }
+        });
+        fixture.typed();
+        fixture.manager.confirm_delivery("session", &snapshot);
+        emit(b"\x1b[7;1H\x1b[K> draft");
+        crate::session::clock::at(now(), 0, || {
+            fixture.event(
+                Runtime::ClaudeCode,
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Completed,
+                },
+            )
+        });
+        advance(Duration::from_secs(60));
+        crate::session::clock::at(now(), 0, || fixture.queue("second"));
+        advance(Duration::from_secs(1));
+        advance(Duration::from_secs(150));
+        let readiness =
+            crate::session::clock::at(now(), 0, || fixture.manager.delivery_readiness("session"));
+        let typed = notices();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = None;
+        let workers = terminal.take_workers();
+        drop(terminal);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(
+            !matches!(
+                readiness,
+                DeliveryReadiness::Ready { .. } | DeliveryReadiness::Working
+            ),
+            "paste={paste} readiness={readiness:?}"
+        );
+        assert_eq!(typed, 1, "paste={paste}: no notice is typed over the draft");
+    }
+}
+
+#[test]
+fn an_unsent_notice_without_a_pending_attempt_is_rechecked_when_the_member_is_idle() {
+    use crate::router::DeliveryReadiness;
+
+    // The tracker still owns a submitted notice that no attempt of this dispatcher left behind.
+    for stale in [true, false] {
+        let fixture = StartupFixture::new();
+        let _output = fixture.launch("claude-code", false, Instant::now());
+        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+        let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+        let terminal = fixture
+            .manager
+            .create_terminal("session", 80, 8, &pool, &events)
+            .unwrap();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal.clone());
+        let emit = |bytes: &[u8]| {
+            fixture
+                .manager
+                .ingest_output_chunk("session", Some("mission"), bytes, events.as_ref());
+        };
+        let now = || *fixture.now.lock().unwrap();
+        let advance = |duration| {
+            *fixture.now.lock().unwrap() += duration;
+            crate::session::clock::at(now(), 0, || fixture.drive());
+        };
+        let notices = || {
+            fixture
+                .fake
+                .inputs
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|input| matches!(input, FakeInput::Bytes { bytes, .. } if String::from_utf8_lossy(bytes).contains("new messages")))
+                .count()
+        };
+        let notice = "[inbox] 1 new messages — run `runner msg read` to view.";
+        let echo = format!("\x1b[5;1H\x1b[K> {notice}");
+        emit(b"\x1b[5;1H> Try a task");
+        fixture.drive();
+        terminal.track_delivery_input(notice);
+        emit(echo.as_bytes());
+        terminal.track_delivery_submit();
+        if stale {
+            crate::session::clock::at(now(), 0, || {
+                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+            });
+            emit(
+                format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
+                    .as_bytes(),
+            );
+            crate::session::clock::at(now(), 0, || {
+                fixture.event(
+                    Runtime::ClaudeCode,
+                    AgentEvent::TurnEnded {
+                        outcome: TurnOutcome::Completed,
+                    },
+                )
+            });
+        } else {
+            emit(echo.as_bytes());
+        }
+        let readiness = || {
+            crate::session::clock::at(now(), 0, || fixture.manager.delivery_readiness("session"))
+        };
+        assert_eq!(readiness(), DeliveryReadiness::Unsent, "stale={stale}");
+        assert_eq!(
+            fixture.manager.activity_snapshot()["session"],
+            SessionActivityState::Idle,
+            "stale={stale}"
+        );
+        advance(Duration::from_secs(1));
+        crate::session::clock::at(now(), 0, || fixture.queue("first"));
+        advance(Duration::from_millis(300));
+        advance(Duration::from_secs(150));
+        let (after, typed) = (readiness(), notices());
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = None;
+        let workers = terminal.take_workers();
+        drop(terminal);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        if stale {
+            assert_eq!(typed, 1, "the released member gets its notice");
+        } else {
+            assert_eq!(after, DeliveryReadiness::Unsent);
+            assert_eq!(typed, 0, "a notice under the cursor is never typed over");
+        }
+    }
+}
+
+#[test]
 fn rejected_native_probe_submits_hold_readiness_without_more_output() {
     use crate::router::DeliveryReadiness;
     use runner_terminal::input_state::InputEvent;
