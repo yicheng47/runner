@@ -77,7 +77,8 @@ pub fn run(command: &Command) -> i32 {
 }
 
 fn command_caller_thread_id(runtime: Runtime, event: &str, payload: &Value) -> Option<String> {
-    // Codex emits SessionEnd only for roots and does not support an MCP handler at teardown.
+    // Codex has no MCP handler at teardown, so this is the payload's own claim, not caller
+    // evidence: internal workers also emit SessionEnd, and the parser ignores foreign ends.
     if runtime != Runtime::Codex
         || event != "SessionEnd"
         || payload["hook_event_name"] != "SessionEnd"

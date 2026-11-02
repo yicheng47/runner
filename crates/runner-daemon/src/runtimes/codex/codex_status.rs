@@ -66,6 +66,11 @@ impl CodexParser {
             .as_ref()
             .filter(|id| !id.is_empty())?
             .clone();
+        // Codex internal workers inherit the slot's hooks, so an end for another
+        // session is never evidence that this slot switched conversations.
+        if report.hook_event_name == "SessionEnd" && self.session_id.as_ref() != Some(&session) {
+            return None;
+        }
         let new_session = self.session_id.as_ref().is_some_and(|id| *id != session);
         let start = report.hook_event_name == "SessionStart";
         if self.retired_sessions.contains(&session) && !start {
@@ -584,7 +589,6 @@ mod tests {
                 "PostToolUse",
                 "PreCompact",
                 "PostCompact",
-                "SessionEnd",
             ] {
                 let routes = Arc::new(crate::session::hook_queue::HookRoutes::default());
                 let receiver = routes.register(Runtime::Codex, "runner".into(), "launch".into());
@@ -744,6 +748,75 @@ mod tests {
                     assert_eq!(keys, expected_keys);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn foreign_session_end_keeps_the_current_conversation() {
+        for keyed in [true, false] {
+            let mut watcher = TestWatcher::new("current".into());
+            let current = uuid::Uuid::new_v4().to_string();
+            let foreign = uuid::Uuid::new_v4().to_string();
+            let end = |id: &str| json!({"hook_event_name":"SessionEnd","session_id":id,"reason":"other","cwd":"/tmp/worker","transcript_path":null});
+            let mut starts = Vec::new();
+            if keyed {
+                watcher
+                    .hooks
+                    .admit(json!({"hook_event_name":"SessionStart","session_id":current,"source":"startup"}))
+                    .unwrap();
+                watcher
+                    .hooks
+                    .admit(json!({"hook_event_name":"UserPromptSubmit","session_id":current,"turn_id":"one"}))
+                    .unwrap();
+            }
+            watcher.hooks.admit(end(&foreign)).unwrap();
+            watcher
+                .drain_with_session_starts(|_, _| {}, |id| starts.push(id))
+                .unwrap();
+
+            if keyed {
+                assert_eq!(starts, vec![current.clone()]);
+                assert_eq!(watcher.observation.value.activity, Activity::Working);
+            } else {
+                assert!(starts.is_empty());
+                assert_eq!(watcher.observation.session_id, None);
+                watcher
+                    .hooks
+                    .admit(json!({"hook_event_name":"SessionStart","session_id":current,"source":"resume"}))
+                    .unwrap();
+                watcher
+                    .hooks
+                    .admit(json!({"hook_event_name":"UserPromptSubmit","session_id":current,"turn_id":"one"}))
+                    .unwrap();
+                watcher
+                    .drain_with_session_starts(|_, _| {}, |id| starts.push(id))
+                    .unwrap();
+                assert_eq!(starts, vec![current.clone()]);
+            }
+            assert_eq!(
+                watcher.observation.session_id.as_deref(),
+                Some(current.as_str())
+            );
+            assert!(watcher.observation.retired_sessions.is_empty());
+            assert!(!watcher.observation.ended);
+
+            watcher
+                .hooks
+                .admit(json!({"hook_event_name":"Stop","session_id":current,"turn_id":"one"}))
+                .unwrap();
+            watcher.drain_status(|_, _| {}).unwrap();
+            assert_eq!(watcher.observation.value.activity, Activity::Ready);
+            assert_eq!(
+                watcher.observation.value.outcome,
+                Some(TurnOutcome::Completed)
+            );
+
+            watcher.hooks.admit(end(&current)).unwrap();
+            watcher
+                .drain_with_session_starts(|_, _| {}, |id| starts.push(id))
+                .unwrap();
+            assert!(watcher.observation.ended);
+            assert_eq!(starts, vec![current.clone()]);
         }
     }
 
