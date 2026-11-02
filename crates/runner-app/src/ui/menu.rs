@@ -30,6 +30,7 @@ pub struct MenuItem {
     pub accent: bool,
     pub disabled: bool,
     pub separator_before: bool,
+    header: bool,
 }
 
 impl MenuItem {
@@ -58,6 +59,7 @@ impl MenuItem {
             accent: false,
             disabled: false,
             separator_before: false,
+            header: false,
         }
     }
 
@@ -103,6 +105,14 @@ impl MenuItem {
 
     pub fn separator_before(mut self, separator_before: bool) -> Self {
         self.separator_before = separator_before;
+        self
+    }
+
+    /// A read-only block: the small label above its description, which is set in the monospace
+    /// font. It is never highlighted, activated or counted by keyboard navigation.
+    pub fn header(mut self) -> Self {
+        self.header = true;
+        self.disabled = true;
         self
     }
 }
@@ -454,6 +464,15 @@ impl PopoverMenu {
         cx.notify();
     }
 
+    /// The labels as of the last render, which is when they follow the language.
+    #[cfg(test)]
+    pub(crate) fn labels(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(|item| item.label.to_string())
+            .collect()
+    }
+
     fn restore_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_handle.is_focused(window) {
             if let Some(focus) = self.return_focus.take() {
@@ -515,6 +534,40 @@ impl PopoverMenu {
             .enumerate()
             .map(|(index, mut item)| {
                 item.relocalize();
+                if item.header {
+                    return div().w_full().child(
+                        div()
+                            .w_full()
+                            .px(rems(10. / 16.))
+                            .py(rems(6. / 16.))
+                            .flex()
+                            .flex_col()
+                            .gap(rems(2. / 16.))
+                            .child(
+                                div()
+                                    .when(cfg!(test), |label| {
+                                        label.debug_selector(move || {
+                                            format!("POPOVER_LABEL_{index}")
+                                        })
+                                    })
+                                    .text_size(theme::text_meta())
+                                    .text_color(theme::faint())
+                                    .child(item.label),
+                            )
+                            .children(item.description.map(|value| {
+                                div()
+                                    .when(cfg!(test), |value| {
+                                        value.debug_selector(move || {
+                                            format!("POPOVER_VALUE_{index}")
+                                        })
+                                    })
+                                    .font_family(theme::UI_MONOSPACE_FONT)
+                                    .text_size(rems(12. / 16.))
+                                    .text_color(theme::muted())
+                                    .child(value)
+                            })),
+                    );
+                }
                 let active = self.state.highlighted == index;
                 let click_entity = menu_entity.clone();
                 let hover_entity = menu_entity.clone();
@@ -1467,6 +1520,25 @@ mod tests {
             MenuAction::Activate(2)
         );
         assert!(!state.open);
+    }
+
+    #[test]
+    fn a_header_is_never_highlighted_or_activated() {
+        let items = vec![
+            MenuItem::new("Fingerprint").description("ab cd").header(),
+            MenuItem::new("Revoke").separator_before(true),
+        ];
+        let mut state = MenuState::default();
+        assert_eq!(state.handle_key(MenuKey::Up, &items), MenuAction::None);
+        assert_eq!(state.highlighted, 1);
+        state.handle_key(MenuKey::Up, &items);
+        assert_eq!(state.highlighted, 1);
+        state.handle_key(MenuKey::Down, &items);
+        assert_eq!(state.highlighted, 1);
+        assert_eq!(
+            state.handle_key(MenuKey::Enter, &items),
+            MenuAction::Activate(1)
+        );
     }
 
     #[test]

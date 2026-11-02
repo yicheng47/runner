@@ -673,6 +673,117 @@ fn a_phone_never_matches_an_account_computer_by_name() {
 }
 
 #[test]
+fn a_device_outside_the_account_shows_its_pairing_name_a_kind_icon_and_a_relative_status() {
+    let phone = PairedDevice {
+        kind: DeviceKind::Phone,
+        connected: false,
+        last_seen_at: chrono::Utc::now() - chrono::Duration::days(5),
+        ..device("Jason's iPhone", "9134 2aa5 19ea 589a 15fc")
+    };
+    for (locale, seen) in [
+        (Locale::English, "Offline · seen 5 days ago"),
+        (Locale::SimplifiedChinese, "离线 · 最后在线 5 天前"),
+    ] {
+        with_locale(locale, || {
+            assert_eq!(device_status(&phone, false), seen);
+            assert_eq!(
+                device_status(&phone, true),
+                crate::i18n::text("client.connected_here")
+            );
+        });
+    }
+    assert_eq!(model::device_title(&phone), "Jason's iPhone");
+    assert_eq!(model::device_icon(&phone), "smartphone.svg");
+    for kind in [DeviceKind::Unknown, DeviceKind::Computer] {
+        assert_eq!(
+            model::device_icon(&PairedDevice {
+                kind,
+                ..phone.clone()
+            }),
+            "monitor.svg"
+        );
+    }
+    let unnamed = device("", "630d cd29 66c4 3366 9112");
+    assert_eq!(model::device_title(&unnamed), "630d cd29 66c4 3366 9112");
+}
+
+#[test]
+fn cached_row_menus_follow_a_language_change() {
+    use crate::surfaces::settings::page::SettingsPane;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, _, clients) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "menu-locale");
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.route = crate::AppRoute::Settings;
+            root.settings_page.pane = SettingsPane::Remote;
+            cx.notify();
+        })
+        .unwrap();
+    let now = chrono::Utc::now();
+    store.update(&mut cx, |store, cx| {
+        store.remote_status = Some(RemoteStatus {
+            state: RemoteState::Connected { since: now },
+            account: Some(RemoteAccount {
+                username: "jason".into(),
+                display_name: "Jason".into(),
+            }),
+            host_name: Some("Laptop".into()),
+            ..Default::default()
+        });
+        store.remote_trust = Some(RemoteTrust {
+            pin_set: true,
+            devices: vec![PairedDevice {
+                kind: DeviceKind::Phone,
+                ..device("Jason's iPhone", "9134 2aa5 19ea 589a 15fc")
+            }],
+            ..Default::default()
+        });
+        cx.notify();
+    });
+    clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+    cx.run_until_parked();
+    // The paired computer's menu holds Forget; the phone's holds its fingerprint above Revoke.
+    let render = |cx: &mut TestAppContext, locale| {
+        with_locale(locale, || {
+            window.update(cx, |_, _, cx| cx.notify()).unwrap();
+            cx.run_until_parked();
+            let menus: Vec<_> = window
+                .read_with(cx, |root, _| {
+                    root.remote_client
+                        .ui
+                        .menus
+                        .borrow()
+                        .values()
+                        .cloned()
+                        .collect()
+                })
+                .unwrap();
+            let mut labels: Vec<_> = menus
+                .iter()
+                .map(|menu| menu.read_with(cx, |menu, _| menu.labels()))
+                .collect();
+            labels.sort();
+            (menus, labels)
+        })
+    };
+    let (english_menus, english) = render(&mut cx, Locale::English);
+    assert_eq!(english, [vec!["Fingerprint", "Revoke"], vec!["Forget"]]);
+    let (chinese_menus, chinese) = render(&mut cx, Locale::SimplifiedChinese);
+    assert_eq!(chinese, [vec!["忘记"], vec!["指纹", "撤销"]]);
+    let mut kept: Vec<_> = english_menus.iter().map(|menu| menu.entity_id()).collect();
+    let mut again: Vec<_> = chinese_menus.iter().map(|menu| menu.entity_id()).collect();
+    kept.sort();
+    again.sort();
+    assert_eq!(
+        kept, again,
+        "the language change must reuse the cached menus"
+    );
+}
+
+#[test]
 fn remote_terminal_uses_remote_address_discards_disconnected_input_and_cancels_on_leave() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();

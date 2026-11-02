@@ -2734,6 +2734,100 @@ mod tests {
     }
 
     #[test]
+    fn a_device_row_opens_a_menu_with_its_fingerprint_above_revoke() {
+        use runner_core::remote::{DeviceKind, PairedDevice};
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for locale in [Locale::English, Locale::SimplifiedChinese] {
+            with_locale(locale, || {
+                for kind in [DeviceKind::Phone, DeviceKind::Unknown] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut cx = TestAppContext::single();
+                    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+                    let window = cx.add_window(|window, cx| {
+                        let mut root = NativeRoot::new(
+                            "device-row".into(),
+                            temp.path().join("logs"),
+                            None,
+                            None,
+                            store.clone(),
+                            window,
+                            cx,
+                        );
+                        root.route = crate::AppRoute::Settings;
+                        root.settings_page.pane = SettingsPane::Remote;
+                        root
+                    });
+                    cx.simulate_window_resize(window.into(), size(px(1440.), px(1160.)));
+                    cx.run_until_parked();
+                    let now = chrono::Utc::now();
+                    store.update(&mut cx, |store, cx| {
+                        store.remote_status = Some(RemoteStatus {
+                            state: RemoteState::Connected { since: now },
+                            account: Some(runner_core::remote::RemoteAccount {
+                                username: "jason".into(),
+                                display_name: "Jason".into(),
+                            }),
+                            host_name: Some("Mac Studio".into()),
+                            ..Default::default()
+                        });
+                        store.remote_trust = Some(RemoteTrust {
+                            pin_set: true,
+                            devices: vec![PairedDevice {
+                                fingerprint: "9134 2aa5 19ea 589a 15fc".into(),
+                                name: "Jason's iPhone".into(),
+                                public_key: String::new(),
+                                paired_at: now,
+                                last_seen_at: now - chrono::Duration::days(5),
+                                connected: false,
+                                kind,
+                            }],
+                            ..Default::default()
+                        });
+                        cx.notify();
+                    });
+                    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+                    cx.run_until_parked();
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    assert!(visual.debug_bounds("REMOTE_DEVICE_ROW").is_some());
+                    assert_eq!(
+                        visual.debug_bounds("REMOTE_PHONE_ICON").is_some(),
+                        kind == DeviceKind::Phone
+                    );
+                    let trigger = visual.debug_bounds("POPOVER_TRIGGER").unwrap();
+                    visual.simulate_click(trigger.center(), gpui::Modifiers::default());
+                    cx.run_until_parked();
+                    let panel = visual.debug_bounds("POPOVER_MENU_PANEL").unwrap();
+                    let label = visual.debug_bounds("POPOVER_LABEL_0").unwrap();
+                    let value = visual.debug_bounds("POPOVER_VALUE_0").unwrap();
+                    let revoke = visual.debug_bounds("POPOVER_LABEL_1").unwrap();
+                    assert!(visual.debug_bounds("POPOVER_ITEM_0").is_none());
+                    assert!(visual.debug_bounds("POPOVER_ICON_1").is_some());
+                    assert!(panel.size.width >= px(240.));
+                    assert!(label.top() < value.top() && value.bottom() <= revoke.top());
+                    assert_eq!(label.left(), value.left());
+                    for part in [label, value, revoke] {
+                        assert!(
+                            part.left() >= panel.left()
+                                && part.right() <= panel.right()
+                                && part.bottom() <= panel.bottom(),
+                            "{locale:?} {kind:?}: {part:?} outside {panel:?}"
+                        );
+                    }
+                    // The core knows no such device, so reaching it shows up as the failure toast.
+                    visual.simulate_click(label.center(), gpui::Modifiers::default());
+                    cx.run_until_parked();
+                    assert!(visual.debug_bounds("POPOVER_MENU_PANEL").is_some());
+                    assert!(visual.debug_bounds("GLOBAL_TOAST").is_none());
+                    visual.simulate_click(revoke.center(), gpui::Modifiers::default());
+                    cx.run_until_parked();
+                    assert!(visual.debug_bounds("POPOVER_MENU_PANEL").is_none());
+                    assert!(visual.debug_bounds("GLOBAL_TOAST").is_some());
+                }
+            });
+        }
+    }
+
+    #[test]
     fn warning_requires_a_live_transition_to_a_relevant_stop() {
         let mut s = RemoteStatus::default();
         for reason in [

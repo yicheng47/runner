@@ -23,7 +23,7 @@
 
 未登录时，远程访问直接打开中继登录状态。本版本只有 Runner 中继这一种连接方式；Tailscale 另行规划。
 
-中继页显示连接、 **允许远程访问（Allow remote access）** 、PIN 与已配对电脑。连接方式区域标明中继并链接到账号。 **重置远程访问（Reset remote access）** 生成新身份，解除所有电脑配对，清除 PIN 并退出登录。
+中继页显示连接、 **允许远程访问（Allow remote access）** 、PIN 与已配对的电脑和手机。连接方式区域标明中继并链接到账号。 **重置远程访问（Reset remote access）** 生成新身份，解除所有电脑和手机的配对，清除 PIN 并退出登录。
 
 尚未设置 PIN 且 PIN 输入未锁定时，连接状态标题下方显示 **完成设置：设置 PIN**，并提供 **设置 PIN**；配对部分暂时隐藏 PIN 行。取消 PIN 对话框后，此行仍可使用，暂停或重连时也会显示。保存 PIN 后，此行消失，PIN 行恢复并提供 **更改 PIN**。
 
@@ -108,7 +108,7 @@ runner remote forget <computer-id>
 
 在 **设置 → 远程访问 → 设置 PIN（Settings → Remote access → Set PIN）** 设置 PIN，或在 Runner 智能体会话外的自有交互终端运行 `runner remote pin`。选择六位数字并再次输入，允许前导零。重复数字、升降序列或常见 PIN 会触发警告，说明可能在五次内猜中。 **仍然使用（Use this PIN）** 保留选择； **重新选择（Choose another）** 清空输入。CLI 用中英双语警告，需单独输入 `y` 或 `yes`；只按 Enter 会取消且不改 PIN。CLI 隐藏两次输入；Runner 不会再次显示 PIN。 **更改 PIN（Change PIN）** 替换 PIN，不解除现有配对。更改 PIN、关闭允许远程访问、退出或重置会使正在进行的配对失效，包括等待保存信任的确认。
 
-Runner 不把 PIN 发给服务。配对需要 PIN；仅账号凭据不能取得终端访问。PIN 交换阻止离线猜测，下述锁定限制在线猜测。另一份 Runner 输入一次 PIN 完成配对，后续使用自己的密钥。电脑区域列出账号所有电脑，本机在首位。各行显示在线、离线及最后在线时间，或已连接本机。访问列区分 **可以打开这台电脑（Can open this computer）** 、 **↗ 本机可访问（This computer can open it）** 、 **⇄ 双向访问（Both ways）** 和 **未配对（Not paired）** 。配对仅授予单向访问，双向需要从两台电脑分别配对。入站标签将配对设备名称与账号电脑名匹配，不会授予信任。没有匹配电脑、多个电脑共享配对标签或同名电脑存在多个密钥的设备，仍以独立行列在电脑下方。每个设备行显示配对指纹和名称，并有独立 **撤销（Revoke）** 。有歧义的标签不将入站访问归给任何电脑。行菜单 **⋯ → 撤销** 或 `runner remote revoke <fingerprint>` 移除入站信任。终端可用 `runner remote devices` 或 `runner remote devices --json` 查看。CLI 还报告 `Connected`，表示该设备当前有认证通道；JSON 使用 `connected`。撤销会关闭该设备全部通道。
+Runner 不把 PIN 发给服务。配对需要 PIN；仅账号凭据不能取得终端访问。PIN 交换阻止离线猜测，下述锁定限制在线猜测。另一份 Runner 或手机输入一次 PIN 完成配对，后续使用自己的密钥。 **电脑和手机** 区域列出账号所有电脑，本机在首位；已与本机配对的手机排在电脑之后。各行显示在线、离线及最后在线时间，或已连接本机。访问列区分 **可以打开这台电脑（Can open this computer）** 、 **↗ 本机可访问（This computer can open it）** 、 **⇄ 双向访问（Both ways）** 和 **未配对（Not paired）** 。配对仅授予单向访问，双向需要从两台电脑分别配对。入站标签将配对设备名称与账号电脑名匹配，不会授予信任。已配对的手机，以及没有匹配电脑、多个电脑共享配对标签或同名电脑存在多个密钥的设备，仍以独立行列在电脑下方。手机按其客户端每次连接时报告的类型识别，不会按名称匹配电脑。在 Runner 记录该类型之前配对、或此后尚未连接的设备显示电脑图标，直到它连接。这类行先显示设备配对时使用的名称，其 **⋯** 菜单在 **撤销（Revoke）** 上方显示指纹。有歧义的标签不将入站访问归给任何电脑。行菜单 **⋯ → 撤销** 或 `runner remote revoke <fingerprint>` 移除入站信任。终端可用 `runner remote devices` 或 `runner remote devices --json` 查看。CLI 还报告 `Connected`，表示该设备当前有认证通道；JSON 使用 `connected`。撤销会关闭该设备全部通道。
 
 连续五次配对确认失败会锁定 PIN 输入。错误 PIN 和损坏的加密确认都计数，格式错误的帧不计。Runner 在设置中显示警告和 **解锁（Unlock）** ；解锁前新设备无法配对。已配对设备继续工作。更改 PIN 不会解锁，锁定在重启后仍保留。
 
