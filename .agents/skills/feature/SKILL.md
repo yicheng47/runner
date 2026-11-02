@@ -19,12 +19,12 @@ File a new feature as an issue.
 1. Ask the user to describe the feature (motivation, scope, key decisions) unless they already have.
 2. **Pick a priority** (see Priority below). If the user didn't state one, propose one and confirm before filing. Don't file unlabeled.
 3. **Pick a readiness label** (see Readiness below) and propose it together with the priority. A feature with new UI or open questions is `needs-design`.
-4. Set a milestone only when the user names one.
-5. Create the issue with labels `feature`, the chosen `P0`/`P1`/`P2`/`P3` and the readiness label, if any:
+4. **Schedule it** (see Scheduling below): set a milestone only when the user names one; otherwise add `backlog`.
+5. Create the issue with labels `feature`, the chosen `P0`/`P1`/`P2`/`P3`, the readiness label, if any, and `backlog` when it has no milestone:
    - Title: `feat: <short description>`
    - Body: Motivation, Scope, and Open questions when there are any. The issue holds the design discussion until development starts.
-   - Command shape: `gh issue create --label feature --label P1 [--label needs-design] --title "…" --body "…" [--milestone 0.16]`
-6. Report the issue URL, priority, readiness and milestone. Do not create a spec or edit any doc.
+   - Command shape: `gh issue create --label feature --label P1 [--label needs-design] --title "…" --body "…" (--milestone 0.16 | --label backlog)`
+6. Report the issue URL, priority, readiness and milestone or `backlog`. Do not create a spec or edit any doc.
 
 #### `list`
 Show all features, sorted by priority.
@@ -33,7 +33,7 @@ Show all features, sorted by priority.
    `gh issue list --label feature --state open --limit 50 --json number,title,labels,milestone,createdAt,assignees`
 2. List the spec files in `docs/features/` (excluding README); most features have none until development starts.
 3. Sort the rows by priority (`P0` first, then `P1`, `P2`, `P3`, then unlabeled-by-priority last). Within a priority bucket, sort by issue number ascending.
-4. Present a combined view: **Priority**, **Readiness** (`agent-ready`, `needs-design` or —), feature name, **#** (issue), **Milestone**, spec file (if one exists), **Created**. Issues without a P-label show `—` in priority and a callout asking the user to triage them.
+4. Present a combined view: **Priority**, **Readiness** (`agent-ready`, `needs-design` or —), feature name, **#** (issue), **Milestone** (`backlog` for a backlog issue), spec file (if one exists), **Created**. Issues without a P-label show `—` in priority, and issues with neither a milestone nor `backlog` show `—` in Milestone; add a callout asking the user to triage either.
 5. If the user asks for closed/shipped features too, repeat with `--state all` and add a **State** column.
 
 #### `spec <issue-number>`
@@ -65,12 +65,23 @@ Set or change an existing feature's readiness.
    `gh issue edit <number> --remove-label agent-ready --remove-label needs-design [--add-label <readiness>]`
 2. Confirm the new readiness.
 
+#### `schedule <issue-number> <milestone|backlog>`
+Put an existing feature on a milestone or in the backlog.
+
+1. For a milestone: `gh issue edit <number> --milestone <milestone> --remove-label backlog`. For the backlog: `gh issue edit <number> --remove-milestone --add-label backlog`.
+2. Confirm the new milestone or `backlog`. `docs/roadmap.md` mirrors the split at its next refresh.
+
 ## Labels
 
 - `feature` — all feature issues use this label.
 - `bug` — for bug reports (not managed by this skill).
 - `P0` / `P1` / `P2` / `P3` — priority, exactly one per issue.
 - `agent-ready` / `needs-design` — readiness, at most one per issue (see Readiness below).
+- `backlog` — no release commitment; see Scheduling below.
+
+## Scheduling
+
+Every open issue has exactly one of a milestone or the `backlog` label. A milestone is a release commitment; `backlog` means the issue is triaged but has none. Setting a milestone removes `backlog`, and taking an issue off its milestone without closing it adds `backlog`. Priority and scheduling are separate: a P1 can sit in the backlog when its development is deliberately later.
 
 ## Readiness
 
