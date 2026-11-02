@@ -125,6 +125,7 @@ pub fn boot(
         ops::session::close_exited_shells(&mut conn).context("close exited shells")?;
     }
     core.usage.set_enabled(model_runtimes.clone());
+    core.usage.restore(&pool);
     if background {
         runtime_status::start_background_discovery(
             event_channel,

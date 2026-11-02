@@ -1,6 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use runner_core::protocol::terminal::TerminalPalette;
+use runner_core::protocol::usage::AgentUsage;
+use runner_core::runtime::Runtime;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -11,12 +13,19 @@ pub(super) const SEED_MARKER_KEY: &str = "default_crew_seeded";
 const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
 const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
 const TERMINAL_PALETTE_KEY: &str = "terminal_palette";
+const USAGE_LKG_KEY: &str = "usage_lkg";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginShellEnvLkg {
     pub env: crate::shell_path::LoginShellEnv,
     pub shell: String,
     pub captured_at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageLkg {
+    pub runtimes: HashMap<Runtime, AgentUsage>,
+    pub claude_accounts: BTreeMap<String, AgentUsage>,
 }
 
 pub(super) fn ensure_app_state_table(conn: &Connection) -> Result<()> {
@@ -62,6 +71,18 @@ pub fn set_login_shell_env_lkg(pool: &DbPool, snapshot: &LoginShellEnvLkg) -> Re
         LOGIN_SHELL_ENV_LKG_KEY,
         &serde_json::to_string(snapshot)?,
     )
+}
+
+pub fn usage_lkg(pool: &DbPool) -> Result<Option<UsageLkg>> {
+    let conn = pool.get()?;
+    app_state_get(&conn, USAGE_LKG_KEY)?
+        .map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+
+pub fn set_usage_lkg(pool: &DbPool, usage: &UsageLkg) -> Result<()> {
+    let conn = pool.get()?;
+    app_state_set(&conn, USAGE_LKG_KEY, &serde_json::to_string(usage)?)
 }
 
 pub fn terminal_palette(pool: &DbPool) -> Result<Option<TerminalPalette>> {
