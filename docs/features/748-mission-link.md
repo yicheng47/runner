@@ -122,6 +122,7 @@ The sidebar is settled: the linked group, option E (Jason, 2026-11-02).
 
 - **Claude Code's inbox socket** as a second, non-typing delivery path for Claude Code chats. It can follow as an opt-in if typed reports prove intrusive.
 - **States read from the pull request**, such as Ready for review, Landing and CI status from `gh pr view` on the mission's branch. They would sharpen Settled later.
+- **A missions view in the chat's right side panel.** The sidebar group and the reports cover it. If one is wanted later, it fits as a plugin side-panel view ([#1072](https://github.com/yicheng47/runner/issues/1072)).
 - **Linking an existing mission to a chat, or moving the link**, such as a `mission link` command.
 - **#916's verbs**, including `runner done` and `wait`.
 - **Codex outside Runner** through its app server.
@@ -131,7 +132,7 @@ The sidebar is settled: the linked group, option E (Jason, 2026-11-02).
 
 **2026-10-27, pull-only.** The chat heard about its missions only when the person asked, and a badge and strip on the chat showed their state. Jason replaced it on 2026-11-02 because the frontman could not react when a crew finished or asked a question. Its text is at `e42ec525`.
 
-**2026-10-20, side panel.** Options A–C in the design file showed the chat's missions in its right side panel, with a Catch up chat button that typed one line on request. The sidebar group replaces the panel; the frames stay in the file above the 2026-11-02 section.
+**2026-10-20, side panel.** Options A–C showed the chat's missions in its right side panel, with a Catch up chat button that typed one line on request. On 2026-11-02 Jason dropped a missions view in the right side panel altogether: the sidebar group shows each mission's state and the reports bring changes into the chat. The frames were removed from the design file and remain in the design repo's history.
 
 **2026-09-29, watching chat.** The mission's dispatcher typed `[Runner] Mission …` notices into the starting chat with the readiness holds, confirmation and redelivery of arch §8.5. Jason rejected it on 2026-10-17 because the chat is his conversation. This design revives its delivery with stricter holds: idle only, no draft cap, a report only on three states and none for handoffs. Its findings on why the agent cannot watch still hold: Codex has no idle-wake facility, a Stop-hook or `write_stdin` loop keeps the chat's turn open for the whole mission, and the Codex app server cannot reach a chat that Runner hosts. The full text is `docs/features/748-mission-watch-delivery.md` at `9e5ba05e`.
 
