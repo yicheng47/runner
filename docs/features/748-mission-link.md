@@ -90,6 +90,18 @@ Two alternatives were drawn beside it and not chosen. **D** indented the mission
 
 The group's head is the sidebar row of the tab that holds the starting chat, since a sidebar row is a tab. A tab whose chats started missions in several groups shows one group with all of them. Each mission row keeps its own trailing status: Working, Needs you, Failed, or the unread dot once Settled. Archiving the chat dissolves the group and its missions return to flat rows in their project. A mission without a starter is always a flat row.
 
+### Active view
+
+The Active view groups work the same way, option H in the design file's section "748 — Active view with linked groups (2026-11-02)". Jason chose it on 2026-11-02:
+
+- Chats and missions share one **Agents** heading in creation order, replacing the separate Chats and Missions headings. A chat and the missions it started form the same linked group as in Projects. Terminals keep their own heading.
+- Rows still never move: status changes, unread output, renames and restarts keep their place, as #887 decided. Collapsing the Agents or Terminals heading is remembered as before.
+- With [#990](https://github.com/yicheng47/runner/issues/990)'s filters, a group shows while its chat or any of its missions matches, and a mission that matches nothing hides inside its group. This replaces #990's statement that the Chats → Missions → Terminals grouping is unchanged.
+
+Two alternatives were drawn beside it and not chosen. **G** kept the three headings with groups under Chats, which put missions under two headings. **I** grouped rows by state (Needs you, Working, Settled), which moved a whole group every time one of its missions changed state.
+
+### Mission back-link
+
 On the mission side, the header carries a "from <chat>" caption that opens the chat, and reads "from <chat> (archived)" when the chat is archived. The design file draws it, together with a chat receiving two reports.
 
 Desktop notifications keep their current triggers, settings and targets. Clicking one still opens the mission.
@@ -103,13 +115,13 @@ Desktop notifications keep their current triggers, settings and targets. Clickin
 
 ### Docs
 
-- **Guide:** [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports and `--no-report`. [Missions](../guide/concepts/missions.md) describes the starter link and reports. [Chats and windows](../guide/guides/chats-and-windows.md) describes the linked group in the sidebar. `make guide-cli` regenerates the [CLI reference](../guide/reference/cli.md).
+- **Guide:** [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports and `--no-report`. [Missions](../guide/concepts/missions.md) describes the starter link and reports. [Chats and windows](../guide/guides/chats-and-windows.md) describes the linked group in Projects and the Agents and Terminals headings in Active. `make guide-cli` regenerates the [CLI reference](../guide/reference/cli.md).
 - **Architecture:** `docs/arch/arch.md` §8.5 adds report delivery beside the inbox dispatcher, §9.4 documents `RUNNER_SESSION_ID` and the link, §9.6 replaces the skill's start-and-watch contract, and §10.1 adds the two columns.
 - **Regression:** [MIS-WATCH-01 and MIS-WATCH-02](../tests/regression/missions.md) retire, replaced by rows for the link, a report reaching an idle chat, a report held by a draft, and the agent that does not watch.
 
 ## Decisions to confirm
 
-The sidebar is settled: the linked group, option E (Jason, 2026-11-02).
+The sidebar is settled: the linked group, option E, in Projects and the Agents list, option H, in Active (Jason, 2026-11-02).
 
 1. **Reports fire on Needs you, Failed and Settled** (recommended), not on Working or member handoffs.
 2. **Reports are on by default** for a mission a chat starts, with `--no-report` to turn them off (recommended). The alternative is opt-in with `--report`.
@@ -140,7 +152,7 @@ The sidebar is settled: the linked group, option E (Jason, 2026-11-02).
 
 1. **Backend link.** `RUNNER_SESSION_ID` for every agent session, with a shim for direct chats if a runtime drops it; the migration with `started_by_session_id` and `report_to_starter`; validation at start; `started_by` on the local and companion protocols; the `--started-here` query. Tests: a chat is recorded, while a terminal pane, a slot and a missing variable record nothing; resume and `add-role` from another chat leave it unchanged; deleting the chat clears it; an old database migrates.
 2. **Mission state and reports.** The state derivation in the daemon with the settle window, the per-chat pending report, and delivery through readiness and the attempt. Tests: the state precedence; one report per transition and replacement while pending; idle-only for Claude Code; a draft holds without a cap; an unsubmitted line pauses; a stopped chat receives on resume; an archived chat receives nothing; `--no-report`.
-3. **App.** The linked group in the sidebar and the mission's back-link, reading the daemon's state. Tests: grouping, collapse summary precedence, archive dissolving the group, a mission without a starter, and a chat with two missions.
+3. **App.** The linked group in Projects, the Agents list in Active and the mission's back-link, reading the daemon's state. Tests: grouping in both views, collapse summary precedence, archive dissolving the group, a mission without a starter, a chat with two missions, creation order in Active, and the #990 filters on a group.
 4. **CLI, skill and docs.** `--no-report`, the JSON fields, the `STARTED BY` line, `--started-here`, the skill and help rules, the guide, arch and regression rows.
 5. **Live checks**, under the standing development-app authorization in `AGENTS.md`; see Verification.
 
@@ -164,7 +176,7 @@ Run in the development app with an inexpensive model, low effort, tiny prompts a
 - [ ] With unsent text in the chat's input, a report waits past ten minutes and arrives only after the text is sent or cleared. A report never arrives during a turn, in Claude Code as well as Codex.
 - [ ] Killing one member produces one `… failed` report while the other member keeps running.
 - [ ] Two missions from one chat both report, one at a time. A mission started with `--no-report` never reports. A mission started from the app has no starter and stays a flat row.
-- [ ] The sidebar shows the chat and its missions as a linked group, with each mission's status, and the collapsed group shows the count and the most urgent state; archiving the chat leaves its missions running as flat rows with an "(archived)" caption, and archiving a mission removes it from the group.
+- [ ] The sidebar shows the chat and its missions as a linked group, with each mission's status, and the collapsed group shows the count and the most urgent state; archiving the chat leaves its missions running as flat rows with an "(archived)" caption, and archiving a mission removes it from the group. In Active, the same group appears under Agents beside chats and missions without a starter, and it keeps its place when a mission's state changes.
 - [ ] Claude Code in a Runner chat behaves like Codex and arms no Monitor.
 
 Windows and Linux use the same daemon and surface and stay unverified until checked.
