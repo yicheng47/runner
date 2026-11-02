@@ -54,6 +54,8 @@ runner mission stop <mission-id>
 runner mission archive <mission-id>
 ```
 
+`mission answer` 接受 `mission show` 列出的待回答问题 ID，也接受消息流中该成员 `ask_human` 事件的 ID。其他 ID（包括已回答问题的 ID）会被拒绝，并列出待回答问题的 ID，因此回答不会被静默丢弃。
+
 在任务内，成员可以使用 `runner msg post --to reviewer "Ready for review"` 和 `runner msg read`，无需任务 ID。任务外的写操作需要 `--mission`。外部调用者未使用 `--as` 时以操作者身份发言；不要用 `--as` 冒充其他成员。
 
 Runner 向每个成员推送收件箱通知。等待队友且没有独立工作时，请结束当前轮次。不要启动消息流监控、轮询或睡眠循环来等待消息。团队协作通过后续轮次迭代。外部监控说明不适用于接收自己任务中的消息。有限诊断检查、独立工作，以及为已授权 PR 等待 CI 仍可进行。

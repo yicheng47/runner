@@ -133,6 +133,9 @@ impl ModelField {
         }
         self.state
             .toggle(&self.suggestions, self.selected_index(cx));
+        if self.state.is_open() {
+            self.menu_scroll.scroll_to_item(self.state.highlighted());
+        }
         cx.notify();
     }
 
@@ -168,6 +171,9 @@ impl ModelField {
         {
             self.choose(index, cx);
         } else {
+            if self.state.is_open() {
+                self.menu_scroll.scroll_to_item(self.state.highlighted());
+            }
             cx.notify();
         }
     }
@@ -317,7 +323,7 @@ fn model_options(options: &[RuntimeCatalogOption]) -> Vec<SelectOption> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{px, TestAppContext, VisualTestContext};
+    use gpui::{px, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext};
 
     struct FieldHost {
         field: Entity<ModelField>,
@@ -438,5 +444,74 @@ mod tests {
             row.right() <= track.left() + px(0.5) && check.right() <= track.left(),
             "six models scroll, so the rows end at the scrollbar's lane: {row:?} {check:?} {track:?}"
         );
+    }
+
+    fn press_key(visual: &mut VisualTestContext, key: &str) {
+        visual.simulate_keystrokes(key);
+        visual.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+        });
+        visual.run_until_parked();
+    }
+
+    fn assert_row_in_view(visual: &mut VisualTestContext, index: usize, context: &str) {
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("STYLED_SELECT_OPTION_{index}").into_boxed_str(),
+            ))
+            .unwrap();
+        let viewport = visual.debug_bounds("STYLED_SELECT_SCROLL").unwrap();
+        assert!(
+            row.top() >= viewport.top() - px(1.) && row.bottom() <= viewport.bottom() + px(1.),
+            "{context}: row {index} {row:?} outside {viewport:?}"
+        );
+    }
+
+    /// WS-CREATE-02: the keyboard highlight stays in view while it moves,
+    /// and a reopened chooser scrolls to an offscreen selection.
+    #[test]
+    fn keyboard_navigation_keeps_the_highlighted_model_in_view() {
+        let mut cx = TestAppContext::single();
+        let window = cx.add_window(|window, cx| {
+            window.resize(gpui::size(px(1200.), px(900.)));
+            let input = cx.new(|cx| TextField::new(cx.focus_handle(), "", "", true));
+            input.read(cx).focus_handle().focus(window, cx);
+            let options: Vec<_> = (0..20)
+                .map(|index| {
+                    option(
+                        &format!("model-{index}"),
+                        &format!("Model {index}"),
+                        "A model",
+                    )
+                })
+                .collect();
+            let field = cx.new(|cx| ModelField::new(input, &options, cx));
+            FieldHost { field }
+        });
+        cx.run_until_parked();
+        let field = window.read_with(&cx, |host, _| host.field.clone()).unwrap();
+        let input = field.read_with(&cx, |field, _| field.input());
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+        press_key(&mut visual, "enter");
+        assert!(field.read_with(&visual, |field, _| field.state.is_open()));
+        for step in 1..20 {
+            press_key(&mut visual, "down");
+            let highlighted = field.read_with(&visual, |field, _| field.state.highlighted());
+            assert_eq!(highlighted, step);
+            assert_row_in_view(&mut visual, highlighted, "down");
+        }
+        assert!(field.read_with(&visual, |field, _| field.menu_scroll.offset().y < px(0.)));
+
+        press_key(&mut visual, "enter");
+        assert_eq!(
+            input.read_with(&visual, |input, _| input.text().to_owned()),
+            "model-19"
+        );
+        assert!(!field.read_with(&visual, |field, _| field.state.is_open()));
+
+        press_key(&mut visual, "enter");
+        assert!(field.read_with(&visual, |field, _| field.state.is_open()));
+        assert_row_in_view(&mut visual, 19, "reopen");
     }
 }
