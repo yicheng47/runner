@@ -337,6 +337,7 @@ impl Sidebar {
         attention: AttentionState,
         visible_projects: Vec<String>,
         tab_index_by_node: &HashMap<String, u8>,
+        launcher_row: Option<&ProjectScope>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let collapsed = self
@@ -344,7 +345,10 @@ impl Sidebar {
             .sidebar_collapsed_projects
             .contains(&project.id);
         let live = nested.iter().any(SidebarRow::is_live);
-        let selected = self.active_project_id.as_deref() == Some(project.id.as_str());
+        let launcher_here =
+            matches!(launcher_row, Some(ProjectScope::Project(id)) if *id == project.id);
+        let selected = launcher_row.is_none()
+            && self.active_project_id.as_deref() == Some(project.id.as_str());
         let renaming = self
             .rename
             .as_ref()
@@ -557,9 +561,12 @@ impl Sidebar {
             .child(header_wrap)
             .children((!collapsed).then(|| {
                 project_children()
+                    .children(launcher_here.then(|| self.launcher_row(cx)))
                     .children(if nested.is_empty() {
                         if self.dragged_id.is_some() {
                             vec![self.render_empty_project_drop_area(node.id.clone(), cx)]
+                        } else if launcher_here {
+                            Vec::new()
                         } else {
                             vec![empty_sidebar_label(crate::i18n::text("ui.empty"))]
                         }

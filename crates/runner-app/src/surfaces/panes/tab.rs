@@ -216,6 +216,23 @@ impl NativeRoot {
             });
 
         let Some(layout) = self.front_page_layout().cloned() else {
+            let launcher = self.render_launcher(None, true, window, cx);
+            let close = self.launcher_page_closable(cx).then(|| {
+                let root = cx.entity();
+                div()
+                    .debug_selector(|| "LAUNCHER_PAGE_CLOSE".into())
+                    .absolute()
+                    .top(rems(8. / 16.))
+                    .right(rems(8. / 16.))
+                    .child(
+                        IconButton::new("launcher-page-close", "close.svg")
+                            .size(IconButtonSize::Sm)
+                            .tooltip(crate::i18n::text("keymap.close-pane.title"))
+                            .on_press(move |window, cx| {
+                                root.update(cx, |root, cx| root.close_launcher_page(window, cx));
+                            }),
+                    )
+            });
             return div()
                 .debug_selector(|| "LAUNCHER_PAGE".into())
                 .track_focus(&self.chat_focus)
@@ -235,7 +252,16 @@ impl NativeRoot {
                 )
                 .children(error_banner)
                 .children(warning_banner)
-                .child(self.render_launcher(None, true, window, cx))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(launcher)
+                        .children(close),
+                )
                 .into_any_element();
         };
         if self.remote_client.is_local()

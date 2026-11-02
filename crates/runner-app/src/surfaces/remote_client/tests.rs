@@ -1091,7 +1091,7 @@ fn shared_remote_sidebar_controls_do_not_open_local_creation_or_change_local_sta
         .unwrap();
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
     for selector in [
-        "SIDEBAR_WORKSPACE_NEW_CHAT",
+        "SIDEBAR_WORKSPACE_NEW_TAB",
         "SIDEBAR_WORKSPACE:workspace-role",
         "SIDEBAR_WORKSPACE:workspace-crew",
     ] {
@@ -5159,7 +5159,7 @@ fn remote_libraries_require_catalog_and_gate_launch_actions_separately() {
                 .is_some(),
             catalog
         );
-        assert!(visual.debug_bounds("SIDEBAR_WORKSPACE_NEW_CHAT").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_WORKSPACE_NEW_TAB").is_none());
         fake.queue_result("catalog", Ok(library_catalog(2)));
         window
             .update(&mut visual, |root, window, cx| root.open_roles(window, cx))

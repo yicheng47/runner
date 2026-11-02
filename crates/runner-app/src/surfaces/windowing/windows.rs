@@ -14,6 +14,10 @@ fn opening_window_minimum(settings: &AppSettings) -> gpui::Size<gpui::Pixels> {
 }
 
 pub(crate) fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    if this.launcher_page_visible() {
+        this.close_launcher_page(window, cx);
+        return;
+    }
     if this.remote_client.is_active() {
         this.close_remote_front_page(window, cx);
         return;

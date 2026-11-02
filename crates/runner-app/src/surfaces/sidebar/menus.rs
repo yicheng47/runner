@@ -284,6 +284,7 @@ impl Sidebar {
                 if let Some(shell) = self.shell.upgrade() {
                     window.defer(cx, move |window, cx| {
                         shell.update(cx, |shell, shell_cx| {
+                            shell.reveal_started_scope(&scope, shell_cx);
                             shell.open_sidebar_chat_modal(scope, window, shell_cx)
                         });
                     });

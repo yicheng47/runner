@@ -205,6 +205,28 @@ impl ChatLauncher {
         }
     }
 
+    /// A host's field has no choices until its catalog loads, so the project
+    /// asked for still stands while it does.
+    fn page_scope(&self) -> ProjectScope {
+        if self.loading {
+            ProjectScope::or_root(self.initial_project.clone())
+        } else {
+            self.project.scope()
+        }
+    }
+
+    /// Redraws the sidebar's row. Deferred because `open_launcher_page` chooses
+    /// a project with the root already borrowed.
+    fn project_scope_changed(&self, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        cx.defer(move |cx| {
+            if let Some(root) = root.upgrade() {
+                let sidebar = root.read(cx).front_page_sidebar();
+                sidebar.update(cx, |_, cx| cx.notify());
+            }
+        });
+    }
+
     /// The field that takes the launcher's keys: the goal on the goal step,
     /// else the search.
     fn field(&self) -> &Entity<TextField> {
@@ -465,6 +487,7 @@ impl ChatLauncher {
                                     this.changed_directory = true;
                                     let path = this.cwd.read(cx).text().to_owned();
                                     this.project.picked(&path, cx);
+                                    this.project_scope_changed(cx);
                                     cx.notify();
                                 },
                             ));
@@ -473,6 +496,7 @@ impl ChatLauncher {
                     }
                     Err(error) => this.error = Some(error.to_string()),
                 }
+                this.project_scope_changed(cx);
                 cx.notify();
             });
         })
@@ -718,6 +742,7 @@ impl ChatLauncher {
             self.cwd.update(cx, |input, cx| input.reset(path, cx));
         }
         self.changed_directory = false;
+        self.project_scope_changed(cx);
         cx.notify();
     }
 
@@ -748,6 +773,7 @@ impl ChatLauncher {
                             this.project.picked(&path, cx);
                             this.cwd.update(cx, |input, cx| input.reset(path, cx));
                             this.changed_directory = true;
+                            this.project_scope_changed(cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -1571,6 +1597,42 @@ impl NativeRoot {
         cx.notify();
     }
 
+    /// The project the launcher page starts in, once the page has a launcher.
+    pub(crate) fn launcher_page_scope(&self, cx: &App) -> Option<ProjectScope> {
+        Some(self.page_launcher(cx)?.read(cx).page_scope())
+    }
+
+    fn page_launcher(&self, cx: &App) -> Option<&Entity<ChatLauncher>> {
+        let target = self.front_page_client(cx).target;
+        self.launchers
+            .get(&format!("{target:?}:{:?}", None::<PaneKey>))
+    }
+
+    /// With no tab or page behind it the launcher is the window's empty state,
+    /// and there is nothing to close it back to.
+    pub(crate) fn launcher_page_closable(&self, cx: &App) -> bool {
+        self.launcher_page_visible()
+            && self
+                .page_launcher(cx)
+                .is_some_and(|launcher| match &launcher.read(cx).origin {
+                    Some(mission::LauncherOrigin::Local {
+                        route: AppRoute::Chat,
+                        ..
+                    }) => !self.tabs.tabs().is_empty(),
+                    Some(mission::LauncherOrigin::Remote(None)) | None => false,
+                    Some(_) => true,
+                })
+    }
+
+    pub(crate) fn close_launcher_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.launcher_page_closable(cx) {
+            return;
+        }
+        if let Some(launcher) = self.page_launcher(cx).cloned() {
+            launcher.update(cx, |launcher, cx| launcher.leave_page(window, cx));
+        }
+    }
+
     pub(crate) fn launcher_page_visible(&self) -> bool {
         if self.remote_client.is_active() {
             matches!(
@@ -1945,7 +2007,7 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surfaces::start_chat::tests::{modal_harness, project_fixture};
+    use crate::surfaces::start_chat::tests::{modal_harness, project_fixture, ModalHarness};
     use runner_core::protocol::model::Runtime;
 
     fn agent() -> RuntimeChoice {
@@ -2049,6 +2111,174 @@ mod tests {
             assert_eq!(launcher.read(cx).cwd.read(cx).text(), projects[0].cwd);
             assert!(root.tabs.tabs().is_empty());
         });
+    }
+
+    #[test]
+    fn launcher_page_row_follows_its_project_and_plus_reveals_it() {
+        fn row_scope(harness: &ModalHarness) -> Option<ProjectScope> {
+            harness.read_root(|root, cx| root.front_page_sidebar().read(cx).launcher_row_scope(cx))
+        }
+        fn assert_row_under(harness: &mut ModalHarness, project: &str) {
+            let row = harness
+                .bounds("SIDEBAR_LAUNCHER_TAB")
+                .expect("launcher row");
+            let header = harness
+                .bounds(&format!("SIDEBAR_PROJECT:{project}"))
+                .expect("project header");
+            assert!(row.origin.y > header.origin.y);
+            assert!(row.origin.y < header.origin.y + px(48.));
+        }
+        fn update_settings(
+            harness: &mut ModalHarness,
+            update: impl FnOnce(&mut AppSettings) -> bool + 'static,
+        ) {
+            harness.act(move |root, _, cx| {
+                root.app_store
+                    .update(cx, |store, cx| store.update_settings(update, false, cx));
+            });
+        }
+
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let (alpha, beta) = (projects[0].id.clone(), projects[1].id.clone());
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let nodes = root.core(cx).node_list().unwrap();
+            root.app_store.update(cx, |store, cx| {
+                store.nodes = nodes;
+                cx.notify();
+            });
+        });
+        let collapsed = beta.clone();
+        update_settings(&mut harness, move |settings| {
+            settings.sidebar_collapsed_projects.insert(collapsed)
+        });
+
+        // Opening the page elsewhere leaves a collapsed project collapsed, so
+        // there is no row and New tab keeps the selection.
+        let scope = ProjectScope::Project(beta.clone());
+        harness.act(move |root, window, cx| root.open_sidebar_chat_modal(scope, window, cx));
+        assert_eq!(row_scope(&harness), None);
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+
+        // + on a collapsed project expands it, so the row is visible.
+        let scope = ProjectScope::Project(beta.clone());
+        harness.act(move |root, window, cx| {
+            root.front_page_sidebar().update(cx, |sidebar, cx| {
+                sidebar.open_launcher_in(scope, window, cx);
+            });
+        });
+        assert_eq!(
+            row_scope(&harness),
+            Some(ProjectScope::Project(beta.clone()))
+        );
+        assert_row_under(&mut harness, &beta);
+
+        // + on another project moves the row while the page already shows.
+        let scope = ProjectScope::Project(alpha.clone());
+        harness.act(move |root, window, cx| root.open_sidebar_chat_modal(scope, window, cx));
+        assert_eq!(
+            row_scope(&harness),
+            Some(ProjectScope::Project(alpha.clone()))
+        );
+        assert_row_under(&mut harness, &alpha);
+
+        // So does the launcher's own project picker.
+        let chosen = beta.clone();
+        harness.act(move |root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| launcher.choose_project(&chosen, cx));
+        });
+        assert_eq!(
+            row_scope(&harness),
+            Some(ProjectScope::Project(beta.clone()))
+        );
+        assert_row_under(&mut harness, &beta);
+
+        // No project draws it in Recents.
+        harness
+            .act(|root, window, cx| root.open_sidebar_chat_modal(ProjectScope::Root, window, cx));
+        assert_eq!(row_scope(&harness), Some(ProjectScope::Root));
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_some());
+
+        // With nowhere to draw it, New tab keeps the selection.
+        update_settings(&mut harness, |settings| {
+            settings.sidebar_active_only = true;
+            true
+        });
+        assert_eq!(row_scope(&harness), None);
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+        update_settings(&mut harness, |settings| {
+            settings.sidebar_active_only = false;
+            true
+        });
+
+        // Leaving the page removes it.
+        harness.act(|root, window, cx| root.open_roles(window, cx));
+        assert_eq!(row_scope(&harness), None);
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+    }
+
+    #[test]
+    fn page_close_row_close_and_close_tab_return_to_where_the_launcher_page_opened() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+
+        // The window's empty state has nothing behind it: no ×, and ⌘W keeps it.
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.open_new_tab_modal(&NewTab, window, cx);
+        });
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_some());
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB_CLOSE").is_none());
+        assert!(harness.bounds("LAUNCHER_PAGE_CLOSE").is_none());
+        harness.act(close_tab);
+        assert!(harness.read_root(|root, _| root.launcher_page_visible()));
+
+        let mut previous = String::new();
+        harness.act(|root, window, cx| {
+            root.test_open_empty_tab(window, cx);
+            previous = root.tabs.active_tab_id().unwrap().to_owned();
+            root.open_new_tab_modal(&NewTab, window, cx);
+        });
+
+        // The page's × sits in its top-right corner, and the row's does the same.
+        for selector in ["LAUNCHER_PAGE_CLOSE", "SIDEBAR_LAUNCHER_TAB_CLOSE"] {
+            let close = harness.bounds(selector).expect("close button");
+            if selector == "LAUNCHER_PAGE_CLOSE" {
+                let page = harness.bounds("LAUNCHER_PAGE").expect("launcher page");
+                assert!(close.right() <= page.right());
+                assert!(page.right() - close.right() < px(16.));
+                assert!(close.top() - page.top() < px(16.));
+            }
+            harness
+                .visual
+                .simulate_click(close.center(), gpui::Modifiers::default());
+            harness.visual.run_until_parked();
+            harness.read_root(|root, _| {
+                assert_eq!(root.route, AppRoute::Chat);
+                assert_eq!(root.tabs.active_tab_id(), Some(previous.as_str()));
+            });
+            assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+            assert!(harness.bounds("LAUNCHER_PAGE_CLOSE").is_none());
+            harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        }
+        harness.act(close_tab);
+
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        harness.act(close_tab);
+        harness.read_root(|root, _| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.active_tab_id(), Some(previous.as_str()));
+            assert_eq!(root.tabs.tabs().len(), 1);
+        });
+
+        // ⌘W from the goal step closes the page too, and returns to a page.
+        harness.act(|root, window, cx| {
+            root.open_crews(window, cx);
+            root.open_launcher_page(ProjectScope::Root, Step::Goal(None), window, cx);
+        });
+        harness.act(close_tab);
+        harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Crews));
     }
 
     #[test]

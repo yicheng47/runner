@@ -824,7 +824,7 @@ fn menu_labels(entries: &[(UiMenuItem, SidebarMenuAction)]) -> Vec<&str> {
 }
 
 #[test]
-fn workspace_new_chat_is_selected_on_the_launcher_page() {
+fn workspace_new_tab_is_selected_on_the_launcher_page() {
     assert_eq!(
         WORKSPACE_ENTRIES,
         [

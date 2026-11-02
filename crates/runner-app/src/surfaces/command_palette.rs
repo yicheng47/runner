@@ -144,7 +144,7 @@ fn palette_items(
     for (id, label, destination) in [
         (
             "new-chat",
-            crate::i18n::text("ui.new_chat"),
+            crate::i18n::text("ui.new_tab"),
             PaletteDestination::NewChat,
         ),
         (
@@ -1229,7 +1229,12 @@ mod localization_tests {
     fn translated_commands_search_by_label_description_and_original_aliases() {
         i18n::testing::with_locale(i18n::Locale::SimplifiedChinese, || {
             let items = palette_items(&[], &[], &[], &[], None);
+            assert_eq!(
+                filtered_palette_items(&items, "新建标签页")[0].id,
+                "new-chat"
+            );
             assert_eq!(filtered_palette_items(&items, "新建对话")[0].id, "new-chat");
+            assert_eq!(filtered_palette_items(&items, "new tab")[0].id, "new-chat");
             assert_eq!(
                 filtered_palette_items(&items, "当前空窗格")[0].id,
                 "new-terminal"

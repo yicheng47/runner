@@ -102,15 +102,64 @@ pub(crate) fn sidebar_item_row(
         )
 }
 
-pub(crate) fn workspace_new_chat_row(
+/// The launcher page's place in the tree. It is drawn while the page shows and
+/// never stored, so its only action is the × shown on hover; starting something
+/// replaces it.
+pub(crate) fn launcher_tab_row(close: Option<WeakEntity<NativeRoot>>) -> AnyElement {
+    div()
+        .debug_selector(|| "SIDEBAR_LAUNCHER_TAB".into())
+        .group("sidebar-row-actions")
+        .w_full()
+        .px(rems(10. / 16.))
+        .py(rems(6. / 16.))
+        .flex()
+        .items_center()
+        .gap(rems(6. / 16.))
+        .rounded_sm()
+        .border_1()
+        .border_dashed()
+        .border_color(theme::faint())
+        .bg(theme::chrome_selected())
+        .text_size(theme::text_body())
+        .text_color(theme::muted())
+        .child(
+            svg()
+                .path("app-window.svg")
+                .size(rems(12. / 16.))
+                .flex_none()
+                .text_color(theme::muted()),
+        )
+        .child(sidebar_row_label(
+            crate::i18n::text("ui.new_tab").to_owned(),
+            false,
+            false,
+        ))
+        .children(close.map(|root| {
+            div()
+                .debug_selector(|| "SIDEBAR_LAUNCHER_TAB_CLOSE".into())
+                .flex_none()
+                .child(project_row_action(
+                    "sidebar-launcher-tab-close".into(),
+                    "close.svg",
+                    12.,
+                    crate::i18n::text("keymap.close-pane.title"),
+                    move |_, window, cx| {
+                        let _ = root.update(cx, |root, cx| root.close_launcher_page(window, cx));
+                    },
+                ))
+        }))
+        .into_any_element()
+}
+
+pub(crate) fn workspace_new_tab_row(
     shortcut: Option<String>,
     enabled: bool,
     selected: bool,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     div()
-        .id("workspace-new-chat")
-        .debug_selector(|| "SIDEBAR_WORKSPACE_NEW_CHAT".into())
+        .id("workspace-new-tab")
+        .debug_selector(|| "SIDEBAR_WORKSPACE_NEW_TAB".into())
         .w_full()
         .px(rems(10. / 16.))
         .py(rems(6. / 16.))
@@ -145,7 +194,7 @@ pub(crate) fn workspace_new_chat_row(
                 .text_size(theme::text_title())
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::muted())
-                .child(crate::i18n::text("ui.new_chat")),
+                .child(crate::i18n::text("ui.new_tab")),
         )
         .children(shortcut.map(|shortcut| {
             div()
