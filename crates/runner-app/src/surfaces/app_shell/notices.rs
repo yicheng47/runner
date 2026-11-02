@@ -3,11 +3,18 @@ use super::*;
 impl NativeRoot {
     pub(crate) fn render_daemon_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let store = self.app_store.read(cx);
-        if !store.daemon_disconnected
-            || store.daemon_notice != Some(runner_app::lifecycle::DaemonNotice::Repeated)
-        {
+        if !store.daemon_disconnected {
             return None;
         }
+        let message = match store.daemon_notice {
+            Some(runner_app::lifecycle::DaemonNotice::Repeated) => {
+                runner_core::protocol::managed::RESTART_LIMIT_NOTICE
+            }
+            Some(runner_app::lifecycle::DaemonNotice::InUse) => {
+                runner_core::protocol::managed::IN_USE_NOTICE
+            }
+            _ => return None,
+        };
         let root = cx.weak_entity();
         let log_path = self.log_dir.join("runnerd.log");
         Some(
@@ -15,7 +22,7 @@ impl NativeRoot {
                 div()
                     .debug_selector(|| "DAEMON_CRASH_MESSAGE".into())
                     .truncate()
-                    .child(runner_core::protocol::managed::RESTART_LIMIT_NOTICE),
+                    .child(message),
                 runner_app::ui::Tone::Danger,
             )
             .id("daemon-crash-banner")

@@ -53,7 +53,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Development Commands
 
-- Start the native app against the development database: `make run`. It stops the development daemon before launching, so the rebuilt sidecar owns the sessions. `runner-dev daemon stop` stops that daemon explicitly.
+- Start the native app against the development database: `make run`. A rebuilt sidecar replaces the development daemon of another build, unless another development app is still connected to that daemon: then the launch waits three seconds for it to disconnect and exits with an error, so quit the other app first. `runner-dev daemon stop` stops the daemon explicitly and hangs up every connected app's sessions.
 - Format: `make fmt`.
 - Clippy: `make clippy`.
 - Workspace tests: `make test`.

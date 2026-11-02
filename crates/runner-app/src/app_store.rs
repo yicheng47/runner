@@ -488,7 +488,9 @@ impl AppStore {
                         StoreRefreshKind::All,
                         EntityRefreshKind::All,
                         Some(DaemonEvent::Disconnected(
-                            if event.payload["restart_limit"].as_bool().unwrap_or(false) {
+                            if event.payload["in_use"].as_bool().unwrap_or(false) {
+                                runner_app::lifecycle::DaemonNotice::InUse
+                            } else if event.payload["restart_limit"].as_bool().unwrap_or(false) {
                                 runner_app::lifecycle::DaemonNotice::Repeated
                             } else {
                                 runner_app::lifecycle::DaemonNotice::Stopped
@@ -540,9 +542,13 @@ impl AppStore {
                                 }
                                 DaemonEvent::Reconnected => {
                                     this.daemon_disconnected = false;
-                                    if this.daemon_notice
-                                        == Some(runner_app::lifecycle::DaemonNotice::Repeated)
-                                    {
+                                    if matches!(
+                                        this.daemon_notice,
+                                        Some(
+                                            runner_app::lifecycle::DaemonNotice::Repeated
+                                                | runner_app::lifecycle::DaemonNotice::InUse
+                                        )
+                                    ) {
                                         this.daemon_notice = None;
                                         this.error = None;
                                     } else if this.daemon_notice
@@ -1285,6 +1291,24 @@ mod tests {
                 Some(runner_app::lifecycle::DaemonNotice::Repeated)
             );
             assert!(store.revisions.error > before);
+        });
+        events.emit("daemon/reconnected", &serde_json::Value::Null);
+        cx.run_until_parked();
+        store.read_with(&cx, |store, _| {
+            assert!(!store.daemon_disconnected);
+            assert!(store.error.is_none() && store.daemon_notice.is_none());
+        });
+        events.emit(
+            "daemon/disconnected",
+            &serde_json::json!({"restart_limit":true,"in_use":true}),
+        );
+        cx.run_until_parked();
+        store.read_with(&cx, |store, _| {
+            assert!(store.daemon_disconnected);
+            assert_eq!(
+                store.daemon_notice,
+                Some(runner_app::lifecycle::DaemonNotice::InUse)
+            );
         });
         events.emit("daemon/reconnected", &serde_json::Value::Null);
         cx.run_until_parked();

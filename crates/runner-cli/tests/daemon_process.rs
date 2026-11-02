@@ -901,6 +901,180 @@ fn mismatch_restart_waits_for_lock_and_installs_new_sidecar() {
     daemon.stopped();
 }
 
+fn other_build(daemon: &Daemon) -> (PathBuf, String) {
+    use std::io::Write;
+    let dir = daemon.root.path().join("other");
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join(runner_core::cli_install::DAEMON_DEST_BIN_NAME);
+    std::fs::copy(
+        daemon
+            .launch
+            .source
+            .parent()
+            .unwrap()
+            .join(runner_core::cli_install::DAEMON_DEST_BIN_NAME),
+        &exe,
+    )
+    .unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&exe)
+        .unwrap()
+        .write_all(b"1116-other")
+        .unwrap();
+    let hash = daemon_process::executable_hash(&exe).unwrap();
+    (exe, hash)
+}
+
+fn connect_app(daemon: &Daemon, hash: &str) -> Arc<SocketTransport> {
+    let deadline = Instant::now() + daemon_process::DAEMON_START_TIMEOUT;
+    loop {
+        match SocketTransport::connect(
+            &daemon.launch.daemon_endpoint,
+            Hello {
+                exe_sha256: hash.into(),
+                client: "app".into(),
+            },
+        ) {
+            Ok(client) => return client,
+            Err(ConnectError::NotRunning) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            Err(error) => panic!("other app connect: {error}"),
+        }
+    }
+}
+
+#[test]
+fn mismatched_app_keeps_a_daemon_another_app_is_connected_to() {
+    let mut daemon = Daemon::new();
+    let (other, other_hash) = other_build(&daemon);
+    daemon.child = Some(daemon.command_at(&other).spawn().unwrap());
+    let other_app = connect_app(&daemon, &other_hash);
+    let other_pid = other_app.welcome.pid;
+    let mut app = daemon.launch.clone();
+    app.app = true;
+    let started = Instant::now();
+    match app.connect_or_spawn(&daemon.hash) {
+        Err(ConnectError::InUse(welcome)) => {
+            assert_eq!(welcome.pid, other_pid);
+            assert_eq!(welcome.app_clients, 1);
+        }
+        result => panic!(
+            "the other app's daemon was not kept: {:?}",
+            result.map(|client| client.welcome.pid)
+        ),
+    }
+    assert!(started.elapsed() >= daemon_process::IN_USE_GRACE);
+    assert!(other_app.client().role_list().is_ok());
+    // An app that quits during the grace period, as an updater's relaunch can race it, is replaced.
+    let quitting = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        drop(other_app);
+    });
+    let replacement = app.connect_or_spawn(&daemon.hash).unwrap();
+    quitting.join().unwrap();
+    assert_ne!(replacement.welcome.pid, other_pid);
+    assert_eq!(replacement.welcome.exe_sha256, daemon.hash);
+    replacement.shutdown(true).unwrap();
+    daemon.stopped();
+}
+
+#[test]
+fn takeover_refuses_an_app_admitted_after_a_zero_count_probe() {
+    let mut daemon = Daemon::new();
+    let (other, other_hash) = other_build(&daemon);
+    daemon.child = Some(daemon.command_at(&other).spawn().unwrap());
+    let deadline = Instant::now() + daemon_process::DAEMON_START_TIMEOUT;
+    let probe = loop {
+        match SocketTransport::connect(&daemon.launch.daemon_endpoint, daemon.hello(&daemon.hash)) {
+            Err(ConnectError::Mismatch(welcome)) => break welcome,
+            Err(ConnectError::NotRunning) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            result => panic!("probe: {:?}", result.map(|client| client.welcome.pid)),
+        }
+    };
+    assert_eq!(probe.app_clients, 0);
+    let other_app = connect_app(&daemon, &other_hash);
+    let mut app = daemon.launch.clone();
+    app.app = true;
+    let refused = app
+        .take_over()
+        .unwrap()
+        .expect("an app admitted after the probe must keep its daemon");
+    assert_eq!(refused.pid, other_app.welcome.pid);
+    assert_eq!(refused.app_clients, 1);
+    assert!(other_app.client().role_list().is_ok());
+    drop(other_app);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.take_over().unwrap().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "takeover still refused after the app left"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    daemon.stopped();
+}
+
+#[test]
+fn managed_app_pauses_instead_of_replacing_another_apps_daemon() {
+    use runner_core::protocol::managed::{ManagedTransport, IN_USE_NOTICE};
+    let mut daemon = Daemon::new();
+    let mut launch = daemon.launch.clone();
+    launch.app = true;
+    let managed = ManagedTransport::connect(launch, daemon.hash.clone()).unwrap();
+    let mut events = managed.client().subscribe();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let data = daemon.launch.paths.app_data_dir.clone();
+    // Holding the start lock lets the other build start before this app recovers.
+    let starter = daemon_process::startup_lock(&data).unwrap();
+    let stop = SocketTransport::connect(&daemon.launch.daemon_endpoint, daemon.hello("")).unwrap();
+    stop.shutdown(true).unwrap();
+    daemon_process::wait_unlocked(&data, daemon_process::DAEMON_STOP_TIMEOUT).unwrap();
+    drop(stop);
+    let (other, other_hash) = other_build(&daemon);
+    daemon.child = Some(daemon.command_at(&other).spawn().unwrap());
+    let other_app = connect_app(&daemon, &other_hash);
+    let other_pid = other_app.welcome.pid;
+    drop(starter);
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                assert_ne!(event.name, "daemon/reconnected");
+                if event.name == "daemon/disconnected" && event.payload["in_use"] == true {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("an app meeting another app's daemon must pause with the in-use notice");
+    });
+    assert_eq!(
+        managed.client().role_list().unwrap_err().message,
+        IN_USE_NOTICE
+    );
+    assert!(other_app.client().role_list().is_ok());
+    assert!(managed
+        .client()
+        .reconnect()
+        .unwrap_err()
+        .message
+        .contains("Another Runner build"));
+    assert!(other_app.client().role_list().is_ok());
+    drop(other_app);
+    managed.client().reconnect().unwrap();
+    assert!(managed.client().role_list().is_ok());
+    assert_ne!(daemon.connect().welcome.pid, other_pid);
+    managed.shutdown().unwrap();
+    daemon.stopped();
+}
+
 #[test]
 fn managed_connection_caps_automatic_restarts_and_allows_explicit_retry() {
     use runner_core::protocol::managed::ManagedTransport;
@@ -1665,6 +1839,7 @@ fn undecodable_request_reports_protocol_skew_and_keeps_control_connection_alive(
         wire::SHUTDOWN,
         &wire::Shutdown {
             stop_sessions: true,
+            takeover: false,
         },
     )
     .unwrap()

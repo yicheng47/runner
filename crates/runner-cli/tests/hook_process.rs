@@ -251,6 +251,7 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
                                 exe_sha256: String::new(),
                                 pid: 1,
                                 started_at: String::new(),
+                                app_clients: 0,
                             },
                         )
                         .unwrap()
@@ -402,6 +403,7 @@ async fn codex_session_end_rejects_stale_and_retired_launches_neutrally() {
                             exe_sha256: String::new(),
                             pid: 1,
                             started_at: String::new(),
+                            app_clients: 0,
                         },
                     )
                     .unwrap()

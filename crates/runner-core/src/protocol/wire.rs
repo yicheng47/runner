@@ -45,11 +45,17 @@ pub struct Welcome {
     pub exe_sha256: String,
     pub pid: u32,
     pub started_at: String,
+    #[serde(default)]
+    pub app_clients: u32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Shutdown {
     pub stop_sessions: bool,
+    /// A replacing app's stop, which runnerd refuses while an app is connected.
+    #[serde(default)]
+    pub takeover: bool,
 }
+pub const TAKEOVER_REFUSED: &str = "daemon/takeover-refused";
 #[derive(Serialize, Deserialize)]
 pub struct Call {
     pub id: u64,

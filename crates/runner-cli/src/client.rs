@@ -176,7 +176,7 @@ impl SocketClient {
         .map_err(|error| match error {
             ConnectError::NotRunning => ClientError::NotRunning,
             ConnectError::Blocked => connect_failure(std::io::ErrorKind::PermissionDenied, exists),
-            ConnectError::Mismatch(_) | ConnectError::Protocol(_) => {
+            ConnectError::Mismatch(_) | ConnectError::InUse(_) | ConnectError::Protocol(_) => {
                 ClientError::Protocol(VERSION_SKEW_MESSAGE.into())
             }
         })?;
@@ -424,6 +424,7 @@ mod skew_tests {
                     exe_sha256: "old".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
             )
             .unwrap()
@@ -487,6 +488,7 @@ mod cursor_tests {
                     exe_sha256: "existing".into(),
                     pid: 1,
                     started_at: "now".into(),
+                    app_clients: 0,
                 },
             )
             .unwrap()

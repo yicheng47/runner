@@ -6,6 +6,8 @@
 
 Runner 在显示窗口前启动后台服务。若失败，会将原因写入 `runner.log`，并在 Windows 上显示 **Runner 无法启动（Runner could not start）** 对话框。日志在 macOS 的 `~/Library/Logs/com.wycstudios.runner` 与 Windows 的 `%APPDATA%\com.wycstudios.runner\logs`。请在[报告问题](#收集有用的错误报告)时附上该信息。
 
+若另一个版本或构建的 Runner 正在使用同一份数据，新打开的 Runner 不会接管后台服务，而是停止并提示另一个 Runner 构建正在使用这些数据。请退出另一个 Runner，再重新打开。若 Runner 打开期间后台服务换了主人，同一提示会以横幅显示：退出另一个 Runner 后点击 **重试（Try again）** 。此检查之前发布的 Runner 版本仍会直接接管后台服务。
+
 ## 找不到智能体或无法启动
 
 1. 在常用终端运行智能体。若在那里也无法启动或登录，请先完成它自身的设置。

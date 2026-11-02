@@ -6,6 +6,8 @@ Start with the failing agent or command, then check Runner's settings and diagno
 
 Runner starts its background service before showing a window. If that fails, Runner records the reason in `runner.log` and, on Windows, shows it in a **Runner could not start** dialog. The log is in `~/Library/Logs/com.wycstudios.runner` on macOS and `%APPDATA%\com.wycstudios.runner\logs` on Windows. Include the message when you [report the problem](#collect-a-useful-bug-report).
 
+If a copy of Runner from another version or build is open on the same data, a new copy does not take over the background service; it stops with a message that another Runner build is using this data. Quit the other copy, then open Runner again. If the background service changes hands while Runner is open, the same message appears in a banner: quit the other copy, then click **Try again**. Versions of Runner released before this check still take over the background service without asking.
+
 ## An agent is missing or fails to start
 
 1. Run the agent in your usual terminal. If it cannot start or sign in there, finish its own setup first.
