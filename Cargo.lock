@@ -5656,6 +5656,7 @@ dependencies = [
  "base64",
  "log",
  "regex",
+ "regex-syntax",
  "runner-core",
  "serde",
  "serde_json",

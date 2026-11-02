@@ -14,7 +14,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, KeyboardModes};
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler, KeyboardModes};
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use runner_core::protocol::terminal::{
@@ -23,6 +23,7 @@ use runner_core::protocol::terminal::{
 };
 use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 
+pub mod find;
 mod model;
 pub use model::{ModelOptions, TerminalHost, TerminalModel};
 
@@ -445,7 +446,11 @@ impl PaletteState {
 }
 
 fn parse(parser: &mut ParserState, term: &mut Term<EventProxy>, bytes: &[u8]) {
-    parser.processor.advance(term, bytes);
+    parse_with(parser, term, bytes);
+}
+
+fn parse_with<H: Handler>(parser: &mut ParserState, handler: &mut H, bytes: &[u8]) {
+    parser.processor.advance(handler, bytes);
     let held = parser
         .processor
         .sync_timeout()
@@ -474,6 +479,10 @@ pub struct TerminalMirror {
     link_cwd: std::sync::OnceLock<Option<PathBuf>>,
     config: Mutex<Config>,
     coalesce_bursts: bool,
+    /// Written only while the term is locked, so a reader holding the term
+    /// lock sees the mark that matches the grid.
+    scroll_mark: Mutex<find::ScrollMark>,
+    viewport_holds: Arc<AtomicUsize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -512,6 +521,18 @@ pub struct TerminalView {
 impl Drop for TerminalView {
     fn drop(&mut self) {
         self.viewers.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// While any hold is alive, output arriving at the bottom of the scrollback
+/// scrolls the viewport back so it stays on the same content.
+pub struct ViewportHold {
+    holds: Arc<AtomicUsize>,
+}
+
+impl Drop for ViewportHold {
+    fn drop(&mut self) {
+        self.holds.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -700,6 +721,8 @@ impl TerminalMirror {
             link_cwd: std::sync::OnceLock::new(),
             config: Mutex::new(term_config()),
             coalesce_bursts,
+            scroll_mark: Mutex::default(),
+            viewport_holds: Arc::default(),
         });
         mirror.restore(&attachment);
         mirror.refresh_metadata();
@@ -768,6 +791,7 @@ impl TerminalMirror {
             TermMode::empty(),
             attachment.snapshot.seq,
         );
+        self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
         self.subscriber_id
@@ -869,7 +893,7 @@ impl TerminalMirror {
         };
         let mut term = self.term.lock();
         let previous = *term.mode();
-        parse(&mut parser, &mut term, bytes);
+        self.track_scroll(&mut term, |tracker| parse_with(&mut parser, tracker, bytes));
         mark_paint(&mut sequence, &mut term, previous, seq);
         if parser.processor.sync_timeout().sync_timeout().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true)
@@ -885,7 +909,7 @@ impl TerminalMirror {
         let held = parser.burst.take();
         let mut term = self.term.lock();
         let previous = *term.mode();
-        parse(parser, &mut term, &held);
+        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, &held));
         let seq = sequence.last;
         mark_paint(sequence, &mut term, previous, seq);
         true
@@ -907,7 +931,7 @@ impl TerminalMirror {
         {
             let mut term = self.term.lock();
             let previous = *term.mode();
-            parser.processor.stop_sync(&mut *term);
+            self.track_scroll(&mut term, |tracker| parser.processor.stop_sync(tracker));
             parser.boundary.end_sync();
             let seq = sequence.last;
             mark_paint(&mut sequence, &mut term, previous, seq);
@@ -933,6 +957,38 @@ impl TerminalMirror {
     fn wake_viewers(&self) {
         if self.viewers.load(Ordering::Acquire) > 0 {
             (self.waker)();
+        }
+    }
+
+    /// Feeds the term through a scroll tracker and records how far the
+    /// content moved. A held viewport at the bottom scrolls back by the same
+    /// amount, stopping at the oldest line; one already scrolled back is kept
+    /// in place by alacritty.
+    fn track_scroll(
+        &self,
+        term: &mut Term<EventProxy>,
+        apply: impl FnOnce(&mut find::ScrollTracker<'_, EventProxy>),
+    ) {
+        let display_offset = term.grid().display_offset();
+        let mut tracker = find::ScrollTracker::new(term);
+        apply(&mut tracker);
+        let moved = tracker.finish();
+        if let Some(lines) = moved.filter(|lines| *lines > 0) {
+            if display_offset == 0 && self.viewport_holds.load(Ordering::Acquire) > 0 {
+                term.scroll_display(Scroll::Delta(i32::try_from(lines).unwrap_or(i32::MAX)));
+            }
+        }
+        self.scroll_mark.lock().unwrap().advance(moved);
+    }
+
+    pub fn scroll_mark(&self) -> find::ScrollMark {
+        *self.scroll_mark.lock().unwrap()
+    }
+
+    pub fn hold_viewport(&self) -> ViewportHold {
+        self.viewport_holds.fetch_add(1, Ordering::AcqRel);
+        ViewportHold {
+            holds: Arc::clone(&self.viewport_holds),
         }
     }
     pub fn submit_text(&self, text: &str) -> std::result::Result<(), ClientError> {
@@ -1113,6 +1169,9 @@ impl TerminalMirror {
         let mut term = self.term.lock();
         let mut size = self.size.lock().unwrap();
         let rows_changed = size.1 != rows;
+        if *size != (cols, rows) {
+            self.scroll_mark.lock().unwrap().rebuild();
+        }
         *size = (cols, rows);
         term.resize(TermSize::new(cols as usize, rows as usize));
         if rows_changed {
@@ -2595,6 +2654,36 @@ mod tests {
     }
 
     #[test]
+    fn a_released_burst_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
+        let (mirror, frames, _) = scripted_mirror(true);
+        let _view = mirror.view();
+        let lines = |range: std::ops::Range<usize>| {
+            range
+                .map(|line| format!("line {line:05} of the output\r\n"))
+                .collect::<String>()
+                .into_bytes()
+        };
+        send_output(&frames, 1, &lines(0..30));
+        assert!(wait_for(Duration::from_secs(2), || mirror
+            .output_activity()
+            .last_seq
+            == 1));
+        let mark = mirror.scroll_mark();
+        let hold = mirror.hold_viewport();
+        let burst = lines(30..6030);
+        let chunks = burst.chunks(8 * 1024).collect::<Vec<_>>();
+        assert!(burst.len() > 2 * BURST_BYTES);
+        for (index, chunk) in chunks.iter().enumerate() {
+            send_output(&frames, index as u64 + 2, chunk);
+        }
+        assert!(wait_for(Duration::from_secs(2), || mark
+            .moved_since(mirror.scroll_mark())
+            == Some(6000)));
+        assert_eq!(mirror.scroll_state().display_offset, 6000);
+        drop(hold);
+    }
+
+    #[test]
     fn local_mirror_parses_a_clear_scrollback_at_once() {
         let (mirror, frames, _) = scripted_mirror(false);
         send_output(&frames, 1, b"\x1b[3Jlocal output");
@@ -2611,6 +2700,136 @@ mod tests {
             .last_seq
             == 1));
         assert!(screen_text(&mirror).contains('x'));
+    }
+
+    #[test]
+    fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
+        use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
+        use runner_core::protocol::{EventSubscription, Request, Response, Transport};
+        struct Frames(mpsc::Receiver<TerminalFrame>);
+        impl TerminalSubscription for Frames {
+            fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+                self.0.recv().map_err(|_| ClientError::msg("closed"))
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                Arc::new(|| {})
+            }
+        }
+        struct Host(Mutex<Option<mpsc::Receiver<TerminalFrame>>>);
+        impl Transport for Host {
+            fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+                Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+                let rx = self.0.lock().unwrap().take().unwrap();
+                Ok(TerminalAttachment {
+                    subscriber_id: 0,
+                    snapshot: TerminalSnapshot {
+                        seq: 0,
+                        cols: 20,
+                        rows: 5,
+                        bytes: Vec::new(),
+                        unfinished_len: 0,
+                        preceding_char: None,
+                        controller: Default::default(),
+                    },
+                    frames: Box::new(Frames(rx)),
+                })
+            }
+        }
+        let (frames, rx) = mpsc::channel();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        let mirror = TerminalMirror::attach(
+            DaemonClient::new(Arc::new(Host(Mutex::new(Some(rx))))),
+            "find".into(),
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
+        .unwrap();
+        let _view = mirror.view();
+        let lines = |count: usize| "\r\nline".repeat(count).into_bytes();
+        mirror.test_feed(1, &lines(4));
+        let start = mirror.scroll_mark();
+        mirror.test_feed(2, &lines(6));
+        assert_eq!(start.moved_since(mirror.scroll_mark()), Some(6));
+        assert_eq!(mirror.scroll_state().display_offset, 0);
+
+        let hold = mirror.hold_viewport();
+        mirror.test_feed(3, &lines(3));
+        assert_eq!(mirror.scroll_state().display_offset, 3);
+        drop(hold);
+        mirror.test_feed(4, &lines(2));
+        assert_eq!(mirror.scroll_state().display_offset, 5);
+        mirror.scroll_to_bottom();
+        mirror.test_feed(5, &lines(2));
+        assert_eq!(mirror.scroll_state().display_offset, 0);
+        assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
+
+        mirror.resize_local(20, 5);
+        assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
+
+        // A tab that wraps a full bottom row scrolls a held viewport too.
+        let hold = mirror.hold_viewport();
+        let mark = mirror.scroll_mark();
+        mirror.test_feed(6, b"\x1b[5;1Habcdefghijklmnopqrst");
+        assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(0));
+        mirror.test_feed(7, b"\t");
+        assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(1));
+        assert_eq!(mirror.scroll_state().display_offset, 1);
+        drop(hold);
+        mirror.scroll_to_bottom();
+
+        // A burst past the scrollback leaves a held viewport at its top, also
+        // when it scrolls the ring buffer's whole length (1005 rows here) so
+        // the same row allocations come back to the top.
+        mirror.configure(20, CursorShape::Block);
+        for (seq, burst) in [(8, 40), (9, 1005), (10, 1007)] {
+            let mark = mirror.scroll_mark();
+            let hold = mirror.hold_viewport();
+            mirror.test_feed(seq, &lines(burst));
+            let state = mirror.scroll_state();
+            assert_eq!(
+                (state.history_lines, state.display_offset),
+                (20, 20),
+                "{burst}"
+            );
+            assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(burst as i32));
+            drop(hold);
+            mirror.scroll_to_bottom();
+        }
+
+        // A resize from the daemon, with the controller unchanged, still
+        // wakes the views so an open find bar recomputes.
+        let before = wakes.load(Ordering::SeqCst);
+        let mark = mirror.scroll_mark();
+        frames
+            .send(TerminalFrame::Resized {
+                seq: 11,
+                cols: 24,
+                rows: 5,
+                controller: Default::default(),
+            })
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while wakes.load(Ordering::SeqCst) == before {
+            assert!(
+                Instant::now() < deadline,
+                "a resize frame did not wake the views"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(mirror.size(), (24, 5));
+        assert_eq!(mark.moved_since(mirror.scroll_mark()), None);
+        let resized = mirror.scroll_mark();
+        mirror.test_feed(12, b"\x1b[?1049h");
+        assert_eq!(resized.moved_since(mirror.scroll_mark()), None);
+        drop(frames);
+        mirror.test_stop_frames();
     }
 
     #[test]

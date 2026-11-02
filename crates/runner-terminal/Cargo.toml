@@ -12,6 +12,7 @@ anyhow = "1"
 base64 = "0.22"
 log = "0.4"
 regex = "1"
+regex-syntax = "0.8"
 runner-core = { path = "../runner-core" }
 serde.workspace = true
 serde_json.workspace = true
