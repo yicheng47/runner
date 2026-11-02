@@ -111,6 +111,25 @@ impl RemoteWindow {
             None | Some(Item::Launcher | Item::Roles | Item::Crews) => Vec::new(),
         }
     }
+
+    /// Running chats in open tabs keep their attachment while hidden and
+    /// connected, so switching back needs no attach, take or host resize, and
+    /// keep their recovery marker until they reattach. A hidden pane is not
+    /// drawn, so it sends no viewport or size.
+    fn open_sessions(&self, overview: &Overview) -> HashSet<String> {
+        self.layouts
+            .values()
+            .flat_map(PaneLayout::all_session_ids)
+            .filter(|id| {
+                overview.sessions.get(id).is_some_and(|session| {
+                    !matches!(
+                        session.status.status.effective(),
+                        Status::Stopped | Status::Error
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 impl RemoteClient {
