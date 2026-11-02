@@ -170,10 +170,8 @@ impl SettingsPane {
 
 const APP_PANES: &[SettingsPane] = &[
     SettingsPane::General,
-    SettingsPane::Account,
     SettingsPane::Appearance,
     SettingsPane::Notifications,
-    SettingsPane::Remote,
     SettingsPane::Missions,
     SettingsPane::Terminal,
     SettingsPane::Shortcuts,
@@ -186,6 +184,8 @@ const INTEGRATION_PANES: &[SettingsPane] = &[
     SettingsPane::Mcp,
 ];
 
+const CLOUD_PANES: &[SettingsPane] = &[SettingsPane::Account, SettingsPane::Remote];
+
 const SYSTEM_PANES: &[SettingsPane] = &[
     SettingsPane::Updates,
     SettingsPane::Diagnostics,
@@ -195,6 +195,7 @@ const SYSTEM_PANES: &[SettingsPane] = &[
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.app", APP_PANES),
     ("ui.integrations", INTEGRATION_PANES),
+    ("ui.cloud", CLOUD_PANES),
     ("ui.system", SYSTEM_PANES),
 ];
 
@@ -1672,7 +1673,10 @@ mod tests {
     fn nav_search_filters_labels_and_removes_empty_groups() {
         crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
             let all = filtered_nav_groups("");
-            assert_eq!(all.len(), 3);
+            assert_eq!(
+                all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
+                ["App", "Integrations", "Cloud", "System"]
+            );
             assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
             assert_eq!(
                 all[0],
@@ -1680,10 +1684,8 @@ mod tests {
                     "App",
                     vec![
                         SettingsPane::General,
-                        SettingsPane::Account,
                         SettingsPane::Appearance,
                         SettingsPane::Notifications,
-                        SettingsPane::Remote,
                         SettingsPane::Missions,
                         SettingsPane::Terminal,
                         SettingsPane::Shortcuts,
@@ -1702,6 +1704,14 @@ mod tests {
                         SettingsPane::Mcp
                     ]
                 )
+            );
+            assert_eq!(
+                all[2],
+                ("Cloud", vec![SettingsPane::Account, SettingsPane::Remote])
+            );
+            assert_eq!(
+                filtered_nav_groups("remote"),
+                vec![("Cloud", vec![SettingsPane::Remote])]
             );
             assert_eq!(
                 SettingsPane::from_route(Some("skills")),

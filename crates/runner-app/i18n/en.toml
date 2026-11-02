@@ -479,6 +479,7 @@
 "ui.close_tab" = "Close Tab"
 "ui.close_terminal" = "Close terminal"
 "ui.close_window" = "Close Window"
+"ui.cloud" = "Cloud"
 "ui.codex_default" = "Codex default"
 "ui.codex_didn_t_answer" = "Codex didn't answer."
 "ui.collapse_sessions_panel" = "Collapse sessions panel"

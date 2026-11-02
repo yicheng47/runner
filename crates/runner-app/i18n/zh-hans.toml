@@ -479,6 +479,7 @@
 "ui.close_tab" = "关闭标签页"
 "ui.close_terminal" = "关闭终端"
 "ui.close_window" = "关闭窗口"
+"ui.cloud" = "云端"
 "ui.codex_default" = "Codex 默认"
 "ui.codex_didn_t_answer" = "Codex 未响应。"
 "ui.collapse_sessions_panel" = "收起会话面板"
