@@ -254,12 +254,7 @@ impl NativeRoot {
         let group_control = self.remote_client.is_local() && self.tab_control_covered(&layout, cx);
         let show_start = start_surface_visible(Some(&layout));
         let grouped = layout.root.leaves().len() > 1;
-        let focused_shell = layout
-            .focused_session_id()
-            .and_then(|id| self.front_page_session(id, cx))
-            .is_some_and(|entry| {
-                Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
-            });
+        let terminal_tab = self.active_tab_is_terminal(cx);
         if self.remote_client.is_local() {
             self.prune_pane_state(&layout);
         }
@@ -322,7 +317,7 @@ impl NativeRoot {
             .child(tab_body);
         let panel_open = self.remote_client.is_local()
             && !show_start
-            && side_panel_open(self.settings(cx).chat_panel_open, focused_shell);
+            && side_panel_open(self.settings(cx).chat_panel_open, terminal_tab);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),
