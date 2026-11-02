@@ -449,6 +449,13 @@ pub async fn mission_signal_impl(
             .ok_or_else(|| Error::msg("person signal payload must be an object"))?;
         object.insert("target".into(), serde_json::to_value(resolved.recipients)?);
     }
+    if input.signal_type == "human_response" && from == "human" {
+        let question_id = payload["question_id"]
+            .as_str()
+            .ok_or_else(|| Error::msg("human_response requires payload.question_id"))?;
+        let question_id = resolve_pending_question(&log, question_id)?;
+        payload["question_id"] = question_id.into();
+    }
     if matches!(input.signal_type.as_str(), "human_said" | "human_response") {
         let object = payload
             .as_object_mut()
@@ -465,6 +472,35 @@ pub async fn mission_signal_impl(
         payload,
     })?;
     Ok(event)
+}
+
+/// The router delivers an answer only to a pending `human_question` card,
+/// and drops any other ID with a feed warning. A member's `ask_human`
+/// event precedes its card in the feed, so its ID names that card too.
+fn resolve_pending_question(log: &EventLog, question_id: &str) -> Result<String> {
+    let (entries, _skipped) = log.read_from_lossy(0)?;
+    let pending = crate::router::pending_asks(&entries);
+    if pending.contains_key(question_id) {
+        return Ok(question_id.to_owned());
+    }
+    let card = entries.iter().map(|entry| &entry.event).find(|event| {
+        event.signal_type.as_ref().map(SignalType::as_str) == Some("human_question")
+            && event.payload["triggered_by"].as_str() == Some(question_id)
+            && pending.contains_key(&event.id)
+    });
+    if let Some(card) = card {
+        return Ok(card.id.clone());
+    }
+    let mut ids = pending.into_keys().collect::<Vec<_>>();
+    ids.sort();
+    Err(Error::msg(if ids.is_empty() {
+        format!("{question_id} is not a pending question; the mission has none pending")
+    } else {
+        format!(
+            "{question_id} is not a pending question; pending question IDs: {}",
+            ids.join(", ")
+        )
+    }))
 }
 
 fn post_message(
@@ -1856,6 +1892,80 @@ mod tests {
                 "{signal_type}: {error}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn human_response_must_name_a_pending_question() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let mission = {
+            let mut conn = state.db.get().unwrap();
+            let (_crew_id, mission_id) = start_message_test_mission(&mut conn, &state.app_data_dir);
+            get(&conn, &mission_id).unwrap()
+        };
+        let answer = |question_id: &str| {
+            mission_signal_impl(
+                &state,
+                PostSignalInput {
+                    mission_id: mission.id.clone(),
+                    from: None,
+                    signal_type: "human_response".into(),
+                    payload: serde_json::json!({"question_id": question_id, "choice": "yes"}),
+                },
+            )
+        };
+
+        let error = answer("missing").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "missing is not a pending question; the mission has none pending"
+        );
+
+        let ask = mission_signal_impl(
+            &state,
+            PostSignalInput {
+                mission_id: mission.id.clone(),
+                from: Some("reviewer".into()),
+                signal_type: "ask_human".into(),
+                payload: serde_json::json!({"prompt": "Proceed?", "choices": ["yes", "no"]}),
+            },
+        )
+        .await
+        .unwrap();
+        let log = EventLog::open(&event_log::mission_dir(
+            &state.app_data_dir,
+            mission.crew_id.as_deref(),
+            &mission.id,
+        ))
+        .unwrap();
+        let card = log
+            .append(EventDraft::signal(
+                mission.crew_id.as_deref(),
+                mission.id.clone(),
+                "router",
+                SignalType::new("human_question"),
+                serde_json::json!({"triggered_by": ask.id, "prompt": "Proceed?", "choices": ["yes", "no"]}),
+            ))
+            .unwrap();
+
+        let error = answer("missing").await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "missing is not a pending question; pending question IDs: {}",
+                card.id
+            )
+        );
+
+        let response = answer(&ask.id).await.unwrap();
+        assert_eq!(response.payload["question_id"], card.id.as_str());
+        assert_eq!(response.payload["delivery"], "inbox");
+
+        let error = answer(&card.id).await.unwrap_err();
+        assert!(
+            error.to_string().contains("the mission has none pending"),
+            "an answered question is no longer pending: {error}"
+        );
     }
 
     #[test]

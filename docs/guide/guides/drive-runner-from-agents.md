@@ -54,6 +54,8 @@ runner mission stop <mission-id>
 runner mission archive <mission-id>
 ```
 
+`mission answer` takes a question ID that `mission show` lists as pending, or the ID of the member's `ask_human` event from the feed. Any other ID, including one for a question that has already been answered, is refused with the pending question IDs, so an answer is never dropped silently.
+
 Inside a mission, members can use `runner msg post --to reviewer "Ready for review"` and `runner msg read` without supplying a mission ID. Outside a mission, writes need `--mission`. An outside caller without `--as` speaks as the person; do not use `--as` to impersonate another member.
 
 Runner pushes inbox notifications to every mission member. When waiting for a teammate and no independent work remains, finish your turn. Do not start a feed watcher, poll, or sleep-loop to wait for messages. Iterate with teammates across turns. External monitoring instructions do not apply to receiving messages in your own mission. Bounded diagnostic inspection, independent work and watching CI for an authorized PR remain valid.
