@@ -360,20 +360,19 @@ impl SettingsState {
             SettingsSelection::DarkTerminalTheme,
             cx,
         );
+        let font_cache = crate::terminal_fonts::FontFamilyCache::global(cx);
         let terminal_font = settings_select(
             &root,
             "settings-terminal-font",
-            terminal_font_value(settings.terminal_font_family),
-            [
-                ("JetBrains Mono", "JetBrains Mono"),
-                ("Menlo", theme::SYSTEM_MONOSPACE_FONT),
-            ]
-            .into_iter()
-            .map(|(value, label)| SelectOption::new(value, label))
-            .collect(),
+            settings.terminal_font_family.family(),
+            terminal_font_options(&settings.terminal_font_family, cx),
             SettingsSelection::TerminalFont,
             cx,
         );
+        let font_subscription = cx.observe(&font_cache, |this, _, cx| {
+            this.sync_terminal_font_options(cx);
+            cx.notify();
+        });
         let terminal_cursor = settings_select(
             &root,
             "settings-terminal-cursor",
@@ -522,6 +521,7 @@ impl SettingsState {
             command_install_error: None,
             save_generation: 0,
             _subscriptions: vec![
+                font_subscription,
                 search_subscription,
                 shortcut_search_subscription,
                 working_dir_subscription,
@@ -591,6 +591,37 @@ fn settings_content_column(
         )
 }
 
+fn terminal_font_options(family: &TerminalFontFamily, cx: &App) -> Vec<SelectOption> {
+    use crate::terminal_fonts::{FontFamilyCache, BUNDLED_FONT};
+    let mut options = vec![SelectOption::new(BUNDLED_FONT, "JetBrains Mono")
+        .section(crate::i18n::message("ui.bundled"))];
+    if let Some(families) = FontFamilyCache::loaded(cx) {
+        let mut installed = families
+            .monospace
+            .iter()
+            .map(|name| SelectOption::new(name, name.clone()))
+            .collect::<Vec<_>>();
+        if let Some(first) = installed.first_mut() {
+            *first = first.clone().section(crate::i18n::message("ui.installed"));
+        }
+        options.extend(installed);
+        if !options.iter().any(|option| option.value == family.family()) {
+            let mut saved = SelectOption::new(family.family(), family.family().to_owned())
+                .section(crate::i18n::message("ui.installed"));
+            if !families.all.iter().any(|name| name == family.family()) {
+                saved = saved.description(crate::i18n::message("ui.not_installed"));
+            }
+            options.push(saved);
+        }
+    } else if family.family() != BUNDLED_FONT {
+        options.push(SelectOption::new(
+            family.family(),
+            family.family().to_owned(),
+        ));
+    }
+    options
+}
+
 fn settings_select(
     root: &Entity<NativeRoot>,
     id: &'static str,
@@ -629,6 +660,13 @@ fn settings_select(
             handler,
             select_cx,
         );
+        let select = if matches!(selection, SettingsSelection::TerminalFont) {
+            select
+                .searchable(crate::i18n::message("ui.search_fonts"), select_cx)
+                .width(px(220.))
+        } else {
+            select
+        };
         let select = if matches!(selection, SettingsSelection::QuitBehavior) {
             select.min_menu_width(px(300.))
         } else {
@@ -894,8 +932,10 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.light_terminal_theme, value)),
             SettingsSelection::DarkTerminalTheme => DarkTerminalTheme::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.dark_terminal_theme, value)),
-            SettingsSelection::TerminalFont => parse_terminal_font(value)
-                .is_some_and(|value| update_if_changed(&mut settings.terminal_font_family, value)),
+            SettingsSelection::TerminalFont => update_if_changed(
+                &mut settings.terminal_font_family,
+                TerminalFontFamily::new(value),
+            ),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
             #[cfg(target_os = "macos")]
@@ -917,6 +957,15 @@ impl NativeRoot {
             return;
         }
         cx.notify();
+    }
+
+    fn sync_terminal_font_options(&self, cx: &mut Context<Self>) {
+        let family = self.settings(cx).terminal_font_family.clone();
+        let options = terminal_font_options(&family, cx);
+        self.settings_page.terminal_font.update(cx, |select, cx| {
+            select.set_value(family.family(), cx);
+            select.set_options(options, cx);
+        });
     }
 
     fn set_theme_intent(&mut self, intent: ThemeIntent, cx: &mut Context<Self>) {
@@ -1025,6 +1074,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn apply_terminal_settings(&self, cx: &mut Context<Self>) {
+        self.sync_terminal_font_options(cx);
         self.apply_terminal_palette(cx);
         for chat in self.attached.values() {
             app_settings::configure_terminal(&chat.terminal, self.settings(cx));

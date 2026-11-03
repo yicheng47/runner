@@ -262,7 +262,7 @@ impl AgentUpdateDialog {
     /// without running anything.
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let client = self.app_store.read(cx).client.clone();
-        let size = initial_grid(&terminal_style_for(&self.app_store.read(cx).settings));
+        let size = initial_grid(&terminal_style_for(&self.app_store.read(cx).settings, cx));
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
@@ -325,7 +325,7 @@ impl AgentUpdateDialog {
             }
         };
         let settings = self.app_store.read(cx).settings.clone();
-        terminal.set_palette(terminal_style_for(&settings).palette);
+        terminal.set_palette(terminal_style_for(&settings, cx).palette);
         app_settings::configure_terminal(&terminal, &settings);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -634,7 +634,7 @@ fn record_terminal_event(
 
 impl Render for AgentUpdateDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let style = terminal_style_for(&self.app_store.read(cx).settings);
+        let style = terminal_style_for(&self.app_store.read(cx).settings, cx);
         let mark = ChatIcon::for_runtime(self.request.runtime.key());
         let title = crate::i18n::tf(
             "format.updating",

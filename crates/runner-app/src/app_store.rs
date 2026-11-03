@@ -170,7 +170,7 @@ impl StoreRevisions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct TerminalSettingsSnapshot {
     light_theme: LightTerminalTheme,
     dark_theme: DarkTerminalTheme,
@@ -192,7 +192,7 @@ impl TerminalSettingsSnapshot {
             light_theme: settings.light_terminal_theme,
             dark_theme: settings.dark_terminal_theme,
             is_light: variant.is_light(),
-            font_family: settings.terminal_font_family,
+            font_family: settings.terminal_font_family.clone(),
             font_size: settings.terminal_font_size,
             cursor_style: settings.terminal_cursor_style,
         }
@@ -232,7 +232,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.app_zoom.to_bits().hash(&mut hasher);
         std::mem::discriminant(&settings.light_terminal_theme).hash(&mut hasher);
         std::mem::discriminant(&settings.dark_terminal_theme).hash(&mut hasher);
-        std::mem::discriminant(&settings.terminal_font_family).hash(&mut hasher);
+        settings.terminal_font_family.hash(&mut hasher);
         settings.terminal_font_size.hash(&mut hasher);
         std::mem::discriminant(&settings.terminal_cursor_style).hash(&mut hasher);
         settings.sidebar_width.to_bits().hash(&mut hasher);
@@ -1526,6 +1526,19 @@ mod tests {
                 "{variant:?}"
             );
         }
+    }
+
+    #[test]
+    fn font_family_names_invalidate_terminal_and_shell_settings() {
+        let mut settings = AppSettings {
+            terminal_font_family: TerminalFontFamily::new("SF Mono"),
+            ..AppSettings::default()
+        };
+        let terminal = TerminalSettingsSnapshot::from(&settings);
+        let shell = ShellSettingsSnapshot::from(&settings);
+        settings.terminal_font_family = TerminalFontFamily::new("Fira Code");
+        assert_ne!(terminal, TerminalSettingsSnapshot::from(&settings));
+        assert_ne!(shell, ShellSettingsSnapshot::from(&settings));
     }
 
     #[test]

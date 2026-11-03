@@ -1427,3 +1427,5 @@
 "launcher.goal_note" = "目标 · 与每位成员共享"
 "launcher.new_line" = "换行"
 "launcher.crew_unavailable" = "这个小队已不可用，请另选一个。"
+"ui.search_fonts" = "搜索字体"
+"ui.bundled" = "内置"

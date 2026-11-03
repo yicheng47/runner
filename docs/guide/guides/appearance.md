@@ -31,6 +31,6 @@ Windows uses Solid and does not show the macOS material selector.
 
 **Settings → General → App zoom** scales the application controls. Use **⌘+** / **Ctrl++** to zoom in, **⌘−** / **Ctrl+−** to zoom out, and **⌘0** / **Ctrl+0** to reset.
 
-The terminal canvas has a separate text size. Open **Settings → Terminal** to choose its font, font size and cursor style. If the sidebar is comfortable but the agent text is too small, change the terminal font size instead of app zoom.
+The terminal canvas has a separate text size. Open **Settings → Terminal** to choose its font, font size and cursor style. The searchable **Font family** list groups JetBrains Mono under **Bundled** and the monospace fonts on your computer under **Installed**. A missing saved font is marked **Not installed** and uses JetBrains Mono until you reinstall it or choose another font. Font changes apply to open terminals and the Appearance preview. If the sidebar is comfortable but the agent text is too small, change the terminal font size instead of app zoom.
 
 On macOS, **Option as Meta key** also controls whether Option sends shell shortcuts or types your keyboard layout's characters. **Automatic**, the default, uses Meta on U.S., U.S. International and ABC layouts and types characters on other layouts. Choose **Both Option keys**, **Left Option only**, **Right Option only** or **Off** to override it. A layout switch takes effect on the next keypress.

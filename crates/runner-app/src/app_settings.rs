@@ -155,38 +155,56 @@ pub fn app_font() -> Font {
     font
 }
 
-/// The bundled terminal face is the Nerd Font *Mono* build of JetBrains Mono
-/// (`assets/fonts/JetBrainsMonoNerdFontMono-*.ttf`): it keeps every icon one
-/// cell wide, which the grid renderer assumes. Settings saved under the retired
-/// "Meslo Nerd Font" default load as this face.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TerminalFontFamily {
-    #[serde(
-        alias = "System default",
-        alias = "Monaco",
-        alias = "SF Mono",
-        alias = "Fira Code"
-    )]
-    Menlo,
-    #[default]
-    #[serde(rename = "JetBrains Mono", alias = "Meslo Nerd Font")]
-    JetBrainsMono,
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct TerminalFontFamily(String);
+
+impl Default for TerminalFontFamily {
+    fn default() -> Self {
+        Self(crate::terminal_fonts::BUNDLED_FONT.to_owned())
+    }
+}
+
+impl<'de> Deserialize<'de> for TerminalFontFamily {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let family = String::deserialize(deserializer)?;
+        Ok(Self::new(match family.as_str() {
+            "JetBrains Mono" | "Meslo Nerd Font" => crate::terminal_fonts::BUNDLED_FONT,
+            "Menlo" => runner_app::theme::SYSTEM_MONOSPACE_FONT,
+            _ => &family,
+        }))
+    }
 }
 
 impl TerminalFontFamily {
-    pub fn family(self) -> &'static str {
-        match self {
-            Self::Menlo => runner_app::theme::SYSTEM_MONOSPACE_FONT,
-            Self::JetBrainsMono => "JetBrainsMono Nerd Font Mono",
-        }
+    pub fn new(family: impl Into<String>) -> Self {
+        Self(family.into())
     }
 
-    pub fn font(self) -> Font {
-        let mut font = font(self.family());
+    pub fn family(&self) -> &str {
+        &self.0
+    }
+
+    pub fn font(&self, cx: &gpui::App) -> Font {
+        let available = crate::terminal_fonts::FontFamilyCache::loaded(cx)
+            .is_some_and(|families| families.all.contains(&self.0));
+        self.resolved_font(available)
+    }
+
+    fn resolved_font(&self, available: bool) -> Font {
+        let mut font = font(if available {
+            self.0.clone()
+        } else {
+            crate::terminal_fonts::BUNDLED_FONT.to_owned()
+        });
         font.fallbacks = Some(FontFallbacks::from_fonts(
-            runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
-                .iter()
-                .map(|family| (*family).to_owned())
+            std::iter::once(crate::terminal_fonts::BUNDLED_FONT)
+                .chain(
+                    runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
+                        .iter()
+                        .copied(),
+                )
+                .map(str::to_owned)
                 .collect(),
         ));
         font
@@ -363,7 +381,7 @@ impl Default for AppSettings {
             app_zoom: 1.,
             light_terminal_theme: LightTerminalTheme::RosePineDawn,
             dark_terminal_theme: DarkTerminalTheme::Runner,
-            terminal_font_family: TerminalFontFamily::JetBrainsMono,
+            terminal_font_family: TerminalFontFamily::default(),
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
             option_as_meta: Default::default(),
@@ -773,7 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn persisted_labels_match_the_react_settings_contract() {
+    fn persisted_settings_use_the_current_contract() {
         let value = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(value["appTheme"], "auto");
         assert_eq!(value["lightAppTheme"], "runner-light");
@@ -781,7 +799,10 @@ mod tests {
         assert_eq!(value["lightTerminalTheme"], "rose-pine-dawn");
         assert_eq!(value["darkTerminalTheme"], "runner");
         assert!(value.get("terminalTheme").is_none());
-        assert_eq!(value["terminalFontFamily"], "JetBrains Mono");
+        assert_eq!(
+            value["terminalFontFamily"],
+            crate::terminal_fonts::BUNDLED_FONT
+        );
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
         assert_eq!(value["resumeOnLaunch"], true);
@@ -1009,44 +1030,63 @@ mod tests {
     }
 
     #[test]
-    fn terminal_fonts_default_to_jetbrains_mono_and_normalize_legacy_choices() {
+    fn terminal_fonts_migrate_each_legacy_choice() {
         assert_eq!(
-            AppSettings::default().terminal_font_family,
-            TerminalFontFamily::JetBrainsMono
+            AppSettings::default().terminal_font_family.family(),
+            crate::terminal_fonts::BUNDLED_FONT
         );
-        for legacy in ["System default", "Menlo", "Monaco", "SF Mono", "Fira Code"] {
+        for (saved, expected) in [
+            ("JetBrains Mono", crate::terminal_fonts::BUNDLED_FONT),
+            ("Meslo Nerd Font", crate::terminal_fonts::BUNDLED_FONT),
+            ("Menlo", runner_app::theme::SYSTEM_MONOSPACE_FONT),
+            ("System default", "System default"),
+            ("Monaco", "Monaco"),
+            ("SF Mono", "SF Mono"),
+            ("Fira Code", "Fira Code"),
+        ] {
             let parsed: TerminalFontFamily =
-                serde_json::from_str(&format!("\"{legacy}\"")).unwrap();
-            assert_eq!(parsed, TerminalFontFamily::Menlo, "{legacy}");
-        }
-        for bundled in ["JetBrains Mono", "Meslo Nerd Font"] {
-            let parsed: TerminalFontFamily =
-                serde_json::from_str(&format!("\"{bundled}\"")).unwrap();
-            assert_eq!(parsed, TerminalFontFamily::JetBrainsMono, "{bundled}");
+                serde_json::from_value(serde_json::json!(saved)).unwrap();
+            assert_eq!(parsed.family(), expected, "{saved}");
         }
     }
 
     #[test]
-    fn terminal_fonts_use_the_platform_fallback_chain() {
-        for family in [TerminalFontFamily::JetBrainsMono, TerminalFontFamily::Menlo] {
-            let font = family.font();
-            assert_eq!(font.family.as_ref(), family.family());
-            #[cfg(windows)]
-            assert_eq!(
-                font.fallbacks.unwrap().fallback_list(),
-                ["Microsoft YaHei", "Segoe UI"]
-            );
-            #[cfg(target_os = "linux")]
-            assert_eq!(
-                font.fallbacks.clone().unwrap().fallback_list(),
+    fn missing_terminal_font_falls_back_without_overwriting_saved_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ui-settings.json");
+        fs::write(&path, r#"{"terminalFontFamily":"Runner Missing Font 931"}"#).unwrap();
+        let settings = AppSettings::load(&path).unwrap();
+        assert_eq!(
+            settings
+                .terminal_font_family
+                .resolved_font(false)
+                .family
+                .as_ref(),
+            crate::terminal_fonts::BUNDLED_FONT
+        );
+        settings.save(&path).unwrap();
+        assert_eq!(
+            AppSettings::load(&path)
+                .unwrap()
+                .terminal_font_family
+                .family(),
+            "Runner Missing Font 931"
+        );
+    }
+
+    #[test]
+    fn terminal_fonts_use_bundled_icons_and_platform_fallbacks() {
+        let family = TerminalFontFamily::new("SF Mono");
+        let font = family.resolved_font(true);
+        assert_eq!(font.family.as_ref(), "SF Mono");
+        let expected = std::iter::once(crate::terminal_fonts::BUNDLED_FONT)
+            .chain(
                 runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
-            );
-            #[cfg(target_os = "macos")]
-            assert_eq!(
-                font.fallbacks.unwrap().fallback_list(),
-                ["Microsoft YaHei", "sans-serif"]
-            );
-        }
+                    .iter()
+                    .copied(),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(font.fallbacks.unwrap().fallback_list(), expected);
     }
 
     #[test]

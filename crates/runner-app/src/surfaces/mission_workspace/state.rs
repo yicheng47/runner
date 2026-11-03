@@ -787,13 +787,13 @@ impl MissionWorkspace {
     }
 
     pub(super) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
-        self.presentation.terminal_style(self.settings(cx))
+        self.presentation.terminal_style(self.settings(cx), cx)
     }
 
     pub(crate) fn apply_terminal_settings(&self, cx: &App) {
         for chat in self.attached.values() {
             chat.terminal.set_palette(
-                crate::surfaces::app_shell::terminal_style_for(self.settings(cx)).palette,
+                crate::surfaces::app_shell::terminal_style_for(self.settings(cx), cx).palette,
             );
             app_settings::configure_terminal(&chat.terminal, self.settings(cx));
         }

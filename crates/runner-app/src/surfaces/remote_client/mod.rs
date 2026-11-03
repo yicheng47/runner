@@ -79,7 +79,7 @@ impl RemoteClient {
         &self.app_store.read(cx).settings
     }
     fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
-        let mut style = crate::surfaces::app_shell::terminal_style_for(self.settings(cx));
+        let mut style = crate::surfaces::app_shell::terminal_style_for(self.settings(cx), cx);
         if let Some(palette) = self.remote_terminal_palette(cx) {
             style.palette = palette;
         }

@@ -51,7 +51,7 @@ pub(crate) struct PreviewPane {
     pub mode: PreviewMode,
     pub colors: ThemeColors,
     pub palette: TerminalPalette,
-    pub font_family: &'static str,
+    pub font: gpui::Font,
     pub caption: SharedString,
     pub active: bool,
 }
@@ -78,7 +78,7 @@ fn preview_pane(pane: PreviewPane, on_pick: PickHandler) -> AnyElement {
         mode,
         colors,
         palette,
-        font_family,
+        font,
         caption,
         active,
     } = pane;
@@ -115,7 +115,7 @@ fn preview_pane(pane: PreviewPane, on_pick: PickHandler) -> AnyElement {
                     pane
                 })
                 .child(sidebar_strip(&colors))
-                .child(main_area(mode, &colors, &palette, font_family)),
+                .child(main_area(mode, &colors, &palette, font)),
         )
         .child(
             div()
@@ -156,7 +156,7 @@ fn main_area(
     mode: PreviewMode,
     colors: &ThemeColors,
     palette: &TerminalPalette,
-    font_family: &'static str,
+    font: gpui::Font,
 ) -> Div {
     let lines = [
         ("❯ cargo test -p runner-daemon", palette.foreground),
@@ -205,7 +205,11 @@ fn main_area(
                 .p(rems(8. / 16.))
                 .flex()
                 .flex_col()
-                .font_family(font_family)
+                .map(|mut terminal| {
+                    terminal.text_style().font_family = Some(font.family);
+                    terminal.text_style().font_fallbacks = font.fallbacks;
+                    terminal
+                })
                 .text_size(theme::text_meta())
                 .font_weight(FontWeight::NORMAL)
                 .line_height(rems(15. / 16.))

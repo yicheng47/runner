@@ -306,7 +306,7 @@ mod static_font_tests {
     };
 
     use super::{INTER_FONTS, JETBRAINS_MONO_FONTS};
-    use crate::app_settings::TerminalFontFamily;
+    use crate::terminal_fonts::BUNDLED_FONT;
 
     #[test]
     fn jetbrains_mono_static_faces_resolve_under_the_settings_family_name() {
@@ -318,15 +318,12 @@ mod static_font_tests {
             .collect::<Vec<_>>();
         assert_eq!(
             faces.iter().map(Font::family_name).collect::<Vec<_>>(),
-            vec![TerminalFontFamily::JetBrainsMono.family(); 4]
+            vec![BUNDLED_FONT; 4]
         );
         // The UI monospace request must name the bundled family exactly, or
         // gpui silently resolves it to its own fallback stack (Helvetica on
         // macOS) with no log line.
-        assert_eq!(
-            runner_app::platform_fonts::UI_MONOSPACE_FONT,
-            TerminalFontFamily::JetBrainsMono.family()
-        );
+        assert_eq!(runner_app::platform_fonts::UI_MONOSPACE_FONT, BUNDLED_FONT);
         assert_eq!(
             faces
                 .iter()

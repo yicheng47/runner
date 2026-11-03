@@ -31,6 +31,6 @@ Windows 使用实色，不显示 macOS 的材质选择器。
 
 **设置 → 通用 → 界面缩放（Settings → General → App zoom）** 调整应用控件大小。使用 **⌘+** / **Ctrl++** 放大， **⌘−** / **Ctrl+−** 缩小， **⌘0** / **Ctrl+0** 重置。
 
-终端画布有独立文字大小。打开 **设置 → 终端（Settings → Terminal）** 选择字体、字号和光标样式。若侧边栏大小合适而智能体文字太小，请调整终端字号，而非应用缩放。
+终端画布有独立文字大小。打开 **设置 → 终端（Settings → Terminal）** 选择字体、字号和光标样式。可搜索的 **字体（Font family）** 列表将 JetBrains Mono 放在 **内置（Bundled）** 下，将电脑上的等宽字体放在 **已安装（Installed）** 下。已保存但缺失的字体标为 **未安装（Not installed）**，并使用 JetBrains Mono，直到重新安装该字体或选择其他字体。字体更改会应用到已打开的终端和外观预览。若侧边栏大小合适而智能体文字太小，请调整终端字号，而非应用缩放。
 
 在 macOS 上， **将 Option 用作 Meta 键（Option as Meta key）** 还控制 Option 是发送 Shell 快捷键还是输入键盘布局的字符。默认的 **自动（Automatic）** 在 U.S.、U.S. International 和 ABC 布局中使用 Meta，在其他布局中输入字符。可选择 **左右 Option 键（Both Option keys）** 、 **仅左 Option 键（Left Option only）** 、 **仅右 Option 键（Right Option only）** 或 **关闭（Off）** 覆盖默认行为。布局切换从下一次按键生效。

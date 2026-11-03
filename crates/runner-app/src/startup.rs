@@ -61,6 +61,8 @@ pub(crate) fn run() -> Result<()> {
                     .collect(),
             )
             .expect("bundled fonts must be valid");
+        #[cfg(target_os = "macos")]
+        crate::terminal_fonts::register_bundled_font_for_fallback();
 
         #[cfg(target_os = "macos")]
         install_app_icon();

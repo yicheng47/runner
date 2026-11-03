@@ -5522,6 +5522,8 @@ dependencies = [
  "base64",
  "block2 0.6.2",
  "chrono",
+ "core-foundation 0.10.0",
+ "core-text",
  "flate2",
  "futures",
  "gpui-pre",

@@ -1851,12 +1851,12 @@ mod tests {
     }
 
     impl Render for WheelHost {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let style = TerminalStyle {
                 palette: runner_terminal::palette::RUNNER,
                 font: crate::app_settings::AppSettings::default()
                     .terminal_font_family
-                    .font(),
+                    .font(cx),
                 font_size: self.font_size,
                 app_zoom: 1.,
             };
@@ -1997,10 +1997,10 @@ mod tests {
         let mut visual = VisualTestContext::from_window(window.into(), &cx);
         visual.simulate_resize(size(px(700.), px(300.)));
         let right_bounds = visual.debug_bounds("WHEEL_RIGHT").unwrap();
-        let cell_width = visual.update(|window, _| {
+        let cell_width = visual.update(|window, cx| {
             let font = crate::app_settings::AppSettings::default()
                 .terminal_font_family
-                .font();
+                .font(cx);
             let id = window.text_system().resolve_font(&font);
             window
                 .text_system()
@@ -2061,10 +2061,10 @@ mod tests {
         wait_for_rows(&right_terminal, 5);
         let changed_bounds = visual.debug_bounds("WHEEL_RIGHT").unwrap();
         assert_eq!(changed_bounds.left(), right_bounds.left() + px(20.));
-        let new_width = visual.update(|window, _| {
+        let new_width = visual.update(|window, cx| {
             let font = crate::app_settings::AppSettings::default()
                 .terminal_font_family
-                .font();
+                .font(cx);
             let id = window.text_system().resolve_font(&font);
             window
                 .text_system()
