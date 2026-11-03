@@ -32,6 +32,14 @@ pub struct MissionEnv {
     pub event_log: PathBuf,
 }
 
+/// The calling agent session's ID (#748). Every agent session has one;
+/// terminals and ordinary shells do not.
+pub fn session_id() -> Option<String> {
+    std::env::var(runner_core::protocol::SESSION_ID_ENV)
+        .ok()
+        .filter(|id| !id.is_empty())
+}
+
 pub fn resolve() -> BusContext {
     resolve_from(|name| std::env::var(name).ok())
 }

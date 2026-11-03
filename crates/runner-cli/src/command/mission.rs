@@ -15,13 +15,47 @@ pub(super) fn mission_arg(command: &MissionCommand) -> Option<&Option<String>> {
     }
 }
 
+/// Commands that act for the calling chat need one. Checked before Runner
+/// is reached, so the hint shows even while it is not running.
+pub(super) fn require_chat(
+    command: &MissionCommand,
+    session: Option<&str>,
+) -> Result<(), CliError> {
+    if session.is_some() {
+        return Ok(());
+    }
+    match command {
+        MissionCommand::List {
+            linked_here: true, ..
+        } => Err(CliError::usage(
+            "runner mission list --linked-here is for a Runner chat; outside one, use runner mission list",
+        )),
+        MissionCommand::Link { chat: None, .. } => Err(CliError::usage(
+            "runner mission link without --chat is for a Runner chat; outside one, pass --chat <session>",
+        )),
+        _ => Ok(()),
+    }
+}
+
 pub(super) async fn run_mission(
     client: &impl Caller,
     command: &MissionCommand,
     context: &BusContext,
+    session: Option<&str>,
 ) -> Result<ToolResponse, CliError> {
+    require_chat(command, session)?;
     match command {
-        MissionCommand::List { crew } => {
+        MissionCommand::List {
+            linked_here: true, ..
+        } => {
+            call(
+                client,
+                "mission_list_linked",
+                json!({"session_id": session}),
+            )
+            .await
+        }
+        MissionCommand::List { crew, .. } => {
             let crew_id = match crew {
                 Some(crew) => Some(resolve_named(client, "crew", "crew_list", crew).await?.id),
                 None => None,
@@ -39,6 +73,7 @@ pub(super) async fn run_mission(
             title,
             project,
             cwd,
+            no_report,
         } => {
             let crew = match crew {
                 Some(crew) => Some(resolve_named(client, "crew", "crew_list", crew).await?),
@@ -67,6 +102,8 @@ pub(super) async fn run_mission(
                     "title": title,
                     "goal_override": goal,
                     "cwd": cwd,
+                    "started_by_session_id": session,
+                    "no_report": no_report,
                 }),
             )
             .await
@@ -161,6 +198,33 @@ pub(super) async fn run_mission(
                 json!({"mission_id": mission_id, "project_id": project_id}),
             )
             .await
+        }
+        MissionCommand::Link {
+            mission,
+            chat,
+            no_report,
+        } => {
+            let mission_id = resolve_mission(client, mission).await?;
+            let chat = match (chat, session) {
+                (Some(chat), _) => resolve_session(client, chat).await?,
+                (None, Some(session)) => session.to_owned(),
+                (None, None) => unreachable!("require_chat refuses a link with no chat"),
+            };
+            call(
+                client,
+                "mission_link",
+                json!({
+                    "mission_id": mission_id,
+                    "session_id": chat,
+                    "no_report": no_report,
+                    "caller_session_id": session,
+                }),
+            )
+            .await
+        }
+        MissionCommand::Unlink { mission } => {
+            let mission_id = resolve_mission(client, mission).await?;
+            call(client, "mission_unlink", json!({"mission_id": mission_id})).await
         }
         MissionCommand::Feed {
             mission,

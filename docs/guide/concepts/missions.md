@@ -28,6 +28,20 @@ An inbox notice that Runner typed itself is not a draft. If the agent ignored it
 
 The scrollbar on the feed’s right edge appears while you scroll or hover the feed, then hides after you leave. It shows your position in long histories. Drag its thumb, click its track, or scroll over it to move through the feed. New messages keep the feed at the bottom while you are near the end; while reading older messages, use **New messages** to return to the bottom.
 
+## Linked chat and reports
+
+A mission that an agent starts from a Runner chat is linked to that chat; a mission started from the app, from a terminal or by an agent outside Runner starts unlinked. A mission has at most one linked chat: the sidebar shows the mission under that chat, and the mission reports to it. Link, move or remove the link from the sidebar or with `runner mission link` and `runner mission unlink`, as [Chats and windows](../guides/chats-and-windows.md#missions-under-the-chat-that-started-them) describes. Only an agent chat can be linked, never a terminal or a mission member, and the chat and the mission must be in the same project or both outside one. Archiving either keeps the link; deleting the chat removes it. The mission's header names the linked chat and opens it.
+
+Runner gives each mission one state: **Needs you** while a question is pending or a member waits for input or approval, **Failed** when a member crashed or its turn failed, **Working** while a member works, **Settled** once every member has been idle for 30 seconds with nothing pending, and **Ended** once no member runs. Each time a mission enters Needs you, Failed or Settled, Runner reports it to the linked chat in one line that points to the mission:
+
+```text
+[runner] Mission 01M6DD9ZQK4R8V2TBN5C7XW3EH "Fix the login bug" needs you. Read it with runner mission show 01M6DD9ZQK4R8V2TBN5C7XW3EH.
+```
+
+`runner mission show` prints this state as `STATE`, beside `STATUS`, which says whether the mission is running, stopped or completed. A mission can be `STATE settled` and `STATUS running` at once: its members are idle, but their sessions still run.
+
+A report waits until the chat is idle and its input is empty, for as long as an unsent draft stays, and reports from several missions arrive one at a time, oldest first. A later state replaces a report still waiting, so a chat that was busy hears only the latest. Working and handoffs between members never report. A stopped chat receives its waiting reports when it resumes, and an archived chat receives none while its missions keep running. Linking from the sidebar, or from another chat's command line, sends one report with the mission's current state. Start the mission with `--no-report`, or link it with `--no-report`, to keep the link without reports.
+
 ## Permissions
 
 Mission launches use the runtime's broad-access mode, generally **Bypass**; pi uses a trusted workspace. A role's more restrictive direct-chat permission setting does not turn a mission into an approval-by-approval workflow. Write clear limits in the goal, and choose the working directory accordingly.

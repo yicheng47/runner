@@ -325,6 +325,13 @@ pub fn call_daemon(
         "mission_list_summary" => {
             response(client.mission_list_summary_impl(argument(&args, "crew_id")?))
         }
+        "mission_list_linked" => {
+            response(client.mission_list_linked(&argument::<String>(&args, "session_id")?))
+        }
+        "mission_link" => response(client.mission_link(parse(args)?)),
+        "mission_unlink" => {
+            response(client.mission_unlink(&argument::<String>(&args, "mission_id")?))
+        }
         "mission_feed" => response(client.mission_feed(parse(args)?)),
         "mission_status" => response(client.mission_status(&argument::<String>(&args, "id")?)),
         "mission_get" => response(client.mission_get(&argument::<String>(&args, "id")?)),

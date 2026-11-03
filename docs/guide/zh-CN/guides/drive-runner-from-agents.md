@@ -19,7 +19,7 @@ runner role list --json
 
 ## 启动并跟进小队
 
-本节的启动与监控说明适用于启动另一个任务的外部操作者。该任务的更新不会自动推送到外部智能体的聊天中。任务参与者则按下文所述接收自己任务的收件箱通知。
+从 Shell 启动时，请自行启动任务并跟随其消息流。Runner 聊天中的智能体启动任务时，Runner 会把任务关联到该聊天并向它汇报，见[从 Runner 聊天启动](#从-runner-聊天启动)。任务成员按下文所述接收自己任务的收件箱通知。
 
 编写 UTF-8 编码的 `brief.md`，包含任务、目录假设、验证要求与授权的 Git 操作。在 macOS Shell 中运行：
 
@@ -40,7 +40,22 @@ runner mission feed $mission --follow --json
 
 跟随命令会显示新事件，直到任务结束或所有会话退出。按 **Ctrl+C** 只结束跟随，不会停止任务。可以在一个终端中保持跟随，另开终端运行其他命令。
 
-启动另一个任务的外部智能体必须安排监控，使后续工作中及空闲时都能收到输出与退出通知。无人读取的后台日志不算监控。如果宿主无法投递这些事件，智能体应明确说明，并提供消息流命令供你运行。监控中断后，请检查任务，并使用 `--since <offset> --oldest-first` 从最后一条 JSON 事件的 `next_offset` 恢复。完整监控契约见生成的[智能体指南](../reference/cli.md#智能体指南)。
+## 从 Runner 聊天启动
+
+在 Runner 聊天中，`runner mission start` 会把新任务关联到该聊天。任务行显示在侧边栏中该聊天的下方；任务需要你处理、失败或稳定下来时，Runner 会等聊天空闲且输入框为空，再向聊天输入一行简短的 `[runner]` 汇报。加上 `--no-report` 可只关联、不汇报。从应用、终端或 Runner 外部智能体启动的任务不会关联。
+
+启动任务的智能体会告诉你任务 ID，并说明 Runner 是否会向此聊天汇报：用 `--no-report` 启动、关联到其他聊天或未关联的任务不会汇报到这里；随后它结束当前轮次，而不是监控消息流。收到 `[runner]` 行时，智能体用 `runner mission show` 和 `runner mission feed` 查看任务，告诉你发生了什么，并把待回答的问题转给你。它只按你的决定回答问题。
+
+```sh
+runner mission link <mission-id>
+runner mission link <mission-id> --chat <session-id> --no-report
+runner mission unlink <mission-id>
+runner mission list --linked-here
+```
+
+`mission link` 把已有任务关联到当前所在的聊天，在聊天外则关联到 `--chat` 指定的聊天；任务已有关联时会改为新聊天。只能关联未归档的智能体聊天，且它须与任务属于同一项目，或两者都不属于项目。`mission unlink` 解除关联。`mission list --linked-here` 列出关联到当前聊天的任务，便于智能体在上下文压缩后重新找到它们。也可以在侧边栏中关联，见[聊天与窗口](chats-and-windows.md#聊天下方的关联任务)。
+
+Runner 聊天之外的智能体没有关联，也收不到汇报。它会告诉你任务 ID，你可以在应用中或用 `runner mission feed <mission-id> --follow` 跟进任务。
 
 ## 发送消息并回答问题
 
@@ -58,7 +73,7 @@ runner mission archive <mission-id>
 
 在任务内，成员可以使用 `runner msg post --to reviewer "Ready for review"` 和 `runner msg read`，无需任务 ID。任务外的写操作需要 `--mission`。外部调用者未使用 `--as` 时以操作者身份发言；不要用 `--as` 冒充其他成员。
 
-Runner 向每个成员推送收件箱通知。等待队友且没有独立工作时，请结束当前轮次。不要启动消息流监控、轮询或睡眠循环来等待消息。团队协作通过后续轮次迭代。外部监控说明不适用于接收自己任务中的消息。有限诊断检查、独立工作，以及为已授权 PR 等待 CI 仍可进行。
+Runner 向每个成员推送收件箱通知。等待队友且没有独立工作时，请结束当前轮次。不要启动消息流监控、轮询或睡眠循环来等待消息。团队协作通过后续轮次迭代。有限诊断检查、独立工作，以及为已授权 PR 等待 CI 仍可进行。
 
 使用 `runner msg post --to coder --to reviewer "Please check the parser."` 给多人发消息，或使用开头提及：`runner msg post "@coder @reviewer Please check the parser."`。显式 `--to` 优先。开头收件人标记为 `@handle`，可紧跟一个 `:` 或 `,`，因此 `@coder, @reviewer: Please check.` 会发送给两位成员。代号由小写字母、数字、`_` 和 `-` 组成，以字母或数字开头。任何其他标记都会结束开头提及序列：`@reviewer's audit` 与单独的 `@` 仍是文本，不指定收件人。正文中的提及不指定收件人。未知代号和 `@human` 会被拒绝；有效成员见 `mission show`。所有人都需要行动时才省略收件人以广播；普通跟进请回复发送者。
 
@@ -74,7 +89,7 @@ runner mission add-role <returned-mission-id> coder --task-file task.md
 runner mission add-role <returned-mission-id> reviewer --task "Review the coder's diff after its handoff."
 ```
 
-外部操作者需按上文为返回的 ID 启动消息流监控。这些成员收到共享目标、各自任务与收件箱通知。添加和移除角色由操作者控制，任务内的智能体不能操作。完整 [CLI 参考](../reference/cli.md)列出覆盖设置和生命周期命令。
+从 Runner 聊天启动的任务会如上文所述关联到该聊天。这些成员收到共享目标、各自任务与收件箱通知。添加和移除角色由操作者控制，任务内的智能体不能操作。完整 [CLI 参考](../reference/cli.md)列出覆盖设置和生命周期命令。
 
 ## 退出码
 

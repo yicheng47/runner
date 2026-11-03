@@ -123,7 +123,7 @@ Desktop notifications keep their current triggers, settings and targets. Clickin
 
 - `mission start` gains `--no-report`, and its JSON gains `linked_chat`. Plain output, `-q`, stdout and exit codes are unchanged, and `mission start` still returns at once.
 - `mission link` and `mission unlink` set and remove the link, as in [Linking by hand](#linking-by-hand).
-- `mission show` gains `STARTED BY` and `LINKED TO` lines and the `linked_chat` JSON field, with whether it reports.
+- `mission show` gains `STARTED BY` and `LINKED TO` lines and the `linked_chat` JSON field, with whether it reports, and a `STATE` line with the state reports name (the `phase` JSON field) beside the lifecycle `STATUS`, so a settled mission that still runs does not read as unfinished.
 - `mission list --linked-here` lists the missions linked to this chat, read from `RUNNER_SESSION_ID`. Outside a Runner chat it exits with a hint.
 - `mission feed --follow` stays, for people and scripts that want a live tail.
 
