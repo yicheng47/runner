@@ -217,14 +217,7 @@ impl NativeRoot {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let library = matches!(
-            self.remote_client.active_item(),
-            Some(
-                crate::surfaces::remote_client::RemoteItem::Roles
-                    | crate::surfaces::remote_client::RemoteItem::Crews
-            )
-        );
-        let height = if self.front_page_has_islands() && !library {
+        let height = if self.front_page_has_islands() {
             TITLEBAR_DRAG_HEIGHT
         } else {
             WORKSPACE_HEADER_HEIGHT
