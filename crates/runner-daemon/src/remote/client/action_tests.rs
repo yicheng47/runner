@@ -641,6 +641,8 @@ async fn a_followed_feed_keeps_the_shared_route_alive_without_an_overview_follow
             title: "Feed".into(),
             goal_override: None,
             cwd: Some(host.path()),
+            started_by_session_id: None,
+            no_report: false,
         },
     )
     .unwrap();
@@ -850,6 +852,8 @@ fn feed_mission(host: &Host) -> (String, runner_core::event_log::EventLog) {
             title: "Feed fixture".into(),
             goal_override: None,
             cwd: Some(host.path()),
+            started_by_session_id: None,
+            no_report: false,
         },
     )
     .unwrap();
@@ -1505,6 +1509,8 @@ async fn role_and_crew_actions_reject_invalid_fields_and_unknown_ids_without_lea
                 stopped_at: None,
                 pinned_at: None,
                 archived_at: None,
+                linked_session_id: None,
+                report_to_chat: true,
             },
         )
         .unwrap();

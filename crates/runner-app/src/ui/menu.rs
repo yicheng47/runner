@@ -14,6 +14,8 @@ use crate::ui::scrollbar::Scrollbar;
 use crate::ui::tooltip::tooltip_view;
 
 pub type MenuHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// Opens an item's submenu beside the item's row, whose bounds it is given.
+pub type SubmenuHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -30,6 +32,8 @@ pub struct MenuItem {
     pub accent: bool,
     pub disabled: bool,
     pub separator_before: bool,
+    /// Opens a submenu beside the row instead of acting and closing the menu.
+    pub submenu: bool,
     header: bool,
 }
 
@@ -59,6 +63,7 @@ impl MenuItem {
             accent: false,
             disabled: false,
             separator_before: false,
+            submenu: false,
             header: false,
         }
     }
@@ -105,6 +110,13 @@ impl MenuItem {
 
     pub fn separator_before(mut self, separator_before: bool) -> Self {
         self.separator_before = separator_before;
+        self
+    }
+
+    /// The item opens a submenu: a chevron marks it, and choosing it keeps the
+    /// menu open while the submenu shows beside it.
+    pub fn submenu(mut self) -> Self {
+        self.submenu = true;
         self
     }
 
@@ -815,6 +827,8 @@ pub struct ContextMenu {
     on_activate: MenuHandler,
     on_dismiss: DismissHandler,
     return_focus: Option<FocusHandle>,
+    on_submenu: Option<SubmenuHandler>,
+    row_bounds: Rc<std::cell::RefCell<std::collections::HashMap<usize, Bounds<Pixels>>>>,
 }
 
 impl ContextMenu {
@@ -838,7 +852,15 @@ impl ContextMenu {
             on_activate,
             on_dismiss,
             return_focus: None,
+            on_submenu: None,
+            row_bounds: Default::default(),
         }
+    }
+
+    /// Handles the items marked `submenu`.
+    pub fn on_submenu(mut self, handler: SubmenuHandler) -> Self {
+        self.on_submenu = Some(handler);
+        self
     }
 
     /// Opens under `anchor`, the button that opened the menu, the way a
@@ -880,6 +902,20 @@ impl ContextMenu {
         if self.items.get(index).is_none_or(|item| item.disabled) {
             return;
         }
+        if self.items[index].submenu {
+            if let Some(handler) = self.on_submenu.clone() {
+                self.state.highlighted = index;
+                let bounds = self
+                    .row_bounds
+                    .borrow()
+                    .get(&index)
+                    .copied()
+                    .unwrap_or_default();
+                handler(index, bounds, window, cx);
+                cx.notify();
+                return;
+            }
+        }
         self.state.close();
         if self.focus_handle.is_focused(window) {
             if let Some(focus) = self.return_focus.take() {
@@ -892,6 +928,14 @@ impl ContextMenu {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "right" {
+            let index = self.state.highlighted;
+            if self.items.get(index).is_some_and(|item| item.submenu) {
+                cx.stop_propagation();
+                self.activate(index, window, cx);
+            }
+            return;
+        }
         let key = match event.keystroke.key.as_str() {
             "up" => Some(MenuKey::Up),
             "down" => Some(MenuKey::Down),
@@ -935,8 +979,21 @@ impl ContextMenu {
                     theme::text()
                 };
                 let separator_before = item.separator_before;
+                let submenu = item.submenu;
+                let measured = Rc::clone(&self.row_bounds);
                 let row = div()
                     .id(("context-menu-item", index))
+                    .relative()
+                    .child(
+                        canvas(
+                            move |bounds, _, _| {
+                                measured.borrow_mut().insert(index, bounds);
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
                     .when(cfg!(test), |row| {
                         row.debug_selector(move || format!("CONTEXT_MENU_ITEM_{index}"))
                     })
@@ -1002,6 +1059,15 @@ impl ContextMenu {
                             .text_color(theme::faint())
                             .child(shortcut)
                     }))
+                    .when(submenu, |row| {
+                        row.child(
+                            svg()
+                                .flex_none()
+                                .path("chevron-right.svg")
+                                .size(rems(12. / 16.))
+                                .text_color(theme::faint()),
+                        )
+                    })
                     .when_some(item.tooltip, |row, tooltip| {
                         row.tooltip(move |_, cx| tooltip_view(tooltip.clone(), cx))
                     })
@@ -1086,7 +1152,7 @@ fn context_menu_width(zoom: f32) -> (Pixels, Pixels) {
     (px(160. * zoom), px(320. * zoom))
 }
 
-pub(crate) fn context_menu_layer(
+pub fn context_menu_layer(
     position: gpui::Point<Pixels>,
     window: &Window,
     width: Pixels,

@@ -506,6 +506,8 @@ async fn mission_start_spawn_failure_leaves_live_siblings_and_spawns_later_slots
             title: "Independent slots".into(),
             goal_override: None,
             cwd: Some(data.path().to_string_lossy().into_owned()),
+            started_by_session_id: None,
+            no_report: false,
         },
     )
     .await

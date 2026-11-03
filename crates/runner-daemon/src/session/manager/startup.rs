@@ -6,6 +6,8 @@ const STARTUP_OUTPUT_GRACE: Duration = Duration::from_secs(10);
 
 pub(super) struct StartupDelivery {
     pub(super) runtime: String,
+    /// A direct chat's gate holds only reports to it (#748); it has no inbox.
+    pub(super) reports_only: bool,
     hooks: bool,
     pending_turn: bool,
     started: Instant,
@@ -19,12 +21,36 @@ impl StartupDelivery {
         let hooks = crate::runtimes::for_key(runtime).startup_delivery_uses_hooks(pending_turn);
         Self {
             runtime: runtime.to_owned(),
+            reports_only: false,
             hooks,
             pending_turn,
             started: now,
             first_output: None,
             last_output: None,
             working: false,
+        }
+    }
+
+    /// A direct agent chat's gate after a spawn: a report waits until the agent is
+    /// ready, as a slot's notice does, so it never lands before the agent reads its
+    /// input or in a quiet startup screen such as a folder-trust prompt.
+    pub(super) fn for_reports(runtime: &str, pending_turn: bool, now: Instant) -> Self {
+        Self {
+            reports_only: true,
+            ..Self::new(runtime, pending_turn, now)
+        }
+    }
+
+    /// The same gate for a start that meets no folder-trust screen: a conversation
+    /// actually resumed or forked, in a folder trusted when it first ran, or a fresh
+    /// start with no first turn whose runtime has already decided the folder's trust. A
+    /// runtime that sends no startup hook there opens it once startup output settles;
+    /// from the agent's first hook, the hooks decide, first turn included.
+    pub(super) fn for_trusted_reports(runtime: &str, pending_turn: bool, now: Instant) -> Self {
+        let gate = Self::for_reports(runtime, pending_turn, now);
+        Self {
+            hooks: gate.hooks && crate::runtimes::for_key(runtime).startup_hook_on_reopen(),
+            ..gate
         }
     }
 
@@ -39,6 +65,9 @@ impl StartupDelivery {
     ) -> bool {
         if observation.source != ObservationSource::Hook {
             return false;
+        }
+        if self.reports_only {
+            self.hooks = true;
         }
         self.working = observation.activity == Activity::Working || observation.needs_you();
         self.hooks

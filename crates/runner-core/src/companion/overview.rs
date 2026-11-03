@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use super::{wire_enum, SessionStatus};
 
 wire_enum!(MissionState, Stopped, { Running => "running", Stopped => "stopped" });
+wire_enum!(MissionPhase, Working, {
+    NeedsYou => "needsYou", Failed => "failed", Working => "working",
+    Settled => "settled", Ended => "ended",
+});
 wire_enum!(SessionKind, Chat, { Chat => "chat", Agent => "agent", Shell => "shell" });
 wire_enum!(SplitDirection, Row, { Row => "row", Column => "column" });
 wire_enum!(SidebarNodeKind, Tab, { Project => "project", Tab => "tab", Mission => "mission" });
@@ -126,6 +130,60 @@ pub struct Mission {
     pub members: Vec<Member>,
     pub asks: Vec<Ask>,
     pub shells: Vec<String>,
+    /// The chat the mission reports to (#748); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat: Option<LinkedChat>,
+    /// The host's derived mission state (#748); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MissionPhase>,
+}
+
+impl MissionPhase {
+    /// The local protocol's phase, or None for a value this build does not know.
+    pub fn protocol(&self) -> Option<crate::protocol::MissionPhase> {
+        use crate::protocol::MissionPhase as P;
+        match self {
+            Self::NeedsYou => Some(P::NeedsYou),
+            Self::Failed => Some(P::Failed),
+            Self::Working => Some(P::Working),
+            Self::Settled => Some(P::Settled),
+            Self::Ended => Some(P::Ended),
+            Self::Unrecognized(_) => None,
+        }
+    }
+}
+
+impl From<crate::protocol::MissionPhase> for MissionPhase {
+    fn from(phase: crate::protocol::MissionPhase) -> Self {
+        use crate::protocol::MissionPhase as P;
+        match phase {
+            P::NeedsYou => Self::NeedsYou,
+            P::Failed => Self::Failed,
+            P::Working => Self::Working,
+            P::Settled => Self::Settled,
+            P::Ended => Self::Ended,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedChat {
+    pub session_id: String,
+    pub title: String,
+    pub archived: bool,
+    pub reports: bool,
+}
+
+impl From<crate::protocol::LinkedChat> for LinkedChat {
+    fn from(chat: crate::protocol::LinkedChat) -> Self {
+        Self {
+            session_id: chat.session_id,
+            title: chat.title,
+            archived: chat.archived,
+            reports: chat.reports,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

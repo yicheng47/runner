@@ -392,12 +392,13 @@ pub fn reorder_pinned(conn: &Connection, ordered_ids: &[String]) -> rusqlite::Re
 /// a tab updates its member sessions' `sessions.project_id`, a mission
 /// updates `missions.project_id` plus its sessions — the pointers stay
 /// authoritative for cwd binding and project scoping.
+/// Returns how many mission links a cross-project move dropped.
 pub fn move_and_reorder(
     tx: &Transaction<'_>,
     id: &str,
     parent_id: Option<&str>,
     ordered_ids: &[String],
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<usize> {
     let node = get(tx, id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
     let parent = match parent_id {
         Some(parent_id) => Some(get(tx, parent_id)?.ok_or(rusqlite::Error::QueryReturnedNoRows)?),
@@ -422,9 +423,11 @@ pub fn move_and_reorder(
         (Some(p), Some(NodeType::Project)) => p.ref_id.clone(),
         _ => None,
     };
-    if old_project != new_project {
-        write_project_through(tx, &node, new_project.as_deref())?;
-    }
+    let unlinked = if old_project != new_project {
+        write_project_through(tx, &node, new_project.as_deref())?
+    } else {
+        0
+    };
 
     tx.execute(
         "UPDATE nodes SET parent_id = ?2 WHERE id = ?1",
@@ -453,7 +456,7 @@ pub fn move_and_reorder(
             rusqlite::params![node_id, position as i64],
         )?;
     }
-    Ok(())
+    Ok(unlinked)
 }
 
 /// The project a node belongs to by placement: its parent when the
@@ -470,20 +473,22 @@ pub fn effective_project(
         .and_then(|p| p.ref_id))
 }
 
+/// Returns how many mission links the move dropped (#748).
 fn write_project_through(
     conn: &Connection,
     node: &NodeRow,
     project_id: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<usize> {
+    let mut unlinked = 0;
     match node.node_type {
         NodeType::Tab => {
             if let Some(layout) = node.layout.as_deref() {
-                write_layout_project(conn, layout, project_id)?;
+                unlinked += write_layout_project(conn, layout, project_id)?;
             }
         }
         NodeType::Mission => {
             let Some(mission_id) = node.ref_id.as_deref() else {
-                return Ok(());
+                return Ok(0);
             };
             conn.execute(
                 "UPDATE missions SET project_id = ?2 WHERE id = ?1",
@@ -493,20 +498,23 @@ fn write_project_through(
                 "UPDATE sessions SET project_id = ?2 WHERE mission_id = ?1",
                 rusqlite::params![mission_id, project_id],
             )?;
+            unlinked += super::mission::unlink_across_projects(conn)?;
             if let Some(layout) = node.layout.as_deref() {
-                write_layout_project(conn, layout, project_id)?;
+                unlinked += write_layout_project(conn, layout, project_id)?;
             }
         }
         NodeType::Project => {}
     }
-    Ok(())
+    Ok(unlinked)
 }
 
+/// Moves the layout's chats into `project_id` and returns how many mission
+/// links that dropped, since a mission links only to a chat in its project.
 pub fn write_layout_project(
     conn: &Connection,
     layout: &str,
     project_id: Option<&str>,
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<usize> {
     for session_id in session_ids_from_layout(layout) {
         conn.execute(
             "UPDATE sessions SET project_id = ?2
@@ -514,7 +522,7 @@ pub fn write_layout_project(
             rusqlite::params![session_id, project_id],
         )?;
     }
-    Ok(())
+    super::mission::unlink_across_projects(conn)
 }
 
 pub fn session_ids(row: &NodeRow) -> Vec<String> {

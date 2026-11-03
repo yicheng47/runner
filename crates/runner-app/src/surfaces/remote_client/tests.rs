@@ -4128,7 +4128,7 @@ fn switching_computers_restores_each_windows_remote_sidebar_view() {
             .insert("local-project".into());
         settings
             .sidebar_collapsed_active_groups
-            .insert("missions".into());
+            .insert("agents".into());
         settings.sidebar_projects_open = false;
         settings.sidebar_chats_open = false;
     });
@@ -4181,13 +4181,13 @@ fn switching_computers_restores_each_windows_remote_sidebar_view() {
     }
     sidebar(&cx).update(&mut cx, |sidebar, cx| sidebar.toggle_active_only(cx));
     visual.run_until_parked();
-    let group = visual.debug_bounds("ACTIVE_GROUP_TOGGLE chats").unwrap();
+    let group = visual.debug_bounds("ACTIVE_GROUP_TOGGLE agents").unwrap();
     visual.simulate_click(group.center(), Default::default());
     visual.run_until_parked();
     let remembered = remote_view(&cx);
     assert!(remembered.0);
     assert!(!remembered.1.is_empty());
-    assert!(remembered.2.contains("chats"));
+    assert!(remembered.2.contains("agents"));
     assert!(!remembered.3 && !remembered.4);
 
     visit(&mut cx, computers()[0].clone());

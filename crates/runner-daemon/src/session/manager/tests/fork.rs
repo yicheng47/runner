@@ -217,6 +217,11 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
         spec.env.get("FORK_TEST_ENV").map(String::as_str),
         Some("same-env")
     );
+    assert_eq!(
+        spec.env.get("RUNNER_SESSION_ID"),
+        Some(&spawned.id),
+        "a fork addresses itself, not its source"
+    );
     assert!(!spec.args.contains(&"-p".to_string()));
     assert!(!spec.args.iter().any(|arg| arg.contains("forked from")));
     assert!(!spec.args.iter().any(|arg| arg.contains("Forker persona")));

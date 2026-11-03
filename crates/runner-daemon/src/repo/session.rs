@@ -1069,6 +1069,42 @@ pub fn get_direct(conn: &Connection, id: &str) -> rusqlite::Result<Option<Direct
         .optional()
 }
 
+/// The title the sidebar shows for a direct chat when the app has no live
+/// title of its own: the person's name for it, the agent's persisted
+/// topic, else the role or runtime label.
+pub fn direct_title(chat: &DirectSessionRow) -> String {
+    let runtime = chat.row.agent_runtime.as_deref().unwrap_or_default();
+    let handle = chat.role_handle.as_deref();
+    runner_core::protocol::session_title::preferred_title(
+        chat.row.title.as_deref(),
+        None,
+        chat.row.live_title.as_deref(),
+        runtime,
+        handle,
+        chat.row.cwd.as_deref(),
+    )
+    .unwrap_or_else(|| {
+        let command = chat
+            .row
+            .launch_definition
+            .as_ref()
+            .map(|definition| definition.command.as_str())
+            .or(chat.row.agent_command.as_deref())
+            .unwrap_or_default();
+        let display_name = chat
+            .role_display_name
+            .as_deref()
+            .filter(|_| handle.is_some())
+            .or_else(|| {
+                crate::runtimes::for_key(runtime)
+                    .catalog()
+                    .map(|catalog| catalog.display_name)
+            })
+            .unwrap_or(runtime);
+        runner_core::protocol::session_title::default_label(runtime, command, handle, display_name)
+    })
+}
+
 pub fn live_handles_for_mission(
     conn: &Connection,
     mission_id: &str,

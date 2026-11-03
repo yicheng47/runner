@@ -5,8 +5,10 @@ use gpui::prelude::*;
 use gpui::{AnyElement, KeyDownEvent, Window};
 use runner_app::ui::{MenuItem as UiMenuItem, SessionControlKind, TextField};
 use runner_core::protocol::model::SessionStatus;
+use runner_core::protocol::NodeType;
 
 use super::*;
+use crate::surfaces::front_page::model::WorkspaceMission;
 use crate::*;
 
 impl MissionWorkspace {
@@ -15,7 +17,8 @@ impl MissionWorkspace {
             return;
         };
         let busy = self.lifecycle_busy() || self.secondary;
-        let pinned = mission.pinned;
+        let pinned = self.mission_pinned(&mission, cx);
+        self.menu_pinned = pinned;
         let mut actions = Vec::new();
         let mut items = Vec::new();
         for (feature, action, label, icon, destructive) in [
@@ -75,10 +78,51 @@ impl MissionWorkspace {
         }
     }
 
+    /// A linked mission's pin is its group's: the pin of the tab holding its
+    /// chat (#748). The daemon pins that tab when the mission is pinned.
+    pub(super) fn mission_pinned(&self, mission: &WorkspaceMission, cx: &App) -> bool {
+        let Some(chat) = mission.linked_chat.as_ref().filter(|chat| !chat.archived) else {
+            return mission.pinned;
+        };
+        if self.presentation.is_remote() {
+            return self
+                .presentation
+                .chat_tab_pinned(&chat.session_id)
+                .unwrap_or(mission.pinned);
+        }
+        self.app_store
+            .read(cx)
+            .nodes
+            .iter()
+            .find(|node| {
+                node.node_type == NodeType::Tab
+                    && PaneLayout::from_node_row(node)
+                        .is_ok_and(|layout| layout.contains_session(&chat.session_id))
+            })
+            .map_or(mission.pinned, |tab| tab.pinned_position.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn toggle_pin_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.configure_mission_action_menu(cx);
+        let index = self
+            .menu_actions
+            .iter()
+            .position(|action| matches!(action, MissionMenuAction::Pin))
+            .expect("the header offers Pin");
+        self.handle_mission_menu_action(index, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn menu_pinned_for_test(&self) -> bool {
+        self.menu_pinned
+    }
+
     fn toggle_mission_pin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mission) = self.mission_view() else {
             return;
         };
+        let pinned = self.mission_pinned(&mission, cx);
         let mission_id = mission.id.clone();
         let Some(operation) = self.prepare_mission_action("pin", "pin".into()) else {
             return;
@@ -86,7 +130,7 @@ impl MissionWorkspace {
         let client = self.client.clone();
         let task = cx.background_spawn(async move {
             client
-                .pin_mission_state(mission.id, !mission.pinned)
+                .pin_mission_state(mission.id, !pinned)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {

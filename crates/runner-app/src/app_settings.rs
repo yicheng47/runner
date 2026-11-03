@@ -323,6 +323,8 @@ pub struct AppSettings {
     pub sidebar_chats_open: bool,
     pub sidebar_collapsed_projects: BTreeSet<String>,
     pub sidebar_collapsed_active_groups: BTreeSet<String>,
+    /// Collapsed linked groups (#748), by the node id of the tab heading them.
+    pub sidebar_collapsed_link_groups: BTreeSet<String>,
     pub chat_panel_open: bool,
     pub chat_panel_width: f32,
     pub mission_rail_open: bool,
@@ -374,6 +376,7 @@ impl Default for AppSettings {
             sidebar_chats_open: true,
             sidebar_collapsed_projects: BTreeSet::new(),
             sidebar_collapsed_active_groups: BTreeSet::new(),
+            sidebar_collapsed_link_groups: BTreeSet::new(),
             chat_panel_open: true,
             chat_panel_width: CHAT_PANEL_DEFAULT,
             mission_rail_open: true,

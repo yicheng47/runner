@@ -51,6 +51,7 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_daemon::db::DbPool>) -> AppCore
         windows: Arc::new(runner_daemon::windows::WindowRegistry::new()),
         events: runner_daemon::events::EventChannel::new(),
         session_event_observer: Default::default(),
+        reports: Default::default(),
         app_version: "copilot-smoke".into(),
     }
 }
@@ -236,6 +237,7 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
         stopped_at: None,
         pinned_at: None,
         archived_at: None,
+        linked_chat: None,
     };
     runner_daemon::repo::mission::insert(&db.get().unwrap(), &(&mission).into()).unwrap();
 

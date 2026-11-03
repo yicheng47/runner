@@ -299,8 +299,11 @@ pub(super) enum MissionCommand {
     /// List active missions.
     List {
         /// Filter by crew ID or exact name.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "linked_here")]
         crew: Option<String>,
+        /// List the missions linked to this chat.
+        #[arg(long)]
+        linked_here: bool,
     },
     /// Show an operational mission snapshot.
     Show { mission: Option<String> },
@@ -324,6 +327,9 @@ pub(super) enum MissionCommand {
         /// Mission directory; defaults to the current directory.
         #[arg(long, conflicts_with = "project")]
         cwd: Option<PathBuf>,
+        /// Link the mission to this chat without typing reports into it.
+        #[arg(long)]
+        no_report: bool,
     },
     /// Add a configured worker role to a running mission (person only).
     AddRole {
@@ -370,6 +376,18 @@ pub(super) enum MissionCommand {
         #[arg(long, conflicts_with = "project")]
         unfile: bool,
     },
+    /// Link a mission to a chat, which Runner then tells when it needs you, fails or settles.
+    Link {
+        mission: String,
+        /// Direct chat session ID or unique prefix; defaults to this chat.
+        #[arg(long)]
+        chat: Option<String>,
+        /// Link without typing reports into the chat.
+        #[arg(long)]
+        no_report: bool,
+    },
+    /// Remove a mission's link to its chat.
+    Unlink { mission: String },
     /// Print a window from the mission event feed.
     Feed {
         mission: Option<String>,

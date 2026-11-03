@@ -3,6 +3,7 @@
 pub(crate) mod dispatch;
 mod handlers;
 pub mod prompt;
+pub(crate) mod report;
 pub mod runtime;
 
 use std::collections::{HashMap, HashSet};
@@ -63,6 +64,14 @@ pub trait StdinInjector: Send + Sync + 'static {
         session_id: &str,
         listener: Weak<dyn SessionDeliveryListener>,
     );
+
+    /// Readiness for a report to a linked chat: idle only, and a draft holds it without a cap.
+    fn report_readiness(&self, session_id: &str) -> DeliveryReadiness;
+
+    /// The input gate for a report, or `None` unless the session is idle and free.
+    fn reserve_report(&self, session_id: &str) -> Result<Option<u64>>;
+
+    fn synthesize_report_busy(&self, session_id: &str);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -134,6 +143,18 @@ impl StdinInjector for SessionManager {
         listener: Weak<dyn SessionDeliveryListener>,
     ) {
         SessionManager::register_delivery_listener(self, session_id, listener)
+    }
+
+    fn report_readiness(&self, session_id: &str) -> DeliveryReadiness {
+        SessionManager::report_readiness(self, session_id)
+    }
+
+    fn reserve_report(&self, session_id: &str) -> Result<Option<u64>> {
+        SessionManager::reserve_report(self, session_id)
+    }
+
+    fn synthesize_report_busy(&self, session_id: &str) {
+        SessionManager::synthesize_report_busy(self, session_id)
     }
 }
 

@@ -320,6 +320,8 @@ mod tests {
                 title: "New mission".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -657,6 +659,8 @@ mod tests {
                     title: "Concurrent start".into(),
                     goal_override: None,
                     cwd: None,
+                    started_by_session_id: None,
+                    no_report: false,
                 },
             )
             .map_err(|error| error.to_string());

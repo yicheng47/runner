@@ -272,6 +272,7 @@ impl MissionWorkspace {
             rail_view: MissionRailView::default(),
             action_menu,
             menu_actions: Vec::new(),
+            menu_pinned: false,
             rename_modal: None,
             mission_id_copy,
             session_key_copies: HashMap::new(),
@@ -824,9 +825,13 @@ impl MissionWorkspace {
                 self.error = Some(error.to_string().into());
             }
         }
+        let pin_moved = self
+            .mission_view()
+            .is_some_and(|mission| self.mission_pinned(&mission, cx) != self.menu_pinned);
         if revisions.locale != previous.locale
             || revisions.settings != previous.settings
             || (reactions.terminal_wake && self.is_active(cx))
+            || pin_moved
         {
             cx.notify();
         }

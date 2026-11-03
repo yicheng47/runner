@@ -344,7 +344,15 @@ impl SessionManager {
                 self.install_handle(
                     &session_id,
                     SessionHandle {
-                        startup: None,
+                        // A report to the chat waits until the agent is ready (#748).
+                        startup: (!Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell))
+                            .then(|| {
+                                startup::StartupDelivery::for_trusted_reports(
+                                    &role.runtime,
+                                    false,
+                                    super::super::clock::now(),
+                                )
+                            }),
                         #[cfg(windows)]
                         pending_first_turn: None,
                         id: session_id.clone(),

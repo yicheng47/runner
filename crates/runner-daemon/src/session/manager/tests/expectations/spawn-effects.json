@@ -12,6 +12,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -40,6 +41,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -68,6 +70,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -93,6 +96,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -115,6 +119,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -143,6 +148,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -172,6 +178,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -201,6 +208,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -230,6 +238,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -259,6 +268,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -292,6 +302,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -325,6 +336,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": true,
@@ -355,6 +367,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -381,6 +394,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -407,6 +421,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -433,6 +448,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -456,6 +472,7 @@
         "DISABLE_INSTALLATION_CHECKS": "1",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -483,6 +500,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -510,6 +528,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -537,6 +556,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -564,6 +584,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -595,6 +616,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -626,6 +648,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -651,6 +674,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -676,6 +700,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -701,6 +726,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -726,6 +752,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -751,6 +778,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -777,6 +805,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -803,6 +832,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -829,6 +859,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -855,6 +886,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -885,6 +917,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -915,6 +948,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -940,6 +974,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -965,6 +1000,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -990,6 +1026,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1015,6 +1052,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1040,6 +1078,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1066,6 +1105,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1092,6 +1132,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1118,6 +1159,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1144,6 +1186,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1174,6 +1217,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1204,6 +1248,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1228,6 +1273,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1252,6 +1298,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1276,6 +1323,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1300,6 +1348,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1324,6 +1373,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1349,6 +1399,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1374,6 +1425,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1399,6 +1451,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1424,6 +1477,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1453,6 +1507,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1482,6 +1537,7 @@
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID4>",
         "RUNNER_MISSION_ID": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1503,6 +1559,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1528,6 +1585,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1553,6 +1611,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1575,6 +1634,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1598,6 +1658,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1624,6 +1685,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1650,6 +1712,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1676,6 +1739,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1706,6 +1770,7 @@
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
         "RUNNER_MISSION_ID": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1736,6 +1801,7 @@
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
         "RUNNER_MISSION_ID": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1764,6 +1830,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1788,6 +1855,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1812,6 +1880,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1836,6 +1905,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1861,6 +1931,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1886,6 +1957,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1911,6 +1983,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1936,6 +2009,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1965,6 +2039,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -1994,6 +2069,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2018,6 +2094,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2042,6 +2119,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2066,6 +2144,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2090,6 +2169,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2115,6 +2195,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2140,6 +2221,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2165,6 +2247,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2190,6 +2273,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2219,6 +2303,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2248,6 +2333,7 @@
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
         "RUNNER_MISSION_ID": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2274,6 +2360,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2302,6 +2389,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2330,6 +2418,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID2>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2358,6 +2447,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2387,6 +2477,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2416,6 +2507,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2445,6 +2537,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2474,6 +2567,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2507,6 +2601,7 @@
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2540,6 +2635,7 @@
         "RUNNER_HOOK_GENERATION": "<ID1>",
         "RUNNER_HOOK_SESSION": "<ID2>",
         "RUNNER_MISSION_ID": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color",
         "XDG_CONFIG_HOME": "<TMP>/.config",
         "XDG_DATA_HOME": "<TMP>/.local/share"
@@ -2779,6 +2875,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2800,6 +2897,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2821,6 +2919,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2842,6 +2941,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2864,6 +2964,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2886,6 +2987,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2908,6 +3010,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2930,6 +3033,7 @@
         "COPILOT_HOME": "<TMP>/.copilot",
         "PI_CODING_AGENT_DIR": "<TMP>/.pi/agent",
         "RUNNER_HANDLE": "tester",
+        "RUNNER_SESSION_ID": "<ID1>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2956,6 +3060,7 @@
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -2982,6 +3087,7 @@
         "RUNNER_EVENT_LOG": "<TMP>/events.ndjson",
         "RUNNER_HANDLE": "tester",
         "RUNNER_MISSION_ID": "<ID1>",
+        "RUNNER_SESSION_ID": "<ID2>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,

@@ -231,6 +231,25 @@ impl SessionState {
         delivery: &DeliveryGateState,
         now: Instant,
     ) -> router::DeliveryReadiness {
+        self.readiness_for(delivery, now, false)
+    }
+
+    /// A report waits for an idle session on every runtime, so it never lands
+    /// in a turn the person started, and a draft holds it without a cap (#748).
+    fn report_readiness(
+        &self,
+        delivery: &DeliveryGateState,
+        now: Instant,
+    ) -> router::DeliveryReadiness {
+        self.readiness_for(delivery, now, true)
+    }
+
+    fn readiness_for(
+        &self,
+        delivery: &DeliveryGateState,
+        now: Instant,
+        report: bool,
+    ) -> router::DeliveryReadiness {
         use router::{DeliveryReadiness as R, DeliveryReservation as D};
         if self.pending_spawn {
             return R::Pending;
@@ -238,7 +257,11 @@ impl SessionState {
         let Some(handle) = &self.handle else {
             return R::Unavailable;
         };
-        if handle.startup.is_some() {
+        if handle
+            .startup
+            .as_ref()
+            .is_some_and(|startup| report || !startup.reports_only)
+        {
             return R::Starting;
         }
         if self.model.status().observation.needs_you() {
@@ -247,7 +270,12 @@ impl SessionState {
         if delivery.in_flight || delivery.next_ticket != delivery.next_served {
             return R::InFlight;
         }
-        if let Some(hold) = self.model.draft_hold(now) {
+        let hold = if report {
+            self.model.report_draft_hold(now)
+        } else {
+            self.model.draft_hold(now)
+        };
+        if let Some(hold) = hold {
             return match hold {
                 D::RecentlyTyping(delay) => R::RecentlyTyping(delay),
                 D::Unsent => R::Unsent,
@@ -256,6 +284,7 @@ impl SessionState {
         }
         let idle = self.model.activity() == Some(SessionActivityState::Idle);
         if !idle
+            && !report
             && runner_core::protocol::runtime_metadata::for_key(&self.delivery_runtime)
                 .queues_input_mid_turn()
         {

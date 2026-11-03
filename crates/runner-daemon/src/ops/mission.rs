@@ -1,4 +1,6 @@
 pub mod feed;
+pub mod link;
+pub mod report;
 pub mod roles;
 pub mod roster;
 
@@ -72,6 +74,8 @@ pub use runner_core::protocol::mission::MissionStart;
 pub use runner_core::protocol::mission::StartMissionOutput;
 
 pub use runner_core::protocol::mission::MissionActivityState;
+
+pub use runner_core::protocol::mission::MissionLinkInput;
 
 fn new_id() -> String {
     UlidGen::new().to_string()
@@ -209,6 +213,24 @@ pub fn start(
     // the roster sidecar is per-mission, and the router boots fresh per
     // mission.
 
+    // A direct agent chat that runs `mission start` is the mission's starter
+    // and, within its own project, its linked chat (#748). Any other caller
+    // starts an unlinked mission.
+    let starter = input
+        .started_by_session_id
+        .as_deref()
+        .and_then(|session_id| link::direct_agent_chat(&tx, session_id).ok());
+    let linked_session_id = starter
+        .as_ref()
+        .filter(|chat| link::ensure_linkable(chat, project_id.as_deref()).is_ok())
+        .map(|chat| chat.row.id.clone());
+    let started_by = starter.as_ref().map(|chat| {
+        serde_json::json!({
+            "session_id": chat.row.id,
+            "title": repo::session::direct_title(chat),
+        })
+    });
+
     let id = new_id();
     let started_at = now();
     repo::mission::insert(
@@ -225,6 +247,8 @@ pub fn start(
             stopped_at: None,
             pinned_at: None,
             archived_at: None,
+            linked_session_id,
+            report_to_chat: !input.no_report,
         },
     )?;
     // Sidebar node, under the project's node when bound (feature 44).
@@ -240,6 +264,14 @@ pub fn start(
 
     // Open the event log and emit the two opening events.
     let log = EventLog::open(&mission_dir)?;
+    let mut start_payload = serde_json::json!({
+        "title": title,
+        "cwd": cwd,
+        "permission_mode": "bypass",
+    });
+    if let Some(started_by) = started_by {
+        start_payload["started_by"] = started_by;
+    }
     log.append(EventDraft {
         crew_id: input.crew_id.clone(),
         mission_id: id.clone(),
@@ -247,11 +279,7 @@ pub fn start(
         from: "system".into(),
         to: Default::default(),
         signal_type: Some(SignalType::new("mission_start")),
-        payload: serde_json::json!({
-            "title": title,
-            "cwd": cwd,
-            "permission_mode": "bypass",
-        }),
+        payload: start_payload,
     })?;
     log.append(EventDraft {
         crew_id: input.crew_id.clone(),
@@ -1067,6 +1095,12 @@ fn is_concurrent_resume_error(error: &str) -> bool {
 /// DESC, started_at DESC`). Setting `pinned = false` clears the
 /// timestamp.
 pub async fn mission_pin_impl(state: &AppCore, id: String, pinned: bool) -> Result<Mission> {
+    // Pinning a linked mission pins its chat's group (#748).
+    let head = link::group_head(&*state.db.get()?, &id)?;
+    if let Some(head) = head {
+        crate::ops::node::node_set_pinned(state, head.id, pinned)?;
+        return mission_get(state, &id);
+    }
     let conn = state.db.get()?;
     let pinned_at: Option<Timestamp> = if pinned { Some(now()) } else { None };
     let n = repo::mission::set_pinned_at(&conn, &id, pinned_at)?;
@@ -1355,9 +1389,20 @@ pub async fn mission_list_summary_impl(
     state: &AppCore,
     crew_id: Option<String>,
 ) -> Result<Vec<MissionSummary>> {
+    let missions = list(&*state.db.get()?, crew_id.as_deref())?;
+    summaries(state, missions)
+}
+
+/// The non-archived missions linked to a chat, oldest first, for
+/// `mission list --linked-here` (#748).
+pub async fn mission_list_linked(state: &AppCore, session_id: &str) -> Result<Vec<MissionSummary>> {
+    let missions = repo::mission::list_linked(&*state.db.get()?, session_id)?;
+    summaries(state, missions)
+}
+
+fn summaries(state: &AppCore, missions: Vec<Mission>) -> Result<Vec<MissionSummary>> {
     let statuses = crate::ops::session::session_status_snapshot(state)?;
     let conn = state.db.get()?;
-    let missions = list(&conn, crew_id.as_deref())?;
 
     let mut summaries = Vec::with_capacity(missions.len());
     for m in missions {
@@ -1405,6 +1450,12 @@ pub async fn mission_list_summary_impl(
         } else {
             None
         };
+        let phase = state.reports.phase(&m.id).unwrap_or_else(|| {
+            report::derive(
+                &report::phase_input(state, &m, &sessions, &statuses, pending_ask_count),
+                None,
+            )
+        });
         let session_statuses = sessions
             .into_iter()
             .filter(|session| !Runtime::parse(&session.runtime).is_some_and(Runtime::is_shell))
@@ -1429,6 +1480,7 @@ pub async fn mission_list_summary_impl(
             any_session_live,
             all_sessions_live,
             activity,
+            phase: Some(phase),
         });
     }
     Ok(summaries)
@@ -1523,6 +1575,8 @@ mod tests {
                 title: "Message mission".into(),
                 goal_override: Some("Ship it".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -1592,6 +1646,8 @@ mod tests {
                 title: "Try".into(),
                 goal_override: Some(oversized),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap_err();
@@ -1615,6 +1671,8 @@ mod tests {
                 title: "Try".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap_err();
@@ -1642,6 +1700,8 @@ mod tests {
                 title: "   ".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap_err();
@@ -1985,6 +2045,8 @@ mod tests {
                     title: "Resume mission".into(),
                     goal_override: None,
                     cwd: None,
+                    started_by_session_id: None,
+                    no_report: false,
                 },
             )
             .unwrap()
@@ -2018,6 +2080,53 @@ mod tests {
     }
 
     #[test]
+    fn mission_resume_leaves_the_link_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = crate::test_support::test_core_in(temp.path().to_path_buf());
+        let mission_id = {
+            let mut conn = state.db.get().unwrap();
+            let mut chat = crate::test_support::test_session_row("chat", SessionStatus::Running);
+            chat.agent_runtime = Some("codex".into());
+            crate::test_support::insert_session_row(&conn, &chat).unwrap();
+            let crew_id = seed_crew(&conn, "Linked resume crew");
+            let slot_id = add_role(&mut conn, &crew_id, "lead");
+            let mission_id = start(
+                &mut conn,
+                &state.app_data_dir,
+                StartMissionInput {
+                    crew_id: Some(crew_id),
+                    project_id: None,
+                    title: "Linked resume".into(),
+                    goal_override: None,
+                    cwd: None,
+                    started_by_session_id: Some("chat".into()),
+                    no_report: true,
+                },
+            )
+            .unwrap()
+            .mission
+            .id;
+            conn.execute(
+                "INSERT INTO sessions (id, mission_id, role_id, slot_id, status, started_at)
+                 SELECT 'stopped-lead', ?1, role_id, id, 'stopped', '2026-09-18T00:00:00Z'
+                   FROM slots WHERE id = ?2",
+                params![mission_id, slot_id],
+            )
+            .unwrap();
+            mission_id
+        };
+
+        let output = mission_resume_with(&state, &mission_id, |_, _| Ok(())).unwrap();
+
+        assert_eq!(output.resumed_session_ids, ["stopped-lead"]);
+        let chat = mission_get(&state, &mission_id)
+            .unwrap()
+            .linked_chat
+            .unwrap();
+        assert_eq!((chat.session_id.as_str(), chat.reports), ("chat", false));
+    }
+
+    #[test]
     fn mission_resume_reports_completed_sessions_when_a_later_resume_fails() {
         let temp = tempfile::tempdir().unwrap();
         let state = crate::test_support::test_core_in(temp.path().to_path_buf());
@@ -2035,6 +2144,8 @@ mod tests {
                     title: "Partial resume mission".into(),
                     goal_override: None,
                     cwd: None,
+                    started_by_session_id: None,
+                    no_report: false,
                 },
             )
             .unwrap()
@@ -2213,6 +2324,8 @@ mod tests {
                 title: "first mission".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2282,6 +2395,8 @@ mod tests {
                 title: "inferred project".into(),
                 goal_override: None,
                 cwd: Some(cwd.to_string_lossy().into_owned()),
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2321,6 +2436,8 @@ mod tests {
                 title: "recents mission".into(),
                 goal_override: None,
                 cwd: Some(cwd.clone()),
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2353,6 +2470,8 @@ mod tests {
                 title: "override cwd".into(),
                 goal_override: None,
                 cwd: Some("/override".into()),
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2377,6 +2496,8 @@ mod tests {
                 title: "Bypass".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2407,6 +2528,8 @@ mod tests {
                 title: "unknown project".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap_err();
@@ -2439,6 +2562,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("override goal".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2463,6 +2588,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2507,6 +2634,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2548,6 +2677,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2579,6 +2710,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2752,6 +2885,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2832,6 +2967,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2908,6 +3045,8 @@ mod tests {
                 title: "first".into(),
                 goal_override: Some("x".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -2929,6 +3068,8 @@ mod tests {
                 title: "second".into(),
                 goal_override: Some("y".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -2942,6 +3083,8 @@ mod tests {
                 title: "other crew".into(),
                 goal_override: Some("z".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2977,6 +3120,8 @@ mod tests {
                 title: "first".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -2990,6 +3135,8 @@ mod tests {
                 title: "second".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3056,6 +3203,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3129,6 +3278,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3164,6 +3315,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3243,6 +3396,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3323,6 +3478,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: None,
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3407,6 +3564,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap_err();
@@ -3443,6 +3602,8 @@ mod tests {
                 title: "live".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3491,6 +3652,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3523,6 +3686,8 @@ mod tests {
                 title: "m".into(),
                 goal_override: Some("go".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3568,6 +3733,8 @@ mod tests {
                 title: "old".into(),
                 goal_override: Some("g".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap();
@@ -3627,6 +3794,8 @@ mod tests {
                 title: "running-1".into(),
                 goal_override: Some("g".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -3641,6 +3810,8 @@ mod tests {
                 title: "running-2".into(),
                 goal_override: Some("g".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -3655,6 +3826,8 @@ mod tests {
                 title: "completed".into(),
                 goal_override: Some("g".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()
@@ -3674,6 +3847,8 @@ mod tests {
                 title: "running-archived".into(),
                 goal_override: Some("g".into()),
                 cwd: None,
+                started_by_session_id: None,
+                no_report: false,
             },
         )
         .unwrap()

@@ -65,7 +65,11 @@ pub fn run(cli: Cli) -> i32 {
     if let Some(code) = run_local(&cli, &context) {
         return code;
     }
-    if let Err(error) = validate_remote(&cli, &context) {
+    let session = env::session_id();
+    if let Err(error) = validate_remote(&cli, &context).and_then(|()| match &cli.command {
+        Command::Mission { command } => require_chat(command, session.as_deref()),
+        _ => Ok(()),
+    }) {
         eprintln!("{}", error.message);
         return error.code;
     }
@@ -79,7 +83,7 @@ pub fn run(cli: Cli) -> i32 {
             return 1;
         }
     };
-    let code = match runtime.block_on(run_remote(&cli, &context)) {
+    let code = match runtime.block_on(run_remote(&cli, &context, session.as_deref())) {
         Ok(Some(response)) => {
             let response = postprocess_response(&cli, response);
             output::print(&response, cli.json, cli.quiet, output_view(&cli.command));
@@ -317,7 +321,11 @@ fn validate_remote(cli: &Cli, context: &BusContext) -> Result<(), CliError> {
     }
 }
 
-async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolResponse>, CliError> {
+async fn run_remote(
+    cli: &Cli,
+    context: &BusContext,
+    session: Option<&str>,
+) -> Result<Option<ToolResponse>, CliError> {
     if let Command::Daemon { command } = &cli.command {
         return daemon_command(command).map(Some);
     }
@@ -358,13 +366,17 @@ async fn run_remote(cli: &Cli, context: &BusContext) -> Result<Option<ToolRespon
         .await?;
         return Ok(None);
     }
-    run_connected(&client, cli, context).await.map(Some)
+    run_connected(&client, cli, context, session)
+        .await
+        .map(Some)
 }
 
+/// `session` is the caller's `RUNNER_SESSION_ID`, when it runs in an agent session.
 async fn run_connected(
     client: &impl Caller,
     cli: &Cli,
     context: &BusContext,
+    session: Option<&str>,
 ) -> Result<ToolResponse, CliError> {
     match &cli.command {
         Command::Remote { .. } | Command::Daemon { .. } | Command::Hook { .. } => unreachable!(),
@@ -372,7 +384,7 @@ async fn run_connected(
         Command::Project { command } => run_project(client, command).await,
         Command::Role { command } => run_role(client, command).await,
         Command::Crew { command } => run_crew(client, command).await,
-        Command::Mission { command } => run_mission(client, command, context).await,
+        Command::Mission { command } => run_mission(client, command, context, session).await,
         Command::Chat { command } => run_chat(client, command).await,
         Command::Session { command } => run_session(client, command).await,
         Command::Msg { command } => run_msg(client, command, context).await,
@@ -1407,7 +1419,7 @@ mod tests {
                 }
                 let cli = Cli::try_parse_from(args).unwrap();
                 let client = RecordingClient::default();
-                run_connected(&client, &cli, &BusContext::OffBus)
+                run_connected(&client, &cli, &BusContext::OffBus, None)
                     .await
                     .unwrap();
                 let calls = client.calls.lock().unwrap();
@@ -1711,7 +1723,7 @@ mod tests {
     #[tokio::test]
     async fn project_delete_adds_the_resolved_id_for_quiet_output_only() {
         let cli = Cli::try_parse_from(["runner", "project", "delete", "Runner"]).unwrap();
-        let response = run_connected(&RecordingClient::default(), &cli, &BusContext::OffBus)
+        let response = run_connected(&RecordingClient::default(), &cli, &BusContext::OffBus, None)
             .await
             .unwrap();
         assert_eq!(response.value["id"], "project-id");
@@ -1888,6 +1900,8 @@ mod tests {
                     "title": "CLI",
                     "goal_override": null,
                     "cwd": nested_cwd,
+                    "started_by_session_id": null,
+                    "no_report": false,
                 }),
             ),
             (
@@ -1925,6 +1939,8 @@ mod tests {
                     "title": "CLI",
                     "goal_override": "Ship it",
                     "cwd": null,
+                    "started_by_session_id": null,
+                    "no_report": false,
                 }),
             ),
             (
@@ -1975,6 +1991,21 @@ mod tests {
                 vec!["mission", "move", "01M", "--unfile"],
                 vec!["mission_list", "mission_set_project"],
                 json!({"mission_id": MISSION_ID, "project_id": null}),
+            ),
+            (
+                vec!["mission", "link", "01M", "--chat", "01S"],
+                vec!["mission_list", "session_list", "mission_link"],
+                json!({
+                    "mission_id": MISSION_ID,
+                    "session_id": "01S00000000000000000000000",
+                    "no_report": false,
+                    "caller_session_id": null,
+                }),
+            ),
+            (
+                vec!["mission", "unlink", "01M"],
+                vec!["mission_list", "mission_unlink"],
+                json!({"mission_id": MISSION_ID}),
             ),
             (
                 vec!["mission", "feed", "01M", "--since", "7", "--limit", "2"],
@@ -2129,7 +2160,7 @@ mod tests {
                 panic!("failed to validate {argv:?}: {}", error.message);
             });
             let client = RecordingClient::default();
-            run_connected(&client, &cli, &context)
+            run_connected(&client, &cli, &context, None)
                 .await
                 .unwrap_or_else(|error| panic!("failed to run {argv:?}: {}", error.message));
             reached_requests.extend(client.requests.into_inner().unwrap());
@@ -2187,6 +2218,8 @@ mod tests {
             "mission_pin_impl",
             "mission_rename_impl",
             "mission_set_project",
+            "mission_link",
+            "mission_unlink",
             "mission_post_impl",
             "mission_signal_impl",
             "session_list_with_activity",
@@ -2241,6 +2274,8 @@ mod tests {
             &["mission", "pin", "01M"],
             &["mission", "unpin", "01M"],
             &["mission", "move", "01M", "--unfile"],
+            &["mission", "link", "01M", "--chat", "01S"],
+            &["mission", "unlink", "01M"],
             &["mission", "feed", "01M", "--oldest-first"],
             &["mission", "answer", "01M", "question", "yes"],
             &["chat", "start", "coder"],
@@ -2293,5 +2328,78 @@ mod tests {
                 "missing built-binary golden for {leaf}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn mission_commands_carry_the_calling_chat() {
+        async fn run(
+            argv: &[&str],
+            session: Option<&str>,
+        ) -> (Result<(), CliError>, Vec<(String, Value)>) {
+            let mut args = vec!["runner"];
+            args.extend_from_slice(argv);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let client = RecordingClient::default();
+            let result = run_connected(&client, &cli, &BusContext::OffBus, session)
+                .await
+                .map(|_| ());
+            (result, client.calls.into_inner().unwrap())
+        }
+        fn request<'a>(calls: &'a [(String, Value)], tool: &str) -> &'a Value {
+            &calls.iter().find(|(name, _)| name == tool).unwrap().1
+        }
+        const MISSION: &str = "01M00000000000000000000000";
+        const CHAT: &str = "01S00000000000000000000000";
+
+        let (_, calls) = run(
+            &["mission", "start", "--title", "t", "--no-report"],
+            Some(CHAT),
+        )
+        .await;
+        let start = request(&calls, "mission_start");
+        assert_eq!(start["started_by_session_id"], CHAT);
+        assert_eq!(start["no_report"], true);
+        let (_, calls) = run(&["mission", "start", "--title", "t"], None).await;
+        assert_eq!(
+            request(&calls, "mission_start")["started_by_session_id"],
+            Value::Null
+        );
+
+        let (_, calls) = run(&["mission", "link", "01M"], Some(CHAT)).await;
+        let link = request(&calls, "mission_link");
+        assert_eq!(link["mission_id"], MISSION);
+        assert_eq!(link["session_id"], CHAT, "inside a chat, that chat");
+        assert_eq!(link["caller_session_id"], CHAT);
+        let (_, calls) = run(
+            &["mission", "link", MISSION, "--chat", "01S", "--no-report"],
+            None,
+        )
+        .await;
+        let link = request(&calls, "mission_link");
+        assert_eq!(link["session_id"], CHAT, "outside one, --chat");
+        assert_eq!(link["caller_session_id"], Value::Null);
+        assert_eq!(link["no_report"], true);
+        let (result, calls) = run(&["mission", "link", MISSION], None).await;
+        assert_eq!(
+            result.unwrap_err().code,
+            2,
+            "outside a chat, --chat is needed"
+        );
+        assert!(calls.iter().all(|(name, _)| name != "mission_link"));
+
+        let (_, calls) = run(&["mission", "unlink", MISSION], None).await;
+        assert_eq!(request(&calls, "mission_unlink")["mission_id"], MISSION);
+
+        let (_, calls) = run(&["mission", "list", "--linked-here"], Some(CHAT)).await;
+        assert_eq!(request(&calls, "mission_list_linked")["session_id"], CHAT);
+        let (result, calls) = run(&["mission", "list", "--linked-here"], None).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.code, 2);
+        assert!(
+            error.message.contains("use runner mission list"),
+            "{}",
+            error.message
+        );
+        assert!(calls.is_empty());
     }
 }

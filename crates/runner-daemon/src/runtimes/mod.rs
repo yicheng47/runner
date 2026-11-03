@@ -442,6 +442,22 @@ pub trait RuntimeAdapter: Send + Sync {
     fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
         false
     }
+    /// Whether a resumed or forked conversation sends its startup hook, so a report's
+    /// gate can wait for it (#748).
+    fn startup_hook_on_reopen(&self) -> bool {
+        true
+    }
+    /// Whether a fresh start with `args` in `cwd` opens with no folder-trust screen, as
+    /// its config already records the decision, so a report's gate need not wait for a
+    /// hook the runtime sends only with the first turn (#748).
+    fn starts_trusted(
+        &self,
+        _cwd: Option<&Path>,
+        _args: &[String],
+        _env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        false
+    }
     fn mission_dir_args(&self, _dir: Option<&Path>) -> Vec<String> {
         Vec::new()
     }

@@ -549,7 +549,9 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
                 scope,
                 title: "Mission".into(),
                 goal_override: Some("Goal".into()),
-                cwd: Some("/work".into())
+                cwd: Some("/work".into()),
+                started_by_session_id: None,
+                no_report: false,
             },
             initial_size: Some((91, 33)),
         }

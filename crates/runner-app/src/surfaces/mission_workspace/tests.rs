@@ -2756,6 +2756,7 @@ fn empty_feed_panel_fills_remaining_space_and_shrinks_for_new_content() {
             started_at: Utc::now(),
             stopped_at: None,
             archived_at: None,
+            linked_chat: None,
         });
     });
     host.update(&mut cx, |host, _, cx| {

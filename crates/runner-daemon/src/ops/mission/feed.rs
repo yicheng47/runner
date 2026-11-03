@@ -232,8 +232,35 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
         .count();
     let last_event_id = entries.last().map(|entry| entry.event.id.clone());
     let last_event_offset = entries.last().map(|entry| entry.next_offset);
+    let started_by = entries
+        .iter()
+        .find(|entry| {
+            entry
+                .event
+                .signal_type
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "mission_start")
+        })
+        .and_then(|entry| entry.event.payload.get("started_by"))
+        .and_then(|starter| serde_json::from_value(starter.clone()).ok());
+    drop(conn);
+    let phase = state.reports.phase(&mission.id).unwrap_or_else(|| {
+        let statuses = crate::ops::session::session_status_snapshot(state).unwrap_or_default();
+        super::report::derive(
+            &super::report::phase_input(
+                state,
+                &mission,
+                &sessions,
+                &statuses,
+                projection.pending_asks.len(),
+            ),
+            None,
+        )
+    });
     let snapshot = MissionStatusSnapshot {
         mission,
+        phase: Some(phase),
+        started_by,
         crew,
         sessions,
         latest_session_status_by_handle: projection.latest_session_status_by_handle,

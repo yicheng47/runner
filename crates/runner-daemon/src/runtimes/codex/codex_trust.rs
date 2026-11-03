@@ -143,6 +143,64 @@ fn seed_project_trust_at_with_home(
     Ok(())
 }
 
+/// Whether `config_path` holds a trust decision for a Codex started in `cwd`, so Codex
+/// shows no folder-trust screen (`should_show_trust_screen` in its TUI). The project is
+/// found as Codex's `get_active_project` finds it: an entry for `cwd` itself wins, even
+/// one with no decision, before the entry for its repository root.
+pub(crate) fn trust_decided(cwd: &Path, config_path: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(doc) = raw.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let Some(projects) = doc.get("projects").and_then(|item| item.as_table_like()) else {
+        return false;
+    };
+    let entry = |path: &Path| {
+        lookup_keys(path).into_iter().find_map(|key| {
+            projects.get(&key).or_else(|| {
+                let mut matches = projects
+                    .iter()
+                    .filter(|(name, _)| normalize_lookup_key(name) == key)
+                    .collect::<Vec<_>>();
+                matches.sort_by_key(|(name, _)| *name);
+                matches.first().map(|(_, item)| *item)
+            })
+        })
+    };
+    entry(cwd)
+        .or_else(|| {
+            resolve_project_trust_root(cwd)
+                .ok()
+                .and_then(|root| entry(&root))
+        })
+        .and_then(|project| project.get("trust_level"))
+        .and_then(|level| level.as_str())
+        .is_some_and(|level| matches!(level, "trusted" | "untrusted"))
+}
+
+/// Codex's keys for a path: its canonical form, then the path as given.
+fn lookup_keys(path: &Path) -> Vec<String> {
+    let given = normalize_lookup_key(&path.to_string_lossy());
+    let canonical = fs::canonicalize(path)
+        .map(|path| normalize_lookup_key(&path.to_string_lossy()))
+        .unwrap_or_else(|_| given.clone());
+    if given == canonical {
+        vec![canonical]
+    } else {
+        vec![canonical, given]
+    }
+}
+
+fn normalize_lookup_key(key: &str) -> String {
+    if cfg!(windows) {
+        key.to_ascii_lowercase()
+    } else {
+        key.to_owned()
+    }
+}
+
 fn resolve_project_trust_root(cwd: &Path) -> Result<PathBuf> {
     let cwd = fs::canonicalize(cwd)
         .map_err(|e| Error::msg(format!("realpath {}: {e}", cwd.display())))?;
@@ -217,6 +275,99 @@ mod tests {
             .get("trust_level")?
             .as_str()
             .map(str::to_owned)
+    }
+
+    #[test]
+    fn a_trust_decision_counts_where_codex_looks_for_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let cwd = repo.join("crates/app");
+        let config_path = temp.path().join("codex/config.toml");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(temp.path().join("other")).unwrap();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        #[cfg(windows)]
+        assert!(
+            !cwd.to_string_lossy().starts_with(r"\\?\"),
+            "a non-verbatim cwd against the canonical keys the seed writes"
+        );
+        let key = |path: &Path| fs::canonicalize(path).unwrap().display().to_string();
+        let decided = |config: String| {
+            fs::write(&config_path, config).unwrap();
+            trust_decided(&cwd, &config_path)
+        };
+        assert!(!trust_decided(&cwd, &config_path), "no config");
+        seed_project_trust_at(&cwd, &config_path).unwrap();
+        assert!(trust_decided(&cwd, &config_path), "seeded at the repo root");
+        assert!(
+            decided(format!(
+                "[projects.{:?}]\ntrust_level = \"untrusted\"\n",
+                key(&repo)
+            )),
+            "an untrusted decision shows no trust screen either"
+        );
+        assert!(
+            decided(format!(
+                "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+                key(&cwd)
+            )),
+            "the folder's own entry"
+        );
+        assert!(
+            !decided(format!(
+                "[projects.{:?}]\ntrust_level = \"trusted\"\n[projects.{:?}]\nmodel = \"x\"\n",
+                key(&repo),
+                key(&cwd)
+            )),
+            "the folder's undecided entry wins over a trusted root"
+        );
+        assert!(
+            !decided(format!(
+                "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+                key(&temp.path().join("other"))
+            )),
+            "another folder"
+        );
+    }
+
+    #[test]
+    fn the_folder_s_canonical_entry_wins_over_its_entry_as_given() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        fs::create_dir_all(&real).unwrap();
+        #[cfg(unix)]
+        let cwd = {
+            let link = temp.path().join("link");
+            symlink(&real, &link).unwrap();
+            link
+        };
+        #[cfg(windows)]
+        let cwd = real.clone();
+        let canonical = fs::canonicalize(&cwd).unwrap().display().to_string();
+        let given = cwd.display().to_string();
+        assert_ne!(canonical, given);
+        let config_path = temp.path().join("config.toml");
+        let entry = |key: &str, level: Option<&str>| match level {
+            Some(level) => format!("[projects.{key:?}]\ntrust_level = {level:?}\n"),
+            None => format!("[projects.{key:?}]\nmodel = \"x\"\n"),
+        };
+        let decided = |config: String| {
+            fs::write(&config_path, config).unwrap();
+            trust_decided(&cwd, &config_path)
+        };
+        assert!(
+            decided(entry(&canonical, Some("trusted")) + &entry(&given, None)),
+            "the canonical entry decides"
+        );
+        assert!(
+            !decided(entry(&canonical, None) + &entry(&given, Some("trusted"))),
+            "an undecided canonical entry wins over the given path's"
+        );
+        assert!(
+            decided(entry(&given, Some("trusted"))),
+            "the path as given when there is no canonical entry"
+        );
     }
 
     #[test]

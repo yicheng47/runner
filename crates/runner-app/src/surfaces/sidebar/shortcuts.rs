@@ -14,8 +14,30 @@ impl Sidebar {
     fn shortcut_row_walk(
         &self,
         rows: &[(NodeRow, SidebarShortcutRow)],
+        groups: &super::link::LinkGroups,
         cx: &App,
     ) -> Vec<crate::surfaces::sidebar_logic::VisibleSidebarRow> {
+        // Each scope in the order it draws: a linked mission right after its
+        // chat's row, unless the group is collapsed (#748).
+        let collapsed = &self.settings(cx).sidebar_collapsed_link_groups;
+        let expand = |scope: Vec<&(NodeRow, SidebarShortcutRow)>| {
+            scope
+                .into_iter()
+                .filter(|(node, _)| groups.head(&node.id).is_none())
+                .flat_map(|(node, row)| {
+                    let children = if collapsed.contains(&node.id) {
+                        &[][..]
+                    } else {
+                        groups.missions(&node.id)
+                    };
+                    std::iter::once(row.clone()).chain(children.iter().filter_map(|id| {
+                        rows.iter()
+                            .find(|(child, _)| &child.id == id)
+                            .map(|(_, row)| row.clone())
+                    }))
+                })
+                .collect::<Vec<_>>()
+        };
         let mut pinned = rows
             .iter()
             .filter(|(node, _)| node.pinned_position.is_some())
@@ -45,24 +67,24 @@ impl Sidebar {
                         .settings(cx)
                         .sidebar_collapsed_projects
                         .contains(project_id),
-                    children: rows
-                        .iter()
-                        .filter(|(child, _)| {
-                            child.pinned_position.is_none()
-                                && child.parent_id.as_deref() == Some(node.id.as_str())
-                        })
-                        .map(|(_, row)| row.clone())
-                        .collect(),
+                    children: expand(
+                        rows.iter()
+                            .filter(|(child, _)| {
+                                child.pinned_position.is_none()
+                                    && child.parent_id.as_deref() == Some(node.id.as_str())
+                            })
+                            .collect(),
+                    ),
                 })
             })
             .collect();
-        let recent = rows
-            .iter()
-            .filter(|(node, _)| node.pinned_position.is_none() && node.parent_id.is_none())
-            .map(|(_, row)| row.clone())
-            .collect();
+        let recent = expand(
+            rows.iter()
+                .filter(|(node, _)| node.pinned_position.is_none() && node.parent_id.is_none())
+                .collect(),
+        );
         visible_sidebar_walk(
-            pinned.into_iter().map(|(_, row)| row.clone()).collect(),
+            expand(pinned),
             self.settings(cx).sidebar_projects_open,
             projects,
             self.settings(cx).sidebar_chats_open,
@@ -73,22 +95,52 @@ impl Sidebar {
     pub(crate) fn refresh_shortcut_rows(&mut self, tabs: &TabSet, cx: &App) {
         let walk = if self.settings(cx).sidebar_active_only {
             let collapsed = &self.settings(cx).sidebar_collapsed_active_groups;
-            self.resolved_active_rows_for_tabs(tabs, cx)
+            let collapsed_links = &self.settings(cx).sidebar_collapsed_link_groups;
+            let rows = self.resolved_active_rows_for_tabs(tabs, cx);
+            let sources = rows
                 .iter()
-                .filter(|row| !collapsed.contains(row.group().key()))
-                .map(|row| {
-                    crate::surfaces::sidebar_logic::VisibleSidebarRow::Activatable(
-                        row.shortcut_row(&self.source_nodes(cx)),
-                    )
-                })
-                .collect()
+                .map(|row| row.source.clone())
+                .collect::<Vec<_>>();
+            let groups = super::link::LinkGroups::of(&sources);
+            let nodes = self.source_nodes(cx);
+            let activatable = |row: &super::active::ActiveSidebarRow| {
+                crate::surfaces::sidebar_logic::VisibleSidebarRow::Activatable(
+                    row.shortcut_row(&nodes),
+                )
+            };
+            // Each heading in the order it draws, a group's missions under its chat.
+            let mut walk = Vec::new();
+            for group in [
+                super::active::ActiveGroup::Agents,
+                super::active::ActiveGroup::Terminals,
+            ] {
+                if collapsed.contains(group.key()) {
+                    continue;
+                }
+                for row in rows.iter().filter(|row| row.group() == group) {
+                    if groups.head(&row.source.node().id).is_some() {
+                        continue;
+                    }
+                    walk.push(activatable(row));
+                    if collapsed_links.contains(&row.source.node().id) {
+                        continue;
+                    }
+                    for id in groups.missions(&row.source.node().id) {
+                        if let Some(child) = rows.iter().find(|row| &row.source.node().id == id) {
+                            walk.push(activatable(child));
+                        }
+                    }
+                }
+            }
+            walk
         } else {
-            let rows = self
-                .resolved_sidebar_rows_for_tabs(tabs, cx)
+            let resolved = self.resolved_sidebar_rows_for_tabs(tabs, cx);
+            let groups = super::link::LinkGroups::of(&resolved);
+            let rows = resolved
                 .iter()
                 .map(|row| (row.node().clone(), row.shortcut_row(&self.source_nodes(cx))))
                 .collect::<Vec<_>>();
-            self.shortcut_row_walk(&rows, cx)
+            self.shortcut_row_walk(&rows, &groups, cx)
         };
         let numbered_shortcut_rows = numbered_sidebar_rows(walk);
         self.tab_index_by_node = numbered_shortcut_rows

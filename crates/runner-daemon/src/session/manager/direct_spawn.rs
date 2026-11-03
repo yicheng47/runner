@@ -315,6 +315,12 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
+        let starts_trusted = first_turn.is_none()
+            && crate::runtimes::for_key(&role.runtime).starts_trusted(
+                spec.cwd.as_deref(),
+                &spec.args,
+                &spec.env,
+            );
         let capture_root =
             match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
@@ -390,7 +396,21 @@ impl SessionManager {
         self.install_handle(
             &session_id,
             SessionHandle {
-                startup: None,
+                // A report to the chat waits until the agent is ready (#748).
+                startup: (!Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell)).then(
+                    || {
+                        let gate = if starts_trusted {
+                            startup::StartupDelivery::for_trusted_reports
+                        } else {
+                            startup::StartupDelivery::for_reports
+                        };
+                        gate(
+                            &role.runtime,
+                            first_turn.is_some(),
+                            super::super::clock::now(),
+                        )
+                    },
+                ),
                 #[cfg(windows)]
                 pending_first_turn: None,
                 id: session_id.clone(),

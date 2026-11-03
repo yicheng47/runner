@@ -119,7 +119,7 @@ Use an installed Python executable appropriate to the platform, or an equivalent
 "$smoke_cli" mission show <mission-id> --json
 ```
 
-Start means start and watch: use the Runner skill's supported watch facility for that exact mission ID. If the host cannot deliver background events while idle, state that automatic watching is unavailable and give the foreground feed command. Do not claim an unread background log or manually polled PTY is an active notification watch.
+Follow the mission with the foreground feed command above. When the smoke agent runs in a Runner chat, the mission links to that chat and Runner reports its state there instead; a mission started from a mission slot or a terminal is unlinked and needs the foreground feed. Do not claim an unread background log or manually polled PTY is an active notification watch.
 
 Before typing anything into the mission, verify the marker file contains **exactly one line in the requested mission directory**, the agent's terminal shows the ACK, the session captured a key and Runner reached Idle. An ACK with a marker written elsewhere fails the working-directory check. No manual Return, trust acceptance or repeated goal submission may be counted as automatic startup. Record any prompt that prevented execution, unexpected extra tools and the existing permission mode. Do not switch to bypass mode to obtain a pass.
 

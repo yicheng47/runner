@@ -1506,3 +1506,53 @@ fn remote_mission_panes_use_the_host_palette() {
         workspace(window, &cx).read_with(&cx, |workspace, cx| workspace.terminal_style(cx).palette);
     assert_eq!(palette, runner_terminal::palette::ROSE_PINE_DAWN);
 }
+
+#[test]
+fn the_remote_header_reads_and_toggles_a_linked_missions_group_pin() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, mut cx, window, _store, fake) = setup();
+    let mut data = overview();
+    data.tabs[0].panes = runner_core::companion::Pane::Leaf {
+        session: Some("chat".into()),
+    };
+    data.tabs[0].pinned = true;
+    data.missions[0].linked_chat = Some(runner_core::companion::LinkedChat {
+        session_id: "chat".into(),
+        title: "Chat".into(),
+        archived: false,
+        reports: true,
+    });
+    let chat = data.sessions["member"].clone();
+    data.sessions.insert("chat".into(), chat);
+    fake.set_overview(data.clone());
+    cx.run_until_parked();
+    let workspace = workspace(window, &cx);
+    let pinned = |cx: &mut TestAppContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace.mission_pinned(&workspace.mission_view().unwrap(), cx)
+        })
+    };
+    assert!(pinned(&mut cx), "the group's tab is pinned");
+
+    window
+        .update(&mut cx, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_pin_for_test(window, cx)
+            })
+        })
+        .unwrap();
+    for _ in 0..1000 {
+        if fake.request_count("pin") == 1 {
+            break;
+        }
+        assert!(cx.executor().tick());
+    }
+    let pins = remote_test::action_trace(&fake, "pin");
+    assert_eq!(pins.len(), 1);
+    assert_eq!(pins[0]["pinned"], false, "the header offers Unpin");
+
+    data.tabs[0].pinned = false;
+    fake.set_overview(data);
+    cx.run_until_parked();
+    assert!(!pinned(&mut cx), "the header follows the host's group pin");
+}

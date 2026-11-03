@@ -410,6 +410,29 @@ fn session_cwd_is_nullable_and_defaults_when_missing() {
 }
 
 #[test]
+fn a_mission_carries_its_linked_chat_and_phase_and_older_hosts_send_neither() {
+    let HostMessage::Overview(overview) = decode("overview_push") else {
+        panic!()
+    };
+    assert_eq!(
+        overview.missions[0].linked_chat,
+        Some(LinkedChat {
+            session_id: "01M60000000000000000000000".into(),
+            title: "Fix the feed".into(),
+            archived: false,
+            reports: true,
+        })
+    );
+    assert_eq!(overview.missions[0].phase, Some(MissionPhase::NeedsYou));
+    let HostMessage::Result(result) = decode("result_overview") else {
+        panic!()
+    };
+    let older: Overview = serde_json::from_value(result.result).unwrap();
+    assert_eq!(older.missions[0].linked_chat, None);
+    assert_eq!(older.missions[0].phase, None);
+}
+
+#[test]
 fn result_payloads_decode_as_the_request_specific_types() {
     let HostMessage::Result(result) = decode("result_overview") else {
         panic!()

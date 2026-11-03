@@ -573,6 +573,11 @@ impl SessionManager {
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
         );
+        let starts_trusted = crate::runtimes::for_key(&role.runtime).starts_trusted(
+            spec.cwd.as_deref(),
+            &spec.args,
+            &spec.env,
+        );
         let capture_root =
             match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,
@@ -665,13 +670,29 @@ impl SessionManager {
         self.install_handle(
             session_id,
             SessionHandle {
-                startup: snap.mission_id.as_ref().map(|_| {
-                    startup::StartupDelivery::new(
-                        &role.runtime,
-                        !plan.resuming && first_turn.is_some(),
-                        super::super::clock::now(),
-                    )
-                }),
+                // A slot's inbox, and a chat's reports (#748), wait until the agent is ready.
+                startup: {
+                    let pending_turn = !plan.resuming && first_turn.is_some();
+                    let now = super::super::clock::now();
+                    if snap.mission_id.is_some() {
+                        Some(startup::StartupDelivery::new(
+                            &role.runtime,
+                            pending_turn,
+                            now,
+                        ))
+                    } else if Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell) {
+                        None
+                    } else {
+                        // A resume that falls back to a fresh start can meet a trust prompt again,
+                        // unless the runtime's config already records the folder as trusted.
+                        let gate = if plan.resuming || (starts_trusted && !pending_turn) {
+                            startup::StartupDelivery::for_trusted_reports
+                        } else {
+                            startup::StartupDelivery::for_reports
+                        };
+                        Some(gate(&role.runtime, pending_turn, now))
+                    }
+                },
                 #[cfg(windows)]
                 pending_first_turn: None,
                 id: session_id.to_string(),

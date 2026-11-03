@@ -129,13 +129,15 @@ impl Sidebar {
         let mut scroll = sidebar_scroll_container("sidebar-node-scroll", &self.scroll).when(
             !active_only,
             |scroll| {
-                scroll.on_drop(cx.listener(|this, drag: &SidebarNodeDrag, _, cx| {
-                    this.commit_sidebar_drop(&drag.node_id, cx);
+                scroll.on_drop(cx.listener(|this, drag: &SidebarNodeDrag, window, cx| {
+                    this.commit_sidebar_drop(&drag.node_id, window, cx);
                 }))
             },
         );
         if !active_only {
             let rows = self.resolved_sidebar_rows(cx);
+            let groups = super::link::LinkGroups::of(&rows);
+            self.drop_hint = self.drop_hint(&rows, &groups, cx);
             let tree = SidebarTree::from_local(&self.source_nodes(cx));
             let resolve = |id: &str| rows.iter().find(|row| row.node().id == id).cloned();
             let pinned = tree
@@ -164,6 +166,10 @@ impl Sidebar {
                     .filter(|row| row.node().pinned_position.is_none())
                     .map(|row| (row.node().parent_id.clone(), row.attention())),
             );
+            let pinned = pinned
+                .into_iter()
+                .filter(|row| groups.head(&row.node().id).is_none())
+                .collect::<Vec<_>>();
             if !pinned.is_empty() {
                 let visible = pinned
                     .iter()
@@ -186,15 +192,36 @@ impl Sidebar {
                                         node_project_id(&self.source_nodes(cx), row.node());
                                     let shortcut_index =
                                         tab_index_by_node.get(&row.node().id).copied();
-                                    self.render_sidebar_row(
-                                        row,
-                                        project_id,
-                                        shortcut_index,
-                                        DropKind::Pinned,
-                                        None,
-                                        visible.clone(),
-                                        cx,
-                                    )
+                                    let missions = groups
+                                        .missions(&row.node().id)
+                                        .iter()
+                                        .filter_map(|id| {
+                                            rows.iter().find(|row| &row.node().id == id).cloned()
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if missions.is_empty() {
+                                        self.render_sidebar_row(
+                                            row,
+                                            project_id,
+                                            shortcut_index,
+                                            DropKind::Pinned,
+                                            None,
+                                            visible.clone(),
+                                            cx,
+                                        )
+                                    } else {
+                                        self.render_link_group(
+                                            row,
+                                            missions,
+                                            project_id,
+                                            shortcut_index,
+                                            DropKind::Pinned,
+                                            None,
+                                            visible.clone(),
+                                            &tab_index_by_node,
+                                            cx,
+                                        )
+                                    }
                                 }))
                                 .children(self.dragged_id.is_some().then(|| {
                                     self.render_end_drop_divider(
@@ -286,6 +313,8 @@ impl Sidebar {
                                             visible_projects.clone(),
                                             &tab_index_by_node,
                                             launcher_row.as_ref(),
+                                            &rows,
+                                            &groups,
                                             cx,
                                         ))
                                     })
@@ -347,8 +376,9 @@ impl Sidebar {
                         let visible = root_rows
                             .iter()
                             .map(|row| row.node().id.clone())
+                            .filter(|id| groups.head(id).is_none())
                             .collect::<Vec<_>>();
-                        let has_rows = !root_rows.is_empty();
+                        let has_rows = !visible.is_empty();
                         let launcher_here = launcher_row == Some(ProjectScope::Root);
                         div()
                             .id("root-chat-scope")
@@ -364,22 +394,16 @@ impl Sidebar {
                             } else if root_rows.is_empty() {
                                 vec![empty_sidebar_label(crate::i18n::text("ui.no_chats_yet"))]
                             } else {
-                                root_rows
-                                    .into_iter()
-                                    .map(|row| {
-                                        let shortcut_index =
-                                            tab_index_by_node.get(&row.node().id).copied();
-                                        self.render_sidebar_row(
-                                            row,
-                                            None,
-                                            shortcut_index,
-                                            DropKind::Leaf,
-                                            None,
-                                            visible.clone(),
-                                            cx,
-                                        )
-                                    })
-                                    .collect()
+                                self.render_scope(
+                                    root_rows,
+                                    &rows,
+                                    &groups,
+                                    None,
+                                    DropKind::Leaf,
+                                    None,
+                                    &tab_index_by_node,
+                                    cx,
+                                )
                             })
                             .children((has_rows && self.dragged_id.is_some()).then(|| {
                                 self.render_end_drop_divider(DropKind::Leaf, None, visible, cx)
@@ -617,6 +641,7 @@ impl Sidebar {
                 drop_kind,
                 parent_id,
                 visible_ids,
+                Default::default(),
                 cx,
             ),
             SidebarRow::Mission {
@@ -632,6 +657,7 @@ impl Sidebar {
                 drop_kind,
                 parent_id,
                 visible_ids,
+                None,
                 cx,
             ),
         }

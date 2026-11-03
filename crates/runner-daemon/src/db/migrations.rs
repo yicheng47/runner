@@ -70,6 +70,7 @@ use crate::error::Result;
 // 0026: records launch definitions, with a Rust conversion in the same transaction.
 // 0027: drops six process-host columns and three session override columns.
 // 0028: optional mission crew provenance and explicit dependent-row cleanup.
+// 0029: a mission's linked chat and whether it reports there (#748).
 pub(super) const MIGRATIONS: &[(i64, &str, bool)] = &[
     (1, include_str!("../../migrations/0001_init.sql"), false),
     (
@@ -198,6 +199,11 @@ pub(super) const MIGRATIONS: &[(i64, &str, bool)] = &[
         28,
         include_str!("../../migrations/0028_optional_mission_crew_restrict_deletes.sql"),
         true,
+    ),
+    (
+        29,
+        include_str!("../../migrations/0029_mission_linked_chat.sql"),
+        false,
     ),
 ];
 

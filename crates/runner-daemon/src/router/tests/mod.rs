@@ -141,6 +141,22 @@ impl StdinInjector for Fake {
         }
     }
     fn register_delivery_listener(&self, _: &str, _: Weak<dyn SessionDeliveryListener>) {}
+    fn report_readiness(&self, session: &str) -> DeliveryReadiness {
+        match self.delivery_readiness(session) {
+            DeliveryReadiness::Working => DeliveryReadiness::Ready { idle: false },
+            readiness => readiness,
+        }
+    }
+    fn reserve_report(&self, session: &str) -> Result<Option<u64>> {
+        if self.report_readiness(session) != (DeliveryReadiness::Ready { idle: true }) {
+            return Ok(None);
+        }
+        self.0.lock().unwrap().reserved.insert(session.into(), 1);
+        Ok(Some(1))
+    }
+    fn synthesize_report_busy(&self, _: &str) {
+        self.0.lock().unwrap().busy += 1;
+    }
 }
 impl RouterUiNotifier for Fake {
     fn delivery_blocked(&self, event: &DeliveryBlockedEvent) {
@@ -1745,5 +1761,414 @@ fn multi_target_human_messages_keep_recipients_live_and_during_reopen_repair() {
     for entry in messages {
         assert_eq!(entry.event.recipients(), &["lead", "worker"]);
         assert!(!entry.event.addresses("qa"));
+    }
+}
+
+mod report {
+    use super::super::report::{Line, ReportDispatcher, ReportKind, ReportSource};
+    use super::*;
+
+    #[derive(Default)]
+    struct Lines {
+        closed: Mutex<bool>,
+        stale: Mutex<Vec<String>>,
+        unknown: Mutex<Vec<String>>,
+    }
+    impl ReportSource for Lines {
+        fn line(&self, _: &str, mission: &str, kind: ReportKind) -> Line {
+            if self.stale.lock().unwrap().iter().any(|m| m == mission) {
+                Line::Drop
+            } else if self.unknown.lock().unwrap().iter().any(|m| m == mission) {
+                Line::Wait
+            } else {
+                Line::Send(format!("[runner] Mission {mission} {kind:?}"))
+            }
+        }
+        fn chat_open(&self, _: &str) -> bool {
+            !*self.closed.lock().unwrap()
+        }
+    }
+
+    struct Reports {
+        port: Fake,
+        lines: Lines,
+        dispatcher: ReportDispatcher,
+        now: Instant,
+    }
+    impl Reports {
+        fn new() -> Self {
+            Self {
+                port: Fake::default(),
+                lines: Lines::default(),
+                dispatcher: ReportDispatcher::default(),
+                now: Instant::now(),
+            }
+        }
+        fn tick(&mut self) -> Option<Instant> {
+            self.dispatcher.advance(&self.port, &self.lines, self.now)
+        }
+        fn wait(&mut self, by: Duration) -> Option<Instant> {
+            self.now += by;
+            self.tick()
+        }
+        /// Type, press Enter and confirm one report.
+        fn deliver(&mut self) {
+            self.tick();
+            self.wait(SUBMIT_DELAY);
+            self.wait(super::super::dispatch::CONFIRM_WINDOW);
+        }
+        fn readiness(&self, readiness: DeliveryReadiness) {
+            self.port
+                .0
+                .lock()
+                .unwrap()
+                .readiness
+                .insert("C".into(), readiness);
+        }
+        fn typed(&self) -> Vec<String> {
+            self.port
+                .0
+                .lock()
+                .unwrap()
+                .pushes
+                .iter()
+                .filter(|(_, bytes)| bytes != b"\r")
+                .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+                .collect()
+        }
+        fn enters(&self) -> usize {
+            self.port
+                .0
+                .lock()
+                .unwrap()
+                .pushes
+                .iter()
+                .filter(|(_, bytes)| bytes == b"\r")
+                .count()
+        }
+    }
+
+    #[test]
+    fn a_report_is_typed_submitted_and_confirmed_once() {
+        let mut r = Reports::new();
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+
+        assert_eq!(r.tick(), Some(r.now + SUBMIT_DELAY));
+        assert_eq!(r.typed(), ["[runner] Mission m1 State"]);
+        assert_eq!(r.enters(), 0, "Enter waits for SUBMIT_DELAY");
+        r.wait(SUBMIT_DELAY);
+        assert_eq!(r.enters(), 1);
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+
+        let state = r.port.0.lock().unwrap();
+        assert_eq!((state.confirmed, state.busy), (1, 1));
+        drop(state);
+        assert!(r.dispatcher.pending("C").is_empty());
+        r.wait(Duration::from_secs(60));
+        assert_eq!(r.typed().len(), 1);
+    }
+
+    #[test]
+    fn a_report_waits_for_an_idle_chat_on_every_runtime() {
+        let mut r = Reports::new();
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        for held in [
+            DeliveryReadiness::Working,
+            DeliveryReadiness::Ready { idle: false },
+            DeliveryReadiness::Unconfirmed,
+            DeliveryReadiness::Drafting,
+            DeliveryReadiness::Unsent,
+            DeliveryReadiness::NeedsYou,
+            DeliveryReadiness::Starting,
+            DeliveryReadiness::Unavailable,
+        ] {
+            r.readiness(held);
+            r.wait(Duration::from_secs(3600));
+            assert!(r.typed().is_empty(), "{held:?}");
+        }
+        r.readiness(DeliveryReadiness::RecentlyTyping(Duration::from_secs(2)));
+        assert_eq!(r.wait(Duration::ZERO), Some(r.now + Duration::from_secs(2)));
+        r.readiness(DeliveryReadiness::Ready { idle: true });
+        r.wait(Duration::from_secs(2));
+        assert_eq!(r.typed().len(), 1);
+    }
+
+    #[test]
+    fn reports_go_one_at_a_time_oldest_first_and_a_later_change_replaces_one_waiting() {
+        let mut r = Reports::new();
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        r.dispatcher.queue("C", "m2", ReportKind::Linked);
+        r.dispatcher.queue("C", "m1", ReportKind::Linked);
+        assert_eq!(
+            r.dispatcher.pending("C"),
+            [
+                ("m1".to_owned(), ReportKind::Linked),
+                ("m2".to_owned(), ReportKind::Linked)
+            ]
+        );
+
+        r.deliver();
+        assert_eq!(r.typed(), ["[runner] Mission m1 Linked"]);
+        r.readiness(DeliveryReadiness::Ready { idle: false });
+        r.wait(Duration::from_secs(60));
+        assert_eq!(
+            r.typed().len(),
+            1,
+            "the next report waits for the chat to be idle again"
+        );
+        r.readiness(DeliveryReadiness::Ready { idle: true });
+        r.dispatcher
+            .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+        r.deliver();
+        assert_eq!(
+            r.typed(),
+            ["[runner] Mission m1 Linked", "[runner] Mission m2 Linked"]
+        );
+        assert!(r.dispatcher.pending("C").is_empty());
+    }
+
+    #[test]
+    fn an_unsubmitted_line_pauses_the_chat_until_it_is_cleared() {
+        let mut r = Reports::new();
+        r.port.0.lock().unwrap().sticky = true;
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        r.deliver();
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+        assert_eq!(
+            r.enters(),
+            2,
+            "one extra Enter, then the line is unsubmitted"
+        );
+        for _ in 0..5 {
+            r.wait(Duration::from_secs(60));
+        }
+        assert_eq!(r.typed().len(), 1, "no second line stacks on the first");
+        assert_eq!(r.dispatcher.pending("C").len(), 1);
+
+        r.port.0.lock().unwrap().input.clear();
+        r.wait(Duration::ZERO);
+        assert_eq!(
+            r.typed().len(),
+            2,
+            "cleared without a turn: the report is retried"
+        );
+
+        let mut sent = Reports::new();
+        sent.port.0.lock().unwrap().sticky = true;
+        sent.dispatcher.queue("C", "m1", ReportKind::State);
+        sent.deliver();
+        sent.wait(super::super::dispatch::CONFIRM_WINDOW);
+        {
+            let mut state = sent.port.0.lock().unwrap();
+            state.input.clear();
+            state.turn_started += 1;
+        }
+        sent.wait(Duration::ZERO);
+        assert!(
+            sent.dispatcher.pending("C").is_empty(),
+            "the person sent the line: the chat has the report"
+        );
+        assert_eq!(sent.typed().len(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Leftover {
+        UnverifiedThenVisible,
+        UnverifiedTrackerOnly,
+    }
+
+    /// An attempt whose confirmation could not see the composer.
+    fn leave_unverified_line(r: &mut Reports, leftover: Leftover) {
+        r.port.0.lock().unwrap().sticky = true;
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        r.tick();
+        r.wait(SUBMIT_DELAY);
+        r.port.0.lock().unwrap().unknown = true;
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+        assert_eq!(
+            r.enters(),
+            1,
+            "{leftover:?}: no second Enter without seeing the line"
+        );
+        match leftover {
+            Leftover::UnverifiedThenVisible => r.port.0.lock().unwrap().unknown = false,
+            Leftover::UnverifiedTrackerOnly => r.port.0.lock().unwrap().unsent = true,
+        }
+    }
+
+    #[test]
+    fn an_unverified_line_that_is_still_there_is_never_typed_over() {
+        for leftover in [
+            Leftover::UnverifiedThenVisible,
+            Leftover::UnverifiedTrackerOnly,
+        ] {
+            let mut r = Reports::new();
+            leave_unverified_line(&mut r, leftover);
+            r.dispatcher.queue("C", "m2", ReportKind::State);
+            for _ in 0..5 {
+                r.dispatcher
+                    .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+                r.wait(Duration::from_secs(60));
+            }
+            assert_eq!(r.typed().len(), 1, "{leftover:?}");
+            assert_eq!(r.dispatcher.pending("C").len(), 2, "{leftover:?}");
+            assert_eq!(r.port.0.lock().unwrap().rechecks, 0, "{leftover:?}");
+
+            {
+                let mut state = r.port.0.lock().unwrap();
+                state.input.clear();
+                state.unsent = false;
+                state.unknown = false;
+            }
+            r.wait(Duration::ZERO);
+            assert_eq!(
+                r.typed(),
+                ["[runner] Mission m1 State", "[runner] Mission m1 State"],
+                "{leftover:?}: once the line is gone the report is retried"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unverified_line_whose_turn_starts_late_is_not_typed_again() {
+        for person_typed in [false, true] {
+            let mut r = Reports::new();
+            r.dispatcher.queue("C", "m1", ReportKind::Linked);
+            r.tick();
+            r.wait(SUBMIT_DELAY);
+            // A native Codex fork's first turn reports after the window (QA run 5).
+            r.port.0.lock().unwrap().unknown = true;
+            r.wait(super::super::dispatch::CONFIRM_WINDOW);
+            assert_eq!(r.port.0.lock().unwrap().confirmed, 0, "unverified");
+            // The composer shows the line gone and the chat busy before its turn is reported.
+            r.port.0.lock().unwrap().unknown = false;
+            r.readiness(DeliveryReadiness::Ready { idle: false });
+            r.wait(super::super::dispatch::CONFIRM_WINDOW);
+            assert_eq!(r.dispatcher.pending("C").len(), 1);
+            {
+                let mut state = r.port.0.lock().unwrap();
+                state.turn_started += 1;
+                if person_typed {
+                    state.revision += 1;
+                }
+            }
+            r.dispatcher
+                .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+            r.wait(Duration::from_secs(5));
+            r.readiness(DeliveryReadiness::Ready { idle: true });
+            r.dispatcher
+                .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+            r.wait(Duration::from_secs(5));
+            if person_typed {
+                assert_eq!(
+                    r.typed().len(),
+                    2,
+                    "after the person's own input the turn may be theirs: retried"
+                );
+            } else {
+                assert_eq!(r.typed().len(), 1, "the line's own turn: not typed again");
+                assert!(r.dispatcher.pending("C").is_empty());
+                assert_eq!(r.port.0.lock().unwrap().confirmed, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_deferred_retry_keeps_the_late_turn_evidence() {
+        let mut r = Reports::new();
+        r.dispatcher.queue("C", "m1", ReportKind::Linked);
+        r.tick();
+        r.wait(SUBMIT_DELAY);
+        r.port.0.lock().unwrap().unknown = true;
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+        r.port.0.lock().unwrap().unknown = false;
+        r.readiness(DeliveryReadiness::Ready { idle: false });
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+        // A ready pass before the turn shows defers the retry without typing.
+        r.lines.unknown.lock().unwrap().push("m1".into());
+        r.readiness(DeliveryReadiness::Ready { idle: true });
+        r.dispatcher
+            .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+        r.wait(Duration::ZERO);
+        assert_eq!(r.typed().len(), 1);
+        r.port.0.lock().unwrap().turn_started += 1;
+        r.lines.unknown.lock().unwrap().clear();
+        r.dispatcher
+            .session_event(&r.port, "C", SessionDeliveryEvent::Idle);
+        r.wait(Duration::from_secs(5));
+        assert_eq!(r.typed().len(), 1, "not typed again after the deferral");
+        assert!(r.dispatcher.pending("C").is_empty());
+        assert_eq!(r.port.0.lock().unwrap().confirmed, 1);
+    }
+
+    #[test]
+    fn a_stale_unsent_hold_without_a_leftover_is_delivered_once_rechecked() {
+        let mut r = Reports::new();
+        r.readiness(DeliveryReadiness::Unsent);
+        r.port.0.lock().unwrap().recheck_releases = true;
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+
+        r.tick();
+        assert_eq!(r.port.0.lock().unwrap().rechecks, 1);
+        assert_eq!(r.typed(), ["[runner] Mission m1 State"]);
+        r.wait(SUBMIT_DELAY);
+        r.wait(super::super::dispatch::CONFIRM_WINDOW);
+        assert_eq!(r.port.0.lock().unwrap().confirmed, 1);
+        assert!(r.dispatcher.pending("C").is_empty());
+    }
+
+    #[test]
+    fn a_stopped_chat_receives_its_report_when_it_resumes() {
+        let mut r = Reports::new();
+        r.readiness(DeliveryReadiness::Unavailable);
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        assert_eq!(r.tick(), None, "nothing to time while the chat is stopped");
+        assert!(r.typed().is_empty());
+
+        r.readiness(DeliveryReadiness::Ready { idle: true });
+        r.dispatcher
+            .session_event(&r.port, "C", SessionDeliveryEvent::Respawned);
+        r.tick();
+        assert_eq!(r.typed().len(), 1);
+    }
+
+    #[test]
+    fn a_closed_chat_or_a_stale_report_sends_nothing() {
+        let mut r = Reports::new();
+        r.dispatcher.queue("C", "m1", ReportKind::State);
+        r.tick();
+        *r.lines.closed.lock().unwrap() = true;
+        r.wait(SUBMIT_DELAY);
+        assert!(r.dispatcher.pending("C").is_empty());
+        assert_eq!(r.enters(), 0);
+        assert!(
+            r.port.0.lock().unwrap().reserved.is_empty(),
+            "the input gate is released"
+        );
+
+        let mut stale = Reports::new();
+        stale.lines.stale.lock().unwrap().push("m1".into());
+        stale.dispatcher.queue("C", "m1", ReportKind::State);
+        stale.dispatcher.queue("C", "m2", ReportKind::State);
+        stale.tick();
+        assert_eq!(stale.typed(), ["[runner] Mission m2 State"]);
+        assert_eq!(
+            stale.dispatcher.pending("C"),
+            [("m2".to_owned(), ReportKind::State)]
+        );
+
+        let mut unknown = Reports::new();
+        unknown.lines.unknown.lock().unwrap().push("m1".into());
+        unknown.dispatcher.queue("C", "m1", ReportKind::Linked);
+        assert_eq!(unknown.tick(), Some(unknown.now + Duration::from_secs(1)));
+        assert!(unknown.typed().is_empty());
+        assert_eq!(
+            unknown.dispatcher.pending("C").len(),
+            1,
+            "a mission not read yet waits"
+        );
+        unknown.lines.unknown.lock().unwrap().clear();
+        unknown.wait(Duration::from_secs(1));
+        assert_eq!(unknown.typed(), ["[runner] Mission m1 Linked"]);
     }
 }

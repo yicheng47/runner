@@ -183,6 +183,42 @@ impl SessionManager {
         Ok(())
     }
 
+    /// A confirmed report reads as busy until the chat's agent reports its
+    /// turn, or the submit window withdraws it, as a confirmed inbox notice does.
+    pub(crate) fn synthesize_report_busy(&self, session_id: &str) {
+        let Some(session) = self.session_state(session_id) else {
+            return;
+        };
+        let mut session = session.lock().unwrap();
+        if session.model.activity() == Some(SessionActivityState::Busy) {
+            return;
+        }
+        let revision = session.model.revision();
+        session.model.apply(
+            SessionEvent::Delivered { revision },
+            super::super::clock::state_now(),
+        );
+    }
+
+    /// A running session with the given activity, for tests outside the manager.
+    #[cfg(test)]
+    pub(crate) fn test_running_activity(&self, session_id: &str, state: SessionActivityState) {
+        let session = self.session_state_or_insert(session_id);
+        let mut session = session.lock().unwrap();
+        session.model.apply(
+            SessionEvent::Transition {
+                state,
+                source: StatusSource::Forwarder,
+                live: true,
+            },
+            super::super::clock::state_now(),
+        );
+        session.model.apply(
+            SessionEvent::TestLifecycle(crate::session::status::Lifecycle::Running),
+            super::super::clock::state_now(),
+        );
+    }
+
     pub(crate) fn publish_direct_activity(
         &self,
         session_id: &str,

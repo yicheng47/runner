@@ -81,6 +81,7 @@ fn mission(
         stopped_at: minutes.map(|minutes| started + chrono::Duration::minutes(minutes)),
         pinned_at: None,
         archived_at: None,
+        linked_chat: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn summary(mission: Mission) -> MissionSummary {
         any_session_live: false,
         all_sessions_live: false,
         activity: None,
+        phase: None,
     }
 }
 

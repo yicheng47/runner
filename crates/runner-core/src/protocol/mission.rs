@@ -2,6 +2,10 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The agent session's own ID, set on every agent session's spawn, resume
+/// and fork. An address, not a caller identity (#748).
+pub const SESSION_ID_ENV: &str = "RUNNER_SESSION_ID";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissionReadCursor {
     pub start_offset: u64,
@@ -25,6 +29,13 @@ pub struct StartMissionInput {
     /// An explicit value overrides the project's bound cwd.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The caller's `RUNNER_SESSION_ID`. A direct agent chat is recorded as
+    /// the starter and linked; any other session is ignored (#748).
+    #[serde(default)]
+    pub started_by_session_id: Option<String>,
+    /// Link without typing reports into the chat (`--no-report`).
+    #[serde(default)]
+    pub no_report: bool,
 }
 
 /// A mission start whose project the caller has decided. The CLI's
@@ -37,6 +48,10 @@ pub struct MissionStart {
     pub title: String,
     pub goal_override: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub started_by_session_id: Option<String>,
+    #[serde(default)]
+    pub no_report: bool,
 }
 
 impl From<StartMissionInput> for MissionStart {
@@ -47,8 +62,31 @@ impl From<StartMissionInput> for MissionStart {
             title: input.title,
             goal_override: input.goal_override,
             cwd: input.cwd,
+            started_by_session_id: input.started_by_session_id,
+            no_report: input.no_report,
         }
     }
+}
+
+/// Link a mission to a direct agent chat, or move its link (#748).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionLinkInput {
+    pub mission_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub no_report: bool,
+    /// The caller's `RUNNER_SESSION_ID`. When it is the chat being linked,
+    /// its own agent made the link and the chat is not told.
+    #[serde(default)]
+    pub caller_session_id: Option<String>,
+}
+
+/// The chat that started a mission, as its `mission_start` event records
+/// it. It never changes, unlike the link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissionStarter {
+    pub session_id: String,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +96,29 @@ pub struct StartMissionOutput {
     /// The frontend uses this to render the first event in the workspace
     /// without making a second round-trip.
     pub goal: String,
+}
+
+/// The one state the daemon derives for a mission (#748). The first that
+/// applies wins, in declaration order after `Ended`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionPhase {
+    /// A question is pending, or a member waits for input or approval.
+    NeedsYou,
+    /// A member crashed or its turn failed; others may still run.
+    Failed,
+    Working,
+    /// Every member has been idle for the settle window with nothing pending.
+    Settled,
+    /// Stopped, archived, or every member exited.
+    Ended,
+}
+
+impl MissionPhase {
+    /// The phases a linked chat hears about.
+    pub fn reported(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Failed | Self::Settled)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +152,9 @@ pub struct MissionSummary {
     /// `session_status` events. `None` means the mission has no live
     /// sessions and keeps the sidebar attention slot clear.
     pub activity: Option<MissionActivityState>,
+    /// The daemon's state for the mission; absent from older daemons.
+    #[serde(default)]
+    pub phase: Option<MissionPhase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +245,10 @@ pub struct SkippedEventLine {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MissionStatusSnapshot {
     pub mission: Mission,
+    #[serde(default)]
+    pub phase: Option<MissionPhase>,
+    #[serde(default)]
+    pub started_by: Option<MissionStarter>,
     pub crew: Option<Crew>,
     pub sessions: Vec<SessionRow>,
     pub latest_session_status_by_handle: BTreeMap<String, SessionStatusSnapshot>,

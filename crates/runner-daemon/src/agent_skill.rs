@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn both_skills_scope_start_and_watch_to_external_operators_with_the_matching_executable() {
+    fn both_skills_name_the_link_and_report_commands_with_the_matching_executable() {
         for debug in [false, true] {
             let skill = render(debug, Path::new("/Runner Dev/bin/runner"));
             let command = if debug {
@@ -189,24 +189,16 @@ mod tests {
             } else {
                 "runner"
             };
-            assert!(skill.contains(&format!("after every successful `{command} mission start`")));
-            assert!(skill.contains(&format!("`{command} mission feed <id> --follow --json`")));
             for rule in [
-                "External operators starting a different mission must start and watch",
-                "That mission's updates are not automatically pushed into your chat",
-                "For that external watch",
-                "An external watch facility qualifies only if",
-                "exactly one watcher per mission",
-                "while idle",
-                "An unread background log or a completion-only notification is not a watch",
-                "automatic watching is unavailable",
-                "On host expiry or unexpected exit",
-                "stderr diagnostics and exit",
-                "re-arm exactly one watch with `--since <next_offset> --oldest-first`",
-                "`timeout_ms` at its maximum",
+                format!("`{command} mission start` links the new mission to this chat"),
+                format!("`{command} mission link <mission>` links an existing mission"),
+                format!("`{command} mission show <id> --json`"),
+                format!("`{command} mission show <id>` and `{command} mission feed <id>`"),
+                format!("`{command} mission list --linked-here` finds this chat's missions"),
             ] {
-                assert!(skill.contains(rule), "missing watch rule: {rule}");
+                assert!(skill.contains(&rule), "missing {rule}");
             }
+            assert!(!skill.contains("--follow"));
         }
     }
 

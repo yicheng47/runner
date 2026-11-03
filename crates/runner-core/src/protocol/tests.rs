@@ -296,7 +296,21 @@ record!(Mission {
     started_at,
     stopped_at,
     pinned_at,
-    archived_at
+    archived_at,
+    linked_chat
+});
+record!(LinkedChat {
+    session_id,
+    title,
+    archived,
+    reports
+});
+record!(MissionStarter { session_id, title });
+record!(MissionLinkInput {
+    mission_id,
+    session_id,
+    no_report,
+    caller_session_id
 });
 variant!(MissionActivityState => Self::Busy);
 variant!(MissionFeedOrder => Self::OldestFirst);
@@ -325,6 +339,8 @@ record!(MissionReadCursor {
 });
 record!(MissionStatusSnapshot {
     mission,
+    phase,
+    started_by,
     crew,
     sessions,
     latest_session_status_by_handle,
@@ -365,7 +381,9 @@ record!(MissionStart {
     scope,
     title,
     goal_override,
-    cwd
+    cwd,
+    started_by_session_id,
+    no_report
 });
 variant!(MissionStatus => Self::Running);
 record!(MissionSummary {
@@ -375,8 +393,10 @@ record!(MissionSummary {
     pending_ask_count,
     any_session_live,
     all_sessions_live,
-    activity
+    activity,
+    phase
 });
+variant!(MissionPhase => Self::NeedsYou);
 record!(NodeRow {
     id,
     parent_id,

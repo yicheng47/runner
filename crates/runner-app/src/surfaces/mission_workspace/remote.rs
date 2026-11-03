@@ -480,6 +480,26 @@ impl MissionPresentation {
             Self::Remote(remote) => Some(remote),
         }
     }
+    /// Whether the host's tab holding `chat` is pinned; `None` when no tab
+    /// holds it or the window is local.
+    pub(super) fn chat_tab_pinned(&self, chat: &str) -> Option<bool> {
+        fn holds(pane: &runner_core::companion::Pane, chat: &str) -> bool {
+            match pane {
+                runner_core::companion::Pane::Split { a, b, .. } => {
+                    holds(a, chat) || holds(b, chat)
+                }
+                runner_core::companion::Pane::Leaf { session } => session.as_deref() == Some(chat),
+                runner_core::companion::Pane::Unknown(_) => false,
+            }
+        }
+        self.remote()?
+            .overview
+            .as_ref()?
+            .tabs
+            .iter()
+            .find(|tab| holds(&tab.panes, chat))
+            .map(|tab| tab.pinned)
+    }
     pub(super) fn summary(
         &self,
         mission_id: Option<&str>,
@@ -515,6 +535,14 @@ impl MissionPresentation {
             started_at: None,
             archived: false,
             pinned: mission.pinned,
+            linked_chat: mission.linked_chat.clone().map(|chat| {
+                runner_core::protocol::LinkedChat {
+                    session_id: chat.session_id,
+                    title: chat.title,
+                    archived: chat.archived,
+                    reports: chat.reports,
+                }
+            }),
         })
     }
     pub(super) fn members(

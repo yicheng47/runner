@@ -2,21 +2,23 @@ use super::elements::{
     sidebar_icon, sidebar_row_label, sidebar_row_shell, sidebar_row_trailing_slot,
     tab_shortcut_pill,
 };
+use super::rows_render::GroupHead;
 use super::*;
+use crate::surfaces::sidebar_logic::AttentionState;
 use runner_app::ui::agent_status::StatusRollup;
 use runner_core::protocol::model::Runtime;
 use runner_core::protocol::status::{Activity, AgentStatus, Lifecycle, ObservationSource};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum ActiveGroup {
-    Chats,
-    Missions,
+    /// Chats and missions together, in creation order (#748).
+    Agents,
     Terminals,
 }
 
 #[derive(Clone)]
 pub(super) struct ActiveSidebarRow {
-    source: SidebarRow,
+    pub(super) source: SidebarRow,
     group: ActiveGroup,
     rollup: StatusRollup,
 }
@@ -24,8 +26,7 @@ pub(super) struct ActiveSidebarRow {
 impl ActiveGroup {
     pub(super) fn key(self) -> &'static str {
         match self {
-            Self::Chats => "chats",
-            Self::Missions => "missions",
+            Self::Agents => "agents",
             Self::Terminals => "terminals",
         }
     }
@@ -207,7 +208,7 @@ impl Sidebar {
                         if terminals_only {
                             ActiveGroup::Terminals
                         } else {
-                            ActiveGroup::Chats
+                            ActiveGroup::Agents
                         },
                         StatusRollup { entries },
                         members
@@ -220,20 +221,55 @@ impl Sidebar {
                         continue;
                     }
                     (
-                        ActiveGroup::Missions,
+                        ActiveGroup::Agents,
                         self.mission_status_rollup(summary),
                         summary.mission.running && summary.any_session_live,
                     )
                 }
             };
-            if rollup.priority_value() >= 2 || live {
-                rows.push(ActiveSidebarRow {
+            let attention = match &source {
+                SidebarRow::Mission { summary, .. } => self.mission_attention(summary),
+                SidebarRow::Tab { .. } => super::rows::status_attention(rollup.priority_value()),
+            };
+            let active = attention >= AttentionState::Unread || live;
+            rows.push((
+                active,
+                ActiveSidebarRow {
                     source,
                     group,
                     rollup,
-                });
+                },
+            ));
+        }
+        // A chat heads its linked group while it or any of its missions is
+        // active, and a shown group keeps every linked mission, Ended included,
+        // until it is archived.
+        let sources = rows
+            .iter()
+            .map(|(_, row)| row.source.clone())
+            .collect::<Vec<_>>();
+        let groups = super::link::LinkGroups::of(&sources);
+        let mut shown = rows
+            .iter()
+            .filter(|(active, _)| *active)
+            .map(|(_, row)| row.source.node().id.clone())
+            .collect::<HashSet<_>>();
+        let heads = shown
+            .iter()
+            .filter_map(|id| groups.head(id).map(str::to_owned))
+            .collect::<Vec<_>>();
+        shown.extend(heads);
+        for (_, row) in &rows {
+            let id = &row.source.node().id;
+            if groups.head(id).is_some_and(|head| shown.contains(head)) {
+                shown.insert(id.clone());
             }
         }
+        let mut rows = rows
+            .into_iter()
+            .filter(|(_, row)| shown.contains(&row.source.node().id))
+            .map(|(_, row)| row)
+            .collect::<Vec<_>>();
         sort_active_rows(&mut rows);
         rows
     }
@@ -266,15 +302,20 @@ impl Sidebar {
                         .matches(NodeType::Mission, &summary.mission.id),
                 })
         });
+        let sources = rows
+            .iter()
+            .map(|row| row.source.clone())
+            .collect::<Vec<_>>();
+        let link_groups = super::link::LinkGroups::of(&sources);
         for (group, label) in [
-            (ActiveGroup::Chats, "heading.chats"),
-            (ActiveGroup::Missions, "heading.missions"),
+            (ActiveGroup::Agents, "heading.agents"),
             (ActiveGroup::Terminals, "heading.terminals"),
         ] {
             let members = rows
                 .iter()
                 .enumerate()
                 .filter(|(_, row)| row.group() == group)
+                .filter(|(_, row)| link_groups.head(&row.source.node().id).is_none())
                 .collect::<Vec<_>>();
             if members.is_empty() {
                 continue;
@@ -342,11 +383,79 @@ impl Sidebar {
                             .flex_col()
                             .gap(rems(2. / 16.))
                             .children(members.into_iter().map(|(index, row)| {
-                                self.render_active_row(
+                                let head_id = row.source.node().id.clone();
+                                let missions = link_groups
+                                    .missions(&head_id)
+                                    .iter()
+                                    .filter_map(|id| {
+                                        rows.iter()
+                                            .enumerate()
+                                            .find(|(_, row)| &row.source.node().id == id)
+                                    })
+                                    .collect::<Vec<_>>();
+                                if missions.is_empty() {
+                                    return self.render_active_row(
+                                        row,
+                                        self.tab_index_by_node.get(&head_id).copied(),
+                                        rename_index == Some(index),
+                                        GroupHead::default(),
+                                        cx,
+                                    );
+                                }
+                                // One collapse state per group, shared with Projects.
+                                let collapsed = self
+                                    .settings(cx)
+                                    .sidebar_collapsed_link_groups
+                                    .contains(&head_id);
+                                let state =
+                                    self.group_state(missions.iter().filter_map(|(_, row)| {
+                                        match &row.source {
+                                            SidebarRow::Mission { summary, .. } => Some(summary),
+                                            SidebarRow::Tab { .. } => None,
+                                        }
+                                    }));
+                                let head = self.render_active_row(
                                     row,
-                                    self.tab_index_by_node.get(&row.source.node().id).copied(),
+                                    self.tab_index_by_node.get(&head_id).copied(),
                                     rename_index == Some(index),
+                                    GroupHead {
+                                        attention: collapsed.then_some(state.attention),
+                                        summary: collapsed
+                                            .then(|| state.summary(&head_id, theme::text_meta())),
+                                        in_group: true,
+                                        ..GroupHead::default()
+                                    },
                                     cx,
+                                );
+                                let selected = self.tab_selected(&head_id, cx)
+                                    || missions.iter().any(|(_, row)| {
+                                        matches!(&row.source, SidebarRow::Mission { summary, .. }
+                                            if self.mission_selected(&summary.mission.id, cx))
+                                    });
+                                let missions = if collapsed {
+                                    Vec::new()
+                                } else {
+                                    missions
+                                        .into_iter()
+                                        .map(|(index, row)| {
+                                            self.render_active_row(
+                                                row,
+                                                self.tab_index_by_node
+                                                    .get(&row.source.node().id)
+                                                    .copied(),
+                                                rename_index == Some(index),
+                                                GroupHead::default(),
+                                                cx,
+                                            )
+                                        })
+                                        .collect()
+                                };
+                                super::link::active_link_group(
+                                    &head_id,
+                                    head,
+                                    self.link_group_toggle(&head_id, collapsed, true, cx),
+                                    missions,
+                                    selected,
                                 )
                             }))
                     })),
@@ -382,11 +491,14 @@ impl Sidebar {
         }
     }
 
+    /// `group`: set for the chat row heading a linked group, whose outline is its
+    /// border; collapsed, its summary replaces the place line.
     fn render_active_row(
         &self,
         row: &ActiveSidebarRow,
         index: Option<u8>,
         renaming: bool,
+        group: GroupHead,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let store = self.app_store.read(cx);
@@ -476,6 +588,13 @@ impl Sidebar {
                     });
                 }),
             )
+        } else if let Some(attention) = group.attention {
+            sidebar_row_trailing_slot().child(super::rows_render::group_state_glyph(
+                &shortcut.node_id,
+                attention,
+            ))
+        } else if let SidebarRow::Mission { summary, node, .. } = row.source.clone() {
+            sidebar_row_trailing_slot().child(self.render_mission_attention(&summary, &node.id, cx))
         } else {
             sidebar_row_trailing_slot().child(row.rollup.render_pane_with_elapsed(
                 SharedString::from(format!("active-status-{}", shortcut.node_id)),
@@ -485,86 +604,93 @@ impl Sidebar {
         let hover_id = shortcut.node_id.clone();
         let target = shortcut.target;
         let menu_row = row.clone();
-        sidebar_row_shell(
-            SharedString::from(format!("active-{}", shortcut.node_id)),
-            active || renaming,
-            false,
-        )
-        .gap_2()
-        .rounded(rems(6. / 16.))
-        .text_size(theme::text_ui())
-        .child(sidebar_icon(icon, live))
-        .child(
-            div()
+        let row_id = SharedString::from(format!("active-{}", shortcut.node_id));
+        let collapsed_head = group.summary.is_some();
+        let second_line = match group.summary {
+            Some(summary) => summary,
+            None => div()
+                .debug_selector(|| format!("ACTIVE_LOCATION {}", shortcut.node_id))
                 .min_w(px(0.))
-                .flex_1()
                 .flex()
-                .flex_col()
-                .gap(rems(2. / 16.))
+                .items_center()
+                .gap(rems(6. / 16.))
+                .text_size(theme::text_meta())
+                .text_color(theme::faint())
                 .child(
-                    div()
-                        .debug_selector(|| format!("ACTIVE_TITLE {}", shortcut.node_id))
-                        .child(title),
+                    gpui::svg()
+                        .path("folder.svg")
+                        .size(rems(10. / 16.))
+                        .flex_none()
+                        .text_color(theme::faint()),
                 )
-                .child(
-                    div()
-                        .debug_selector(|| format!("ACTIVE_LOCATION {}", shortcut.node_id))
-                        .min_w(px(0.))
-                        .flex()
-                        .items_center()
-                        .gap(rems(6. / 16.))
-                        .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child(
-                            gpui::svg()
-                                .path("folder.svg")
-                                .size(rems(10. / 16.))
-                                .flex_none()
-                                .text_color(theme::faint()),
-                        )
-                        .child(div().min_w(px(0.)).truncate().child(location)),
-                ),
-        )
-        .child(trailing)
-        .when(renaming, |row| {
-            row.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                match event.keystroke.key.as_str() {
-                    "enter" => {
-                        cx.stop_propagation();
-                        this.submit_sidebar_rename(window, cx);
-                    }
-                    "escape" => {
-                        cx.stop_propagation();
-                        this.cancel_sidebar_rename(window, cx);
-                    }
-                    _ => {}
-                }
-            }))
-        })
-        .when(!renaming, |row| {
-            row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                this.set_row_hovered(&hover_id, *hovered, cx)
-            }))
-            .on_click(cx.listener(move |this, _, window, cx| match &target {
-                SidebarActivationTarget::Tab { tab_id, session_id } => {
-                    this.activate_sidebar_session(tab_id, session_id, window, cx)
-                }
-                SidebarActivationTarget::Mission {
-                    mission_id,
-                    project_id,
-                } => {
-                    this.active_project_id = project_id.clone();
-                    this.open_mission(mission_id.clone(), window, cx);
-                }
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                    cx.stop_propagation();
-                    this.open_active_menu(&menu_row, event.position, window, cx);
-                }),
+                .child(div().min_w(px(0.)).truncate().child(location))
+                .into_any_element(),
+        };
+        sidebar_row_shell(row_id.clone(), active || renaming, false, !group.in_group)
+            .gap_2()
+            .rounded(rems(6. / 16.))
+            .when(group.in_group, |row| {
+                super::link::active_head_shape(row, collapsed_head)
+            })
+            .text_size(theme::text_ui())
+            .child(super::elements::sidebar_mark(
+                row_id,
+                sidebar_icon(icon, live),
+            ))
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(rems(2. / 16.))
+                    .child(
+                        div()
+                            .debug_selector(|| format!("ACTIVE_TITLE {}", shortcut.node_id))
+                            .child(title),
+                    )
+                    .child(second_line),
             )
-        })
-        .into_any_element()
+            .child(trailing)
+            .when(renaming, |row| {
+                row.on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                    match event.keystroke.key.as_str() {
+                        "enter" => {
+                            cx.stop_propagation();
+                            this.submit_sidebar_rename(window, cx);
+                        }
+                        "escape" => {
+                            cx.stop_propagation();
+                            this.cancel_sidebar_rename(window, cx);
+                        }
+                        _ => {}
+                    }
+                }))
+            })
+            .when(!renaming, |row| {
+                row.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                    this.set_row_hovered(&hover_id, *hovered, cx)
+                }))
+                .on_click(cx.listener(move |this, _, window, cx| match &target {
+                    SidebarActivationTarget::Tab { tab_id, session_id } => {
+                        this.activate_sidebar_session(tab_id, session_id, window, cx)
+                    }
+                    SidebarActivationTarget::Mission {
+                        mission_id,
+                        project_id,
+                    } => {
+                        this.active_project_id = project_id.clone();
+                        this.open_mission(mission_id.clone(), window, cx);
+                    }
+                }))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_active_menu(&menu_row, event.position, window, cx);
+                    }),
+                )
+            })
+            .into_any_element()
     }
 }

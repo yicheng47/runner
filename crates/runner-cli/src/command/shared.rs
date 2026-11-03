@@ -97,6 +97,7 @@ pub(super) fn output_view(command: &Command) -> output::View {
             MissionCommand::AddRole { .. } => View::RoleChange("Added role"),
             MissionCommand::RemoveRole { .. } => View::RoleChange("Removed role"),
             MissionCommand::Answer { .. } => View::Confirmation("Answered question"),
+            MissionCommand::Link { .. } | MissionCommand::Unlink { .. } => View::MissionLink,
             MissionCommand::Start { .. }
             | MissionCommand::Stop { .. }
             | MissionCommand::Archive { .. }
