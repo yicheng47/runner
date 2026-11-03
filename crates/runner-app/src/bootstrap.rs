@@ -22,11 +22,21 @@ pub fn connect(
     let source =
         runner_core::cli_install::locate_source(runner_core::cli_install::AGENT_SOURCE_BIN_NAME)?
             .context("bundled CLI sidecar unavailable; build runner-cli first")?;
-    let hash_source = source.clone();
-    let hash =
-        std::thread::spawn(move || runner_core::daemon_process::executable_hash(&hash_source))
-            .join()
-            .map_err(|_| anyhow::anyhow!("sidecar hash worker panicked"))??;
+    // A previous launch recorded the installed sidecar's hash; hashing the
+    // binary again is only needed when that record no longer matches.
+    let hash = match runner_core::cli_install::cached_install_sha256(
+        &paths.app_data_dir,
+        runner_core::cli_install::DAEMON_DEST_BIN_NAME,
+        &source,
+    ) {
+        Some(hash) => hash,
+        None => {
+            let hash_source = source.clone();
+            std::thread::spawn(move || runner_core::daemon_process::executable_hash(&hash_source))
+                .join()
+                .map_err(|_| anyhow::anyhow!("sidecar hash worker panicked"))??
+        }
+    };
     let connection = runner_core::protocol::managed::ManagedTransport::connect(
         runner_core::daemon_process::Launch::new(paths.clone(), source, true),
         hash,

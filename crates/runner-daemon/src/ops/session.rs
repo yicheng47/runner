@@ -327,6 +327,19 @@ pub fn session_list_recent_direct(state: &AppCore) -> Result<Vec<DirectSessionEn
         .collect()
 }
 
+/// Detail rows for the recent direct sessions, the read side of the
+/// `session_details` request.
+pub fn session_details(state: &AppCore) -> Result<BTreeMap<String, DirectSessionEntry>> {
+    session_list_recent_direct(state)?
+        .into_iter()
+        .filter_map(|entry| match session_get(state, &entry.session_id) {
+            Ok(Some(detail)) => Some(Ok((entry.session_id, detail))),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
 /// Unfiltered single-row lookup for a direct-chat session.
 ///
 /// `session_list_recent_direct` hides archived rows (`archived_at IS

@@ -5,6 +5,21 @@ use super::{agent_skill, command};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+/// Everything the app store fetches while starting, in one response.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct AppBootstrapSnapshot {
+    pub sessions: Vec<DirectSessionEntry>,
+    pub session_details: BTreeMap<String, DirectSessionEntry>,
+    pub roles: Vec<Role>,
+    pub crews: Vec<CrewListItem>,
+    pub nodes: Vec<NodeRow>,
+    pub projects: Vec<ProjectRow>,
+    pub missions: Vec<MissionSummary>,
+    pub live_session_counts: HashMap<Runtime, usize>,
+    pub activity: BTreeMap<String, SessionActivityState>,
+    pub statuses: BTreeMap<String, AgentStatus>,
+}
+
 #[allow(clippy::crate_in_macro_def)]
 #[macro_export]
 macro_rules! daemon_api {
@@ -179,6 +194,7 @@ macro_rules! daemon_api {
 
 
         app_woke() -> () [false] => |core: &crate::AppCore| { core.events.emit("app/woke", &()); Ok(()) };
+        app_bootstrap() -> AppBootstrapSnapshot [false] => |core: &crate::AppCore| { crate::ops::bootstrap::snapshot(core) };
         window_set_mission(label: &str => String = { label.to_owned() }, id: &str => String = { id.to_owned() }, focused: bool => bool = { focused }) -> () [false] => |core: &crate::AppCore, label: String, id: String, focused: bool| { core.windows.set_subjects(&label, vec![Subject::Mission(id)]); if focused { core.windows.mark_focused(&label); } else { core.windows.mark_blurred(&label); } core.broadcast_focus_map(); Ok(()) };
         consume_resume_on_launch(enabled: bool => bool = { enabled }, sizes: HashMap<String, (u16, u16)> => HashMap<String, (u16, u16)> = { sizes }, fallback: (u16, u16) => (u16, u16) = { fallback }) -> AutoResumeReport [false] => |core: &crate::AppCore, enabled: bool, sizes: HashMap<String, (u16, u16)>, fallback: (u16, u16)| { crate::daemon::resume::consume_resume_on_launch(core, enabled, |id| sizes.get(id).copied().or(Some(fallback))) };
         direct_chat_path() -> String [true] => |core: &crate::AppCore| { let snapshot = crate::daemon::discovery_snapshot(core)?; Ok(crate::runtime_status::direct_chat_path(&snapshot.shell_env)) };
@@ -186,7 +202,7 @@ macro_rules! daemon_api {
 
         session_clipboard_file_paths() -> Vec<String> [false] => |_core: &crate::AppCore| { Ok(crate::ops::session::session_clipboard_file_paths()) };
         session_details() -> BTreeMap<String, DirectSessionEntry> [false] =>
-        |core: &crate::AppCore| { crate::ops::session::session_list_recent_direct(core)?.into_iter().filter_map(|entry| match crate::ops::session::session_get(core, &entry.session_id) { Ok(Some(detail)) => Some(Ok((entry.session_id, detail))), Ok(None) => None, Err(error) => Some(Err(error)) }).collect::<crate::error::Result<BTreeMap<String, DirectSessionEntry>>>() };
+        |core: &crate::AppCore| { crate::ops::session::session_details(core) };
     } };
 }
 

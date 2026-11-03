@@ -75,15 +75,25 @@ pub fn run(config: Config) -> Result<()> {
     if let Err(error) = super::windows_shutdown::set_shutdown_priority() {
         log::warn!("runnerd shutdown priority unavailable; continuing: {error}");
     }
-    let hash = daemon_process::executable_hash(&std::env::current_exe()?)?;
+    // The daemon hashes itself for the Welcome handshake; overlap the read
+    // with boot instead of blocking the socket-ready gate on it.
+    let hash_source = std::env::current_exe()?;
+    let hash_worker = std::thread::spawn(move || daemon_process::executable_hash(&hash_source));
     let settings: Settings = std::fs::read(config.paths.app_data_dir.join("ui-settings.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
-    let core = super::boot::boot(&config.paths, settings.runtimes(), false)?;
+    let core = super::boot::boot_minimal(
+        &config.paths,
+        settings.runtimes(),
+        cfg!(target_os = "linux"),
+    )?;
     if config.isolated {
         core.runtime_discovery.write().unwrap().checking = false;
     }
+    let hash = hash_worker
+        .join()
+        .map_err(|_| std::io::Error::other("runnerd hash worker panicked"))??;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .thread_name("runner-ipc")
         .enable_all()
@@ -209,7 +219,19 @@ async fn serve_with_listener(
     let resume_consumer = Arc::new(super::resume::ResumeConsumer::default());
     let consumer = resume_consumer.clone();
     let resume_core = core.clone();
+    let warm_core = core.clone();
     let resume = tokio::task::spawn_blocking(move || {
+        let warm_started = std::time::Instant::now();
+        if let Err(error) = super::boot::warm_up(&warm_core) {
+            log::error!("runnerd startup warmup failed ({error:#})");
+        } else {
+            log::info!(
+                "runnerd startup warmup finished in {:?}",
+                warm_started.elapsed()
+            );
+        }
+        // Sessions resume only once the warmup finished, preserving the
+        // pre-split ordering between router mounts, cleanup and resume.
         let result = super::resume::consume_resume_on_launch_until(
             &resume_core,
             settings.resume_on_launch,

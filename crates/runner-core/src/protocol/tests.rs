@@ -671,6 +671,18 @@ record!(WindowEntry {
     focused
 });
 variant!(WorkDetail => Self::UsingTools);
+record!(AppBootstrapSnapshot {
+    sessions,
+    session_details,
+    roles,
+    crews,
+    nodes,
+    projects,
+    missions,
+    live_session_counts,
+    activity,
+    statuses
+});
 fn round_trip<T: Serialize + DeserializeOwned + std::fmt::Debug>(value: T) {
     let bytes = serde_json::to_vec(&value).unwrap();
     let decoded: T = serde_json::from_slice(&bytes).unwrap();

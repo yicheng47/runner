@@ -22,6 +22,7 @@ pub(super) fn page_limit_offset(page: i64, page_size: i64, filtered_count: i64) 
     (page_size, (page - 1) * page_size)
 }
 
+pub mod bootstrap;
 pub mod crew;
 pub mod mcp;
 pub mod mission;

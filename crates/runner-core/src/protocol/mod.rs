@@ -25,7 +25,7 @@ pub mod terminal;
 pub mod usage;
 pub mod window;
 pub mod wire;
-pub use api::{Request, Response};
+pub use api::{AppBootstrapSnapshot, Request, Response};
 pub use client::*;
 pub use crew::*;
 pub use discovery::*;

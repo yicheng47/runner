@@ -182,8 +182,12 @@ impl Launch {
             }
         }
         if self.app {
-            crate::cli_install::install_from_source(&self.paths.app_data_dir, &self.source)
-                .map_err(|error| ConnectError::Protocol(error.to_string()))?;
+            crate::cli_install::install_from_source_hashed(
+                &self.paths.app_data_dir,
+                &self.source,
+                Some(hash),
+            )
+            .map_err(|error| ConnectError::Protocol(error.to_string()))?;
             let _ = crate::cli_install::remove_stale_mcp_cli(&self.paths.app_data_dir);
         }
         let mut child = self.spawn().map_err(|error| {

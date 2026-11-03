@@ -18,12 +18,42 @@ pub fn boot(
     model_runtimes: Vec<crate::model::Runtime>,
     background: bool,
 ) -> Result<AppCore> {
+    let core = boot_minimal(
+        paths,
+        model_runtimes.clone(),
+        background || cfg!(target_os = "linux"),
+    )?;
+    warm_up(&core)?;
+    if background {
+        runtime_status::start_background_discovery(
+            core.events.clone(),
+            Arc::clone(&core.db),
+            Arc::clone(&core.runtime_shell_env),
+            Arc::clone(&core.runtime_discovery),
+            false,
+            model_runtimes,
+        );
+        #[cfg(not(test))]
+        core.usage.start_scheduler(core.clone());
+    }
+    Ok(core)
+}
+
+/// Everything that must exist before the IPC endpoint starts accepting
+/// clients: the core, its watchers, and the cheap DB normalizations the
+/// first client view depends on. Deliberately excludes the slow startup
+/// work (`warm_up`) so the app can connect while it runs.
+pub fn boot_minimal(
+    paths: &NativePaths,
+    model_runtimes: Vec<crate::model::Runtime>,
+    install_cli: bool,
+) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
     // Mission shims exec `$APPDATA/bin/runner`, so the CLI must be in place
     // before any session spawns. Best-effort: a copy failure is reported and
     // the app keeps running (#480).
-    if background || cfg!(target_os = "linux") {
+    if install_cli {
         if let Err(error) = runner_core::cli_install::install_runner_cli(&paths.app_data_dir) {
             eprintln!("Runner bundled agent CLI install failed: {error}");
         }
@@ -94,15 +124,6 @@ pub fn boot(
         eprintln!("Runner session watcher startup failed: {error}");
     }
 
-    match pool.get() {
-        Ok(conn) => {
-            if let Err(error) = ops::mission::roster::convert_all(&conn, &core.app_data_dir) {
-                log::warn!("mission roster conversion failed: {error}");
-            }
-        }
-        Err(error) => log::warn!("mission roster conversion database unavailable: {error}"),
-    }
-    super::block_on(ops::mission::mount_all_running_mission_routers(&core));
     session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
         .context("clean up stale PTY sessions")?;
     match pool.get() {
@@ -117,8 +138,6 @@ pub fn boot(
         },
         Err(error) => eprintln!("Runner tab unread startup cleanup failed: {error}"),
     }
-    session::pty_runtime::cleanup_orphan_processes_on_startup(&pool)
-        .context("clean up orphan PTY processes")?;
     {
         let mut conn = pool.get().context("get shell cleanup connection")?;
         ops::session::retire_chat_drawers(&mut conn).context("retire chat drawers")?;
@@ -126,19 +145,25 @@ pub fn boot(
     }
     core.usage.set_enabled(model_runtimes.clone());
     core.usage.restore(&pool);
-    if background {
-        runtime_status::start_background_discovery(
-            event_channel,
-            Arc::clone(&pool),
-            runtime_shell_env,
-            runtime_discovery,
-            false,
-            model_runtimes,
-        );
-        #[cfg(not(test))]
-        core.usage.start_scheduler(core.clone());
-    }
     Ok(core)
+}
+
+/// The slow startup work, safe to run while clients are connected:
+/// legacy roster conversion, mission router remounting, and the orphan
+/// process sweep. The socket session must be up without waiting for it.
+pub fn warm_up(core: &AppCore) -> Result<()> {
+    match core.db.get() {
+        Ok(conn) => {
+            if let Err(error) = ops::mission::roster::convert_all(&conn, &core.app_data_dir) {
+                log::warn!("mission roster conversion failed: {error}");
+            }
+        }
+        Err(error) => log::warn!("mission roster conversion database unavailable: {error}"),
+    }
+    super::block_on(ops::mission::mount_all_running_mission_routers(core));
+    session::pty_runtime::cleanup_orphan_processes_on_startup(&core.db)
+        .context("clean up orphan PTY processes")?;
+    Ok(())
 }
 
 pub fn stop_running_sessions_on_quit(core: &AppCore) -> Result<()> {

@@ -727,13 +727,7 @@ impl AppStore {
             store.initialize_skill_defaults();
             store.initialize_command_default();
         }
-        store.refresh_sessions_inner();
-        store.refresh_roles_inner();
-        store.refresh_crews_inner();
-        store.refresh_nodes_inner();
-        store.refresh_projects_inner();
-        store.refresh_missions_blocking_inner();
-        store.refresh_activity_inner();
+        store.refresh_bootstrap_inner();
         store.refresh_render_snapshots();
         store.collecting_startup_errors = false;
         store
@@ -918,6 +912,55 @@ impl AppStore {
     pub(crate) fn save_settings(&self) {
         if let Err(error) = self.settings.save(&self.settings_path) {
             eprintln!("Runner UI settings save failed: {error:#}");
+        }
+    }
+
+    fn refresh_bootstrap_inner(&mut self) {
+        match self.client.app_bootstrap() {
+            Ok(snapshot) => {
+                self.sessions = snapshot.sessions;
+                self.session_details = snapshot.session_details;
+                self.revisions.sessions = self.revisions.sessions.wrapping_add(1);
+                self.roles = snapshot.roles;
+                self.revisions.roles = self.revisions.roles.wrapping_add(1);
+                self.crews = snapshot.crews;
+                self.revisions.crews = self.revisions.crews.wrapping_add(1);
+                self.nodes = snapshot.nodes;
+                self.revisions.nodes = self.revisions.nodes.wrapping_add(1);
+                self.revisions.tab_rows = self.revisions.tab_rows.wrapping_add(1);
+                self.projects = snapshot.projects;
+                self.revisions.projects = self.revisions.projects.wrapping_add(1);
+                let missions = snapshot.missions;
+                #[cfg(any(windows, target_os = "linux", test))]
+                match mission_agent_ids(&self.client, &missions) {
+                    Ok(ids) => self.mission_agent_ids = ids,
+                    Err(error) => self.record_error(error.to_string()),
+                }
+                self.missions = missions;
+                self.revisions.missions = self.revisions.missions.wrapping_add(1);
+                self.live_session_count = snapshot.live_session_counts.values().sum();
+                if !self.daemon_disconnected {
+                    self.stopped_session_count = self.live_session_count;
+                }
+                self.session_activity = snapshot.activity;
+                for summary in &mut self.missions {
+                    for (id, status) in &mut summary.session_statuses {
+                        if let Some(current) = snapshot.statuses.get(id) {
+                            *status = current.clone();
+                        }
+                    }
+                }
+                self.session_statuses = snapshot.statuses;
+                self.revisions.activity = self.revisions.activity.wrapping_add(1);
+            }
+            Err(_) => {
+                self.refresh_sessions_inner();
+                self.refresh_roles_inner();
+                self.refresh_crews_inner();
+                self.refresh_nodes_inner();
+                self.refresh_projects_inner();
+                self.refresh_missions_blocking_inner();
+            }
         }
     }
 

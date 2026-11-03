@@ -2,6 +2,7 @@ use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// Sits beside a mission slot's `runner.exe` shim. That shim is the CLI itself:
 /// finding this file beside its own executable makes it forward to `runner`.
@@ -55,17 +56,27 @@ pub fn remove_stale_mcp_cli(app_data_dir: &Path) -> Result<()> {
 }
 
 pub fn install_from_source(app_data_dir: &Path, source: &Path) -> Result<()> {
+    install_from_source_hashed(app_data_dir, source, None)
+}
+
+/// Like `install_from_source`, with the caller's freshly computed SHA-256
+/// of `source`, so the installer does not read the binary again.
+pub fn install_from_source_hashed(
+    app_data_dir: &Path,
+    source: &Path,
+    source_sha256: Option<&str>,
+) -> Result<()> {
     std::fs::create_dir_all(app_data_dir)?;
     let lock = crate::daemon_process::lock_file(app_data_dir)?;
-    install_binary(app_data_dir, source, AGENT_DEST_BIN_NAME)?;
+    install_binary(app_data_dir, source, AGENT_DEST_BIN_NAME, source_sha256)?;
     match lock.try_lock_exclusive() {
         Ok(()) => {
-            install_binary(app_data_dir, source, DAEMON_DEST_BIN_NAME)?;
+            install_binary(app_data_dir, source, DAEMON_DEST_BIN_NAME, source_sha256)?;
             #[cfg(windows)]
             for name in ["conpty.dll", "OpenConsole.exe"] {
                 let companion = source.parent().unwrap().join(name);
                 if companion.is_file() {
-                    install_binary(app_data_dir, &companion, name)?;
+                    install_binary(app_data_dir, &companion, name, None)?;
                 }
             }
         }
@@ -75,20 +86,46 @@ pub fn install_from_source(app_data_dir: &Path, source: &Path) -> Result<()> {
     Ok(())
 }
 
+/// SHA-256 of `source` as last installed, when the install record beside
+/// `$APPDATA/bin/<dest_name>` still matches this launch's app version and
+/// the source's size and mtime. Lets a connecting client skip hashing the
+/// sidecar on every cold start.
+pub fn cached_install_sha256(
+    app_data_dir: &Path,
+    dest_name: &str,
+    source: &Path,
+) -> Option<String> {
+    let dest = app_data_dir.join("bin").join(dest_name);
+    let meta: InstalledMeta = read_json(&meta_path(&dest))?;
+    let source_meta = std::fs::metadata(source).ok()?;
+    source_matches_meta(&meta, &source_meta).then_some(meta.source_sha256)
+}
+
 pub const DAEMON_DEST_BIN_NAME: &str = if cfg!(windows) {
     "runnerd.exe"
 } else {
     "runnerd"
 };
 
-fn install_binary(app_data_dir: &Path, source: &Path, dest_name: &str) -> Result<()> {
+fn install_binary(
+    app_data_dir: &Path,
+    source: &Path,
+    dest_name: &str,
+    known_source_sha256: Option<&str>,
+) -> Result<()> {
     let dest_dir = app_data_dir.join("bin");
     std::fs::create_dir_all(&dest_dir)?;
     let dest = dest_dir.join(dest_name);
 
-    if up_to_date(source, &dest)? {
+    let (matched, source_sha256) = dest_matches(source, &dest, known_source_sha256)?;
+    if matched {
         return Ok(());
     }
+    let source_sha256 = match source_sha256 {
+        Some(sha) => sha,
+        // The dest did not exist, so there was nothing to compare against.
+        None => crate::daemon_process::executable_hash(source)?,
+    };
 
     // Copy via tempfile + rename to keep the swap atomic — a half-written
     // file would crash the next process that runs this sidecar.
@@ -119,6 +156,11 @@ fn install_binary(app_data_dir: &Path, source: &Path, dest_name: &str) -> Result
         perms.set_mode(0o755);
         std::fs::set_permissions(&dest, perms)?;
     }
+    // Record what was installed so the next launch can trust it instead of
+    // hashing both binaries again.
+    let source_meta = std::fs::metadata(source)?;
+    let dest_len = std::fs::metadata(&dest)?.len();
+    let _ = write_meta(&dest, &source_meta, &source_sha256, dest_len);
     Ok(())
 }
 
@@ -169,16 +211,88 @@ pub fn locate_source(source_name: &str) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn up_to_date(source: &Path, dest: &Path) -> Result<bool> {
-    let Ok(dst_meta) = std::fs::metadata(dest) else {
-        return Ok(false);
+/// Install record beside `$APPDATA/bin/<dest_name>`, written whenever a
+/// copy or a hash comparison confirms what is installed. Identity fields
+/// (app version, source size and mtime) let a later launch skip reading
+/// both binaries; a mismatch of any of them reverts to hashing, and dev
+/// rebuilds always change the source mtime.
+#[derive(Debug, Serialize, Deserialize)]
+struct InstalledMeta {
+    app_version: String,
+    source_len: u64,
+    source_modified_nanos: Option<u64>,
+    source_sha256: String,
+    dest_len: u64,
+}
+
+fn meta_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_owned();
+    name.push(".meta.json");
+    dest.with_file_name(name)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn meta_mtime_nanos(meta: &std::fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+}
+
+fn source_matches_meta(meta: &InstalledMeta, source_meta: &std::fs::Metadata) -> bool {
+    meta.app_version == crate::version::display_version()
+        && meta.source_len == source_meta.len()
+        && meta.source_modified_nanos == meta_mtime_nanos(source_meta)
+}
+
+fn write_meta(
+    dest: &Path,
+    source_meta: &std::fs::Metadata,
+    source_sha256: &str,
+    dest_len: u64,
+) -> Result<()> {
+    let meta = InstalledMeta {
+        app_version: crate::version::display_version(),
+        source_len: source_meta.len(),
+        source_modified_nanos: meta_mtime_nanos(source_meta),
+        source_sha256: source_sha256.to_owned(),
+        dest_len,
     };
-    let src_meta = std::fs::metadata(source)?;
-    if src_meta.len() != dst_meta.len() {
-        return Ok(false);
+    std::fs::write(meta_path(dest), serde_json::to_vec(&meta)?).map_err(Error::Io)
+}
+
+/// Compare `dest` against the hashed `source`, trusting the install record
+/// when its identity still matches. Returns whether the dest is current,
+/// plus the source hash when this call computed one.
+fn dest_matches(
+    source: &Path,
+    dest: &Path,
+    known_source_sha256: Option<&str>,
+) -> Result<(bool, Option<String>)> {
+    let Ok(dest_meta) = std::fs::metadata(dest) else {
+        return Ok((false, None));
+    };
+    let source_meta = std::fs::metadata(source)?;
+    if let Some(meta) = read_json::<InstalledMeta>(&meta_path(dest)) {
+        if source_matches_meta(&meta, &source_meta) && meta.dest_len == dest_meta.len() {
+            return Ok((true, None));
+        }
     }
-    Ok(crate::daemon_process::executable_hash(source)?
-        == crate::daemon_process::executable_hash(dest)?)
+    let source_sha256 = match known_source_sha256 {
+        Some(sha) => sha.to_owned(),
+        None => crate::daemon_process::executable_hash(source)?,
+    };
+    let matched = source_sha256 == crate::daemon_process::executable_hash(dest)?;
+    if matched {
+        // Move the match's evidence to disk so later launches skip both hashes.
+        let _ = write_meta(dest, &source_meta, &source_sha256, dest_meta.len());
+    }
+    Ok((matched, Some(source_sha256)))
 }
 
 #[cfg(test)]
@@ -215,6 +329,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn install_records_a_reusable_source_hash() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let source = root.path().join("source");
+        std::fs::write(&source, b"BUILD").unwrap();
+        install_from_source(&data, &source).unwrap();
+
+        let expected = crate::daemon_process::executable_hash(&source).unwrap();
+        assert_eq!(
+            cached_install_sha256(&data, DAEMON_DEST_BIN_NAME, &source).as_deref(),
+            Some(expected.as_str())
+        );
+
+        // A changed source invalidates the record, and the next install
+        // replaces the dest and records the new hash.
+        std::fs::write(&source, b"NEW BUILD").unwrap();
+        assert_eq!(
+            cached_install_sha256(&data, DAEMON_DEST_BIN_NAME, &source),
+            None
+        );
+        install_from_source(&data, &source).unwrap();
+        let dest = data.join("bin").join(DAEMON_DEST_BIN_NAME);
+        assert_eq!(fs::read(&dest).unwrap(), b"NEW BUILD");
+        let expected = crate::daemon_process::executable_hash(&source).unwrap();
+        assert_eq!(
+            cached_install_sha256(&data, DAEMON_DEST_BIN_NAME, &source).as_deref(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]
@@ -364,7 +509,7 @@ mod tests {
         let dest = bin_dir.join(AGENT_DEST_BIN_NAME);
 
         // First copy: dest doesn't exist, must be replaced.
-        assert!(!up_to_date(&source, &dest).unwrap());
+        assert!(!dest_matches(&source, &dest, None).unwrap().0);
         let tmp = tempfile::NamedTempFile::new_in(&bin_dir).unwrap();
         std::fs::copy(&source, tmp.path()).unwrap();
         tmp.persist(&dest).unwrap();
@@ -375,6 +520,6 @@ mod tests {
         );
 
         // Second copy: identical contents should skip.
-        assert!(up_to_date(&source, &dest).unwrap());
+        assert!(dest_matches(&source, &dest, None).unwrap().0);
     }
 }

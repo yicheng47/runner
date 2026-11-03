@@ -6,7 +6,7 @@ use crate::AppCore;
 use runner_core::protocol::command;
 use runner_core::protocol::terminal::*;
 use runner_core::protocol::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
