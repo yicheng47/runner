@@ -147,6 +147,19 @@ pub struct Mission {
     // lifecycle (running / completed / aborted) and so we can add an
     // "Archived" view later without touching the status grammar.
     pub archived_at: Option<Timestamp>,
+    /// The direct agent chat this mission reports to and is grouped with
+    /// (#748). Absent from older daemons, which read as unlinked.
+    #[serde(default)]
+    pub linked_chat: Option<LinkedChat>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkedChat {
+    pub session_id: String,
+    pub title: String,
+    pub archived: bool,
+    /// Whether Runner types reports into the chat; false for `--no-report`.
+    pub reports: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

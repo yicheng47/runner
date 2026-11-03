@@ -211,6 +211,11 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
         )
         .unwrap();
     let session_id = spawned.id.clone();
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().env.get("RUNNER_SESSION_ID"),
+        Some(&session_id),
+        "an agent chat addresses itself (#748)"
+    );
 
     // Force the spawn to "exit" so the forwarder marks the
     // row stopped; resume() refuses a row that's still
@@ -249,6 +254,11 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
         )
         .unwrap();
     assert_eq!(resumed.id, session_id, "resume must reuse the row id");
+    assert_eq!(
+        fake.last_spawn_spec().unwrap().env.get("RUNNER_SESSION_ID"),
+        Some(&session_id),
+        "resume reuses the row, so the chat keeps its address"
+    );
     let seeded = wait_for_session_status_event(&cap, &session_id, SessionActivityState::Busy);
     assert_eq!(seeded.source.as_str(), "resume");
     assert_eq!(

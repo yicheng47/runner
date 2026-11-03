@@ -487,6 +487,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                         })
                         .collect(),
                     shells: layout.drawer.shells,
+                    linked_chat: snapshot.mission.linked_chat.map(Into::into),
                 });
             }
         }
@@ -951,6 +952,8 @@ mod tests {
                 stopped_at: None,
                 pinned_at: None,
                 archived_at: None,
+                linked_session_id: None,
+                report_to_chat: true,
             },
         )
         .unwrap();

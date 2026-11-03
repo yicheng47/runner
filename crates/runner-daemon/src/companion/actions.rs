@@ -817,6 +817,8 @@ impl DaemonCore {
                         title,
                         goal_override: goal,
                         cwd,
+                        started_by_session_id: None,
+                        no_report: false,
                     },
                     Some((cols, rows)),
                 ))

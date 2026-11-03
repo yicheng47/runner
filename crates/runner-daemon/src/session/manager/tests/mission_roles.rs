@@ -288,6 +288,10 @@ fn empty_mission_mounts_adds_workers_and_remounts_without_a_crew() {
     let fake = fake_runtime();
     let mut core = crate::test_support::test_core_in(data.path().into());
     core.sessions = mgr_with_fake(None, fake.clone());
+    let mut chat =
+        crate::test_support::test_session_row("chat", crate::model::SessionStatus::Running);
+    chat.agent_runtime = Some("claude-code".into());
+    crate::test_support::insert_session_row(&core.db.get().unwrap(), &chat).unwrap();
     let out = crate::daemon::block_on(crate::ops::mission::mission_start_impl_with_size(
         &core,
         runner_core::protocol::MissionStart {
@@ -296,11 +300,20 @@ fn empty_mission_mounts_adds_workers_and_remounts_without_a_crew() {
             title: "Empty test".into(),
             goal_override: Some("SHARED_GOAL".into()),
             cwd: Some(data.path().to_string_lossy().into_owned()),
+            started_by_session_id: Some("chat".into()),
+            no_report: false,
         },
         None,
     ))
     .unwrap();
     let id = &out.mission.id;
+    assert_eq!(
+        out.mission
+            .linked_chat
+            .as_ref()
+            .map(|chat| chat.session_id.as_str()),
+        Some("chat")
+    );
     assert!(out.mission.crew_id.is_none());
     assert_eq!(fake.spawn_count(), 0);
     assert!(core.buses.get(id).is_some());
@@ -383,6 +396,15 @@ fn empty_mission_mounts_adds_workers_and_remounts_without_a_crew() {
     let status = crate::ops::mission::feed::mission_status(&core, id).unwrap();
     assert!(status.crew.is_none());
     assert_eq!(status.sessions.len(), 2);
+    assert_eq!(
+        status
+            .mission
+            .linked_chat
+            .as_ref()
+            .map(|chat| chat.session_id.as_str()),
+        Some("chat"),
+        "add-role leaves the link unchanged"
+    );
     for (from, to) in [("one", Some("two")), ("two", Some("one")), ("one", None)] {
         crate::daemon::block_on(crate::ops::mission::mission_post_impl(
             &core,
@@ -513,6 +535,8 @@ fn one_and_three_slot_crews_share_the_goal_and_allow_removing_every_member() {
                     title: "Shared goal".into(),
                     goal_override: Some("SHARED_GOAL".into()),
                     cwd: Some(data.path().to_string_lossy().into_owned()),
+                    started_by_session_id: None,
+                    no_report: false,
                 },
                 None,
             ))

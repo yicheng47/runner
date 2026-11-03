@@ -81,6 +81,7 @@ fn mission(
         stopped_at: minutes.map(|minutes| started + chrono::Duration::minutes(minutes)),
         pinned_at: None,
         archived_at: None,
+        linked_chat: None,
     }
 }
 

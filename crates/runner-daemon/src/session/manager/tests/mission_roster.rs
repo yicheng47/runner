@@ -84,6 +84,8 @@ async fn mission_start_spawns_the_snapshot_even_when_the_crew_changes() {
             title: "Snapshot start".into(),
             goal_override: None,
             cwd: Some(data.path().to_string_lossy().into_owned()),
+            started_by_session_id: None,
+            no_report: false,
         },
     )
     .await

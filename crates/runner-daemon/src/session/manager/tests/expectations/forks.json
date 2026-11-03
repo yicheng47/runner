@@ -28,6 +28,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_ID",
         "TERM"
       ]
     }
@@ -81,6 +82,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_ID",
         "TERM"
       ],
       "headless": "cwd=<TMP>\nenv=\narg=exec\narg=fork\narg=<ID2>\narg=--json\narg=--skip-git-repo-check\narg=This chat was forked from 'Golden source'.\n"
@@ -113,6 +115,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_ID",
         "TERM"
       ]
     }

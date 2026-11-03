@@ -13,6 +13,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,
@@ -36,6 +37,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID3>",
         "RUNNER_HOOK_SESSION": "<ID4>",
+        "RUNNER_SESSION_ID": "<ID4>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": false,
@@ -61,6 +63,7 @@
         "RUNNER_HOOK_EXECUTABLE": "<TMP>/bin/runner",
         "RUNNER_HOOK_GENERATION": "<ID4>",
         "RUNNER_HOOK_SESSION": "<ID3>",
+        "RUNNER_SESSION_ID": "<ID3>",
         "TERM": "xterm-256color"
       },
       "codex_pending_turn": null,

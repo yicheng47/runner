@@ -505,6 +505,7 @@ fn mission() -> Mission {
         stopped_at: None,
         pinned_at: None,
         archived_at: None,
+        linked_chat: None,
     }
 }
 

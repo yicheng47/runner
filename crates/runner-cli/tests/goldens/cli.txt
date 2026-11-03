@@ -297,7 +297,7 @@ mission-running  Active fixture   Peer  running    0/0   1     -
 
 $ runner mission list --crew Peer --json
 exit 0
-[{"session_statuses":[["session-mission",{"lifecycle":"stopped","observation":{"activity":"unavailable","source":"unavailable","outcome":null,"interactions":[],"detail":null},"exit_code":null,"error_since":null,"failed_since":null,"unread_since":null}]],"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"crew_name":"Peer","pending_ask_count":1,"any_session_live":false,"all_sessions_live":false,"activity":null},{"session_statuses":[],"id":"mission-running","crew_id":"crew-fixture","project_id":null,"title":"Active fixture","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":null,"pinned_at":null,"archived_at":null,"crew_name":"Peer","pending_ask_count":1,"any_session_live":false,"all_sessions_live":false,"activity":null}]
+[{"session_statuses":[["session-mission",{"lifecycle":"stopped","observation":{"activity":"unavailable","source":"unavailable","outcome":null,"interactions":[],"detail":null},"exit_code":null,"error_since":null,"failed_since":null,"unread_since":null}]],"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null,"crew_name":"Peer","pending_ask_count":1,"any_session_live":false,"all_sessions_live":false,"activity":null},{"session_statuses":[],"id":"mission-running","crew_id":"crew-fixture","project_id":null,"title":"Active fixture","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":null,"pinned_at":null,"archived_at":null,"linked_chat":null,"crew_name":"Peer","pending_ask_count":1,"any_session_live":false,"all_sessions_live":false,"activity":null}]
 
 $ runner mission show mission-fixture
 exit 0
@@ -317,7 +317,7 @@ QUESTION ID                 ASKER  PROMPT  CHOICES
 
 $ runner mission show mission-fixture --json
 exit 0
-{"mission":{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null},"crew":{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},"sessions":[{"id":"session-mission","mission_id":"mission-fixture","role_id":"role-coder","slot_id":"slot-coder","cwd":"<ROOT>","status":"stopped","pid":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","live_title":null,"handle":"coder","role_handle":"coder","runtime":"codex","lead":false,"agent_session_key":null}],"latest_session_status_by_handle":{"coder":{"state":"idle","event_id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","source":"fixture"}},"pending_asks":[{"question_id":"01K5ZCJNP00000000000000002","asker":"coder","prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder","event_id":"01K5ZCJNP00000000000000002","ts":"2026-09-18T10:20:30Z"}],"pending_ask_count":1,"live_session_count":0,"stopped_session_count":1,"crashed_session_count":0,"recent_warnings":[],"last_event_id":"01K5ZCJNP00000000000000003","last_event_offset":692,"skipped_event_count":0}
+{"mission":{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null},"started_by":null,"crew":{"id":"crew-fixture","name":"Peer","system_prompt_addendum":"Fixture crew conventions","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"},"sessions":[{"id":"session-mission","mission_id":"mission-fixture","role_id":"role-coder","slot_id":"slot-coder","cwd":"<ROOT>","status":"stopped","pid":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","live_title":null,"handle":"coder","role_handle":"coder","runtime":"codex","lead":false,"agent_session_key":null}],"latest_session_status_by_handle":{"coder":{"state":"idle","event_id":"01K5ZCJNP00000000000000003","ts":"2026-09-18T10:20:30Z","source":"fixture"}},"pending_asks":[{"question_id":"01K5ZCJNP00000000000000002","asker":"coder","prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder","event_id":"01K5ZCJNP00000000000000002","ts":"2026-09-18T10:20:30Z"}],"pending_ask_count":1,"live_session_count":0,"stopped_session_count":1,"crashed_session_count":0,"recent_warnings":[],"last_event_id":"01K5ZCJNP00000000000000003","last_event_offset":692,"skipped_event_count":0}
 
 $ runner mission start --crew Peer --title ship --goal ship --cwd not-a-directory
 exit 0
@@ -331,7 +331,7 @@ STARTED  <TIMESTAMP>
 
 $ runner mission start --crew Peer --title ship --goal ship --cwd not-a-directory --json
 exit 0
-{"mission":{"id":"<ULID_1>","crew_id":"crew-fixture","project_id":"project-fixture","title":"ship","status":"running","goal_override":"ship","cwd":"<ROOT>/not-a-directory","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":"ship"}
+{"mission":{"id":"<ULID_1>","crew_id":"crew-fixture","project_id":"project-fixture","title":"ship","status":"running","goal_override":"ship","cwd":"<ROOT>/not-a-directory","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null,"linked_chat":null},"goal":"ship"}
 
 $ runner mission start --title 'Empty mission'
 exit 0
@@ -345,7 +345,7 @@ STARTED  <TIMESTAMP>
 
 $ runner mission start --title 'Empty mission' --json
 exit 0
-{"mission":{"id":"<ULID_1>","crew_id":null,"project_id":"project-fixture","title":"Empty mission","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null},"goal":""}
+{"mission":{"id":"<ULID_1>","crew_id":null,"project_id":"project-fixture","title":"Empty mission","status":"running","goal_override":null,"cwd":"<ROOT>","started_at":"<TIMESTAMP>","stopped_at":null,"pinned_at":null,"archived_at":null,"linked_chat":null},"goal":""}
 
 $ runner mission start --crew Peer --goal 'Shared goal'
 exit 2
@@ -459,7 +459,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission stop mission-fixture --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner mission resume mission-fixture
 exit 1
@@ -483,7 +483,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission archive mission-fixture --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":"<TIMESTAMP>"}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":"<TIMESTAMP>","linked_chat":null}
 
 $ runner mission unarchive 01K5ZCJNP00000000000000010
 exit 0
@@ -497,7 +497,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission unarchive 01K5ZCJNP00000000000000010 --json
 exit 0
-{"id":"01K5ZCJNP00000000000000010","crew_id":"crew-fixture","project_id":null,"title":"Archived mission","status":"running","goal_override":null,"cwd":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":null,"pinned_at":null,"archived_at":null}
+{"id":"01K5ZCJNP00000000000000010","crew_id":"crew-fixture","project_id":null,"title":"Archived mission","status":"running","goal_override":null,"cwd":null,"started_at":"2026-09-18T10:20:30Z","stopped_at":null,"pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner mission rename mission-fixture Renamed
 exit 0
@@ -511,7 +511,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission rename mission-fixture Renamed --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Renamed","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Renamed","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner mission pin mission-fixture
 exit 0
@@ -525,7 +525,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission pin mission-fixture --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":"<TIMESTAMP>","archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":"<TIMESTAMP>","archived_at":null,"linked_chat":null}
 
 $ runner mission unpin mission-fixture
 exit 0
@@ -539,7 +539,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission unpin mission-fixture --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner mission move mission-fixture --unfile
 exit 0
@@ -553,7 +553,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission move mission-fixture --unfile --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":null,"title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":null,"title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner mission feed mission-fixture --oldest-first
 exit 0
@@ -876,7 +876,7 @@ STARTED  2026-09-18T10:20:30Z
 
 $ runner mission move mission-fixture --project Runner --json
 exit 0
-{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null}
+{"id":"mission-fixture","crew_id":"crew-fixture","project_id":"project-fixture","title":"Fixture mission","status":"completed","goal_override":"Fixture goal","cwd":"<ROOT>","started_at":"2026-09-18T10:20:30Z","stopped_at":"2026-09-18T10:20:30Z","pinned_at":null,"archived_at":null,"linked_chat":null}
 
 $ runner role create coder
 exit 2

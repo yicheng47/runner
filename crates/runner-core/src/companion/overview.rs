@@ -126,6 +126,29 @@ pub struct Mission {
     pub members: Vec<Member>,
     pub asks: Vec<Ask>,
     pub shells: Vec<String>,
+    /// The chat the mission reports to (#748); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_chat: Option<LinkedChat>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedChat {
+    pub session_id: String,
+    pub title: String,
+    pub archived: bool,
+    pub reports: bool,
+}
+
+impl From<crate::protocol::LinkedChat> for LinkedChat {
+    fn from(chat: crate::protocol::LinkedChat) -> Self {
+        Self {
+            session_id: chat.session_id,
+            title: chat.title,
+            archived: chat.archived,
+            reports: chat.reports,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -758,6 +758,7 @@ mod tests {
             stopped_at: None,
             pinned_at: None,
             archived_at: Some(archived_at.parse().unwrap()),
+            linked_chat: None,
         }
     }
 

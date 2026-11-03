@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_rusqlite::{from_row, to_params_named};
 
-use crate::model::{Mission, MissionStatus, Timestamp};
+use crate::model::{LinkedChat, Mission, MissionStatus, Timestamp};
 
 use super::{de_err, insert_sql, select_list, ser_err};
 
@@ -29,6 +29,8 @@ pub struct MissionRow {
     pub pinned_at: Option<Timestamp>,
     #[serde(with = "crate::repo::serde::rfc3339_opt")]
     pub archived_at: Option<Timestamp>,
+    pub linked_session_id: Option<String>,
+    pub report_to_chat: bool,
 }
 
 pub const COLUMNS: &[&str] = &[
@@ -43,6 +45,8 @@ pub const COLUMNS: &[&str] = &[
     "stopped_at",
     "pinned_at",
     "archived_at",
+    "linked_session_id",
+    "report_to_chat",
 ];
 
 impl From<MissionRow> for Mission {
@@ -59,6 +63,7 @@ impl From<MissionRow> for Mission {
             stopped_at: r.stopped_at,
             pinned_at: r.pinned_at,
             archived_at: r.archived_at,
+            linked_chat: None,
         }
     }
 }
@@ -77,8 +82,38 @@ impl From<&Mission> for MissionRow {
             stopped_at: m.stopped_at,
             pinned_at: m.pinned_at,
             archived_at: m.archived_at,
+            linked_session_id: m.linked_chat.as_ref().map(|chat| chat.session_id.clone()),
+            report_to_chat: m.linked_chat.as_ref().is_none_or(|chat| chat.reports),
         }
     }
+}
+
+/// The row as a `Mission`, with its linked chat's title and archive state
+/// read from the chat's row. A link to a row that is no longer a direct
+/// chat reads as unlinked.
+fn hydrate(conn: &Connection, row: MissionRow) -> rusqlite::Result<Mission> {
+    let linked_chat = match &row.linked_session_id {
+        Some(id) => super::session::get_direct(conn, id)?.map(|chat| LinkedChat {
+            session_id: id.clone(),
+            title: super::session::direct_title(&chat),
+            archived: chat.row.archived_at.is_some(),
+            reports: row.report_to_chat,
+        }),
+        None => None,
+    };
+    let mut mission = Mission::from(row);
+    mission.linked_chat = linked_chat;
+    Ok(mission)
+}
+
+fn hydrate_all(
+    conn: &Connection,
+    rows: impl Iterator<Item = rusqlite::Result<MissionRow>>,
+) -> rusqlite::Result<Vec<Mission>> {
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|row| hydrate(conn, row))
+        .collect()
 }
 
 pub fn insert(conn: &Connection, row: &MissionRow) -> rusqlite::Result<()> {
@@ -100,8 +135,9 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Mission>> {
     conn.query_row(&sql, rusqlite::params![id], |row| {
         from_row::<MissionRow>(row).map_err(de_err)
     })
-    .optional()
-    .map(|opt| opt.map(Mission::from))
+    .optional()?
+    .map(|row| hydrate(conn, row))
+    .transpose()
 }
 
 /// Non-archived missions, optionally filtered by crew. Pinned missions
@@ -121,7 +157,7 @@ pub fn list(conn: &Connection, crew_id: Option<&str>) -> rusqlite::Result<Vec<Mi
     let rows = stmt.query_map(rusqlite::params![crew_id], |row| {
         from_row::<MissionRow>(row).map_err(de_err)
     })?;
-    rows.map(|r| r.map(Mission::from)).collect()
+    hydrate_all(conn, rows)
 }
 
 pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<Mission>> {
@@ -130,7 +166,48 @@ pub fn list_all(conn: &Connection) -> rusqlite::Result<Vec<Mission>> {
         select_list(COLUMNS)
     ))?;
     let rows = stmt.query_map([], |row| from_row::<MissionRow>(row).map_err(de_err))?;
-    rows.map(|row| row.map(Mission::from)).collect()
+    hydrate_all(conn, rows)
+}
+
+/// Non-archived missions linked to `session_id`, oldest first.
+pub fn list_linked(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<Mission>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {}
+           FROM missions
+          WHERE linked_session_id = ?1
+            AND archived_at IS NULL
+          ORDER BY started_at, id",
+        select_list(COLUMNS)
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        from_row::<MissionRow>(row).map_err(de_err)
+    })?;
+    hydrate_all(conn, rows)
+}
+
+/// A mission and its chat link only within one project (#748), so moving
+/// either into another project drops the link.
+pub fn unlink_across_projects(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions
+            SET linked_session_id = NULL, report_to_chat = 1
+          WHERE linked_session_id IS NOT NULL
+            AND project_id IS NOT
+                (SELECT s.project_id FROM sessions s WHERE s.id = missions.linked_session_id)",
+        [],
+    )
+}
+
+pub fn set_link(
+    conn: &Connection,
+    id: &str,
+    session_id: Option<&str>,
+    report_to_chat: bool,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions SET linked_session_id = ?1, report_to_chat = ?2 WHERE id = ?3",
+        rusqlite::params![session_id, report_to_chat, id],
+    )
 }
 
 /// Archived missions, optionally filtered by crew, newest-archived
@@ -149,7 +226,7 @@ pub fn list_archived(conn: &Connection, crew_id: Option<&str>) -> rusqlite::Resu
     let rows = stmt.query_map(rusqlite::params![crew_id], |row| {
         from_row::<MissionRow>(row).map_err(de_err)
     })?;
-    rows.map(|r| r.map(Mission::from)).collect()
+    hydrate_all(conn, rows)
 }
 
 /// Terminal stop: flip `running` -> `completed` and stamp `archived_at`
@@ -302,6 +379,8 @@ mod tests {
             stopped_at: Some(now),
             pinned_at: Some(now),
             archived_at: Some(now),
+            linked_session_id: None,
+            report_to_chat: true,
         }
     }
 
@@ -318,6 +397,8 @@ mod tests {
             stopped_at: None,
             pinned_at: None,
             archived_at: None,
+            linked_session_id: None,
+            report_to_chat: true,
         }
     }
 

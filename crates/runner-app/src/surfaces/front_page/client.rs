@@ -833,6 +833,8 @@ impl FrontPageClient {
                         title,
                         goal_override: goal,
                         cwd,
+                        started_by_session_id: None,
+                        no_report: false,
                     },
                     Some(size),
                 )

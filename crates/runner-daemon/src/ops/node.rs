@@ -25,6 +25,13 @@ fn emit_layout_changed(state: &AppCore) {
         .emit(LAYOUT_CHANGED_EVENT, &serde_json::json!({}));
 }
 
+/// A chat or mission that left its project dropped the links between them.
+fn emit_unlinked(state: &AppCore, unlinked: usize) {
+    if unlinked > 0 {
+        state.events.emit("mission/changed", &serde_json::json!({}));
+    }
+}
+
 fn validate_layout(layout: &str) -> Result<()> {
     serde_json::from_str::<serde_json::Value>(layout)
         .map(|_| ())
@@ -59,13 +66,14 @@ pub fn node_rename(state: &AppCore, id: String, name: String) -> Result<NodeRow>
 }
 
 pub fn node_tab_upsert(state: &AppCore, input: NodeTabUpsertInput) -> Result<NodeRow> {
-    let row = persist_tab_layout(state, input)?;
+    let (row, unlinked) = persist_tab_layout(state, input)?;
+    emit_unlinked(state, unlinked);
     state.sessions.reconcile_tab_control(&row.id, &state.db)?;
     emit_layout_changed(state);
     Ok(row)
 }
 
-fn persist_tab_layout(state: &AppCore, input: NodeTabUpsertInput) -> Result<NodeRow> {
+fn persist_tab_layout(state: &AppCore, input: NodeTabUpsertInput) -> Result<(NodeRow, usize)> {
     validate_layout(&input.layout)?;
     ulid::Ulid::from_string(&input.id)
         .map_err(|_| Error::msg(format!("invalid node id: {}", input.id)))?;
@@ -104,14 +112,14 @@ fn persist_tab_layout(state: &AppCore, input: NodeTabUpsertInput) -> Result<Node
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     repo::node::upsert_move_not_copy(&tx, &row)?;
     let project_id = repo::node::effective_project(&tx, row.parent_id.as_deref())?;
-    repo::node::write_layout_project(
+    let unlinked = repo::node::write_layout_project(
         &tx,
         row.layout.as_deref().expect("tab layout is present"),
         project_id.as_deref(),
     )?;
     tx.commit()?;
     drop(conn);
-    Ok(row)
+    Ok((row, unlinked))
 }
 
 pub fn node_tab_delete(state: &AppCore, node_id: &str) -> Result<()> {
@@ -150,11 +158,12 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
     for session_id in repo::node::session_ids_from_layout(&layout) {
         repo::node::remove_session_except(&tx, &session_id, Some(node_id))?;
     }
-    repo::node::write_layout_project(&tx, &layout, project_id.as_deref())?;
+    let unlinked = repo::node::write_layout_project(&tx, &layout, project_id.as_deref())?;
     repo::node::set_layout(&tx, node_id, &layout)?;
     let row = repo::node::get(&tx, node_id)?.ok_or_else(|| Error::msg("node disappeared"))?;
     tx.commit()?;
     emit_layout_changed(state);
+    emit_unlinked(state, unlinked);
     Ok(row)
 }
 
@@ -200,11 +209,14 @@ pub fn node_move(
             return Err(Error::msg(format!("node not found: {parent_id}")));
         }
     }
-    repo::node::move_and_reorder(&tx, &id, parent_id.as_deref(), &ordered_ids)
+    let unlinked = repo::node::move_and_reorder(&tx, &id, parent_id.as_deref(), &ordered_ids)
         .map_err(|error| Error::msg(format!("move node: {error}")))?;
     let rows = repo::node::list(&tx)?;
     tx.commit()?;
     emit_layout_changed(state);
+    if moved_type != NodeType::Mission {
+        emit_unlinked(state, unlinked);
+    }
     // A cross-project move rewrites domain pointers — nudge the
     // surfaces that render them.
     match moved_type {
@@ -649,7 +661,7 @@ mod tests {
             let committed = committed.clone();
             let resume = resume.clone();
             std::thread::spawn(move || {
-                let row = persist_tab_layout(
+                let (row, _) = persist_tab_layout(
                     &state,
                     NodeTabUpsertInput {
                         id: a.id,

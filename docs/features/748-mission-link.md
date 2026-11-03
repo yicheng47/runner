@@ -124,7 +124,7 @@ Desktop notifications keep their current triggers, settings and targets. Clickin
 
 ### Docs
 
-- **Guide:** [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports, `mission link` and `--no-report`. [Missions](../guide/concepts/missions.md) describes the linked chat and reports. [Chats and windows](../guide/guides/chats-and-windows.md) describes the linked group in Projects, linking by drag and menu, and the Agents and Terminals headings in Active. `make guide-cli` regenerates the [CLI reference](../guide/reference/cli.md).
+- **Guide:** [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports, `mission link` and `--no-report`. [Missions](../guide/concepts/missions.md) describes the linked chat and reports. [Chats and windows](../guide/guides/chats-and-windows.md) describes the linked group in Projects, linking by drag and menu, and the Agents and Terminals headings in Active. `make guide-cli` regenerates the [CLI reference](../guide/reference/cli.md). The Chinese pages under `docs/guide/zh-CN/` change with them.
 - **Architecture:** `docs/arch/arch.md` §8.5 adds report delivery beside the inbox dispatcher, §9.4 documents `RUNNER_SESSION_ID` and the link, §9.6 replaces the skill's start-and-watch contract, and §10.1 adds the two columns.
 - **Regression:** [MIS-WATCH-01 and MIS-WATCH-02](../tests/regression/missions.md) retire, replaced by rows for the link, a report reaching an idle chat, a report held by a draft, and the agent that does not watch.
 
@@ -168,7 +168,7 @@ Jason settled these on 2026-11-02:
 4. **CLI, skill and docs.** `--no-report`, `mission link` and `unlink`, the JSON fields, the `STARTED BY` and `LINKED TO` lines, `--linked-here`, the skill and help rules, the guide, arch and regression rows.
 5. **Live checks**, under the standing development-app authorization in `AGENTS.md`; see Verification.
 
-The phases are one `codex-trio` mission, since reports and the sidebar need live checks by its QA slot. The change touches the daemon's delivery, the protocol and a migration, so its PR takes `core-review` and `risk-high`.
+The phases are one `claude-trio` mission (Jason, 2026-11-03), built on the branch of [#1129](https://github.com/yicheng47/runner/pull/1129), which holds the migration, and ending in that PR, since reports and the sidebar need live checks by its QA slot. The change touches the daemon's delivery, the protocol and a migration, so its PR takes `core-review` and `risk-high`.
 
 ## Verification
 
