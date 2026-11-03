@@ -15,6 +15,7 @@ impl Sidebar {
             let mut settings = self.app_store.read(cx).settings.clone();
             settings.sidebar_collapsed_projects.clear();
             settings.sidebar_collapsed_active_groups.clear();
+            settings.sidebar_collapsed_link_groups.clear();
             settings.sidebar_projects_open = true;
             settings.sidebar_chats_open = true;
             settings.sidebar_active_only = false;
@@ -212,15 +213,24 @@ impl Sidebar {
                             project_id: mission.project.clone(),
                             cwd: None,
                             archived_at: None,
+                            linked_chat: mission.linked_chat.clone().map(|chat| {
+                                runner_core::protocol::LinkedChat {
+                                    session_id: chat.session_id,
+                                    title: chat.title,
+                                    archived: chat.archived,
+                                    reports: chat.reports,
+                                }
+                            }),
                         },
                         any_session_live: live,
                         session_statuses: statuses,
+                        phase: mission.phase.as_ref().and_then(|phase| phase.protocol()),
                     };
-                    let rollup = self.mission_status_rollup(&summary);
+                    let attention = self.mission_attention(&summary);
                     Some(SidebarRow::Mission {
                         node,
                         summary,
-                        attention: super::rows::status_attention(rollup.priority_value()),
+                        attention,
                     })
                 }
                 NodeType::Project => None,
@@ -278,6 +288,8 @@ impl Sidebar {
                 self.front_page.supports(&["close", "archive", "layout"])
             }
             SidebarMenuAction::ArchiveMission(_) => self.front_page.supports(&["archive"]),
+            // The companion protocol carries the link but no request to change it.
+            SidebarMenuAction::LinkToChat(_) | SidebarMenuAction::UnlinkMission(_) => false,
             SidebarMenuAction::StopMission(_) => self.front_page.supports(&["stopMission"]),
             SidebarMenuAction::ResumeMission(_) => self.front_page.supports(&["resumeMission"]),
             SidebarMenuAction::DeleteProject(_) => self.front_page.supports(&["deleteProject"]),

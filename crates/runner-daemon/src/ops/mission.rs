@@ -1095,6 +1095,12 @@ fn is_concurrent_resume_error(error: &str) -> bool {
 /// DESC, started_at DESC`). Setting `pinned = false` clears the
 /// timestamp.
 pub async fn mission_pin_impl(state: &AppCore, id: String, pinned: bool) -> Result<Mission> {
+    // Pinning a linked mission pins its chat's group (#748).
+    let head = link::group_head(&*state.db.get()?, &id)?;
+    if let Some(head) = head {
+        crate::ops::node::node_set_pinned(state, head.id, pinned)?;
+        return mission_get(state, &id);
+    }
     let conn = state.db.get()?;
     let pinned_at: Option<Timestamp> = if pinned { Some(now()) } else { None };
     let n = repo::mission::set_pinned_at(&conn, &id, pinned_at)?;

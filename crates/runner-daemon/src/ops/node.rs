@@ -252,8 +252,21 @@ pub fn node_reorder_pinned(state: &AppCore, ordered_ids: Vec<String>) -> Result<
 pub fn node_set_pinned(state: &AppCore, id: String, pinned: bool) -> Result<NodeRow> {
     let mut conn = state.db.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let node =
+    let mut node =
         repo::node::get(&tx, &id)?.ok_or_else(|| Error::msg(format!("node not found: {id}")))?;
+    // Pinning a linked mission pins its chat's group (#748).
+    if node.node_type == NodeType::Mission {
+        if let Some(head) = node
+            .ref_id
+            .as_deref()
+            .map(|mission| crate::ops::mission::link::group_head(&tx, mission))
+            .transpose()?
+            .flatten()
+        {
+            node = head;
+        }
+    }
+    let id = node.id.clone();
     let pinned_at = pinned.then(Utc::now);
     match node.node_type {
         NodeType::Tab => {

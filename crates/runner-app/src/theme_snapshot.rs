@@ -45,6 +45,10 @@ pub(crate) fn record_border<T: Styled + InteractiveElement>(id: &'static str, mu
     element.debug_selector(|| id.into())
 }
 
+pub(crate) fn recorded_border(id: &'static str) -> Option<gpui::Hsla> {
+    BORDERS.with_borrow(|borders| borders.get(id).copied().flatten())
+}
+
 pub(crate) fn assert_border(window: &mut VisualTestContext, id: &'static str, color: gpui::Hsla) {
     assert!(window.debug_bounds(id).is_some(), "missing surface {id}");
     BORDERS.with_borrow(|borders| assert_eq!(borders.get(id), Some(&Some(color)), "{id}"));

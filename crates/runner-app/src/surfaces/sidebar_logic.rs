@@ -224,6 +224,9 @@ pub(crate) struct DropTarget {
     pub kind: DropKind,
     pub parent_id: Option<String>,
     pub index: usize,
+    /// The tab heading the linked group the drop lands in, ordering among
+    /// that group's missions (#748).
+    pub group: Option<String>,
 }
 
 pub(crate) fn indicator_visible(drop_marker: Option<&str>, has_active_drag: bool) -> bool {
@@ -297,6 +300,7 @@ pub(crate) fn list_drop_target(
         kind,
         parent_id: parent_id.map(str::to_owned),
         index,
+        group: None,
     })
 }
 
@@ -321,6 +325,7 @@ pub(crate) fn container_drop_target(
             .iter()
             .filter(|id| id.as_str() != dragged_id)
             .count(),
+        group: None,
     })
 }
 
@@ -731,6 +736,7 @@ mod tests {
                 kind: DropKind::Leaf,
                 parent_id: Some("project-b".into()),
                 index: 1,
+                group: None,
             })
         );
         let root_target = list_drop_target(
@@ -749,6 +755,7 @@ mod tests {
                 kind: DropKind::Leaf,
                 parent_id: None,
                 index: 0,
+                group: None,
             }
         );
         let visible = ordered_visible_node_ids_after_drop(
@@ -801,6 +808,7 @@ mod tests {
             kind: DropKind::Leaf,
             parent_id: None,
             index: 1,
+            group: None,
         });
         let mut drop_marker = Some("leaf:tab-b:true".into());
 

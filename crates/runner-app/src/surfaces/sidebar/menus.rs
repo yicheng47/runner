@@ -67,6 +67,8 @@ impl Sidebar {
             .collect::<Vec<_>>();
         let root = cx.entity();
         let dismiss_root = root.clone();
+        let submenu_root = root.clone();
+        let submenu_actions = actions.clone();
         let return_focus = window.focused(cx);
         let menu = cx.new(move |menu_cx| {
             let action_root = root.clone();
@@ -90,7 +92,23 @@ impl Sidebar {
                     });
                 }),
             )
-            .return_focus(return_focus);
+            .return_focus(return_focus)
+            .on_submenu(Rc::new(move |index, bounds, window, cx| {
+                if let Some(SidebarMenuAction::LinkToChat(mission_id)) =
+                    submenu_actions.get(index).cloned()
+                {
+                    submenu_root.update(cx, |this, cx| {
+                        this.open_link_picker(
+                            mission_id,
+                            None,
+                            None,
+                            super::link::PickerAnchor::Row(bounds),
+                            window,
+                            cx,
+                        )
+                    });
+                }
+            }));
             match anchor {
                 Some(anchor) => menu.anchored_to(anchor),
                 None => menu,
@@ -170,11 +188,13 @@ impl Sidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let pinned = self.mission_menu_pinned(&node, cx);
         let mut entries = mission_menu_entries(
             &node.id,
-            node.pinned_position.is_some(),
+            pinned,
             &summary.mission.id,
             summary.mission.title,
+            summary.mission.linked_chat.as_ref(),
         );
         if self.front_page.is_remote() {
             entries.insert(
@@ -193,6 +213,17 @@ impl Sidebar {
             );
         }
         self.open_sidebar_context_menu(position, entries, window, cx);
+    }
+
+    /// A linked mission's Pin acts on its group, so its menu reads the group's pin.
+    pub(super) fn mission_menu_pinned(&self, node: &NodeRow, cx: &App) -> bool {
+        let rows = self.resolved_sidebar_rows(cx);
+        super::link::LinkGroups::of(&rows)
+            .head(&node.id)
+            .and_then(|head| rows.iter().find(|row| row.node().id == head))
+            .map_or(node.pinned_position.is_some(), |head| {
+                head.node().pinned_position.is_some()
+            })
     }
 
     /// A sidebar +: the launcher page in `scope`, where chats, terminals and
@@ -389,6 +420,17 @@ impl Sidebar {
                     });
                 }
             }
+            SidebarMenuAction::LinkToChat(mission_id) => {
+                self.open_link_picker(
+                    mission_id,
+                    None,
+                    None,
+                    super::link::PickerAnchor::Pointer,
+                    window,
+                    cx,
+                );
+            }
+            SidebarMenuAction::UnlinkMission(mission_id) => self.unlink_mission(mission_id, cx),
             SidebarMenuAction::ArchiveMission(mission_id) => {
                 if !self.front_page.is_remote() && self.archiving_missions.contains(&mission_id) {
                     return;
@@ -552,8 +594,9 @@ pub(super) fn mission_menu_entries(
     pinned: bool,
     mission_id: &str,
     original: String,
+    linked: Option<&runner_core::protocol::LinkedChat>,
 ) -> Vec<(UiMenuItem, SidebarMenuAction)> {
-    vec![
+    let mut entries = vec![
         (
             UiMenuItem::new(if pinned {
                 crate::i18n::message("ui.unpin")
@@ -574,12 +617,29 @@ pub(super) fn mission_menu_entries(
             }),
         ),
         (
-            UiMenuItem::new(crate::i18n::message("ui.archive"))
-                .icon("archive.svg")
-                .destructive(true),
-            SidebarMenuAction::ArchiveMission(mission_id.to_owned()),
+            UiMenuItem::new(crate::i18n::message("ui.link_to_chat"))
+                .icon("link.svg")
+                .submenu(),
+            SidebarMenuAction::LinkToChat(mission_id.to_owned()),
         ),
-    ]
+    ];
+    if let Some(chat) = linked {
+        entries.push((
+            UiMenuItem::new(crate::i18n::messagef(
+                "format.unlink_from_chat",
+                &[("chat", chat.title.clone())],
+            ))
+            .icon("link-2-off.svg"),
+            SidebarMenuAction::UnlinkMission(mission_id.to_owned()),
+        ));
+    }
+    entries.push((
+        UiMenuItem::new(crate::i18n::message("ui.archive"))
+            .icon("archive.svg")
+            .destructive(true),
+        SidebarMenuAction::ArchiveMission(mission_id.to_owned()),
+    ));
+    entries
 }
 
 pub(super) fn project_menu_entries(

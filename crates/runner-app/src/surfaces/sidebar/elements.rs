@@ -91,15 +91,52 @@ pub(crate) fn sidebar_item_row(
     id: SharedString,
     item: &SidebarItemView,
 ) -> gpui::Stateful<gpui::Div> {
-    sidebar_row_shell(id, item.selected, false)
-        .children(item.pinned.then(pin_indicator))
-        .child(sidebar_icon(item.icon, item.live))
-        .child(
-            sidebar_row_label(item.title.clone(), item.selected, false).debug_selector({
-                let title = item.title.clone();
-                move || format!("SIDEBAR_ITEM_TITLE:{title}")
-            }),
-        )
+    sidebar_item_row_with(id, item, None, true)
+}
+
+/// An item row whose label may carry a second line under its title; `bordered`
+/// as for [`sidebar_row_shell`].
+pub(crate) fn sidebar_item_row_with(
+    id: SharedString,
+    item: &SidebarItemView,
+    subtitle: Option<AnyElement>,
+    bordered: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let pin_id = id.clone();
+    let title = sidebar_row_label(item.title.clone(), item.selected, false).debug_selector({
+        let title = item.title.clone();
+        move || format!("SIDEBAR_ITEM_TITLE:{title}")
+    });
+    sidebar_row_shell(id.clone(), item.selected, false, bordered)
+        .children(item.pinned.then(|| {
+            div()
+                .debug_selector(move || format!("SIDEBAR_PIN {pin_id}"))
+                .flex()
+                .flex_none()
+                .child(pin_indicator())
+        }))
+        .child(sidebar_mark(id, sidebar_icon(item.icon, item.live)))
+        .map(|row| match subtitle {
+            Some(subtitle) => row.child(
+                div()
+                    .min_w(px(0.))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .child(title)
+                    .child(subtitle),
+            ),
+            None => row.child(title),
+        })
+}
+
+/// A row's leading mark, named for tests that measure where it is drawn.
+pub(super) fn sidebar_mark(row_id: SharedString, icon: AnyElement) -> gpui::Div {
+    div()
+        .debug_selector(move || format!("SIDEBAR_MARK {row_id}"))
+        .flex()
+        .flex_none()
+        .child(icon)
 }
 
 /// The launcher page's place in the tree. It is drawn while the page shows and
@@ -361,10 +398,13 @@ pub(crate) fn empty_sidebar_label(label: &'static str) -> AnyElement {
         .into_any_element()
 }
 
+/// `bordered: false` keeps the row's border hidden, selected or hovered: a group
+/// head's outline is its border.
 pub(crate) fn sidebar_row_shell(
     id: SharedString,
     selected: bool,
     accent_bar: bool,
+    bordered: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .debug_selector(|| format!("SIDEBAR_ROW {id}"))
@@ -379,7 +419,7 @@ pub(crate) fn sidebar_row_shell(
         .gap(rems(6. / 16.))
         .rounded_sm()
         .border_1()
-        .border_color(if selected {
+        .border_color(if selected && bordered {
             theme::chrome_selected_border()
         } else {
             gpui::transparent_black()
@@ -404,10 +444,13 @@ pub(crate) fn sidebar_row_shell(
         } else {
             theme::muted()
         })
-        .hover(|row| {
-            row.border_color(theme::chrome_selected_border())
-                .bg(theme::chrome_hover())
-                .text_color(theme::text())
+        .hover(move |row| {
+            let row = row.bg(theme::chrome_hover()).text_color(theme::text());
+            if bordered {
+                row.border_color(theme::chrome_selected_border())
+            } else {
+                row
+            }
         })
 }
 

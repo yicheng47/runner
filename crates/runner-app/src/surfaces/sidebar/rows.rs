@@ -163,8 +163,8 @@ impl Sidebar {
                 }
                 NodeType::Mission => {
                     let summary = missions.get(node.ref_id.as_deref()?)?;
-                    let rollup = self.mission_status_rollup(*summary);
-                    let attention = status_attention(rollup.priority_value()).max(
+                    let display: MissionSummary = (*summary).clone().into();
+                    let attention = self.mission_attention(&display).max(
                         if self.archiving_missions.contains(&summary.mission.id) {
                             AttentionState::Working
                         } else {

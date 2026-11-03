@@ -106,6 +106,8 @@ fn paused_mission_hides_unread_without_acknowledging_sessions() {
         let summary = &mut store.missions[0];
         summary.mission.status = MissionStatus::Running;
         summary.any_session_live = false;
+        // An older daemon's summary: attention comes from the members.
+        summary.phase = None;
         summary.session_statuses = ["coder", "reviewer"]
             .into_iter()
             .map(|id| {
@@ -1018,10 +1020,18 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         }
     }
 
-    let mission_entries =
-        mission_menu_entries("mission-node-1", false, "mission-1", "My mission".into());
-    assert_eq!(menu_labels(&mission_entries), ["Pin", "Rename", "Archive"]);
-    assert!(mission_entries[2].0.destructive);
+    let mission_entries = mission_menu_entries(
+        "mission-node-1",
+        false,
+        "mission-1",
+        "My mission".into(),
+        None,
+    );
+    assert_eq!(
+        menu_labels(&mission_entries),
+        ["Pin", "Rename", "Link to chat", "Archive"]
+    );
+    assert!(mission_entries[3].0.destructive);
     assert_eq!(
         mission_entries
             .iter()
@@ -1036,8 +1046,37 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
                 mission_id: "mission-1".into(),
                 original: "My mission".into(),
             }),
+            SidebarMenuAction::LinkToChat("mission-1".into()),
             SidebarMenuAction::ArchiveMission("mission-1".into()),
         ]
+    );
+    let linked = runner_core::protocol::LinkedChat {
+        session_id: "chat-1".into(),
+        title: "Frontman".into(),
+        archived: false,
+        reports: true,
+    };
+    let linked_entries = mission_menu_entries(
+        "mission-node-1",
+        false,
+        "mission-1",
+        "My mission".into(),
+        Some(&linked),
+    );
+    assert_eq!(
+        menu_labels(&linked_entries),
+        [
+            "Pin",
+            "Rename",
+            "Link to chat",
+            "Unlink from Frontman",
+            "Archive"
+        ],
+        "a linked mission keeps Link to chat, with Unlink right below it"
+    );
+    assert_eq!(
+        linked_entries[3].1,
+        SidebarMenuAction::UnlinkMission("mission-1".into())
     );
 }
 
@@ -1652,6 +1691,8 @@ fn active_projection_orders_tabs_and_rolls_up_missions_without_drawers() {
             .session_activity
             .insert("drawer".into(), SessionActivityState::Busy);
         store.missions[0].session_statuses = vec![("member".into(), working)];
+        // An older daemon's summary: the rollup comes from the members.
+        store.missions[0].phase = None;
     });
     let sidebar = cx.new(|cx| Sidebar::new(WeakEntity::new_invalid(), store.clone(), None, cx));
     let mut tabs = cx.update(|cx| TabSet::from_rows(&store.read(cx).nodes));
@@ -1694,15 +1735,10 @@ fn active_projection_orders_tabs_and_rolls_up_missions_without_drawers() {
         );
         assert_eq!(
             rows.iter()
-                .filter(|row| row.group() == ActiveGroup::Chats)
+                .filter(|row| row.group() == ActiveGroup::Agents)
                 .count(),
-            8
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.group() == ActiveGroup::Missions)
-                .count(),
-            1
+            9,
+            "chats and missions share the Agents heading"
         );
         assert!(rows.iter().all(|row| row.group() != ActiveGroup::Terminals));
         assert_eq!(
@@ -1915,15 +1951,9 @@ fn active_includes_live_idle_chats_and_missions_and_removes_stopped_selection() 
         let rows = sidebar.resolved_active_rows_for_tabs(&tabs, cx);
         assert_eq!(
             rows.iter()
-                .filter(|row| row.group() == ActiveGroup::Chats)
+                .filter(|row| row.group() == ActiveGroup::Agents)
                 .count(),
-            3
-        );
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.group() == ActiveGroup::Missions)
-                .count(),
-            1
+            4
         );
         let shortcuts = rows
             .iter()
@@ -1965,7 +1995,7 @@ fn active_includes_live_idle_chats_and_missions_and_removes_stopped_selection() 
     sidebar.update(&mut cx, |sidebar, cx| {
         let rows = sidebar.resolved_active_rows_for_tabs(&tabs, cx);
         assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|row| row.group() == ActiveGroup::Chats));
+        assert!(rows.iter().all(|row| row.group() == ActiveGroup::Agents));
         assert!(!active_row_names(&rows, &store.read(cx).nodes).contains(&"idle".into()));
         let ids = rows
             .iter()
@@ -2549,7 +2579,7 @@ fn active_group_collapse_hides_rows_and_skips_their_shortcuts() {
         [chat_node.id.clone(), terminal_node.id.clone()]
     );
 
-    let toggle = visual.debug_bounds("ACTIVE_GROUP_TOGGLE chats").unwrap();
+    let toggle = visual.debug_bounds("ACTIVE_GROUP_TOGGLE agents").unwrap();
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds(chat_title).is_none());
@@ -2563,10 +2593,10 @@ fn active_group_collapse_hides_rows_and_skips_their_shortcuts() {
         assert!(store
             .settings
             .sidebar_collapsed_active_groups
-            .contains("chats"));
+            .contains("agents"));
     });
 
-    let toggle = visual.debug_bounds("ACTIVE_GROUP_TOGGLE chats").unwrap();
+    let toggle = visual.debug_bounds("ACTIVE_GROUP_TOGGLE agents").unwrap();
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds(chat_title).is_some());
@@ -2650,7 +2680,7 @@ fn active_lists_unselected_idle_shells_until_they_exit() {
     sidebar.update(&mut cx, |sidebar, cx| {
         let rows = sidebar.resolved_active_rows_for_tabs(&tabs, cx);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].group(), super::active::ActiveGroup::Chats);
+        assert_eq!(rows[0].group(), super::active::ActiveGroup::Agents);
         sidebar.refresh_shortcut_rows(&tabs, cx);
         assert_eq!(sidebar.numbered_shortcut_rows.len(), 1);
         assert_eq!(sidebar.numbered_shortcut_rows[0].node_id, chat_node.id);
@@ -2741,7 +2771,7 @@ fn active_mixed_split_is_one_chat_row_targeting_the_working_chat() {
             sidebar.update(&mut cx, |sidebar, cx| {
                 let rows = sidebar.resolved_active_rows_for_tabs(&tabs, cx);
                 assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].group(), super::active::ActiveGroup::Chats);
+                assert_eq!(rows[0].group(), super::active::ActiveGroup::Agents);
                 for row in &rows {
                     let (label, icon) = row.title_and_icon(|id| {
                         Some(

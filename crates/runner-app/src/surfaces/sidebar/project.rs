@@ -244,6 +244,9 @@ impl NativeRoot {
         if let Some(menu) = &self.front_page_sidebar().read(cx).context_menu {
             overlays.push(menu.clone().into_any_element());
         }
+        if let Some(picker) = self.front_page_sidebar().read(cx).link_picker() {
+            overlays.push(picker.into_any_element());
+        }
         if self.project_modal.is_some() {
             overlays.push(self.render_project_modal(cx));
         }

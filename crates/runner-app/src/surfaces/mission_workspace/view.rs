@@ -534,6 +534,22 @@ impl MissionWorkspace {
             .as_ref()
             .map(|mission| mission.title.clone())
             .unwrap_or_else(|| "…".into());
+        // The app store's summary follows link changes; a remote window reads its host's.
+        let linked = mission.as_ref().and_then(|mission| {
+            if self.client.is_remote() {
+                return mission.linked_chat.clone();
+            }
+            self.app_store
+                .read(cx)
+                .missions
+                .iter()
+                .find(|summary| summary.mission.id == mission.id)
+                .map_or_else(
+                    || mission.linked_chat.clone(),
+                    |summary| summary.mission.linked_chat.clone(),
+                )
+        });
+        let back_link = linked.map(|chat| self.render_linked_chat(chat, cx));
         let drawer_action = (mission_drawer_available(self.archived(), secondary)
             && (!self.layout.drawer.shells().is_empty()
                 || self.remote_supports(&["startShell", "layout"])))
@@ -576,7 +592,11 @@ impl MissionWorkspace {
             title,
         )
         .sidebar_toggle(self.render_collapsed_titlebar_spacer())
-        .title_actions(controls.into_iter().map(IntoElement::into_any_element))
+        .title_actions(
+            back_link
+                .into_iter()
+                .chain(controls.into_iter().map(IntoElement::into_any_element)),
+        )
         .trailing_actions(drawer_action.into_iter().chain(rail_action))
         .into_div()
         .rounded_tl(rems(11. / 16.))
@@ -588,6 +608,58 @@ impl MissionWorkspace {
             element
         });
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
+            .into_any_element()
+    }
+
+    /// "linked to <chat>": opens the chat, or reads "(archived)" and opens nothing.
+    fn render_linked_chat(
+        &self,
+        chat: runner_core::protocol::LinkedChat,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let label = if chat.archived {
+            crate::i18n::tf(
+                "format.linked_to_chat_archived",
+                &[("chat", chat.title.clone())],
+            )
+        } else {
+            crate::i18n::tf("format.linked_to_chat", &[("chat", chat.title.clone())])
+        };
+        let shell = self.shell.clone();
+        let session = chat.session_id.clone();
+        div()
+            .id("mission-linked-chat")
+            .debug_selector(|| "MISSION_LINKED_CHAT".into())
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(rems(4. / 16.))
+            .px(rems(6. / 16.))
+            .py(rems(2. / 16.))
+            .rounded(rems(4. / 16.))
+            .bg(theme::chrome_selected())
+            .text_size(theme::text_caption())
+            .text_color(theme::muted())
+            .child(
+                gpui::svg()
+                    .path("link.svg")
+                    .size(rems(10. / 16.))
+                    .text_color(theme::faint()),
+            )
+            .child(label)
+            .when(!chat.archived, |caption| {
+                caption
+                    .cursor_pointer()
+                    .hover(|caption| caption.text_color(theme::text()))
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        if let Some(shell) = shell.upgrade() {
+                            let session = session.clone();
+                            shell.update(cx, |shell, cx| {
+                                shell.open_chat_session(&session, window, cx);
+                            });
+                        }
+                    }))
+            })
             .into_any_element()
     }
 

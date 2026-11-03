@@ -411,6 +411,9 @@ pub(crate) struct MissionWorkspace {
     rail_view: MissionRailView,
     action_menu: Entity<PopoverMenu>,
     menu_actions: Vec<MissionMenuAction>,
+    /// The pin the header's menu offers to change, to redraw it when a
+    /// linked mission's group is pinned elsewhere.
+    menu_pinned: bool,
     pub(crate) rename_modal: Option<MissionRenameModal>,
     mission_id_copy: Entity<CopyValueButton>,
     session_key_copies: HashMap<String, Entity<CopyValueButton>>,

@@ -5,6 +5,10 @@ mod active;
 mod archive;
 mod drag;
 mod elements;
+mod link;
+mod link_picker;
+#[cfg(test)]
+mod link_tests;
 mod menus;
 mod model;
 mod project;
@@ -228,6 +232,9 @@ enum SidebarMenuAction {
         session_id: String,
     },
     ArchiveMission(String),
+    /// Open the Link to chat picker for a mission (#748).
+    LinkToChat(String),
+    UnlinkMission(String),
     StopMission(String),
     ResumeMission(String),
     DeleteProject(String),
@@ -284,6 +291,11 @@ pub(crate) struct Sidebar {
     dragged_id: Option<String>,
     drop_target: Option<DropTarget>,
     drop_marker: Option<String>,
+    /// A dragged mission over the middle of a chat's row links to it (#748).
+    link_drop: Option<link::LinkDrop>,
+    /// How the current reorder drop would change the dragged mission's link.
+    drop_hint: Option<link::DropHint>,
+    link_picker: Option<Entity<link_picker::LinkPicker>>,
     hovered_row: Option<String>,
     cmd_held_since: Option<Instant>,
     shortcut_key_pressed: bool,

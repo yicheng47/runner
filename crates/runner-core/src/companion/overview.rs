@@ -138,6 +138,21 @@ pub struct Mission {
     pub phase: Option<MissionPhase>,
 }
 
+impl MissionPhase {
+    /// The local protocol's phase, or None for a value this build does not know.
+    pub fn protocol(&self) -> Option<crate::protocol::MissionPhase> {
+        use crate::protocol::MissionPhase as P;
+        match self {
+            Self::NeedsYou => Some(P::NeedsYou),
+            Self::Failed => Some(P::Failed),
+            Self::Working => Some(P::Working),
+            Self::Settled => Some(P::Settled),
+            Self::Ended => Some(P::Ended),
+            Self::Unrecognized(_) => None,
+        }
+    }
+}
+
 impl From<crate::protocol::MissionPhase> for MissionPhase {
     fn from(phase: crate::protocol::MissionPhase) -> Self {
         use crate::protocol::MissionPhase as P;

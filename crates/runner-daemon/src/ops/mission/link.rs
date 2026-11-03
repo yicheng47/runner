@@ -67,9 +67,22 @@ pub fn mission_link(core: &AppCore, input: MissionLinkInput) -> Result<Mission> 
     ensure_linkable(&chat, mission.project_id.as_deref())?;
     let previous = mission.linked_chat.map(|chat| chat.session_id);
     repo::mission::set_link(&tx, &mission.id, Some(&chat.row.id), !input.no_report)?;
+    // A linked mission takes its group's pin: it has none of its own.
+    let unpinned = match repo::node::find_by_ref(&tx, repo::node::NodeType::Mission, &mission.id)? {
+        Some(node) if node.pinned_position.is_some() => {
+            repo::node::set_pinned(&tx, &node.id, false)?;
+            repo::mission::set_pinned_at(&tx, &mission.id, None)?;
+            true
+        }
+        _ => false,
+    };
     let mission = super::get(&tx, &mission.id)?;
     tx.commit()?;
     drop(conn);
+    if unpinned {
+        core.events
+            .emit("chat/layout-changed", &serde_json::json!({}));
+    }
     // The chat hears about a new link unless its own agent made it.
     let reported = !input.no_report
         && previous.as_deref() != Some(chat.row.id.as_str())
@@ -86,12 +99,92 @@ pub fn mission_unlink(core: &AppCore, mission_id: &str) -> Result<Mission> {
     let mut conn = core.db.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mission = super::get(&tx, mission_id)?;
+    let tab = match &mission.linked_chat {
+        Some(chat) => chat_tab(&tx, &chat.session_id)?,
+        None => None,
+    };
     repo::mission::set_link(&tx, &mission.id, None, true)?;
+    let placed = mission.linked_chat.is_some() && place_unlinked(&tx, &mission.id, tab.as_ref())?;
     let mission = super::get(&tx, &mission.id)?;
     tx.commit()?;
     drop(conn);
     core.reports.unlinked(&mission.id);
+    if placed {
+        core.events
+            .emit("chat/layout-changed", &serde_json::json!({}));
+    }
     Ok(mission)
+}
+
+/// The tab holding a chat: the head of its missions' sidebar group.
+pub(crate) fn chat_tab(conn: &Connection, chat: &str) -> Result<Option<repo::node::NodeRow>> {
+    Ok(repo::node::list(conn)?.into_iter().find(|node| {
+        node.node_type == repo::node::NodeType::Tab
+            && repo::node::session_ids(node).iter().any(|id| id == chat)
+    }))
+}
+
+/// The tab heading a mission's sidebar group: the one holding its linked,
+/// unarchived chat. A group's pin belongs to this tab, never to its missions.
+pub(crate) fn group_head(
+    conn: &Connection,
+    mission_id: &str,
+) -> Result<Option<repo::node::NodeRow>> {
+    let mission = super::get(conn, mission_id)?;
+    match mission.linked_chat.filter(|chat| !chat.archived) {
+        Some(chat) => chat_tab(conn, &chat.session_id),
+        None => Ok(None),
+    }
+}
+
+/// Where an unlinked mission's row goes. From an unpinned group it lands
+/// right below the group; from a pinned group, whose pin was the group's, it
+/// goes back to its project unpinned, where a newly started mission appears.
+/// Returns whether its node moved.
+fn place_unlinked(
+    tx: &rusqlite::Transaction<'_>,
+    mission_id: &str,
+    tab: Option<&repo::node::NodeRow>,
+) -> Result<bool> {
+    let Some(mission) = repo::node::find_by_ref(tx, repo::node::NodeType::Mission, mission_id)?
+    else {
+        return Ok(false);
+    };
+    let Some(tab) = tab.filter(|tab| tab.parent_id == mission.parent_id) else {
+        return Ok(false);
+    };
+    repo::node::set_pinned(tx, &mission.id, false)?;
+    let mut siblings: Vec<_> = repo::node::list(tx)?
+        .into_iter()
+        .filter(|node| {
+            node.parent_id == mission.parent_id
+                && node.pinned_position.is_none()
+                && node.id != mission.id
+        })
+        .collect();
+    siblings.sort_by_key(|node| node.position);
+    let mut order: Vec<String> = siblings.into_iter().map(|node| node.id).collect();
+    let at = if tab.pinned_position.is_some() {
+        // Projects lead the root's order, as everywhere else in the sidebar.
+        let nodes = repo::node::list(tx)?;
+        order
+            .iter()
+            .position(|id| {
+                nodes
+                    .iter()
+                    .find(|node| &node.id == id)
+                    .is_some_and(|node| node.node_type != repo::node::NodeType::Project)
+            })
+            .unwrap_or(order.len())
+    } else {
+        order
+            .iter()
+            .position(|id| *id == tab.id)
+            .map_or(order.len(), |i| i + 1)
+    };
+    order.insert(at, mission.id.clone());
+    repo::node::move_and_reorder(tx, &mission.id, mission.parent_id.as_deref(), &order)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -423,6 +516,154 @@ mod tests {
         crate::ops::node::node_move(&f.core, tab_id, Some(target), order).unwrap();
         assert_eq!(f.get(&stays.id).linked_chat, None);
         assert!(published(&mut events).contains(&"mission/changed"));
+    }
+
+    #[test]
+    fn unlinking_places_the_mission_right_below_its_chats_tab() {
+        let f = fixture();
+        f.session("chat", "codex", None);
+        f.session("other", "codex", None);
+        let chat_tab = ulid::Ulid::new().to_string();
+        tab(&f, &chat_tab, None);
+        crate::ops::node::node_tab_upsert(
+            &f.core,
+            runner_core::protocol::NodeTabUpsertInput {
+                id: ulid::Ulid::new().to_string(),
+                parent_id: None,
+                name: "Other".into(),
+                layout: r#"{"slots":["other"]}"#.into(),
+            },
+        )
+        .unwrap();
+        let mission = f.start(Some("chat"), None, false);
+        let root_order = |f: &Fixture| -> Vec<String> {
+            let mut nodes: Vec<_> = repo::node::list(&f.core.db.get().unwrap())
+                .unwrap()
+                .into_iter()
+                .filter(|node| node.parent_id.is_none() && node.pinned_position.is_none())
+                .collect();
+            nodes.sort_by_key(|node| node.position);
+            nodes.into_iter().map(|node| node.id).collect()
+        };
+        let mission_node = repo::node::find_by_ref(
+            &f.core.db.get().unwrap(),
+            repo::node::NodeType::Mission,
+            &mission.id,
+        )
+        .unwrap()
+        .unwrap()
+        .id;
+        assert_eq!(
+            root_order(&f)[0],
+            mission_node,
+            "the mission node was made first"
+        );
+
+        let mut events = f.core.events.subscribe();
+        mission_unlink(&f.core, &mission.id).unwrap();
+
+        let order = root_order(&f);
+        let tab_at = order.iter().position(|id| *id == chat_tab).unwrap();
+        assert_eq!(order[tab_at + 1], mission_node);
+        assert!(published(&mut events).contains(&"chat/layout-changed"));
+    }
+
+    fn node_of(f: &Fixture, mission: &str) -> repo::node::NodeRow {
+        repo::node::find_by_ref(
+            &f.core.db.get().unwrap(),
+            repo::node::NodeType::Mission,
+            mission,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn root_unpinned(f: &Fixture) -> Vec<String> {
+        let mut nodes: Vec<_> = repo::node::list(&f.core.db.get().unwrap())
+            .unwrap()
+            .into_iter()
+            .filter(|node| node.parent_id.is_none() && node.pinned_position.is_none())
+            .collect();
+        nodes.sort_by_key(|node| node.position);
+        nodes.into_iter().map(|node| node.id).collect()
+    }
+
+    #[test]
+    fn pinning_a_linked_mission_pins_its_group_and_linking_drops_its_own_pin() {
+        let f = fixture();
+        f.session("chat", "codex", None);
+        let chat_tab = ulid::Ulid::new().to_string();
+        tab(&f, &chat_tab, None);
+        let loose = f.start(None, None, false);
+        crate::daemon::block_on(super::super::mission_pin_impl(
+            &f.core,
+            loose.id.clone(),
+            true,
+        ))
+        .unwrap();
+        assert!(node_of(&f, &loose.id).pinned_position.is_some());
+
+        f.link(&loose.id, "chat").unwrap();
+        assert!(
+            node_of(&f, &loose.id).pinned_position.is_none(),
+            "a linked mission takes its group's pin"
+        );
+
+        crate::daemon::block_on(super::super::mission_pin_impl(
+            &f.core,
+            loose.id.clone(),
+            true,
+        ))
+        .unwrap();
+        let head = repo::node::get(&f.core.db.get().unwrap(), &chat_tab)
+            .unwrap()
+            .unwrap();
+        assert!(head.pinned_position.is_some(), "the group is pinned");
+        assert!(node_of(&f, &loose.id).pinned_position.is_none());
+
+        crate::ops::node::node_set_pinned(&f.core, node_of(&f, &loose.id).id, false).unwrap();
+        let head = repo::node::get(&f.core.db.get().unwrap(), &chat_tab)
+            .unwrap()
+            .unwrap();
+        assert!(
+            head.pinned_position.is_none(),
+            "unpinning from the mission unpins the group"
+        );
+    }
+
+    #[test]
+    fn unlinking_from_a_pinned_group_returns_the_mission_unpinned_to_the_top() {
+        let f = fixture();
+        f.session("chat", "codex", None);
+        f.session("other", "codex", None);
+        let chat_tab = ulid::Ulid::new().to_string();
+        tab(&f, &chat_tab, None);
+        let mission = f.start(Some("chat"), None, false);
+        crate::ops::node::node_tab_upsert(
+            &f.core,
+            runner_core::protocol::NodeTabUpsertInput {
+                id: ulid::Ulid::new().to_string(),
+                parent_id: None,
+                name: "Other".into(),
+                layout: r#"{"slots":["other"]}"#.into(),
+            },
+        )
+        .unwrap();
+        crate::ops::node::node_set_pinned(&f.core, chat_tab.clone(), true).unwrap();
+        assert_ne!(
+            root_unpinned(&f).first(),
+            Some(&node_of(&f, &mission.id).id)
+        );
+
+        mission_unlink(&f.core, &mission.id).unwrap();
+
+        let node = node_of(&f, &mission.id);
+        assert!(node.pinned_position.is_none(), "the pin was the group's");
+        assert_eq!(
+            root_unpinned(&f).first(),
+            Some(&node.id),
+            "where a newly started mission appears"
+        );
     }
 
     #[test]
