@@ -7,7 +7,9 @@
   },
   {
     "runtime": "claude-code",
-    "files": {}
+    "files": {
+      ".claude.json": "{\"projects\":{\"<TMP>/project\":{\"allowedTools\":[],\"mcpContextUris\":[],\"mcpServers\":{},\"enabledMcpjsonServers\":[],\"disabledMcpjsonServers\":[],\"hasTrustDialogAccepted\":true,\"hasClaudeMdExternalIncludesApproved\":false,\"hasClaudeMdExternalIncludesWarningShown\":false}}}\n"
+    }
   },
   {
     "runtime": "antigravity",

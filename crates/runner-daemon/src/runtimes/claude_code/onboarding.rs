@@ -4,7 +4,7 @@ use runner_core::protocol::ClaudeAccount;
 
 use crate::error::{Error, Result};
 
-static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 const COMPLETED: &str = "hasCompletedOnboarding";
 
 pub(crate) fn complete(account: &ClaudeAccount, home: &Path) -> Result<()> {

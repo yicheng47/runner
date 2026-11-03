@@ -314,6 +314,7 @@ impl SessionManager {
             &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
+            spec.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
         );
         let starts_trusted = first_turn.is_none()
             && crate::runtimes::for_key(&role.runtime).starts_trusted(

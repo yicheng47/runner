@@ -94,6 +94,7 @@ impl RuntimeAdapter for Copilot {
         session_id: &str,
         cwd: Option<&Path>,
         copilot_home: Option<&str>,
+        _claude_config_dir: Option<&str>,
     ) -> crate::error::Result<()> {
         if let Some(cwd) = trust_cwd(session_id, Runtime::Copilot, cwd) {
             copilot_trust::seed_project_trust(cwd, copilot_home)?;

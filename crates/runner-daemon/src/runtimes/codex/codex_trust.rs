@@ -1,8 +1,9 @@
 use crate::runtimes::helpers::{
-    is_broad_trust_root, resolve_config_write_path, write_config_atomically,
+    is_broad_trust_root, resolve_config_write_path, resolve_project_trust_root,
+    write_config_atomically,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 
 use crate::error::{Error, Result};
@@ -201,67 +202,12 @@ fn normalize_lookup_key(key: &str) -> String {
     }
 }
 
-fn resolve_project_trust_root(cwd: &Path) -> Result<PathBuf> {
-    let cwd = fs::canonicalize(cwd)
-        .map_err(|e| Error::msg(format!("realpath {}: {e}", cwd.display())))?;
-    for ancestor in cwd.ancestors() {
-        let git_marker = ancestor.join(".git");
-        if git_marker.is_dir() {
-            return Ok(ancestor.to_path_buf());
-        }
-        if git_marker.is_file() {
-            return Ok(
-                resolve_worktree_main_root(ancestor).unwrap_or_else(|| ancestor.to_path_buf())
-            );
-        }
-    }
-    Ok(cwd)
-}
-
-fn resolve_worktree_main_root(cwd: &Path) -> Option<PathBuf> {
-    let git_file = cwd.join(".git");
-    let git_dir_reference = fs::read_to_string(&git_file).ok()?;
-    let git_dir_path = git_dir_reference.trim().strip_prefix("gitdir:")?.trim();
-    if git_dir_path.is_empty() {
-        return None;
-    }
-    let git_dir_path = Path::new(git_dir_path);
-    let git_dir = if git_dir_path.is_absolute() {
-        git_dir_path.to_path_buf()
-    } else {
-        cwd.join(git_dir_path)
-    };
-    let worktrees_dir = git_dir.parent()?;
-    if worktrees_dir.file_name()? != "worktrees" {
-        return None;
-    }
-
-    let backlink_reference = fs::read_to_string(git_dir.join("gitdir")).ok()?;
-    let backlink_path = backlink_reference.trim();
-    if backlink_path.is_empty() {
-        return None;
-    }
-    let backlink_path = Path::new(backlink_path);
-    let backlink = if backlink_path.is_absolute() {
-        backlink_path.to_path_buf()
-    } else {
-        git_dir.join(backlink_path)
-    };
-    let canonical_backlink = fs::canonicalize(backlink).ok()?;
-    let canonical_git_file = fs::canonicalize(&git_file).ok()?;
-    if canonical_backlink != canonical_git_file {
-        return None;
-    }
-
-    let main_root = worktrees_dir.parent()?.parent()?;
-    fs::canonicalize(main_root).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    use std::path::PathBuf;
     use std::sync::{Arc, Barrier};
     use std::thread;
 

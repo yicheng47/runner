@@ -293,6 +293,7 @@ impl RuntimeAdapter for Codex {
         session_id: &str,
         cwd: Option<&Path>,
         _copilot_home: Option<&str>,
+        _claude_config_dir: Option<&str>,
     ) -> crate::error::Result<()> {
         let hook_server = codex_trust::seed_hook_server();
         if let Some(cwd) = trust_cwd(session_id, Runtime::Codex, cwd) {

@@ -456,8 +456,14 @@ fn claude_accounts_follow_active_selection_and_resume_and_fork_from_origin() {
         .iter()
         .any(|arg| arg == "--plugin-dir"));
     mgr.kill(&source.id).unwrap();
-    let fork = mgr
-        .spawn_fork(
+    let work_config = Path::new(&work.folder).join(".claude.json");
+    let before: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&work_config).unwrap_or_else(|_| "{}".into()),
+    )
+    .unwrap();
+    assert!(before.get("projects").is_none());
+    let fork = crate::runtimes::with_conversation_home(&temp.path().join("isolated-home"), || {
+        mgr.spawn_fork(
             &source.id,
             None,
             None,
@@ -466,7 +472,17 @@ fn claude_accounts_follow_active_selection_and_resume_and_fork_from_origin() {
             pool.clone(),
             capture(),
         )
-        .unwrap();
+    })
+    .unwrap();
+    let mut trusted: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&work_config).unwrap()).unwrap();
+    let root = std::fs::canonicalize(cwd).unwrap();
+    #[cfg(windows)]
+    let root = crate::runtimes::ordinary_windows_path(&root);
+    let root = root.to_string_lossy().replace('\\', "/");
+    assert_eq!(trusted["projects"][&root]["hasTrustDialogAccepted"], true);
+    trusted.as_object_mut().unwrap().remove("projects");
+    assert_eq!(trusted, before);
     let fork_row = crate::repo::session::get_row(&pool.get().unwrap(), &fork.id)
         .unwrap()
         .unwrap();
@@ -853,4 +869,94 @@ fn claude_single_account_and_explicit_pins_keep_their_launch_inputs() {
     .unwrap();
     assert!(account.native);
     assert!(!configured.env.contains_key("CLAUDE_CONFIG_DIR"));
+}
+
+#[test]
+fn claude_trust_uses_the_effective_launch_account_and_environment() {
+    for source in ["native", "active-account", "shell", "role"] {
+        let data = tempfile::tempdir().unwrap();
+        let home = data.path().join("home");
+        let cwd = data.path().join("project");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&cwd).unwrap();
+        let active = home.join("active-account");
+        let shell = home.join("shell-account");
+        let role_dir = home.join("role-account");
+        let pool = pool_with_schema();
+        if source != "native" {
+            let state = serde_json::json!({
+                "accounts": [
+                    {"id":"native", "name":"Personal", "folder":home.join(".claude"), "native":true},
+                    {"id":"work", "name":"Work", "folder":active, "native":false}
+                ],
+                "main_id":"work", "active_id":"work"
+            });
+            crate::db::app_state_set(&pool.get().unwrap(), "claude_accounts", &state.to_string())
+                .unwrap();
+        }
+        let mut configured = role("claude", &[]);
+        configured.runtime = "claude-code".into();
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, fake.clone());
+        if matches!(source, "shell" | "role") {
+            mgr.shell_env
+                .write()
+                .unwrap()
+                .vars
+                .insert("CLAUDE_CONFIG_DIR".into(), shell.display().to_string());
+        }
+        if source == "role" {
+            configured
+                .env
+                .insert("CLAUDE_CONFIG_DIR".into(), role_dir.display().to_string());
+        }
+        insert_role_row(&pool.get().unwrap(), &configured);
+        let out = crate::runtimes::with_conversation_home(&home, || {
+            mgr.spawn_direct(
+                &configured,
+                None,
+                None,
+                None,
+                None,
+                cwd.to_str(),
+                None,
+                None,
+                data.path(),
+                pool,
+                capture(),
+                None,
+            )
+        })
+        .unwrap();
+        let expected = match source {
+            "active-account" => active.join(".claude.json"),
+            "shell" => shell.join(".claude.json"),
+            "role" => role_dir.join(".claude.json"),
+            _ => home.join(".claude.json"),
+        };
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&expected).unwrap()).unwrap();
+        let root = std::fs::canonicalize(&cwd).unwrap();
+        #[cfg(windows)]
+        let root = crate::runtimes::ordinary_windows_path(&root);
+        let root = root.to_string_lossy().replace('\\', "/");
+        assert_eq!(
+            config["projects"][&root]["hasTrustDialogAccepted"], true,
+            "{source}"
+        );
+        for path in [
+            home.join(".claude.json"),
+            active.join(".claude.json"),
+            shell.join(".claude.json"),
+            role_dir.join(".claude.json"),
+        ] {
+            assert_eq!(
+                path.exists(),
+                path == expected,
+                "{source}: {}",
+                path.display()
+            );
+        }
+        mgr.kill(&out.id).unwrap();
+    }
 }

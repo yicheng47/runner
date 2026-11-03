@@ -409,6 +409,7 @@ pub trait RuntimeAdapter: Send + Sync {
         _session_id: &str,
         _cwd: Option<&Path>,
         _copilot_home: Option<&str>,
+        _claude_config_dir: Option<&str>,
     ) -> crate::error::Result<()> {
         Ok(())
     }

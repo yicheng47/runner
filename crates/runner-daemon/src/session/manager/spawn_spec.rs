@@ -97,9 +97,14 @@ impl SessionManager {
         runtime_key: &str,
         cwd: Option<&Path>,
         copilot_home: Option<&str>,
+        claude_config_dir: Option<&str>,
     ) {
-        let result =
-            crate::runtimes::for_key(runtime_key).seed_trust(session_id, cwd, copilot_home);
+        let result = crate::runtimes::for_key(runtime_key).seed_trust(
+            session_id,
+            cwd,
+            copilot_home,
+            claude_config_dir,
+        );
         if let (Err(e), Some(cwd)) = (result, cwd) {
             log::warn!(
                 "failed to seed {:?} project trust: session={session_id} cwd={} error={e}",

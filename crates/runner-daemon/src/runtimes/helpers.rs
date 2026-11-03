@@ -174,6 +174,62 @@ pub(crate) fn is_broad_trust_root(cwd: &Path, home: Option<&Path>) -> bool {
         == Some(cwd)
 }
 
+pub(crate) fn resolve_project_trust_root(cwd: &Path) -> crate::error::Result<PathBuf> {
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|e| crate::error::Error::msg(format!("realpath {}: {e}", cwd.display())))?;
+    for ancestor in cwd.ancestors() {
+        let git_marker = ancestor.join(".git");
+        if git_marker.is_dir() {
+            return Ok(ancestor.to_path_buf());
+        }
+        if git_marker.is_file() {
+            return Ok(
+                resolve_worktree_main_root(ancestor).unwrap_or_else(|| ancestor.to_path_buf())
+            );
+        }
+    }
+    Ok(cwd)
+}
+
+fn resolve_worktree_main_root(cwd: &Path) -> Option<PathBuf> {
+    let git_file = cwd.join(".git");
+    let git_dir_reference = std::fs::read_to_string(&git_file).ok()?;
+    let git_dir_path = git_dir_reference.trim().strip_prefix("gitdir:")?.trim();
+    if git_dir_path.is_empty() {
+        return None;
+    }
+    let git_dir_path = Path::new(git_dir_path);
+    let git_dir = if git_dir_path.is_absolute() {
+        git_dir_path.to_path_buf()
+    } else {
+        cwd.join(git_dir_path)
+    };
+    let worktrees_dir = git_dir.parent()?;
+    if worktrees_dir.file_name()? != "worktrees" {
+        return None;
+    }
+
+    let backlink_reference = std::fs::read_to_string(git_dir.join("gitdir")).ok()?;
+    let backlink_path = backlink_reference.trim();
+    if backlink_path.is_empty() {
+        return None;
+    }
+    let backlink_path = Path::new(backlink_path);
+    let backlink = if backlink_path.is_absolute() {
+        backlink_path.to_path_buf()
+    } else {
+        git_dir.join(backlink_path)
+    };
+    let canonical_backlink = std::fs::canonicalize(backlink).ok()?;
+    let canonical_git_file = std::fs::canonicalize(&git_file).ok()?;
+    if canonical_backlink != canonical_git_file {
+        return None;
+    }
+
+    let main_root = worktrees_dir.parent()?.parent()?;
+    std::fs::canonicalize(main_root).ok()
+}
+
 pub(crate) fn resolve_config_write_path(config_path: &Path) -> crate::error::Result<PathBuf> {
     match std::fs::symlink_metadata(config_path) {
         Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(config_path)
