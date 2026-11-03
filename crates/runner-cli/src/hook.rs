@@ -273,13 +273,25 @@ fn serve(
                 let thread = request["params"]["_meta"]["threadId"]
                     .as_str()
                     .map(str::to_owned);
+                let mut response = json!({});
                 if let Some(route) = route {
+                    if event == "SessionStart"
+                        && payload["source"] == "startup"
+                        && thread
+                            .as_deref()
+                            .is_some_and(|id| payload["session_id"].as_str() == Some(id))
+                    {
+                        response = json!({"hookSpecificOutput": {
+                            "hookEventName": "SessionStart",
+                            "additionalContext": format!("<!-- runner-codex-session-key-capture:{} -->", route.session),
+                        }});
+                    }
                     let _ = runtime.block_on(deliver(
                         &route.endpoint,
                         route.envelope(Runtime::Codex, event, payload, thread),
                     ));
                 }
-                json!({"content":[{"type":"text","text":"{}"}],"isError":false})
+                json!({"content":[{"type":"text","text":response.to_string()}],"isError":false})
             }
             _ => {
                 writeln!(
@@ -559,6 +571,56 @@ mod tests {
             io::ErrorKind::TimedOut
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn startup_hook_marks_runtime_only_chats_without_starting_a_turn() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let route = Route {
+            endpoint: endpoint(root.path()).0,
+            session: "01M6K3Q2XF5NTWR80G0MREWQ2E".into(),
+            generation: "launch".into(),
+        };
+        for (event, source, caller, routed, marked) in [
+            ("SessionStart", "startup", Some("root"), true, true),
+            ("SessionStart", "resume", Some("root"), true, false),
+            ("SessionStart", "clear", Some("root"), true, false),
+            ("SessionStart", "compact", Some("root"), true, false),
+            ("SessionStart", "fork", Some("root"), true, false),
+            ("UserPromptSubmit", "startup", Some("root"), true, false),
+            ("SessionStart", "startup", Some("child"), true, false),
+            ("SessionStart", "startup", None, true, false),
+            ("SessionStart", "startup", Some("root"), false, false),
+        ] {
+            let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"report",
+                "arguments":{"hook_event_name":event,"source":source,"session_id":"root","transcript_path":null},
+                "_meta":{"threadId":caller},
+            }});
+            let input = format!("{request}\n");
+            let mut output = Vec::new();
+            serve(&rt, routed.then_some(&route), input.as_bytes(), &mut output).unwrap();
+            let reply: Value = serde_json::from_slice(&output).unwrap();
+            let context: Value =
+                serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            if marked {
+                assert_eq!(
+                    context,
+                    json!({"hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": "<!-- runner-codex-session-key-capture:01M6K3Q2XF5NTWR80G0MREWQ2E -->",
+                    }})
+                );
+            } else {
+                assert_eq!(context, json!({}), "{event} {source} {caller:?} {routed}");
+            }
+            assert_eq!(reply["result"]["isError"], false);
+        }
     }
 
     #[test]

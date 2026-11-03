@@ -1,6 +1,7 @@
 pub(crate) mod capture;
 pub(crate) mod codex_status;
 pub(crate) mod codex_trust;
+mod conversation;
 pub(crate) mod fork;
 pub(crate) mod models;
 mod program_status;
@@ -23,6 +24,19 @@ fn capture_sessions_root(
     cwd: Option<&Path>,
 ) -> Option<PathBuf> {
     codex_home(env, cwd).map(|home| home.join("sessions"))
+}
+
+fn probe_home(ctx: &ProbeContext<'_>) -> Option<PathBuf> {
+    #[cfg(test)]
+    if !ctx.role_env.contains_key("CODEX_HOME") && crate::runtimes::test_home().is_none() {
+        return None;
+    }
+    let env = ctx
+        .role_env
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    codex_home(&env, ctx.cwd.map(Path::new))
 }
 
 /// The Codex home a session spawned with `env` in `cwd` reads.
@@ -336,6 +350,20 @@ impl RuntimeAdapter for Codex {
     }
     fn mission_dir_args(&self, dir: Option<&Path>) -> Vec<String> {
         add_dir(dir)
+    }
+    fn probe_uses_shell_env(&self) -> bool {
+        true
+    }
+    fn conversation_exists(&self, key: &str, ctx: &ProbeContext<'_>) -> Option<bool> {
+        conversation::conversation_exists(&probe_home(ctx)?, key)
+    }
+    fn recover_conversation(
+        &self,
+        session_id: &str,
+        missing_key: &str,
+        ctx: &ProbeContext<'_>,
+    ) -> Option<String> {
+        conversation::recover_conversation(&probe_home(ctx)?, session_id, missing_key)
     }
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();

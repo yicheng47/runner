@@ -478,6 +478,16 @@ pub trait RuntimeAdapter: Send + Sync {
     fn conversation_exists(&self, _key: &str, _ctx: &ProbeContext<'_>) -> Option<bool> {
         None
     }
+    /// The conversation a row should resume instead of `missing_key`, when
+    /// the runtime can prove which one the row owns.
+    fn recover_conversation(
+        &self,
+        _session_id: &str,
+        _missing_key: &str,
+        _ctx: &ProbeContext<'_>,
+    ) -> Option<String> {
+        None
+    }
     fn missing_conversation(&self) -> MissingConversation {
         MissingConversation::default()
     }

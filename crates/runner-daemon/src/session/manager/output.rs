@@ -73,6 +73,28 @@ pub(super) fn update_local_input_state(
 }
 
 impl SessionManager {
+    /// The environment a runtime's conversation probe reads, matching the
+    /// one its agent was spawned with.
+    pub(super) fn probe_env(
+        &self,
+        adapter: &dyn crate::runtimes::RuntimeAdapter,
+        role_env: &HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        if !adapter.probe_uses_shell_env() {
+            return role_env.clone();
+        }
+        let mut env: HashMap<String, String> = self
+            .shell_env
+            .read()
+            .expect("runtime shell environment lock poisoned")
+            .vars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        env.extend(role_env.clone());
+        env
+    }
+
     /// Forwarder thread shared by `spawn`, `spawn_direct`, and `resume`.
     /// Drains the runtime's `OutputStream` into the terminal sink,
     /// then on channel close queries the runtime for the

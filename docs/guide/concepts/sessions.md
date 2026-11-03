@@ -38,6 +38,6 @@ Runner's background service, `runnerd`, owns processes independently of the app 
 
 If the processes were stopped for shutdown or an update, **Resume running agents on launch** controls their automatic recovery. Manually stopped chats stay stopped until you resume them. Terminal panes resume after a planned stop regardless of the agent-resume setting. Recovery depends on the agent's saved conversation identity and history; it cannot restore an unsaved conversation from terminal pixels alone.
 
-If an agent exits while it resumes, Runner keeps its conversation and Resume tries it again. Runner starts a fresh conversation only when the runtime's saved conversation is gone.
+If an agent exits while it resumes, Runner keeps its conversation and Resume tries it again. Runner starts a fresh conversation only when the runtime's saved conversation is gone. For Codex, if the recorded conversation is gone but the chat's original conversation is still on disk, Runner resumes the original instead.
 
 If the daemon crashes, Runner reconnects and offers recovery for affected chats; shells without a planned launch-resume claim close their panes. Use **Settings → Diagnostics → Open log folder** when a failure repeats. See [Troubleshooting](../guides/troubleshooting.md) for a missing conversation or a failed launch.

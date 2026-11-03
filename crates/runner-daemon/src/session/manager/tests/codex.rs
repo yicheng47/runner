@@ -1329,3 +1329,84 @@ fn codex_native_only_output_does_not_fabricate_completion_but_mixed_output_keeps
         assert!(!state.lock().unwrap().model.completion_armed());
     }
 }
+
+#[test]
+fn codex_resume_takes_back_a_replaced_conversation_or_starts_fresh() {
+    let v7 = |at: std::time::SystemTime| {
+        let millis = at
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let mut bytes = *uuid::Uuid::new_v4().as_bytes();
+        bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+        bytes[6] = 0x70 | (bytes[6] & 0x0f);
+        uuid::Uuid::from_bytes(bytes).to_string()
+    };
+    for recoverable in [false, true] {
+        let pool = pool_with_schema();
+        let data = tempfile::tempdir().unwrap();
+        let fake = fake_runtime();
+        let mgr = mgr_with_fake(None, fake.clone());
+        db::set_runtime_override(&pool, "codex", Some("custom-codex-wrapper")).unwrap();
+        let home = data.path().join("codex-home");
+        mgr.shell_env
+            .write()
+            .unwrap()
+            .vars
+            .insert("CODEX_HOME".into(), home.display().to_string());
+        let id = ulid::Ulid::new();
+        let created: chrono::DateTime<chrono::Local> =
+            chrono::DateTime::<chrono::Utc>::from(id.datetime()).into();
+        let day = home.join("sessions").join(created.format("%Y").to_string());
+        let day = day
+            .join(created.format("%m").to_string())
+            .join(created.format("%d").to_string());
+        std::fs::create_dir_all(&day).unwrap();
+        let replaced = v7(std::time::SystemTime::now() - Duration::from_secs(60));
+        let original = v7(std::time::SystemTime::now() - Duration::from_secs(3600));
+        if recoverable {
+            let marker = crate::runtimes::codex::capture::prompt_marker(&id.to_string());
+            let lines = [
+                serde_json::json!({"type": "session_meta", "payload": {"id": original, "source": "cli"}}),
+                serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": format!("goal\n\n{marker}")}]}}),
+                serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": []}}),
+            ];
+            let body: String = lines.iter().map(|line| format!("{line}\n")).collect();
+            std::fs::write(
+                day.join(format!("rollout-2026-11-03T09-22-56-{original}.jsonl")),
+                body,
+            )
+            .unwrap();
+        }
+        let mut row = crate::repo::session::SessionRowDb::new_running(id.to_string());
+        row.agent_runtime = Some("codex".into());
+        row.agent_command = Some("custom-codex-wrapper".into());
+        row.agent_session_key = Some(replaced.clone());
+        row.status = crate::model::SessionStatus::Stopped;
+        crate::test_support::insert_session_row(&pool.get().unwrap(), &row).unwrap();
+
+        let launch =
+            mgr.resume_on_launch(&row.id, None, None, data.path(), pool.clone(), capture());
+        let spawned = if recoverable {
+            launch.unwrap()
+        } else {
+            let error = launch.err().unwrap();
+            assert!(error.to_string().contains("conversation is unavailable"));
+            assert!(fake.spawns.lock().unwrap().is_empty());
+            mgr.resume(&row.id, None, None, data.path(), pool.clone(), capture())
+                .unwrap()
+        };
+        let args = fake.last_spawn_spec().unwrap().args;
+        let saved = crate::repo::session::get_row(&pool.get().unwrap(), &row.id)
+            .unwrap()
+            .unwrap();
+        mgr.kill(&spawned.id).unwrap();
+        if recoverable {
+            assert!(has_arg_pair(&args, "resume", &original), "{args:?}");
+            assert_eq!(saved.agent_session_key.as_deref(), Some(original.as_str()));
+        } else {
+            assert!(!args.contains(&"resume".into()), "{args:?}");
+            assert_eq!(saved.agent_session_key, None);
+        }
+    }
+}

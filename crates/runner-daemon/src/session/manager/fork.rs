@@ -392,7 +392,7 @@ impl SessionManager {
                             .as_ref()
                             .map(|account| account.origin_folder.clone());
                         let cwd = resolved_cwd.clone();
-                        let env = role.env.clone();
+                        let env = self.probe_env(crate::runtimes::for_key(&runtime), &role.env);
                         Box::new(move || {
                             super::output::conversation_exists(
                                 crate::runtimes::for_key(&runtime),

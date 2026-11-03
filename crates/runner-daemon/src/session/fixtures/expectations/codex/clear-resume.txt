@@ -16,4 +16,4 @@ session_status_rows=published
 900
 1000 result={"key_written":false}
 1100 result={"key_written":false}
-1200 result={"history_exists":null,"missing_reuses_key":false,"missing_resume_on_launch":false}
+1200 result={"history_exists":true,"missing_reuses_key":false,"missing_resume_on_launch":false}

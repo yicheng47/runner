@@ -252,18 +252,7 @@ impl SessionManager {
         );
         let adapter = crate::runtimes::for_key(&role.runtime);
         let missing = adapter.missing_conversation();
-        let mut probe_env = role.env.clone();
-        if adapter.probe_uses_shell_env() {
-            probe_env = self
-                .shell_env
-                .read()
-                .expect("runtime shell environment lock poisoned")
-                .vars
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
-            probe_env.extend(role.env.clone());
-        }
+        let probe_env = self.probe_env(adapter, &role.env);
         let previous_account = snap
             .launch_definition
             .as_ref()
@@ -285,6 +274,7 @@ impl SessionManager {
                 );
             }
         }
+        let recovery_env = probe_env.clone();
         let conversation_exists = {
             let origin_folder = claude_account
                 .as_ref()
@@ -304,6 +294,25 @@ impl SessionManager {
             .agent_session_key
             .as_deref()
             .is_some_and(|key| conversation_exists(key) == Some(false));
+        let recovered_key = snap
+            .agent_session_key
+            .as_deref()
+            .filter(|_| conversation_missing && !fresh)
+            .and_then(|key| {
+                let recovered = adapter.recover_conversation(
+                    session_id,
+                    key,
+                    &crate::runtimes::ProbeContext {
+                        cwd: resolved_cwd_for_check.as_deref(),
+                        role_env: &recovery_env,
+                    },
+                )?;
+                log::warn!(
+                    "session {session_id} conversation {key} is missing; resuming its original conversation {recovered}"
+                );
+                Some(recovered)
+            });
+        let conversation_missing = conversation_missing && recovered_key.is_none();
         if conversation_missing && !allow_fresh_fallback && !missing.resume_on_launch {
             return Err(Error::msg(format!(
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
@@ -312,7 +321,9 @@ impl SessionManager {
         let effective_prior_key = if fresh || (conversation_missing && !missing.reuse_key) {
             None
         } else {
-            snap.agent_session_key.as_deref()
+            recovered_key
+                .as_deref()
+                .or(snap.agent_session_key.as_deref())
         };
         let mut plan = adapter.resume_plan(effective_prior_key);
         if conversation_missing {
