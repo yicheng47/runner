@@ -74,7 +74,7 @@ The absolute development CLI reported app/CLI 0.19.1 and `/Users/jason/Library/A
 
 ## Authorization, scope and method
 
-Jason's mission goal explicitly requested this rerun, including bounded development-app chats/missions and an uncommitted update to this file. QA read the updated feature spec, PR #1120 body and previous record first, then wrote `plan.md` before live testing, following [full-smoke-test.md](full-smoke-test.md) for identity, isolation, native control, evidence and cleanup. Selected regression paths were TERM-SCROLL-01 and TERM-RESIZE-02 from [terminal.md](regression/terminal.md); the whole suite was outside scope.
+Jason's mission goal explicitly requested this rerun, including bounded development-app chats/missions and an uncommitted update to this file. QA read the updated feature spec, PR #1120 body and previous record first, then wrote `plan.md` before live testing, following [full-smoke-test.md](../full-smoke-test.md) for identity, isolation, native control, evidence and cleanup. Selected regression paths were TERM-SCROLL-01 and TERM-RESIZE-02 from [terminal.md](../regression/terminal.md); the whole suite was outside scope.
 
 | Changed behavior | Selected checks and reason |
 | --- | --- |

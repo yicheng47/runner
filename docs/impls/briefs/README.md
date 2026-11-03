@@ -46,3 +46,5 @@ The 0.18.3 release sweep pruned 14 merged mission briefs, covering #873, #861, #
 The 0.19.0 release sweep pruned five merged mission briefs: #1044, #1046, #1083, #1086 and #1092. Their validation records are in [the test archive](../../tests/README.md); #1083 had none of its own. The three examples remain.
 
 The 0.19.1 release sweep pruned the #1097 mission launcher and #1102/#1103 submit-recovery briefs. Their validation records are in [the test archive](../../tests/README.md). The three examples remain.
+
+The 0.19.2 release sweep pruned the #897 find in terminal, #984 usage, #1122 paired phone and #1125 confirmed-notice briefs. The #897 and #1125 validation records are in [the test archive](../../tests/README.md); #984 and #1122 had none of their own. The #1025 remote repaint brief stays while that issue is open. The three examples remain.

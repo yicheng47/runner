@@ -4,7 +4,7 @@ Verdict: **Passed for the selected required macOS live checks**, on the frozen r
 
 ## Scope, authorization and plan
 
-Jason authorized the three-slot mission, bounded real-agent development-app checks, and this record. QA followed [full-smoke-test.md](full-smoke-test.md) for candidate identity, native control, isolation, evidence and cleanup, selecting the reviewer’s scoped [mission cases](regression/missions.md). No installed-app sessions, SQLite access, private PTY writes, product source edits, test expectation edits, QA commits or pushes were used.
+Jason authorized the three-slot mission, bounded real-agent development-app checks, and this record. QA followed [full-smoke-test.md](../full-smoke-test.md) for candidate identity, native control, isolation, evidence and cleanup, selecting the reviewer’s scoped [mission cases](../regression/missions.md). No installed-app sessions, SQLite access, private PTY writes, product source edits, test expectation edits, QA commits or pushes were used.
 
 The plan was recorded before execution in `/private/tmp/runner-1125-qa-q9jxvu17/plan.md`:
 
