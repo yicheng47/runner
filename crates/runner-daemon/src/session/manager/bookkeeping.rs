@@ -178,11 +178,12 @@ impl SessionManager {
         let gate = session.lock().unwrap().delivery_gate.clone();
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
-        session
-            .handle
-            .as_ref()
-            .is_some_and(|handle| handle.startup.is_none())
-            && !session.model.status().observation.needs_you()
+        session.handle.as_ref().is_some_and(|handle| {
+            handle
+                .startup
+                .as_ref()
+                .is_none_or(|startup| startup.reports_only)
+        }) && !session.model.status().observation.needs_you()
             && !delivery.in_flight
             && delivery.next_ticket == delivery.next_served
             && session.model.draft_quiescent(crate::session::clock::now())
@@ -315,6 +316,33 @@ impl SessionManager {
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
         session.delivery_readiness(&delivery, crate::session::clock::now())
+    }
+
+    pub fn report_readiness(&self, session_id: &str) -> router::DeliveryReadiness {
+        let Some(session) = self.raw_session_state(session_id) else {
+            return router::DeliveryReadiness::Unavailable;
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let delivery = gate.state.lock().unwrap();
+        let session = session.lock().unwrap();
+        session.report_readiness(&delivery, crate::session::clock::now())
+    }
+
+    /// Reserve the input gate for a report, only while the session is idle.
+    pub fn reserve_report(&self, session_id: &str) -> Result<Option<u64>> {
+        let Some(session) = self.session_state(session_id) else {
+            return Ok(None);
+        };
+        let gate = session.lock().unwrap().delivery_gate.clone();
+        let mut delivery = gate.state.lock().unwrap();
+        let session = session.lock().unwrap();
+        if session.report_readiness(&delivery, crate::session::clock::now())
+            != (router::DeliveryReadiness::Ready { idle: true })
+        {
+            return Ok(None);
+        }
+        delivery.in_flight = true;
+        Ok(Some(delivery.generation))
     }
 
     pub fn reserve_delivery(&self, session_id: &str) -> Result<router::DeliveryReservation> {

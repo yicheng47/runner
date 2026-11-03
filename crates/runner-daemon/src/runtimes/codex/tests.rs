@@ -579,3 +579,49 @@ fn native_attention_is_drained_independently_of_activity() {
     assert_eq!(terminal.take_attention(), Some(false));
     assert_eq!(terminal.take_attention(), None);
 }
+
+#[test]
+fn a_fresh_start_is_trusted_only_in_its_own_decided_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project");
+    let other = root.path().join("other");
+    let home = root.path().join("codex");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+            std::fs::canonicalize(&cwd).unwrap()
+        ),
+    )
+    .unwrap();
+    let env = std::collections::BTreeMap::from([(
+        "CODEX_HOME".to_owned(),
+        home.to_string_lossy().into_owned(),
+    )]);
+    let other = other.to_string_lossy().into_owned();
+    let trusted = |args: &[&str]| {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        Codex.starts_trusted(Some(&cwd), &args, &env)
+    };
+    assert!(trusted(&[]));
+    assert!(trusted(&["-c", "model=\"gpt\""]), "an unrelated override");
+    for args in [
+        vec!["-C", other.as_str()],
+        vec!["--cd", other.as_str()],
+        vec![&*format!("--cd={other}")],
+        vec![&*format!("-C{other}")],
+        vec!["-c", "projects.x.trust_level=\"untrusted\""],
+        vec!["--config=projects={}"],
+        vec!["-cprojects={}"],
+    ] {
+        assert!(!trusted(&args), "{args:?} changes what Codex looks up");
+    }
+    assert!(
+        !Codex.starts_trusted(Some(Path::new(&other)), &[], &env),
+        "an undecided folder"
+    );
+    assert!(!Codex.starts_trusted(None, &[], &env), "no folder");
+}

@@ -98,6 +98,29 @@ pub struct StartMissionOutput {
     pub goal: String,
 }
 
+/// The one state the daemon derives for a mission (#748). The first that
+/// applies wins, in declaration order after `Ended`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionPhase {
+    /// A question is pending, or a member waits for input or approval.
+    NeedsYou,
+    /// A member crashed or its turn failed; others may still run.
+    Failed,
+    Working,
+    /// Every member has been idle for the settle window with nothing pending.
+    Settled,
+    /// Stopped, archived, or every member exited.
+    Ended,
+}
+
+impl MissionPhase {
+    /// The phases a linked chat hears about.
+    pub fn reported(self) -> bool {
+        matches!(self, Self::NeedsYou | Self::Failed | Self::Settled)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MissionActivityState {
@@ -129,6 +152,9 @@ pub struct MissionSummary {
     /// `session_status` events. `None` means the mission has no live
     /// sessions and keeps the sidebar attention slot clear.
     pub activity: Option<MissionActivityState>,
+    /// The daemon's state for the mission; absent from older daemons.
+    #[serde(default)]
+    pub phase: Option<MissionPhase>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +245,8 @@ pub struct SkippedEventLine {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MissionStatusSnapshot {
     pub mission: Mission,
+    #[serde(default)]
+    pub phase: Option<MissionPhase>,
     #[serde(default)]
     pub started_by: Option<MissionStarter>,
     pub crew: Option<Crew>,

@@ -85,6 +85,8 @@ pub struct AppCore {
     /// GPUI frontend subscribes and applies each event to its native state.
     pub events: EventChannel,
     pub session_event_observer: SessionEventObserverRegistry,
+    /// Mission states and the reports they send to linked chats (#748).
+    pub reports: Arc<ops::mission::report::Reports>,
     /// The application's user-facing version (the GPUI app crate's
     /// `CARGO_PKG_VERSION`, which the release bump updates). Advertised by
     /// the client protocol.

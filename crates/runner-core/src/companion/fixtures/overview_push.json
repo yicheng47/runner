@@ -83,7 +83,8 @@
         "title": "Fix the feed",
         "archived": false,
         "reports": true
-      }
+      },
+      "phase": "needsYou"
     }
   ],
   "sessions": {

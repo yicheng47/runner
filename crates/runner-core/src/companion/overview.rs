@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use super::{wire_enum, SessionStatus};
 
 wire_enum!(MissionState, Stopped, { Running => "running", Stopped => "stopped" });
+wire_enum!(MissionPhase, Working, {
+    NeedsYou => "needsYou", Failed => "failed", Working => "working",
+    Settled => "settled", Ended => "ended",
+});
 wire_enum!(SessionKind, Chat, { Chat => "chat", Agent => "agent", Shell => "shell" });
 wire_enum!(SplitDirection, Row, { Row => "row", Column => "column" });
 wire_enum!(SidebarNodeKind, Tab, { Project => "project", Tab => "tab", Mission => "mission" });
@@ -129,6 +133,22 @@ pub struct Mission {
     /// The chat the mission reports to (#748); older hosts send none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_chat: Option<LinkedChat>,
+    /// The host's derived mission state (#748); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<MissionPhase>,
+}
+
+impl From<crate::protocol::MissionPhase> for MissionPhase {
+    fn from(phase: crate::protocol::MissionPhase) -> Self {
+        use crate::protocol::MissionPhase as P;
+        match phase {
+            P::NeedsYou => Self::NeedsYou,
+            P::Failed => Self::Failed,
+            P::Working => Self::Working,
+            P::Settled => Self::Settled,
+            P::Ended => Self::Ended,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -94,6 +94,7 @@ fn summary(mission: Mission) -> MissionSummary {
         any_session_live: false,
         all_sessions_live: false,
         activity: None,
+        phase: None,
     }
 }
 

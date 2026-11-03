@@ -65,9 +65,20 @@ pub fn mission_link(core: &AppCore, input: MissionLinkInput) -> Result<Mission> 
     }
     let chat = direct_agent_chat(&tx, &input.session_id)?;
     ensure_linkable(&chat, mission.project_id.as_deref())?;
+    let previous = mission.linked_chat.map(|chat| chat.session_id);
     repo::mission::set_link(&tx, &mission.id, Some(&chat.row.id), !input.no_report)?;
     let mission = super::get(&tx, &mission.id)?;
     tx.commit()?;
+    drop(conn);
+    // The chat hears about a new link unless its own agent made it.
+    let reported = !input.no_report
+        && previous.as_deref() != Some(chat.row.id.as_str())
+        && input.caller_session_id.as_deref() != Some(chat.row.id.as_str());
+    if reported {
+        core.reports.linked(&chat.row.id, &mission.id);
+    } else if previous.as_deref() != Some(chat.row.id.as_str()) || input.no_report {
+        core.reports.unlinked(&mission.id);
+    }
     Ok(mission)
 }
 
@@ -78,6 +89,8 @@ pub fn mission_unlink(core: &AppCore, mission_id: &str) -> Result<Mission> {
     repo::mission::set_link(&tx, &mission.id, None, true)?;
     let mission = super::get(&tx, &mission.id)?;
     tx.commit()?;
+    drop(conn);
+    core.reports.unlinked(&mission.id);
     Ok(mission)
 }
 

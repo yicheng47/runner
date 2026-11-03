@@ -1823,6 +1823,16 @@ fn only_a_working_claude_member_is_deliverable_and_every_hold_still_blocks_it() 
         (Runtime::Codex, R::Ready { idle: false }, false),
     ] {
         let (fixture, _output) = working(runtime);
+        assert_eq!(
+            fixture.manager.report_readiness("session"),
+            R::Ready { idle: false },
+            "{runtime:?}: a report waits for the turn to end on every runtime"
+        );
+        assert_eq!(
+            fixture.manager.reserve_report("session").unwrap(),
+            None,
+            "{runtime:?}"
+        );
         assert_eq!(readiness(&fixture), expected, "{runtime:?}");
         assert_eq!(
             matches!(
@@ -1894,4 +1904,286 @@ fn only_a_working_claude_member_is_deliverable_and_every_hold_still_blocks_it() 
         fixture.event(runtime, AgentEvent::TurnStarted);
         assert_eq!(readiness(&fixture), R::Starting, "{runtime:?}");
     }
+}
+
+#[test]
+fn a_direct_chat_takes_no_report_until_its_agent_is_ready_after_spawn_and_resume() {
+    let app_data = tempfile::tempdir().unwrap();
+    let pool = pool_with_schema();
+    let mut role = role("codex", &[]);
+    role.runtime = Runtime::Codex.key().into();
+    insert_role_row(&pool.get().unwrap(), &role);
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+    let spawned = manager
+        .spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+    let ready = |manager: &SessionManager| {
+        manager.publish_agent_event(
+            &id,
+            AgentEvent::Batch {
+                runtime: Runtime::Codex,
+                events: vec![AgentEvent::StartupReady],
+            },
+            &Capture::default(),
+        );
+        manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+    };
+    // A report typed before the agent draws its prompt lands in nothing it reads.
+    manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+    assert_eq!(
+        manager.report_readiness(&id),
+        crate::router::DeliveryReadiness::Starting
+    );
+    ready(&manager);
+    assert_eq!(
+        manager.report_readiness(&id),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+
+    manager.kill(&id).unwrap();
+    manager
+        .resume(&id, None, None, app_data.path(), pool.clone(), capture())
+        .unwrap();
+    manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+    assert_eq!(
+        manager.report_readiness(&id),
+        crate::router::DeliveryReadiness::Starting,
+        "a resumed chat waits for its agent again"
+    );
+    ready(&manager);
+    assert_eq!(
+        manager.report_readiness(&id),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&id).unwrap();
+}
+
+#[test]
+fn a_codex_chat_takes_reports_once_its_startup_output_settles_only_where_no_trust_screen_shows() {
+    let app_data = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    let pool = pool_with_schema();
+    let mut role = role("codex", &[]);
+    role.runtime = Runtime::Codex.key().into();
+    role.env.insert(
+        "CODEX_HOME".into(),
+        codex_home.path().to_str().unwrap().into(),
+    );
+    insert_role_row(&pool.get().unwrap(), &role);
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+    let spawn = |first_turn: Option<&str>| {
+        manager
+            .spawn_direct(
+                &role,
+                None,
+                None,
+                None,
+                None,
+                Some(app_data.path().to_str().unwrap()),
+                None,
+                None,
+                app_data.path(),
+                pool.clone(),
+                capture(),
+                first_turn.map(str::to_owned),
+            )
+            .unwrap()
+            .id
+    };
+    let id = spawn(None);
+    let settle_session = |id: &str, screen: &[u8]| {
+        manager.note_forwarder_transition(id, SessionActivityState::Idle, StatusSource::Forwarder);
+        let stop = manager
+            .session_state(id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .handle
+            .as_ref()
+            .unwrap()
+            .stop
+            .clone();
+        let now = Instant::now();
+        manager.startup_output(id, &stop, screen, now);
+        manager.release_settled_startup(id, &stop, now + Duration::from_secs(5));
+        assert_eq!(
+            manager.report_readiness(id),
+            crate::router::DeliveryReadiness::Starting,
+            "inside the startup grace"
+        );
+        manager.release_settled_startup(id, &stop, now + Duration::from_secs(60));
+        manager.report_readiness(id)
+    };
+    let settle = |screen: &[u8]| settle_session(&id, screen);
+    let trust = b"Do you trust the contents of this directory?";
+    // A fresh chat's quiet trust prompt is no prompt for the report (QA run 4).
+    assert_eq!(settle(trust), crate::router::DeliveryReadiness::Starting);
+    manager.kill(&id).unwrap();
+    // With no conversation to resume, the chat starts fresh and can meet the prompt again.
+    manager
+        .resume(&id, None, None, app_data.path(), pool.clone(), capture())
+        .unwrap();
+    assert_eq!(settle(trust), crate::router::DeliveryReadiness::Starting);
+    manager.kill(&id).unwrap();
+    // A folder Codex's config already trusts shows no trust screen, and Codex sends no
+    // hook before the first turn, so a fresh start opens once its output settles.
+    let composer = b"> Ask Codex to do anything";
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+            std::fs::canonicalize(app_data.path()).unwrap()
+        ),
+    )
+    .unwrap();
+    manager
+        .resume(&id, None, None, app_data.path(), pool.clone(), capture())
+        .unwrap();
+    assert_eq!(
+        settle(composer),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&id).unwrap();
+    let fresh = spawn(None);
+    assert_eq!(
+        settle_session(&fresh, composer),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&fresh).unwrap();
+    // A first turn sends hooks, so its gate still waits for that turn to complete.
+    let first_turn = spawn(Some("first turn"));
+    assert_eq!(
+        settle_session(&first_turn, composer),
+        crate::router::DeliveryReadiness::Starting
+    );
+    manager.kill(&first_turn).unwrap();
+    std::fs::remove_file(codex_home.path().join("config.toml")).unwrap();
+    // A resumed or natively forked Codex conversation draws its prompt but may never send
+    // SessionStart.
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?1 WHERE id = ?2",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), id],
+        )
+        .unwrap();
+    manager
+        .resume(&id, None, None, app_data.path(), pool.clone(), capture())
+        .unwrap();
+    assert_eq!(
+        settle(composer),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&id).unwrap();
+}
+
+#[test]
+fn a_reopened_chat_whose_runtime_sends_its_startup_hook_waits_for_it() {
+    let now = Instant::now();
+    for (runtime, opens) in [(Runtime::Codex, true), (Runtime::ClaudeCode, false)] {
+        let mut gate =
+            super::super::startup::StartupDelivery::for_trusted_reports(runtime.key(), false, now);
+        gate.output(b"prompt", now);
+        assert_eq!(
+            gate.output_settled(now + Duration::from_secs(60)),
+            opens,
+            "{runtime:?}"
+        );
+        let mut fresh =
+            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now);
+        fresh.output(b"Do you trust this folder?", now);
+        assert!(
+            !fresh.output_settled(now + Duration::from_secs(60)),
+            "{runtime:?}: a fresh chat waits for its hook"
+        );
+    }
+}
+
+#[test]
+fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() {
+    let app_data = tempfile::tempdir().unwrap();
+    let pool = pool_with_schema();
+    let mut role = role("codex", &[]);
+    role.runtime = Runtime::Codex.key().into();
+    insert_role_row(&pool.get().unwrap(), &role);
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+    let spawned = manager
+        .spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            Some("first turn".into()),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+    let hook = |event: AgentEvent| {
+        manager.publish_agent_event(
+            &id,
+            AgentEvent::Batch {
+                runtime: Runtime::Codex,
+                events: vec![event],
+            },
+            &Capture::default(),
+        );
+    };
+    let stop = manager
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    let starting = |why: &str| {
+        manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+        assert_eq!(
+            manager.report_readiness(&id),
+            crate::router::DeliveryReadiness::Starting,
+            "{why}"
+        );
+    };
+    hook(AgentEvent::StartupReady);
+    starting("ready, but the first turn has not run");
+    let now = Instant::now();
+    manager.startup_output(&id, &stop, b"> first turn", now);
+    manager.release_settled_startup(&id, &stop, now + Duration::from_secs(60));
+    starting("settled output does not open a fresh chat's gate");
+    hook(AgentEvent::TurnStarted);
+    starting("the first turn is running");
+    hook(AgentEvent::TurnEnded {
+        outcome: TurnOutcome::Completed,
+    });
+    manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+    assert_eq!(
+        manager.report_readiness(&id),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&id).unwrap();
 }

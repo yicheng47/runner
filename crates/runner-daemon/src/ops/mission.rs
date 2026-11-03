@@ -1,5 +1,6 @@
 pub mod feed;
 pub mod link;
+pub mod report;
 pub mod roles;
 pub mod roster;
 
@@ -1443,6 +1444,12 @@ fn summaries(state: &AppCore, missions: Vec<Mission>) -> Result<Vec<MissionSumma
         } else {
             None
         };
+        let phase = state.reports.phase(&m.id).unwrap_or_else(|| {
+            report::derive(
+                &report::phase_input(state, &m, &sessions, &statuses, pending_ask_count),
+                None,
+            )
+        });
         let session_statuses = sessions
             .into_iter()
             .filter(|session| !Runtime::parse(&session.runtime).is_some_and(Runtime::is_shell))
@@ -1467,6 +1474,7 @@ fn summaries(state: &AppCore, missions: Vec<Mission>) -> Result<Vec<MissionSumma
             any_session_live,
             all_sessions_live,
             activity,
+            phase: Some(phase),
         });
     }
     Ok(summaries)

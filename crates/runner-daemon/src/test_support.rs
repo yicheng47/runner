@@ -70,6 +70,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         windows: Arc::new(WindowRegistry::new()),
         events: EventChannel::new(),
         session_event_observer: Default::default(),
+        reports: Default::default(),
         app_version: "0.0.0-test".into(),
     }
 }

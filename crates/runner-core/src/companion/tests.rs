@@ -410,7 +410,7 @@ fn session_cwd_is_nullable_and_defaults_when_missing() {
 }
 
 #[test]
-fn a_mission_carries_its_linked_chat_and_older_hosts_read_as_unlinked() {
+fn a_mission_carries_its_linked_chat_and_phase_and_older_hosts_send_neither() {
     let HostMessage::Overview(overview) = decode("overview_push") else {
         panic!()
     };
@@ -423,11 +423,13 @@ fn a_mission_carries_its_linked_chat_and_older_hosts_read_as_unlinked() {
             reports: true,
         })
     );
+    assert_eq!(overview.missions[0].phase, Some(MissionPhase::NeedsYou));
     let HostMessage::Result(result) = decode("result_overview") else {
         panic!()
     };
     let older: Overview = serde_json::from_value(result.result).unwrap();
     assert_eq!(older.missions[0].linked_chat, None);
+    assert_eq!(older.missions[0].phase, None);
 }
 
 #[test]

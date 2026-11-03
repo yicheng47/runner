@@ -299,6 +299,80 @@ impl router::SessionDeliveryListener for DeliveryEventCapture {
 }
 
 #[test]
+fn a_draft_holds_a_report_past_the_inbox_cap_until_it_is_cleared() {
+    let manager =
+        manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
+    let id = "report-draft";
+    install_test_session_handle(&manager, id);
+    let start = Instant::now();
+    crate::session::clock::at(start, 1000, || {
+        let state = manager.session_state(id).unwrap();
+        let mut state = state.lock().unwrap();
+        state.model.apply(
+            SessionEvent::Transition {
+                state: SessionActivityState::Idle,
+                source: StatusSource::Forwarder,
+                live: true,
+            },
+            crate::session::clock::state_now(),
+        );
+        state.model.apply(
+            SessionEvent::TestInputAt(Some(start)),
+            crate::session::clock::state_now(),
+        );
+    });
+    let observe = |state| {
+        manager.report_input_state(
+            id,
+            InputObservation {
+                state,
+                since: start,
+                composing: false,
+                composer_visible: true,
+            },
+        )
+    };
+    observe(InputState::Drafting);
+    for seconds in [599, 600, 24 * 3600] {
+        crate::session::clock::at(
+            start + Duration::from_secs(seconds),
+            1000 + seconds as i64 * 1000,
+            || {
+                assert_eq!(
+                    manager.report_readiness(id),
+                    router::DeliveryReadiness::Drafting,
+                    "{seconds}s"
+                );
+                assert_eq!(manager.reserve_report(id).unwrap(), None, "{seconds}s");
+            },
+        );
+    }
+    crate::session::clock::at(start + Duration::from_secs(600), 601000, || {
+        assert_eq!(
+            manager.delivery_readiness(id),
+            router::DeliveryReadiness::Ready { idle: true },
+            "an inbox notice still stops waiting at the cap"
+        );
+    });
+    observe(InputState::Idle);
+    crate::session::clock::at(start + Duration::from_secs(24 * 3600), 86_401_000, || {
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::Ready { idle: true }
+        );
+        let token = manager
+            .reserve_report(id)
+            .unwrap()
+            .expect("an idle chat takes a report");
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::InFlight
+        );
+        manager.finish_delivery(id, token);
+    });
+}
+
+#[test]
 fn observed_draft_cap_releases_readiness_and_reservation_only_while_idle() {
     let manager =
         manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());

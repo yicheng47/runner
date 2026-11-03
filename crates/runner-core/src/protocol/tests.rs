@@ -339,6 +339,7 @@ record!(MissionReadCursor {
 });
 record!(MissionStatusSnapshot {
     mission,
+    phase,
     started_by,
     crew,
     sessions,
@@ -392,8 +393,10 @@ record!(MissionSummary {
     pending_ask_count,
     any_session_live,
     all_sessions_live,
-    activity
+    activity,
+    phase
 });
+variant!(MissionPhase => Self::NeedsYou);
 record!(NodeRow {
     id,
     parent_id,

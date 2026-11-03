@@ -205,6 +205,7 @@ async fn serve_with_listener(
     if !config.isolated {
         core.usage.start_scheduler(core.clone());
     }
+    crate::ops::mission::report::Reports::start(core.clone());
     let (resume_tx, resume_rx) = tokio::sync::watch::channel(None);
     let resume_consumer = Arc::new(super::resume::ResumeConsumer::default());
     let consumer = resume_consumer.clone();
@@ -1578,6 +1579,101 @@ mod tests {
             .status()
             .unwrap()
             .success());
+    }
+
+    #[tokio::test]
+    async fn the_served_daemon_tracks_mission_states_for_reports() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(root.path().to_owned());
+        let mission = {
+            let mut conn = core.db.get().unwrap();
+            let crew = crate::ops::crew::create(
+                &conn,
+                crate::ops::crew::CreateCrewInput {
+                    name: "Crew".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .id;
+            crate::test_support::insert_test_role(&conn, "role", "worker", "codex", "codex");
+            crate::test_support::insert_test_slot(&conn, "slot", &crew, "role", "worker", 0, false);
+            crate::ops::mission::start(
+                &mut conn,
+                &core.app_data_dir,
+                runner_core::protocol::MissionStart {
+                    crew_id: Some(crew),
+                    scope: runner_core::protocol::ProjectScope::Root,
+                    title: "Tracked".into(),
+                    goal_override: None,
+                    cwd: Some(root.path().to_string_lossy().into_owned()),
+                    started_by_session_id: None,
+                    no_report: false,
+                },
+            )
+            .unwrap()
+            .mission
+            .id
+        };
+        #[cfg(unix)]
+        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        #[cfg(windows)]
+        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-reports-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        #[cfg(unix)]
+        let mcp_endpoint = IpcEndpoint(root.path().join("mcp.sock"));
+        #[cfg(windows)]
+        let mcp_endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-reports-mcp-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        let config = Config {
+            paths: NativePaths::new(root.path().to_owned(), root.path().join("logs")),
+            endpoint: endpoint.clone(),
+            mcp_endpoint,
+            isolated: true,
+        };
+        let server = tokio::spawn(serve_with_listener(
+            config,
+            core.clone(),
+            "hash".into(),
+            Settings {
+                resume_on_launch: false,
+                ..Settings::default()
+            },
+            IpcListener::bind(&endpoint).unwrap(),
+            #[cfg(windows)]
+            Err(std::io::Error::other("no shutdown window in tests")),
+        ));
+        let client = tokio::task::spawn_blocking(move || {
+            runner_core::protocol::socket::SocketTransport::connect(
+                &endpoint,
+                wire::Hello {
+                    exe_sha256: "hash".into(),
+                    client: "test".into(),
+                },
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        // The report service derives the state; without it the daemon never reports.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while core.reports.phase(&mission).is_none() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the served daemon must run the report service"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        client.shutdown(true).unwrap();
+        tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

@@ -488,6 +488,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                         .collect(),
                     shells: layout.drawer.shells,
                     linked_chat: snapshot.mission.linked_chat.map(Into::into),
+                    phase: snapshot.phase.map(Into::into),
                 });
             }
         }

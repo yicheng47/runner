@@ -243,8 +243,23 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
         })
         .and_then(|entry| entry.event.payload.get("started_by"))
         .and_then(|starter| serde_json::from_value(starter.clone()).ok());
+    drop(conn);
+    let phase = state.reports.phase(&mission.id).unwrap_or_else(|| {
+        let statuses = crate::ops::session::session_status_snapshot(state).unwrap_or_default();
+        super::report::derive(
+            &super::report::phase_input(
+                state,
+                &mission,
+                &sessions,
+                &statuses,
+                projection.pending_asks.len(),
+            ),
+            None,
+        )
+    });
     let snapshot = MissionStatusSnapshot {
         mission,
+        phase: Some(phase),
         started_by,
         crew,
         sessions,

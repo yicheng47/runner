@@ -22,6 +22,14 @@ fn capture_sessions_root(
     env: &std::collections::BTreeMap<String, String>,
     cwd: Option<&Path>,
 ) -> Option<PathBuf> {
+    codex_home(env, cwd).map(|home| home.join("sessions"))
+}
+
+/// The Codex home a session spawned with `env` in `cwd` reads.
+fn codex_home(
+    env: &std::collections::BTreeMap<String, String>,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
     let home = env
         .get("CODEX_HOME")
         .filter(|value| !value.trim().is_empty())
@@ -39,7 +47,26 @@ fn capture_sessions_root(
             .or_else(|| std::env::current_dir().ok())?
             .join(home)
     };
-    Some(home.join("sessions"))
+    Some(home)
+}
+
+/// Whether `args` move Codex to another folder (`-C`/`--cd`) or override its project
+/// trust (`-c projects…`), so the spawn's own folder and config no longer decide it.
+fn overrides_trust_lookup(args: &[String]) -> bool {
+    let projects = |value: &str| value.trim_start().starts_with("projects");
+    args.iter().enumerate().any(|(index, arg)| {
+        let next = || args.get(index + 1).is_some_and(|value| projects(value));
+        match arg.as_str() {
+            "-C" | "--cd" => true,
+            "-c" | "--config" => next(),
+            _ => {
+                arg.starts_with("--cd=")
+                    || (arg.starts_with("-C") && !arg.starts_with("--"))
+                    || arg.strip_prefix("--config=").is_some_and(projects)
+                    || (arg.starts_with("-c") && !arg.starts_with("--") && projects(&arg[2..]))
+            }
+        }
+    })
 }
 
 pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
@@ -232,6 +259,21 @@ impl RuntimeAdapter for Codex {
     }
     fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
         true
+    }
+    /// A native fork or a resume can start without SessionStart.
+    fn startup_hook_on_reopen(&self) -> bool {
+        false
+    }
+    fn starts_trusted(
+        &self,
+        cwd: Option<&Path>,
+        args: &[String],
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        !overrides_trust_lookup(args)
+            && cwd.zip(codex_home(env, cwd)).is_some_and(|(cwd, home)| {
+                codex_trust::trust_decided(cwd, &home.join("config.toml"))
+            })
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)

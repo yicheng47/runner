@@ -97,6 +97,7 @@ impl SessionManager {
             state.delivery_runtime = handle
                 .startup
                 .as_ref()
+                .filter(|startup| !startup.reports_only)
                 .map(|startup| startup.runtime.clone())
                 .unwrap_or_default();
             state.handle = Some(handle);

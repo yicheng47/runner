@@ -29,6 +29,7 @@ pub(crate) fn core(
         windows: Arc::new(windows::WindowRegistry::new()),
         events: events::EventChannel::new(),
         session_event_observer: Default::default(),
+        reports: Default::default(),
         app_version: "0.0.0-test".into(),
     }
 }

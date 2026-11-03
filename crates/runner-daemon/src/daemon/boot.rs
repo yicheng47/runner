@@ -82,6 +82,7 @@ pub fn boot(
         windows: window_registry,
         events: event_channel.clone(),
         session_event_observer: Default::default(),
+        reports: Default::default(),
         app_version: runner_core::version::display_version(),
     };
     session::manager::terminal::restore_palette(&core);
@@ -137,6 +138,7 @@ pub fn boot(
         );
         #[cfg(not(test))]
         core.usage.start_scheduler(core.clone());
+        ops::mission::report::Reports::start(core.clone());
     }
     Ok(core)
 }
