@@ -1,0 +1,7 @@
+# Runner's taffy min-content fix
+
+Upstream: published `taffy` 0.13.0, copied from Cargo's registry source with its packaged files unchanged. The generated registry cache marker `.cargo-ok` is omitted. The published crate carries no license file, so `LICENSE` is upstream's MIT license from the crate's source commit (`45a56299d366ddb383e593a1f0372158d00e8530` in `.cargo_vcs_info.json`). Runner vendors it for #1134 because `gpui-pre` pins `taffy = "0.13.0"`, so Cargo cannot pick up the upstream fix.
+
+Only `src/compute/flexbox.rs` differs from the published source, in one line of `determine_flex_base_size`: `style_min_main_size.unwrap_or({ … })` becomes `style_min_main_size.unwrap_or_else(|| { … })`. The eager argument made every flex item measure its whole subtree's min-content on every layout, even when an explicit min size (an `overflow: hidden` item resolves to 0) made the result unused. Layout results do not change. This is the change upstream made in [DioxusLabs/taffy#1119](https://github.com/DioxusLabs/taffy/pull/1119), first released in taffy 0.14.0.
+
+Remove this tree and its `[patch.crates-io]` entry once GPUI depends on taffy 0.14 or later. Until then, on a taffy 0.13.x upgrade, replace this tree with the new published crate, keep the license file, re-apply the one line, and record `diff -ru` against the installed registry source; the only differences must be that line, `LICENSE` and this document.

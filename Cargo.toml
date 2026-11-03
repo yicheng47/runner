@@ -26,6 +26,7 @@ uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
+taffy = { path = "vendor/taffy" }
 
 # Dev builds are the daily-drive builds (`make run`). Unoptimized taffy/gpui made
 # every keystroke relayout the window at ~100ms with a drawer open (profiled
