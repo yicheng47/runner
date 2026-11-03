@@ -5608,6 +5608,45 @@ fn remote_libraries_require_catalog_and_gate_launch_actions_separately() {
 }
 
 #[test]
+fn remote_libraries_render_on_the_work_card_not_the_island_area() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "library-card");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    crate::theme_snapshot::assert_fill_color(&mut visual, "APP_CONTENT_COLUMN", None);
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    window
+        .update(&mut visual, |root, window, cx| root.open_roles(window, cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("ROLE_ROW:host-role-0").is_some());
+    crate::theme_snapshot::assert_fill_color(
+        &mut visual,
+        "APP_CONTENT_COLUMN",
+        Some(crate::theme::bg()),
+    );
+    fake.queue_result("catalog", Ok(library_catalog(2)));
+    window
+        .update(&mut visual, |root, window, cx| root.open_crews(window, cx))
+        .unwrap();
+    visual.run_until_parked();
+    crate::theme_snapshot::assert_fill_color(
+        &mut visual,
+        "APP_CONTENT_COLUMN",
+        Some(crate::theme::bg()),
+    );
+}
+
+#[test]
 fn remote_libraries_filter_page_and_refresh_errors_without_local_preferences() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();

@@ -179,8 +179,10 @@ impl NativeRoot {
                 } else {
                     runner_app::ui::work_card::work_card(self.front_page_sidebar_collapsed())
                 })
-                .when(cfg!(test), |column| {
-                    column.debug_selector(|| "APP_CONTENT_COLUMN".into())
+                .map(|column| {
+                    #[cfg(test)]
+                    let column = crate::theme_snapshot::record_fill("APP_CONTENT_COLUMN", column);
+                    column
                 })
                 .relative()
                 .flex_1()
