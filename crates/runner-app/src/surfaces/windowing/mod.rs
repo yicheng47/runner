@@ -249,6 +249,7 @@ impl NativeRoot {
         self.save_settings(cx);
         self.attached.clear();
         self.remote_client.disconnect();
+        self.chat_files.release(cx);
         self.mission_workspace
             .update(cx, |workspace, workspace_cx| {
                 workspace.release_window(workspace_cx)

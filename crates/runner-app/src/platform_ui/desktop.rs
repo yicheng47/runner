@@ -75,10 +75,11 @@ pub(crate) fn navigation_left(_window: &Window, zoom: f32) -> f32 {
 }
 
 pub(crate) fn titlebar_mouse_down(
-    _event: &gpui::MouseDownEvent,
+    event: &gpui::MouseDownEvent,
     _window: &mut Window,
     _cx: &mut App,
 ) {
+    super::titlebar_double_click(event.click_count);
 }
 
 impl NativeRoot {

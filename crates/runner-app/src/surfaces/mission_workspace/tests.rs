@@ -1595,6 +1595,7 @@ fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_them
     visual.run_until_parked();
     let context = PanelContext {
         subject: PanelSubject::Mission("test-mission".into()),
+        surface: crate::surfaces::side_panel::PanelSurface::Mission,
         cwd: Some("/tmp/panel-mission".into()),
         project: None,
         remote: false,
