@@ -36,6 +36,7 @@ use super::*;
 use crate::surfaces::mission_composer::ComposerState;
 use crate::surfaces::mission_feed::{message_text, FeedBlock};
 use crate::surfaces::mission_markdown::{FeedMarkdown, FeedSelection};
+use crate::surfaces::side_panel::PanelViewId;
 use crate::*;
 
 const WORKSPACE_TABS_HEIGHT: f32 = 38.;
@@ -56,13 +57,6 @@ enum FeedRow {
 pub(crate) enum MissionTab {
     Feed,
     Session(String),
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum MissionRailView {
-    #[default]
-    Roles,
-    Meta,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -416,7 +410,7 @@ pub(crate) struct MissionWorkspace {
     secondary: bool,
     duplicate_dismissed: bool,
     primary_label: Option<String>,
-    rail_view: MissionRailView,
+    rail_view: PanelViewId,
     action_menu: Entity<PopoverMenu>,
     menu_actions: Vec<MissionMenuAction>,
     /// The pin the header's menu offers to change, to redraw it when a
