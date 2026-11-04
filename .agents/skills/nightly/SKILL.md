@@ -1,6 +1,6 @@
 ---
 name: nightly
-description: Cut or check Runner nightlies — one workflow for macOS, Windows and Linux, one public prerelease, shared stamp, and separate stable feeds
+description: Cut or check Runner nightlies — one workflow for macOS, Windows and Linux, one public prerelease per channel (nightly from main, preview-nightly auto-cut from listed umbrella branches), shared stamp, and separate stable feeds
 ---
 
 # Nightly
@@ -11,13 +11,13 @@ An explicit request to `run` authorizes that workflow dispatch. Reading or editi
 
 ## Usage
 
-`/nightly [run [all|both|macos|windows|linux] | check [all|both|macos|windows|linux]]` — no action means `run`; omitted platform means `all`.
+`/nightly [run [all|both|macos|windows|linux] [preview] | check [all|both|macos|windows|linux] [preview]]` — no action means `run`; omitted platform means `all`; `preview` selects the preview nightly (see [Preview nightly](#preview-nightly)).
 
 ## `run [platform]`
 
 1. **Preflight — stop on any failure and report it.**
    - `git fetch origin`; require branch `main`, a clean tree (`git status --short` empty), and `git rev-parse main origin/main` equal. Capture the full `origin/main` SHA. Do not push local commits without instruction.
-   - Check for **any** queued or running nightly, including other platforms: `gh run list --workflow nightly.yml --limit 30 --json databaseId,status,displayTitle,headSha`. Stop if a run is not completed; all platforms share concurrency group `nightly`, so a dispatch cancels the entire older run.
+   - Check for **any** queued or running nightly of the same channel, including other platforms: `gh run list --workflow nightly.yml --limit 30 --json databaseId,status,displayTitle,headSha`. Stop if such a run is not completed; all platforms share their channel's concurrency group (`nightly` or `preview-nightly`), so a dispatch cancels the entire older run of that channel. A run of the other channel does not block.
    - `main`'s CI is not a gate (Jason, 2026-10-25): code reaches `main` only through pull requests whose required checks passed, and the publish job does not wait for CI. A later push to `main` cancelling that commit's CI run therefore cannot block a cut.
    - If the Runner MCP is reachable, report running missions from `mission_list_summary`. A successful cut can produce a nightly update offer and a Windows background download. Installation/restart remains a separate user action and interrupts live PTYs.
 2. **Dispatch:** `gh workflow run nightly.yml --ref main` for all platforms, or append `-f platform=macos` / `-f platform=windows` / `-f platform=linux` (`both` is the legacy Mac+Windows selection). Find the new run with `gh run list --workflow nightly.yml --branch main --limit 5 --json databaseId,status,headSha,displayTitle,createdAt`; require the selected `Nightly (<platform>)` title, creation after dispatch, and `headSha` equal to preflight. If the source changed during dispatch, report the mismatch and do not claim the intended cut succeeded.
@@ -36,6 +36,16 @@ Read `gh release view nightly --json isPrerelease,isDraft,assets` once; require 
 - **Windows / `nightly`:** require `Runner-Setup-nightly.<sha>.<stamp>-x64.exe` and its exact `.sig`; anonymous access must succeed for both at `https://github.com/yicheng47/runner/releases/download/nightly/`. Installers/signatures prune together. Portable ZIPs are retired. The release page is `https://github.com/yicheng47/runner/releases/tag/nightly`.
 - **Linux / `nightly`:** require `Runner_nightly.<sha>.<stamp>_linux-<x64|arm64>.tar.gz` and `.deb` with an exact matching `.sig` for each package on both architectures; verify anonymous access for all four packages and four signatures. Keep only the newest stamp per architecture, pruning both formats and their signatures together. Linux-only cuts leave appcast and Windows installer/signatures untouched. Packages are signed with the updater trust key; validate package metadata/ELF architecture and consult `docs/arch/linux.md` for native validation gaps.
 - **Stable isolation:** verify `gh api repos/yicheng47/runner/releases/latest --jq .tag_name` still identifies the current production release (0.8.2 when #502 was implemented), not a nightly. Do not report a real installed update or production Sparkle check as tested merely because release metadata is correct.
+
+## Preview nightly
+
+An umbrella branch, which reaches `main` only when its program lands, gets installable test builds from the separate rolling `preview-nightly` release, so `nightly` keeps tracking `main`. The channel is reused by every umbrella; the current list is `on.push.branches` in `.github/workflows/preview-nightly.yml`, starting with `feat/634-file-preview` (#634's file preview).
+
+- **Automatic cut:** every push to a listed branch that changes more than `docs/**` and `**/*.md` dispatches `nightly.yml` on that branch with `channel=preview-nightly` and `platform=all`. Missions land on an umbrella by fast-forward, so there is no merge commit to test as on `main`. A push event runs the workflow file of the pushed commit, so an umbrella is cut only once it contains `preview-nightly.yml` and the channel-aware `nightly.yml`: catch it up with `main` first.
+- **Opt in or out:** add or remove the branch in that one list, in a pull request to `main` that the umbrella then picks up. The pull request that lands an umbrella on `main` removes its branch from the list in the same change; when it was the last one, that pull request deletes `preview-nightly.yml` instead, and the next umbrella restores it from history with its own branch. The workflow tests check the list's shape, not its entries, and skip the trigger checks while the file is absent, so neither change touches them. The prepare job reads the list from the dispatched commit and refuses `preview-nightly` from any branch not in it, including every branch when the file is absent or the list empty, and `nightly` from any branch but `main`. List exact branch names, not patterns: the guard matches names exactly.
+- **Manual `run preview`:** the preflight captures `git rev-parse origin/<umbrella>` instead of requiring `main`; no local checkout of the umbrella is needed. Dispatch `gh workflow run nightly.yml --ref <umbrella> -f channel=preview-nightly`, plus `-f platform=…` for one platform family, and find the run with `--branch <umbrella>` and the title `Preview Nightly (<platform>)`.
+- **Check:** release and tag `preview-nightly`; macOS `Runner-Preview-Nightly-<sha>.<stamp>-arm64.dmg` and `appcast.xml`, Windows `Runner-Setup-preview-nightly.<sha>.<stamp>-x64.exe` and its `.sig`, Linux `Runner_preview-nightly.<sha>.<stamp>_linux-<x64|arm64>.tar.gz` and `.deb` with their `.sig`s, all under `https://github.com/yicheng47/runner/releases/download/preview-nightly/`, with the same retention as `nightly`. The notes end with `script/preview-nightly-release-notes.md`, the apps display `Preview Nightly (<sha>)`, and `git log preview-nightly..origin/<umbrella> --oneline` describes what a new cut would pick up.
+- **Switching:** preview builds share the app identity and data with every other channel and update only from `preview-nightly`. Installing a nightly or stable build by hand moves an install to that channel; on Linux, APT sees a nightly deb of the same release as a downgrade from a preview deb.
 
 ## Notes
 

@@ -71,6 +71,10 @@ fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
             "https://api.github.com/repos/yicheng47/runner/releases/latest",
             "https://github.com/yicheng47/runner/releases/latest",
         ),
+        Some("preview-nightly") => (
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
+            "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
+        ),
         _ => (
             "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
             "https://github.com/yicheng47/runner/releases/tag/nightly",
@@ -626,4 +630,35 @@ fn download(
         return Ok(None);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_release_channel_reads_its_own_release() {
+        assert_eq!(
+            release_urls(Some("nightly")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
+                "https://github.com/yicheng47/runner/releases/tag/nightly",
+            )
+        );
+        assert_eq!(release_urls(None), release_urls(Some("nightly")));
+        assert_eq!(
+            release_urls(Some("preview-nightly")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
+                "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
+            )
+        );
+        assert_eq!(
+            release_urls(Some("production")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/latest",
+                "https://github.com/yicheng47/runner/releases/latest",
+            )
+        );
+    }
 }

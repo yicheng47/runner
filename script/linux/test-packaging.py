@@ -86,6 +86,12 @@ class VersionTests(unittest.TestCase):
         self.assertIn('nightly.20261017.0000.aaaaaaa', newer[1])
         self.assertEqual(self.bundle.package_identity('0.16.2', 'production', '20261017.0000', 'aaaaaaa'), ('0.16.2', '0.16.2'))
 
+    def test_preview_nightly_keeps_its_own_label_and_debian_channel(self):
+        label, deb = self.bundle.package_identity('0.16.2', 'preview-nightly', '20261017.0000', 'aaaaaaa')
+        self.assertEqual(label, 'preview-nightly.aaaaaaa.20261017.0000')
+        self.assertEqual(deb, '0.16.2~preview.nightly.20261017.0000.aaaaaaa')
+        self.assertEqual(self.bundle.MARKETING_VERSIONS, {'nightly': 'Nightly', 'preview-nightly': 'Preview Nightly'})
+
     def test_retired_remote_nightly_channel_is_refused_before_building(self):
         result = run_captured([sys.executable, str(ROOT / 'script/bundle-linux'), '--channel', 'remote-nightly'], check=False)
         self.assertEqual(result.returncode, 2)

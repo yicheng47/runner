@@ -6,9 +6,9 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-def verify(appcast, dmg, version, stamp):
+def verify(appcast, dmg, version, stamp, channel):
     sparkle = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
-    release_url = "https://github.com/yicheng47/runner/releases/tag/nightly"
+    release_url = f"https://github.com/yicheng47/runner/releases/tag/{channel}"
     items = ET.parse(appcast).findall("./channel/item")
     if len(items) != 1 or len(items[0].findall("enclosure")) != 1:
         raise ValueError("nightly appcast must contain exactly one item and enclosure")
@@ -26,7 +26,7 @@ def verify(appcast, dmg, version, stamp):
     if item.findtext("link") != release_url:
         raise ValueError("appcast link must point to the nightly release")
     dmg = Path(dmg)
-    expected_url = f"https://github.com/yicheng47/runner/releases/download/nightly/{dmg.name}"
+    expected_url = f"https://github.com/yicheng47/runner/releases/download/{channel}/{dmg.name}"
     if enclosure.get("url") != expected_url:
         raise ValueError("appcast enclosure must point to the expected nightly DMG")
     if int(enclosure.get("length", "0")) != dmg.stat().st_size:

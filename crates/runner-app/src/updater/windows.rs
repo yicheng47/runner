@@ -65,6 +65,10 @@ fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
             "https://api.github.com/repos/yicheng47/runner/releases/latest",
             "https://github.com/yicheng47/runner/releases/latest",
         ),
+        Some("preview-nightly") => (
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
+            "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
+        ),
         _ => (
             "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
             "https://github.com/yicheng47/runner/releases/tag/nightly",
@@ -803,6 +807,13 @@ mod tests {
         );
         assert_eq!(release_urls(None), release_urls(Some("nightly")));
         assert_eq!(
+            release_urls(Some("preview-nightly")),
+            (
+                "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
+                "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
+            )
+        );
+        assert_eq!(
             release_urls(Some("production")),
             (
                 "https://api.github.com/repos/yicheng47/runner/releases/latest",
@@ -838,6 +849,32 @@ mod tests {
         assert_eq!(
             update.sig_url.as_deref(),
             Some("https://example.com/Runner-Setup-nightly.abc1234.20260908.0100-x64.exe.sig")
+        );
+    }
+
+    #[test]
+    fn preview_nightly_selects_its_installer_and_shows_its_channel() {
+        let release = release(&[
+            (
+                "Runner-Preview-Nightly-def5678.20261104.0200-arm64.dmg",
+                "uploaded",
+            ),
+            (
+                "Runner-Setup-preview-nightly.abc1234.20261104.0100-x64.exe",
+                "uploaded",
+            ),
+            (
+                "Runner-Setup-preview-nightly.abc1234.20261104.0100-x64.exe.sig",
+                "uploaded",
+            ),
+        ]);
+        let update = available_update(&release, Some("20261103.0100"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.info.version(), "Preview Nightly (abc1234)");
+        assert_eq!(
+            update.sig_url.as_deref(),
+            Some("https://example.com/Runner-Setup-preview-nightly.abc1234.20261104.0100-x64.exe.sig")
         );
     }
 

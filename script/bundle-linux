@@ -14,6 +14,7 @@ import json
 
 ROOT = Path(__file__).resolve().parent.parent
 ARCHES = {'x86_64': ('amd64', 62, 'x64'), 'aarch64': ('arm64', 183, 'arm64')}
+MARKETING_VERSIONS = {'nightly': 'Nightly', 'preview-nightly': 'Preview Nightly'}
 
 
 def run(*args, **kwargs):
@@ -44,7 +45,7 @@ def package_identity(version, channel, stamp, sha):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--channel', choices=['production', 'nightly'], default='production')
+    parser.add_argument('--channel', choices=['production', 'nightly', 'preview-nightly'], default='production')
     parser.add_argument('--arch', choices=ARCHES, default=platform.machine())
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'target/linux-packages')
     parser.add_argument('--formats', default='tar,deb')
@@ -66,7 +67,7 @@ def main():
         parser.error('Build and package on a native matching Linux host')
     target = f'{args.arch}-unknown-linux-gnu'
     env = dict(os.environ, RUNNER_BUILD_STAMP=stamp, RUNNER_BUILD_SHA=sha,
-               RUNNER_RELEASE_CHANNEL=args.channel, RUNNER_MARKETING_VERSION=version if args.channel == 'production' else 'Nightly')
+               RUNNER_RELEASE_CHANNEL=args.channel, RUNNER_MARKETING_VERSION=MARKETING_VERSIONS.get(args.channel, version))
     # Always build both inputs with the production data namespace; never re-label prebuilt/debug bytes.
     run('cargo', '--config', 'profile.release.debug-assertions=false', 'build', '--locked', '--release',
         '--target', target, '-p', 'runner-app', '-p', 'runner-cli', cwd=ROOT, env=env)

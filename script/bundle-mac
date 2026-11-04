@@ -17,7 +17,7 @@ BUILD_STAMP="${RUNNER_BUILD_STAMP:-}"
 BUILD_SHA="${RUNNER_BUILD_SHA:-}"
 
 usage() {
-    echo "usage: $0 --channel nightly|production [--dev] [--stamp YYYYMMDD.HHMM] [--sha abc1234] [--print-version|--print-stamp|--print-plist]" >&2
+    echo "usage: $0 --channel nightly|preview-nightly|production [--dev] [--stamp YYYYMMDD.HHMM] [--sha abc1234] [--print-version|--print-stamp|--print-plist]" >&2
 }
 
 workspace_version() {
@@ -72,7 +72,7 @@ if [[ "$PRINT_MODE" == "--print-version" ]]; then
     printf '%s\n' "$VERSION"
     exit 0
 fi
-if [[ "$CHANNEL" != "nightly" && "$CHANNEL" != "production" ]]; then
+if [[ "$CHANNEL" != "nightly" && "$CHANNEL" != "preview-nightly" && "$CHANNEL" != "production" ]]; then
     usage
     exit 1
 fi
@@ -122,6 +122,14 @@ case "$CHANNEL" in
         MARKETING_VERSION="Nightly"
         FEED_URL="https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
         DMG_NAME="Runner-Nightly-$BUILD_SHA.$BUILD_STAMP-arm64.dmg"
+        ;;
+    preview-nightly)
+        BUNDLE_ID="com.wycstudios.runner"
+        APP_NAME="Runner"
+        SHORT_VERSION="$BUILD_SHA"
+        MARKETING_VERSION="Preview Nightly"
+        FEED_URL="https://github.com/yicheng47/runner/releases/download/preview-nightly/appcast.xml"
+        DMG_NAME="Runner-Preview-Nightly-$BUILD_SHA.$BUILD_STAMP-arm64.dmg"
         ;;
     production)
         BUNDLE_ID="com.wycstudios.runner"
@@ -240,6 +248,7 @@ require_arm64_slice "$APP_BUNDLE/Contents/Frameworks/Sparkle.framework/Versions/
 export RUNNER_BUILD_STAMP="$BUILD_STAMP"
 export RUNNER_BUILD_SHA="$BUILD_SHA"
 export RUNNER_MARKETING_VERSION="$MARKETING_VERSION"
+export RUNNER_RELEASE_CHANNEL="$CHANNEL"
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_SYSTEM_VERSION"
 export RUSTFLAGS="${RUSTFLAGS:-} -Lframework=$SPARKLE_WORK_DIR -Clink-arg=-Wl,-rpath,@executable_path/../Frameworks"
 cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --locked --release --package runner-app --features updater --target "$TARGET_TRIPLE"
