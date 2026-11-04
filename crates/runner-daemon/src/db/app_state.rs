@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 
+use runner_core::protocol::files::RECENT_FOLDERS;
 use runner_core::protocol::terminal::TerminalPalette;
 use runner_core::protocol::usage::AgentUsage;
 use runner_core::runtime::Runtime;
@@ -14,6 +16,7 @@ const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
 const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
 const TERMINAL_PALETTE_KEY: &str = "terminal_palette";
 const USAGE_LKG_KEY: &str = "usage_lkg";
+const FILES_RECENT_FOLDERS_KEY: &str = "files_recent_folders";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoginShellEnvLkg {
@@ -99,6 +102,36 @@ pub fn set_terminal_palette(pool: &DbPool, palette: &TerminalPalette) -> Result<
         TERMINAL_PALETTE_KEY,
         &serde_json::to_string(palette)?,
     )
+}
+
+/// The Files view's recently chosen folders, newest first (#634).
+pub fn files_recent_folders(pool: &DbPool) -> Result<Vec<PathBuf>> {
+    let conn = pool.get()?;
+    Ok(app_state_get(&conn, FILES_RECENT_FOLDERS_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default())
+}
+
+/// Moves `folder` to the front of the recent folders, keeping the last
+/// [`RECENT_FOLDERS`].
+pub fn push_files_recent_folder(pool: &DbPool, folder: &Path) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut folders: Vec<PathBuf> = app_state_get(&tx, FILES_RECENT_FOLDERS_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default();
+    folders.retain(|recent| recent != folder);
+    folders.insert(0, folder.to_path_buf());
+    folders.truncate(RECENT_FOLDERS);
+    app_state_set(
+        &tx,
+        FILES_RECENT_FOLDERS_KEY,
+        &serde_json::to_string(&folders)?,
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn runtime_overrides(pool: &DbPool) -> Result<BTreeMap<String, String>> {
