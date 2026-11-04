@@ -16,14 +16,30 @@ use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface
 use crate::*;
 
 impl MissionWorkspace {
+    /// The rail's width, widened while its Files view has a file open.
+    pub(super) fn rail_layout(&self, cx: &App) -> (f32, Option<side_panel::Widened>) {
+        let settings = self.settings(cx);
+        let subject = self
+            .mission_view()
+            .map(|mission| PanelSubject::Mission(mission.id));
+        self.rail_files.layout(
+            subject.as_ref(),
+            settings.mission_rail_width,
+            settings.file_viewer_width,
+            settings.file_tree_width,
+            6.,
+            cx,
+        )
+    }
+
     pub(super) fn render_mission_rail(
         &self,
+        (width, widened): (f32, Option<side_panel::Widened>),
         visibility: f32,
         show_rail: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let width = self.settings(cx).mission_rail_width;
         let visible_width = width * visibility;
         if !show_rail {
             self.rail_files.hide(cx);
@@ -74,7 +90,7 @@ impl MissionWorkspace {
                     }),
             ));
         let files = match (shown, self.mission_view()) {
-            (Some(PanelViewId::Files), Some(mission)) => Some(self.rail_files.show(
+            (Some(PanelViewId::Files), Some(mission)) => Some(self.rail_files.show_with(
                 &PanelContext {
                     subject: PanelSubject::Mission(mission.id),
                     surface: PanelSurface::Mission,
@@ -82,6 +98,8 @@ impl MissionWorkspace {
                     project: mission.project_id,
                     remote: self.presentation.is_remote(),
                 },
+                widened,
+                Some(cx.entity_id()),
                 cx,
             )),
             _ => {
@@ -92,7 +110,7 @@ impl MissionWorkspace {
         let body = match shown {
             Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
             Some(PanelViewId::Files) => files.unwrap_or_else(|| div().into_any_element()),
-            Some(PanelViewId::Sessions) | None => self.render_roles_rail(window, cx),
+            Some(PanelViewId::Sessions) | None => self.render_roles_rail(width, window, cx),
         };
         let rail = div()
             .relative()
@@ -146,7 +164,17 @@ impl MissionWorkspace {
         cx.notify();
     }
 
-    fn render_roles_rail(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_roles_rail(
+        &self,
+        width: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // A rail widened by an open file places two cards per row.
+        let two_up = width >= side_panel::ROSTER_TWO_UP_WIDTH;
+        let card_width = (width - 2. * 20. - 12.) / 2.;
+        let fit_width = if two_up { card_width + 2. * 20. } else { width };
+        let mut cards = Vec::new();
         let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
             MissionTab::Feed => None,
@@ -287,8 +315,7 @@ impl MissionWorkspace {
                     .to_pixels(window.rem_size())
                     + px(2.)
                     + extra;
-                let rail_width =
-                    rems(self.settings(cx).mission_rail_width / 16.).to_pixels(window.rem_size());
+                let rail_width = rems(fit_width / 16.).to_pixels(window.rem_size());
                 let available_width = rail_width - fixed_width;
                 if available_width < needed_width {
                     header_gap = rems(2. / 16.);
@@ -318,13 +345,19 @@ impl MissionWorkspace {
                 None => key_value.child("NULL").into_any_element(),
             };
             let active = selected == Some(session_id.as_str());
-            list = list.child(
+            cards.push(
                 div()
                     .debug_selector(|| format!("MISSION_CARD {session_id}"))
                     .id(SharedString::from(format!(
                         "mission-role-card-{session_id}"
                     )))
-                    .w_full()
+                    .map(|card| {
+                        if two_up {
+                            card.flex_1().min_w(px(0.))
+                        } else {
+                            card.w_full()
+                        }
+                    })
                     .tab_index(0)
                     .p_3()
                     .flex()
@@ -463,6 +496,27 @@ impl MissionWorkspace {
                         )
                     }),
             );
+        }
+        if two_up {
+            let mut cards = cards.into_iter();
+            while let Some(first) = cards.next() {
+                // The filler carries the card's padding and border, which
+                // flex adds to a zero basis, so a lone card keeps half a row.
+                let second = cards.next().map_or_else(
+                    || {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .p_3()
+                            .border_1()
+                            .into_any_element()
+                    },
+                    IntoElement::into_any_element,
+                );
+                list = list.child(div().flex().gap_3().child(first).child(second));
+            }
+        } else {
+            list = list.children(cards);
         }
         if self.mission_composer_roster().is_empty() {
             list = list.child(

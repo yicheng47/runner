@@ -151,6 +151,14 @@ impl NativeRoot {
         )
         .browse_focus(self.settings_page.working_dir_browse_focus.clone());
         let file_link_editor = self.settings(cx).file_link_editor;
+        // The file viewer's Open in menu sets the same choice.
+        if self.settings_page.file_link_editor.read(cx).value() != file_link_editor.key() {
+            self.settings_page
+                .file_link_editor
+                .update(cx, |select, cx| {
+                    select.set_value(file_link_editor.key(), cx)
+                });
+        }
         let found = file_link_editor.cli().map(|command| {
             self.app_store
                 .read(cx)
