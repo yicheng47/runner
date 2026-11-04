@@ -104,6 +104,8 @@ fn trusted_system_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
+const NIGHTLY_CHANNELS: [&str; 2] = ["nightly", "preview-nightly"];
+
 pub(super) fn installer_version(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("Runner_")?;
     let (label, platform) = rest.rsplit_once("_linux-")?;
@@ -118,7 +120,9 @@ pub(super) fn installer_version(name: &str) -> Option<(&str, &str)> {
     {
         return Some((label, ""));
     }
-    let nightly = label.strip_prefix("nightly.")?;
+    let nightly = NIGHTLY_CHANNELS
+        .into_iter()
+        .find_map(|channel| label.strip_prefix(channel)?.strip_prefix('.'))?;
     let (sha, stamp) = nightly.split_once('.')?;
     let (date, time) = stamp.split_once('.')?;
     (sha.len() == 7
@@ -482,13 +486,17 @@ fn package_version_matches(label: &str, version: &str) -> bool {
     if semver::Version::parse(label).is_ok() {
         return version == label;
     }
-    let Some(remainder) = label.strip_prefix("nightly.") else {
+    let Some((channel, remainder)) = NIGHTLY_CHANNELS
+        .into_iter()
+        .find_map(|channel| Some((channel, label.strip_prefix(channel)?.strip_prefix('.')?)))
+    else {
         return false;
     };
-    let channel = "nightly";
     let Some((sha, stamp)) = remainder.split_once('.') else {
         return false;
     };
+    // bundle-linux spells the channel with dots in Debian metadata.
+    let channel = channel.replace('-', ".");
     version.split_once('~').is_some_and(|(base, suffix)| {
         semver::Version::parse(base).is_ok() && suffix == format!("{channel}.{stamp}.{sha}")
     })
@@ -801,6 +809,7 @@ mod tests {
             "Runner_nightly.fffffff.20261020.1500_linux-x64.tar.gz",
             "Runner_nightly.aaaaaaa.20261020.1700_linux-x64.tar.gz",
             "Runner_remote-nightly.bbbbbbb.20261020.1800_linux-x64.tar.gz",
+            "Runner_preview-nightly.ccccccc.20261020.1900_linux-x64.tar.gz",
             "Runner_99.0.0_linux-x64.tar.gz",
         ]);
         let candidate = select_update(
@@ -823,6 +832,31 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        let preview = select_update(
+            &source,
+            InstallKind::Tar,
+            "x64",
+            "preview-nightly",
+            "0.17.1",
+            Some("20261020.1600"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            preview.name,
+            "Runner_preview-nightly.ccccccc.20261020.1900_linux-x64.tar.gz"
+        );
+        assert_eq!(preview.info.version(), "Preview Nightly (ccccccc)");
+        assert!(select_update(
+            &source,
+            InstallKind::Tar,
+            "x64",
+            "preview-nightly",
+            "0.17.1",
+            Some("20261020.1900")
+        )
+        .unwrap()
+        .is_none());
         for invalid in [
             "Runner_../../escape_linux-arm64.deb",
             "Runner_nightly.sha.bad_linux-x64.deb",
@@ -848,6 +882,18 @@ mod tests {
         assert!(!package_version_matches(
             "nightly.aaaaaaa.20261020.1700",
             "1.2.3~remote.nightly.20261020.1700.aaaaaaa"
+        ));
+        assert!(package_version_matches(
+            "preview-nightly.aaaaaaa.20261020.1700",
+            "1.2.3~preview.nightly.20261020.1700.aaaaaaa"
+        ));
+        assert!(!package_version_matches(
+            "preview-nightly.aaaaaaa.20261020.1700",
+            "1.2.3~nightly.20261020.1700.aaaaaaa"
+        ));
+        assert!(!package_version_matches(
+            "nightly.aaaaaaa.20261020.1700",
+            "1.2.3~preview.nightly.20261020.1700.aaaaaaa"
         ));
         assert!(!package_version_matches(
             "1.2.3",

@@ -1,0 +1,23 @@
+name: Preview nightly on push
+
+on:
+  push:
+    # Umbrella branches cut as preview-nightly. nightly.yml's prepare job reads this list too.
+    branches:
+      - feat/634-file-preview
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch an all-platform preview nightly for the pushed umbrella
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run nightly.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f channel=preview-nightly -f platform=all

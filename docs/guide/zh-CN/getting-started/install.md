@@ -53,4 +53,6 @@ Runner 原位更新，并保留设置、聊天和任务。macOS 使用 Sparkle�
 
 Linux 构建使用正式版或 nightly 包标识，稳定版和 nightly 有各自的更新源。Linux 的 **设置 → 更新** 会下载并验证适合当前架构和安装格式的包。 **安装并重启（Install and restart）** 会原子替换受管理的用户 tar 安装，或请求系统授权通过 APT 安装 deb。系统安装需要 polkit（`pkexec`）。若 Runner 运行时外部安装程序或 APT 已替换可执行文件，请先重启 Runner 再检查或安装下一次更新；旧进程会显示重启错误并保持打开。取消授权或安装失败会保持 Runner 打开并显示错误； **设置 → 诊断（Settings → Diagnostics）** 列出安装日志。用户数据会保留。历史未签名版本只提供下载页，不会自动安装。通过 SSH 使用 CLI 前，请运行 `systemctl --user start runnerd` 显式启动 `runnerd`。[Linux 服务生命周期与 WSL 设置](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md#optional-systemd-user-service)介绍了持久运行和关闭行为。
 
+Preview Nightly 构建是仍在独立分支上开发的功能的测试构建。它们面向 macOS、Windows 和 Linux 发布到单独的 [`preview-nightly` 预发布版本](https://github.com/yicheng47/runner/releases/tag/preview-nightly)，显示为 **Preview Nightly** 加上其短提交号，并且只从该版本更新。所有渠道使用同一应用和数据，因此切换时设置、聊天和任务都会保留。要离开 Preview Nightly，请手动安装 nightly 或稳定版构建；在 Linux 上，在 preview deb 之上安装同一版本的 nightly deb 会被 APT 视为降级。
+
 接下来：[第一次聊天](first-chat.md)。

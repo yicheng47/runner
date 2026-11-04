@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('nightly', 'production')]
+    [ValidateSet('nightly', 'preview-nightly', 'production')]
     [string]$Channel = 'nightly',
     [ValidatePattern('^\d{8}\.\d{4}$')]
     [string]$Stamp = $env:RUNNER_BUILD_STAMP,
@@ -39,15 +39,19 @@ try {
     $version = ($metadata.packages | Where-Object name -eq 'runner-app').version
     $baseVersion = $version -replace '-.*$', ''
     $shortSha = $Sha.Substring(0, 7)
-    $shortVersion = if ($Channel -eq 'production') { "$baseVersion.$Stamp" } else { "nightly.$shortSha.$Stamp" }
+    $shortVersion = if ($Channel -eq 'production') { "$baseVersion.$Stamp" } else { "$Channel.$shortSha.$Stamp" }
     $updatesUrl = if ($Channel -eq 'production') {
         'https://github.com/yicheng47/runner/releases/latest'
     } else {
-        'https://github.com/yicheng47/runner/releases/tag/nightly'
+        "https://github.com/yicheng47/runner/releases/tag/$Channel"
     }
     $env:RUNNER_BUILD_STAMP = $Stamp
     $env:RUNNER_BUILD_SHA = $Sha
-    $env:RUNNER_MARKETING_VERSION = if ($Channel -eq 'production') { $baseVersion } else { 'Nightly' }
+    $env:RUNNER_MARKETING_VERSION = switch ($Channel) {
+        'production' { $baseVersion }
+        'preview-nightly' { 'Preview Nightly' }
+        default { 'Nightly' }
+    }
     $env:RUNNER_RELEASE_CHANNEL = $Channel
     $env:RUSTFLAGS = "$previousRustflags -C target-feature=+crt-static".Trim()
     cargo build --locked --release -p runner-app -p runner-cli --target x86_64-pc-windows-msvc -j $Jobs
