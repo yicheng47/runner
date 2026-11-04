@@ -27,7 +27,7 @@ impl MissionWorkspace {
             &mission_id,
             window.is_window_active(),
         );
-        let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Roles);
+        let generation = self.prepare_mission(mission_id.clone(), PanelViewId::Sessions);
         self.composer_input.update(cx, |input, input_cx| {
             input.reset("", input_cx);
             input.set_disabled(false, input_cx);
