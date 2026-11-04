@@ -343,6 +343,24 @@ pub fn set_pinned_at(
     )
 }
 
+/// The Files view's saved root (#634); `None` for no row or no saved root.
+pub fn files_root(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT files_root FROM missions WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
+pub fn set_files_root(conn: &Connection, id: &str, root: Option<&str>) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions SET files_root = ?2 WHERE id = ?1",
+        rusqlite::params![id, root],
+    )
+}
+
 pub fn set_title(conn: &Connection, id: &str, title: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE missions SET title = ?1 WHERE id = ?2",
