@@ -113,8 +113,11 @@ fn a_fixture_repository_reports_what_git_status_reports() {
     assert!(!ignored("src"));
     assert!(!entries.iter().any(|entry| entry.name == ".git"));
     assert!(matches!(
-        super::read(path, "bin.dat").unwrap(),
-        FileContent::Binary { size: 3 }
+        super::read(path, "bin.dat", false).unwrap(),
+        FileContent::Binary {
+            size: 3,
+            bytes: None
+        }
     ));
     assert!(files.list(path, "../").is_err());
 }
@@ -629,7 +632,10 @@ fn each_request_runs_git_at_most_once() {
         0
     );
     assert_eq!(counted(&|| drop(files.list(&worktree, "").unwrap())), 0);
-    assert_eq!(counted(&|| drop(super::read(root, "a.txt").unwrap())), 0);
+    assert_eq!(
+        counted(&|| drop(super::read(root, "a.txt", false).unwrap())),
+        0
+    );
 }
 
 #[test]

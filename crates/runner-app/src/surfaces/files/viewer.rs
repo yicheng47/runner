@@ -337,11 +337,11 @@ impl FilesView {
         self.request(
             cx,
             move |client| {
-                Ok(match client.files_read(&root, &relative)? {
+                Ok(match client.files_read(&root, &relative, false)? {
                     FileContent::Text { bytes, .. } => {
                         Read::Text(Arc::new(Document::decode(&bytes.0)))
                     }
-                    FileContent::Binary { size } => Read::Binary(size),
+                    FileContent::Binary { size, .. } => Read::Binary(size),
                     FileContent::TooLarge { size } => Read::TooLarge(size),
                     FileContent::Missing => Read::Missing,
                 })
