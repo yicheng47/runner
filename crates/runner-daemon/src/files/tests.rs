@@ -4,9 +4,10 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use runner_core::protocol::files::{
-    EntryKind, FileContent, FileStatus, FilesRootOutcome, GitStatus, StatusEntry, WorktreeKind,
-    FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    EntryKind, FileContent, FileStatus, FilesRootOutcome, FilesRootSource, FilesSubject, GitStatus,
+    StatusEntry, WorktreeKind, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
 };
+use runner_core::protocol::DaemonClient;
 use tokio::sync::broadcast;
 
 use super::fixture::{git, repo};
@@ -197,8 +198,131 @@ fn a_plain_folder_has_an_empty_status_and_no_worktrees() {
     assert!(!files.list(plain.path(), "").unwrap()[0].ignored);
 }
 
+fn insert_project(conn: &rusqlite::Connection, id: &str, cwd: &Path) {
+    conn.execute(
+        "INSERT INTO projects (id, name, cwd, position, created_at)
+         VALUES (?1, 'Project', ?2, 0, '2026-11-04T00:00:00Z')",
+        rusqlite::params![id, cwd.to_str().unwrap()],
+    )
+    .unwrap();
+}
+
+fn insert_session(conn: &rusqlite::Connection, id: &str, project: Option<&str>, cwd: &Path) {
+    conn.execute(
+        "INSERT INTO sessions (id, status, project_id, cwd) VALUES (?1, 'stopped', ?2, ?3)",
+        rusqlite::params![id, project, cwd.to_str().unwrap()],
+    )
+    .unwrap();
+}
+
+fn insert_mission(conn: &rusqlite::Connection, id: &str, cwd: &Path) {
+    conn.execute(
+        "INSERT INTO missions (id, title, status, started_at, cwd)
+         VALUES (?1, 'M', 'running', '2026-11-04T00:00:00Z', ?2)",
+        rusqlite::params![id, cwd.to_str().unwrap()],
+    )
+    .unwrap();
+}
+
+fn own_or_saved(outcome: FilesRootOutcome) -> (FilesRootSource, std::path::PathBuf) {
+    match outcome {
+        FilesRootOutcome::Root(root) => (root.source, root.path),
+        other => panic!("expected a root, got {other:?}"),
+    }
+}
+
 fn same(a: &Path, b: &Path) -> bool {
     a.canonicalize().unwrap() == b.canonicalize().unwrap()
+}
+
+#[test]
+fn a_saved_root_round_trips_per_session_and_mission() {
+    let fixture = repo();
+    let core = crate::test_support::test_core();
+    {
+        let conn = core.db.get().unwrap();
+        insert_project(&conn, "p", fixture.path());
+        insert_session(&conn, "chat", Some("p"), &fixture.path().join("src"));
+        insert_session(&conn, "loose", None, fixture.path());
+        insert_mission(&conn, "m", fixture.path());
+    }
+    let client: DaemonClient = crate::daemon::InProcessTransport::client(core.clone());
+    let chat = FilesSubject::Session("chat".into());
+    let mission = FilesSubject::Mission("m".into());
+
+    let (source, path) = own_or_saved(client.files_root(&chat).unwrap());
+    assert_eq!(source, FilesRootSource::Own);
+    assert!(same(&path, fixture.path()));
+    assert_eq!(
+        client
+            .files_root(&FilesSubject::Session("loose".into()))
+            .unwrap(),
+        FilesRootOutcome::ChooseFolder
+    );
+    assert!(client
+        .files_root(&FilesSubject::Session("nope".into()))
+        .is_err());
+
+    let chosen = fixture.path().join("src").join("deep");
+    let (source, path) = own_or_saved(client.files_set_root(&chat, Some(&chosen)).unwrap());
+    assert_eq!(
+        (source, path.as_path()),
+        (FilesRootSource::Saved, chosen.as_path())
+    );
+    assert_eq!(
+        own_or_saved(client.files_root(&chat).unwrap()),
+        (FilesRootSource::Saved, chosen.clone())
+    );
+    assert_eq!(
+        own_or_saved(client.files_root(&mission).unwrap()).0,
+        FilesRootSource::Own,
+        "the chat's root is its own"
+    );
+
+    let other = tempfile::tempdir().unwrap();
+    client.files_set_root(&mission, Some(other.path())).unwrap();
+    assert_eq!(
+        client.files_recent_folders().unwrap(),
+        [other.path().to_path_buf(), chosen.clone()]
+    );
+    assert!(client
+        .files_set_root(&mission, Some(&fixture.path().join("missing")))
+        .is_err());
+    assert!(client
+        .files_set_root(&mission, Some(Path::new("relative")))
+        .is_err());
+
+    let (source, _) = own_or_saved(client.files_set_root(&chat, None).unwrap());
+    assert_eq!(source, FilesRootSource::Own);
+
+    drop(other);
+    let (source, path) = own_or_saved(client.files_root(&mission).unwrap());
+    assert_eq!(source, FilesRootSource::Own);
+    assert!(same(&path, fixture.path()));
+    assert_eq!(
+        crate::repo::mission::files_root(&core.db.get().unwrap(), "m").unwrap(),
+        None,
+        "a saved root that is gone is forgotten"
+    );
+    assert_eq!(client.files_recent_folders().unwrap(), [chosen]);
+}
+
+#[test]
+fn recent_folders_keep_the_last_ten_newest_first() {
+    let core = crate::test_support::test_core();
+    let dirs = (0..12)
+        .map(|_| tempfile::tempdir().unwrap())
+        .collect::<Vec<_>>();
+    for dir in &dirs {
+        crate::db::push_files_recent_folder(&core.db, dir.path()).unwrap();
+    }
+    crate::db::push_files_recent_folder(&core.db, dirs[5].path()).unwrap();
+    let recent = super::recent_folders(&core).unwrap();
+    let expected = [5, 11, 10, 9, 8, 7, 6, 4, 3, 2]
+        .iter()
+        .map(|index| dirs[*index].path().to_path_buf())
+        .collect::<Vec<_>>();
+    assert_eq!(recent, expected);
 }
 
 #[test]

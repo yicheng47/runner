@@ -407,6 +407,7 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
         mission_grid_hint: Arc::new(Mutex::new(None)),
         windows: Arc::new(crate::windows::WindowRegistry::new()),
         events: crate::events::EventChannel::new(),
+        files: Default::default(),
         session_event_observer: Default::default(),
         reports: Default::default(),
         app_version: "0.0.0-test".into(),
