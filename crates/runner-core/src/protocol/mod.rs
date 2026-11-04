@@ -5,6 +5,7 @@ pub mod client;
 pub mod command;
 pub mod crew;
 pub mod discovery;
+pub mod files;
 pub mod hook;
 pub mod managed;
 pub mod mission;
