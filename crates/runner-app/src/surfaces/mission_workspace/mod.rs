@@ -403,6 +403,7 @@ pub(crate) struct MissionWorkspace {
     duplicate_dismissed: bool,
     primary_label: Option<String>,
     rail_view: PanelViewId,
+    rail_files: crate::surfaces::files::FilesPanel,
     action_menu: Entity<PopoverMenu>,
     menu_actions: Vec<MissionMenuAction>,
     /// The pin the header's menu offers to change, to redraw it when a

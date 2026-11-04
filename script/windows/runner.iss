@@ -61,6 +61,10 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\crates\runner-app\LICENSE.xterm"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\crates\runner-app\LICENSE.conpty"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\JetBrainsMono-NF-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\assets\file-icons\LICENSE-catppuccin"; DestDir: "{app}\file-icons"; Flags: ignoreversion
+Source: "..\..\assets\file-icons\LICENSE-material"; DestDir: "{app}\file-icons"; Flags: ignoreversion
+Source: "..\..\assets\file-icons\LICENSE-material-icons"; DestDir: "{app}\file-icons"; Flags: ignoreversion
+Source: "..\..\assets\file-icons\LICENSE-minimal"; DestDir: "{app}\file-icons"; Flags: ignoreversion
 Source: "..\..\assets\fonts\JetBrainsMono-NF-NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\OFL.txt"; DestDir: "{app}"; Flags: ignoreversion
 

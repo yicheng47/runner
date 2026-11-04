@@ -323,6 +323,7 @@ impl NativeRoot {
             chat_panel_prompt_session: None,
             chat_panel_prompt_expanded: false,
             chat_panel_view: crate::surfaces::side_panel::PanelViewId::Info,
+            chat_files: Default::default(),
             panel_chat_by_tab: HashMap::new(),
             command_palette,
             sidebar_preview_open: false,

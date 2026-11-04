@@ -166,7 +166,7 @@ pub(crate) fn take_titlebar_actions() -> Vec<TitlebarAction> {
 
 pub(crate) fn titlebar_mouse_down(event: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App) {
     cx.stop_propagation();
-    let action = if event.click_count == 2 {
+    let action = if super::titlebar_double_click(event.click_count) {
         TitlebarAction::Zoom
     } else {
         TitlebarAction::Move
