@@ -93,6 +93,11 @@ MESSAGING INSIDE YOUR MISSION
   Explicit --to wins; mid-text mentions do not address. Unknown handles and @human are refused.
   Reply to the sender. Broadcast only when everyone must act. Do not post receipt-only replies
   or standby messages; consuming your inbox with runner msg read is still required.
+  When you finish a task or a handoff someone is waiting on, post the result with
+  runner msg post before ending your turn: what you did, the key validation, and anything still
+  needing the person or another member. Address it to whoever asked, or omit --to when the
+  person asked. The mission's operator reads the feed, not your terminal. Post once per
+  finished task.
 
 EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   mission=$(runner mission start --title "Small task" -q)
@@ -167,6 +172,11 @@ mod tests {
             "mid-text mentions do not address",
             "Do not post receipt-only replies",
             "consuming your inbox with runner msg read is still required",
+            "When you finish a task or a handoff someone is waiting on, post the result with\n  runner msg post before ending your turn",
+            "what you did, the key validation, and anything still\n  needing the person or another member",
+            "Address it to whoever asked, or omit --to when the\n  person asked",
+            "The mission's operator reads the feed, not your terminal",
+            "Post once per\n  finished task",
         ] {
             assert!(AGENT_GUIDE.contains(rule), "missing {rule}");
         }
