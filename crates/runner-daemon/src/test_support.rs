@@ -50,6 +50,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
     let runtime_discovery = Arc::new(std::sync::RwLock::new(
         crate::shell_path::DiscoveryState::startup(None, None),
     ));
+    let events = EventChannel::new();
     AppCore {
         remote: Default::default(),
         db: Arc::new(db::open_in_memory().unwrap()),
@@ -59,6 +60,10 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
             Arc::clone(&runtime_discovery),
             Arc::new(InertRuntime),
         ),
+        files: Arc::new(crate::files::FilesService::new(
+            Arc::clone(&runtime_shell_env),
+            events.clone(),
+        )),
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(crate::usage::UsageService::default()),
@@ -68,7 +73,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         mission_roster_locks: Default::default(),
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
         windows: Arc::new(WindowRegistry::new()),
-        events: EventChannel::new(),
+        events,
         session_event_observer: Default::default(),
         reports: Default::default(),
         app_version: "0.0.0-test".into(),

@@ -2015,3 +2015,56 @@ fn migration_0029_leaves_missions_unlinked_and_deleting_the_chat_clears_a_link()
         .unwrap();
     assert_eq!(link(&conn), (None, 1));
 }
+
+#[test]
+fn migration_0030_adds_a_saved_files_root_that_goes_with_its_row() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    run_migrations_up_to(&mut conn, 29).unwrap();
+    conn.execute_batch(
+        "INSERT INTO sessions (id, status, cwd) VALUES ('chat', 'stopped', '/work');
+         INSERT INTO missions (id, title, status, started_at, cwd)
+         VALUES ('mission', 'M', 'running', '2026-11-04T00:00:00Z', '/work');",
+    )
+    .unwrap();
+    run_migrations_up_to(&mut conn, 30).unwrap();
+
+    use crate::repo::{mission, session};
+    assert_eq!(session::files_root(&conn, "chat").unwrap(), None);
+    assert_eq!(mission::files_root(&conn, "mission").unwrap(), None);
+    assert_eq!(
+        session::get_row(&conn, "chat")
+            .unwrap()
+            .unwrap()
+            .cwd
+            .as_deref(),
+        Some("/work")
+    );
+
+    assert_eq!(
+        session::set_files_root(&conn, "chat", Some("/work/src")).unwrap(),
+        1
+    );
+    assert_eq!(
+        mission::set_files_root(&conn, "mission", Some("/elsewhere")).unwrap(),
+        1
+    );
+    assert_eq!(
+        session::files_root(&conn, "chat").unwrap().as_deref(),
+        Some("/work/src")
+    );
+    assert_eq!(
+        mission::files_root(&conn, "mission").unwrap().as_deref(),
+        Some("/elsewhere")
+    );
+    assert_eq!(
+        session::set_files_root(&conn, "absent", Some("/x")).unwrap(),
+        0
+    );
+    assert_eq!(session::files_root(&conn, "absent").unwrap(), None);
+
+    session::set_files_root(&conn, "chat", None).unwrap();
+    assert_eq!(session::files_root(&conn, "chat").unwrap(), None);
+    session::delete_many(&conn, &["chat".into()]).unwrap();
+    assert_eq!(session::files_root(&conn, "chat").unwrap(), None);
+}

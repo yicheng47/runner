@@ -81,6 +81,10 @@ pub fn boot(
         mission_grid_hint: Arc::new(std::sync::Mutex::new(None)),
         windows: window_registry,
         events: event_channel.clone(),
+        files: Arc::new(crate::files::FilesService::new(
+            Arc::clone(&runtime_shell_env),
+            event_channel.clone(),
+        )),
         session_event_observer: Default::default(),
         reports: Default::default(),
         app_version: runner_core::version::display_version(),
