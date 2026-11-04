@@ -391,6 +391,7 @@ impl NativeRoot {
         let area = area
             .id(id)
             .window_control_area(WindowControlArea::Drag)
+            .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
             }))
@@ -416,7 +417,7 @@ impl NativeRoot {
                 }
             }))
             .on_click(|event, window, cx| {
-                if event.click_count() == 2 {
+                if event.click_count() == 2 && platform_ui::titlebar_double_click(2) {
                     cx.stop_propagation();
                     window.titlebar_double_click();
                 }

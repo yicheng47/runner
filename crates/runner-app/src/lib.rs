@@ -36,6 +36,7 @@ mod assets;
 #[cfg(test)]
 mod catalog_golden;
 mod chat_icon;
+mod file_icons;
 mod file_links;
 mod keymap;
 mod list_controls;

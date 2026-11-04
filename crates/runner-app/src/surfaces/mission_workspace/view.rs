@@ -48,6 +48,7 @@ impl MissionWorkspace {
         let area = area
             .id(id)
             .window_control_area(WindowControlArea::Drag)
+            .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
             }))
