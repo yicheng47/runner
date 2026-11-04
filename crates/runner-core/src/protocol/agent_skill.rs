@@ -42,11 +42,11 @@ pub fn render(debug: bool, sidecar: &Path) -> String {
     } else {
         "Operate Runner, the local cockpit for CLI coding agents, through the `runner` CLI: start, follow and steer missions, list crews and roles, start chats. Use when the user mentions Runner, a mission, a crew or a role, or asks to hand work to another agent such as Codex, Claude Code or pi."
     };
+    let session_cli = super::SESSION_CLI_ENV;
     let invocation = if debug {
         format!(
-            "This is Runner's development build. It talks only to the development app.\n\nAlways invoke \"{}\"; a bare `runner` on PATH may be the installed app.\n\nRun \"{}\" help agents for the version-matched command guide.",
-            sidecar.display(),
-            sidecar.display()
+            "This is Runner's development build. It talks only to the development app.\n\nAlways invoke \"{sidecar}\" with `{session_cli}` empty, as below; a bare `runner` on PATH may be the installed app, and inside the installed app's sessions the inherited `{session_cli}` would hand the command to the installed CLI.\n\nRun {session_cli}= \"{sidecar}\" help agents for the version-matched command guide.",
+            sidecar = sidecar.display(),
         )
     } else {
         format!(
@@ -55,7 +55,7 @@ pub fn render(debug: bool, sidecar: &Path) -> String {
         )
     };
     let command = if debug {
-        format!("\"{}\"", sidecar.display())
+        format!("{session_cli}= \"{}\"", sidecar.display())
     } else {
         "runner".to_owned()
     };

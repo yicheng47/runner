@@ -259,6 +259,19 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
         Some(&session_id),
         "resume reuses the row, so the chat keeps its address"
     );
+    assert_eq!(
+        fake.last_spawn_spec()
+            .unwrap()
+            .env
+            .get(runner_core::protocol::SESSION_CLI_ENV)
+            .map(PathBuf::from),
+        Some(
+            fixture_tmp_dir()
+                .join("bin")
+                .join(runner_core::cli_install::AGENT_DEST_BIN_NAME)
+        ),
+        "a resumed chat keeps the bundled CLI (#1149)"
+    );
     let seeded = wait_for_session_status_event(&cap, &session_id, SessionActivityState::Busy);
     assert_eq!(seeded.source.as_str(), "resume");
     assert_eq!(
@@ -521,6 +534,15 @@ fn resume_mission_session_stamps_slot_handle_env() {
     assert!(
         spec.bundled_bin_dir.is_some(),
         "mission resume must put the bundled CLI on PATH",
+    );
+    assert_eq!(
+        spec.env
+            .get(runner_core::protocol::SESSION_CLI_ENV)
+            .map(PathBuf::from),
+        spec.shim_dir
+            .as_ref()
+            .map(|dir| dir.join(runner_core::cli_install::AGENT_DEST_BIN_NAME)),
+        "a resumed slot's runner is its refreshed shim (#1149)",
     );
 
     mgr.kill("mr-sid").unwrap();

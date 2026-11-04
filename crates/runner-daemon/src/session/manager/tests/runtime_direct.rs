@@ -59,10 +59,19 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
         spec.bundled_bin_dir.as_deref(),
         Some(data.path().join("bin").as_path())
     );
-    assert!(spec
-        .env
-        .keys()
-        .all(|key| !key.starts_with("RUNNER_") || key == "RUNNER_ZSH_ZDOTDIR"));
+    assert!(spec.env.keys().all(|key| !key.starts_with("RUNNER_")
+        || key == "RUNNER_ZSH_ZDOTDIR"
+        || key == runner_core::protocol::SESSION_CLI_ENV));
+    assert_eq!(
+        spec.env
+            .get(runner_core::protocol::SESSION_CLI_ENV)
+            .map(PathBuf::from),
+        Some(
+            data.path()
+                .join("bin")
+                .join(runner_core::cli_install::AGENT_DEST_BIN_NAME)
+        )
+    );
     assert_eq!(
         spec.env.get("ZDOTDIR").map(PathBuf::from),
         Some(zdotdir.clone())
@@ -92,10 +101,14 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     assert_eq!(resumed.command, "/bin/zsh");
     assert_eq!(resumed.args, ["-l"]);
     assert_eq!(resumed.cwd.as_deref(), Some(std::path::Path::new("/tmp")));
-    assert!(resumed
-        .env
-        .keys()
-        .all(|key| !key.starts_with("RUNNER_") || key == "RUNNER_ZSH_ZDOTDIR"));
+    assert!(resumed.env.keys().all(|key| !key.starts_with("RUNNER_")
+        || key == "RUNNER_ZSH_ZDOTDIR"
+        || key == runner_core::protocol::SESSION_CLI_ENV));
+    assert_eq!(
+        resumed.env.get(runner_core::protocol::SESSION_CLI_ENV),
+        spec.env.get(runner_core::protocol::SESSION_CLI_ENV),
+        "a resumed terminal keeps the bundled CLI"
+    );
     assert_eq!(resumed.env.get("ZDOTDIR").map(PathBuf::from), Some(zdotdir));
 
     mgr.kill(&spawned.id).unwrap();

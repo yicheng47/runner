@@ -222,6 +222,13 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
         Some(&spawned.id),
         "a fork addresses itself, not its source"
     );
+    assert_eq!(
+        spec.env
+            .get(runner_core::protocol::SESSION_CLI_ENV)
+            .map(PathBuf::from),
+        Some(Path::new("/tmp/bin").join(runner_core::cli_install::AGENT_DEST_BIN_NAME)),
+        "a fork gets the bundled CLI (#1149)"
+    );
     assert!(!spec.args.contains(&"-p".to_string()));
     assert!(!spec.args.iter().any(|arg| arg.contains("forked from")));
     assert!(!spec.args.iter().any(|arg| arg.contains("Forker persona")));

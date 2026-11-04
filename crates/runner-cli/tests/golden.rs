@@ -251,6 +251,7 @@ impl Fixture {
             "RUNNER_HANDLE",
             "RUNNER_EVENT_LOG",
             "RUNNER_SESSION_ID",
+            "RUNNER_SESSION_CLI",
         ] {
             cmd.env_remove(name);
         }

@@ -899,6 +899,7 @@ fn exe_shim_forwards_whole_arguments_identity_and_exit_code() {
             .args(args)
             .env("RUNNER_CREW_ID", "stale")
             .env("RUNNER_HANDLE", "impl")
+            .env_remove(runner_core::protocol::SESSION_CLI_ENV)
             .output()
             .unwrap()
     };
@@ -952,6 +953,7 @@ fn powershell_member_posts_multi_paragraph_text_whole() {
             &format!("runner msg post '{MULTI_PARAGRAPH}'"),
         ])
         .env("PATH", path)
+        .env_remove(runner_core::protocol::SESSION_CLI_ENV)
         .env_remove("RUNNER_CREW_ID")
         .env_remove("RUNNER_MISSION_ID")
         .env_remove("RUNNER_HANDLE")
@@ -967,4 +969,278 @@ fn powershell_member_posts_multi_paragraph_text_whole() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].payload["text"], MULTI_PARAGRAPH);
     assert_eq!(events[0].from, "lead");
+}
+
+/// Runs `runner` the way a login shell does once its startup files put another
+/// build's command link first on PATH (#1149). The mission variables are
+/// absent, so only the session's slot shim can supply them.
+fn session_command(
+    program: impl AsRef<std::ffi::OsStr>,
+    bin: &Path,
+    session_cli: &Path,
+) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env("PATH", bin)
+        .env(runner_core::protocol::SESSION_CLI_ENV, session_cli);
+    for name in [
+        "RUNNER_CREW_ID",
+        "RUNNER_MISSION_ID",
+        "RUNNER_HANDLE",
+        "RUNNER_EVENT_LOG",
+        "RUNNER_SESSION_ID",
+    ] {
+        cmd.env_remove(name);
+    }
+    cmd
+}
+
+fn other_build_runner(
+    program: impl AsRef<std::ffi::OsStr>,
+    bin: &Path,
+    session_cli: &Path,
+    args: &[&str],
+) -> std::process::Output {
+    session_command(program, bin, session_cli)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+fn slot_shim(app_data: &Path, f: &Fixture) -> PathBuf {
+    stage_cli(app_data);
+    runner_daemon::cli_install::install_session_runner_shim(
+        app_data,
+        Some("C"),
+        "M",
+        "lead",
+        &f.events_log,
+        None,
+    )
+    .unwrap()
+    .join(runner_core::cli_install::AGENT_DEST_BIN_NAME)
+}
+
+#[test]
+fn runner_by_name_or_path_hands_off_to_the_sessions_slot_shim_once() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let installed = tempfile::tempdir().unwrap();
+    let cli = stage_cli(installed.path());
+    let bin = cli.parent().unwrap().to_owned();
+    let dev = tempfile::tempdir().unwrap();
+    let shim = slot_shim(dev.path(), &f);
+
+    for program in [std::ffi::OsStr::new("runner"), cli.as_os_str()] {
+        let posted = other_build_runner(program, &bin, &shim, &["msg", "post", MULTI_PARAGRAPH]);
+        assert!(
+            posted.status.success(),
+            "{program:?}: {}",
+            String::from_utf8_lossy(&posted.stderr)
+        );
+    }
+    let events = f.read_log();
+    assert_eq!(events.len(), 2);
+    for event in &events {
+        assert_eq!(event.payload["text"], MULTI_PARAGRAPH);
+        assert_eq!(event.from, "lead");
+    }
+
+    let rejected = other_build_runner(
+        "runner",
+        &bin,
+        &shim,
+        &["msg", "post", "hi", "--to", "ghost"],
+    );
+    assert_eq!(rejected.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("valid handles:"));
+    assert_eq!(f.line_count(), 2);
+}
+
+#[test]
+fn other_command_names_keep_their_cli() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let installed = tempfile::tempdir().unwrap();
+    let cli = stage_cli(installed.path());
+    let bin = cli.parent().unwrap().to_owned();
+    std::fs::copy(
+        &cli,
+        bin.join(format!("runner-dev{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .unwrap();
+    let dev = tempfile::tempdir().unwrap();
+    let shim = slot_shim(dev.path(), &f);
+
+    for program in [std::ffi::OsString::from("runner-dev"), runner_bin().into()] {
+        let out = other_build_runner(&program, &bin, &shim, &["msg", "post", "hi"]);
+        assert_eq!(out.status.code(), Some(2), "{program:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--mission is required"),
+            "{program:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(f.line_count(), 0);
+}
+
+/// Routing is symmetric: a development `runner` that a startup file put first
+/// on PATH inside an installed app's session reaches the installed slot. The
+/// development skill's commands clear the variable to stay with their build.
+#[test]
+fn a_development_runner_obeys_an_installed_session_unless_cleared() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    #[cfg(target_os = "macos")]
+    let installed = home.join("Library/Application Support/com.wycstudios.runner");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let installed = home.join(".local/share/com.wycstudios.runner");
+    #[cfg(windows)]
+    let installed = home.join("AppData/Roaming/com.wycstudios.runner");
+    let installed_shim = slot_shim(&installed, &f);
+    let dev = tempfile::tempdir().unwrap();
+    let dev_cli = stage_cli(dev.path());
+    let dev_bin = dev_cli.parent().unwrap().to_owned();
+    let run = |session_cli: &std::ffi::OsStr| {
+        session_command("runner", &dev_bin, &installed_shim)
+            .args(["msg", "post", "hi"])
+            .env(runner_core::protocol::SESSION_CLI_ENV, session_cli)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("APPDATA", home.join("AppData/Roaming"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .output()
+            .unwrap()
+    };
+
+    let handed = run(installed_shim.as_os_str());
+    assert!(
+        handed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&handed.stderr)
+    );
+    assert_eq!(f.read_log()[0].from, "lead");
+    let kept = run(std::ffi::OsStr::new(""));
+    assert_eq!(kept.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&kept.stderr).contains("--mission is required"));
+    assert_eq!(f.line_count(), 1);
+
+    #[cfg(unix)]
+    {
+        let skill = runner_core::protocol::agent_skill::render(true, &dev_cli);
+        let skill_command = format!("RUNNER_SESSION_CLI= \"{}\"", dev_cli.display());
+        assert!(skill.contains(&format!("`{skill_command} msg read`")));
+        let command = format!("{skill_command} msg post hi");
+        let skill_form = session_command("/bin/sh", &dev_bin, &installed_shim)
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert_eq!(skill_form.status.code(), Some(2));
+        assert_eq!(f.line_count(), 1);
+    }
+}
+
+#[test]
+fn a_missing_or_unrunnable_session_cli_falls_through() {
+    let installed = tempfile::tempdir().unwrap();
+    let cli = stage_cli(installed.path());
+    let bin = cli.parent().unwrap().to_owned();
+    let expected = Command::new(&cli).arg("--version").output().unwrap();
+    assert!(expected.status.success());
+    let unrunnable = installed.path().join("plain");
+    std::fs::write(&unrunnable, "not a program").unwrap();
+
+    for target in [
+        installed
+            .path()
+            .join("gone")
+            .join(runner_core::cli_install::AGENT_DEST_BIN_NAME),
+        installed.path().to_owned(),
+        unrunnable,
+    ] {
+        let out = other_build_runner("runner", &bin, &target, &["--version"]);
+        assert!(out.status.success(), "{}", target.display());
+        assert_eq!(out.stdout, expected.stdout, "{}", target.display());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hand_off_passes_arguments_streams_and_exit_code() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::process::Stdio;
+
+    let installed = tempfile::tempdir().unwrap();
+    let bin = stage_cli(installed.path()).parent().unwrap().to_owned();
+    let session = tempfile::tempdir().unwrap();
+    let stub = session.path().join("runner");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nprintf '[%s]\\n' \"$@\"\nprintf 'cli:%s\\n' \"${RUNNER_SESSION_CLI-unset}\"\nread line\nprintf 'stdin:%s\\n' \"$line\"\nprintf 'err\\n' >&2\nexit 7\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut child = session_command("runner", &bin, &stub)
+        .args(["msg", "two words", ""])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"piped\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "[msg]\n[two words]\n[]\ncli:unset\nstdin:piped\n"
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "err\n");
+}
+
+/// PowerShell starts a resolved command by its full path, so the hand-off
+/// cannot depend on how `runner` was named.
+#[cfg(windows)]
+#[test]
+fn powershell_runner_from_another_build_reaches_the_slot() {
+    let f = Fixture::new("C", "M");
+    f.write_roster(&[("lead", true), ("impl", false)]);
+    let installed = tempfile::tempdir().unwrap();
+    let bin = stage_cli(installed.path()).parent().unwrap().to_owned();
+    let dev = tempfile::tempdir().unwrap();
+    let shim = slot_shim(dev.path(), &f);
+    let path = std::env::join_paths(
+        std::iter::once(bin.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let run = |command: &str| {
+        session_command("powershell.exe", &bin, &shim)
+            .args(["-NoProfile", "-NonInteractive", "-Command", command])
+            .env("PATH", &path)
+            .output()
+            .unwrap()
+    };
+
+    let posted = run(&format!("runner msg post '{MULTI_PARAGRAPH}'"));
+    assert!(
+        posted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&posted.stderr)
+    );
+    let events = f.read_log();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["text"], MULTI_PARAGRAPH);
+    assert_eq!(events[0].from, "lead");
+
+    let rejected = run("runner msg post hi --to ghost; exit $LASTEXITCODE");
+    assert_eq!(
+        rejected.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
+    assert_eq!(f.line_count(), 1);
 }

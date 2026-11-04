@@ -48,6 +48,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -97,6 +98,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -152,6 +154,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -207,6 +210,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -237,6 +241,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -293,6 +298,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -348,6 +354,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -403,6 +410,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -458,6 +466,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -513,6 +522,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -578,6 +588,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -643,6 +654,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -676,6 +688,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -704,6 +717,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -736,6 +750,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -768,6 +783,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -798,6 +814,7 @@
         "DISABLE_INSTALLATION_CHECKS",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -832,6 +849,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -866,6 +884,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -900,6 +919,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -934,6 +954,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -974,6 +995,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1014,6 +1036,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1047,6 +1070,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1074,6 +1098,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1107,6 +1132,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1140,6 +1166,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1171,6 +1198,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1203,6 +1231,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1235,6 +1264,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1267,6 +1297,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1299,6 +1330,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1338,6 +1370,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1377,6 +1410,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1410,6 +1444,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1437,6 +1472,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1470,6 +1506,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1503,6 +1540,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1534,6 +1572,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1566,6 +1605,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1598,6 +1638,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1630,6 +1671,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1662,6 +1704,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1699,6 +1742,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1736,6 +1780,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1769,6 +1814,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1796,6 +1842,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1827,6 +1874,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1858,6 +1906,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1889,6 +1938,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1921,6 +1971,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1953,6 +2004,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -1985,6 +2037,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2017,6 +2070,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2056,6 +2110,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2095,6 +2150,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2119,6 +2175,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2138,6 +2195,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2163,6 +2221,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2188,6 +2247,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2213,6 +2273,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2238,6 +2299,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2263,6 +2325,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2288,6 +2351,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2319,6 +2383,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2350,6 +2415,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2378,6 +2444,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2403,6 +2470,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2431,6 +2499,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2459,6 +2528,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2488,6 +2558,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2517,6 +2588,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2546,6 +2618,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2575,6 +2648,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2612,6 +2686,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2649,6 +2724,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2678,6 +2754,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2703,6 +2780,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2732,6 +2810,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2761,6 +2840,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2791,6 +2871,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2821,6 +2902,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2851,6 +2933,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2881,6 +2964,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2917,6 +3001,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2953,6 +3038,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -2980,6 +3066,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3007,6 +3094,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3036,6 +3124,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3065,6 +3154,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3095,6 +3185,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3125,6 +3216,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3155,6 +3247,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3185,6 +3278,7 @@
         "RUNNER_HOOK_EXECUTABLE",
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3220,6 +3314,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3255,6 +3350,7 @@
         "RUNNER_HOOK_GENERATION",
         "RUNNER_HOOK_SESSION",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM",
         "XDG_CONFIG_HOME",
@@ -3275,6 +3371,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3292,6 +3389,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3309,6 +3407,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3326,6 +3425,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3344,6 +3444,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3362,6 +3463,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3380,6 +3482,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3398,6 +3501,7 @@
         "COLORTERM",
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3421,6 +3525,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3444,6 +3549,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "TERM"
       ]
     }
@@ -3462,6 +3568,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3481,6 +3588,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3500,6 +3608,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3519,6 +3628,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3539,6 +3649,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3559,6 +3670,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3579,6 +3691,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3599,6 +3712,7 @@
         "COPILOT_HOME",
         "PI_CODING_AGENT_DIR",
         "RUNNER_HANDLE",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3623,6 +3737,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
@@ -3647,6 +3762,7 @@
         "RUNNER_EVENT_LOG",
         "RUNNER_HANDLE",
         "RUNNER_MISSION_ID",
+        "RUNNER_SESSION_CLI",
         "RUNNER_SESSION_ID",
         "TERM"
       ]
