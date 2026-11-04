@@ -17,6 +17,7 @@ pub mod db;
 pub mod error;
 pub mod event_bus;
 pub mod events;
+pub mod files;
 pub mod ipc;
 pub mod model;
 pub mod ops;
