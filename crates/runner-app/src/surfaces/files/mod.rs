@@ -3,7 +3,10 @@
 
 mod code;
 mod document;
+mod highlight;
+mod markdown;
 pub(crate) mod picker;
+mod syntax;
 mod tabs;
 pub(crate) mod tree;
 mod view;

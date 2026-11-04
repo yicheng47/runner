@@ -119,7 +119,10 @@ pub fn list(root: &Path, folder: &str, status: Option<&GitStatus>) -> Result<Vec
     Ok(entries)
 }
 
-pub fn read(root: &Path, relative: &str) -> Result<FileContent> {
+/// Reads `relative` under `root`: its text, or for a binary file its size,
+/// and its bytes too with `want_bytes`. Either way, nothing over
+/// [`MAX_READ_BYTES`] and nothing outside the root.
+pub fn read(root: &Path, relative: &str, want_bytes: bool) -> Result<FileContent> {
     let path = resolve(root, relative)?;
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -162,7 +165,10 @@ pub fn read(root: &Path, relative: &str) -> Result<FileContent> {
         return Ok(FileContent::TooLarge { size });
     }
     if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
-        return Ok(FileContent::Binary { size });
+        return Ok(FileContent::Binary {
+            size,
+            bytes: want_bytes.then_some(TerminalBytes(bytes)),
+        });
     }
     Ok(FileContent::Text {
         bytes: TerminalBytes(bytes),
@@ -213,12 +219,12 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
         std::os::unix::fs::symlink(outside.path().join("secret"), dir.path().join("sf")).unwrap();
         std::os::unix::fs::symlink("src/deep", dir.path().join("in")).unwrap();
-        assert!(read(dir.path(), "out/secret").is_err());
-        assert!(read(dir.path(), "out/missing").is_err());
-        assert!(read(dir.path(), "sf").is_err());
+        assert!(read(dir.path(), "out/secret", false).is_err());
+        assert!(read(dir.path(), "out/missing", false).is_err());
+        assert!(read(dir.path(), "sf", false).is_err());
         assert!(list(dir.path(), "out", None).is_err());
         assert!(matches!(
-            read(dir.path(), "in/x.rs").unwrap(),
+            read(dir.path(), "in/x.rs", false).unwrap(),
             FileContent::Text { .. }
         ));
         let entries = list(dir.path(), "", None).unwrap();
@@ -248,8 +254,8 @@ mod tests {
         let root = dir.path().to_path_buf();
         std::thread::spawn(move || {
             let _ = tx.send((
-                read(&root, "pipe").is_err(),
-                read(&root, "to-pipe").is_err(),
+                read(&root, "pipe", false).is_err(),
+                read(&root, "to-pipe", false).is_err(),
             ));
         });
         assert_eq!(
@@ -284,7 +290,7 @@ mod tests {
     #[test]
     fn reading_sorts_text_binary_large_and_missing() {
         let dir = tree();
-        let content = read(dir.path(), "README.md").unwrap();
+        let content = read(dir.path(), "README.md", false).unwrap();
         let FileContent::Text {
             bytes,
             size,
@@ -301,40 +307,106 @@ mod tests {
         binary[BINARY_SNIFF_BYTES - 1] = 0;
         std::fs::write(dir.path().join("bin"), &binary).unwrap();
         assert_eq!(
-            read(dir.path(), "bin").unwrap(),
+            read(dir.path(), "bin", false).unwrap(),
             FileContent::Binary {
-                size: BINARY_SNIFF_BYTES as u64
+                size: BINARY_SNIFF_BYTES as u64,
+                bytes: None,
             }
         );
         let mut late_nul = vec![b'a'; BINARY_SNIFF_BYTES + 1];
         late_nul[BINARY_SNIFF_BYTES] = 0;
         std::fs::write(dir.path().join("late"), &late_nul).unwrap();
         assert!(matches!(
-            read(dir.path(), "late").unwrap(),
+            read(dir.path(), "late", false).unwrap(),
             FileContent::Text { .. }
         ));
 
         let limit = vec![b'x'; MAX_READ_BYTES as usize];
         std::fs::write(dir.path().join("limit"), &limit).unwrap();
         assert!(matches!(
-            read(dir.path(), "limit").unwrap(),
+            read(dir.path(), "limit", false).unwrap(),
             FileContent::Text { size, .. } if size == MAX_READ_BYTES
         ));
         let mut over = limit;
         over.push(b'x');
         std::fs::write(dir.path().join("over"), &over).unwrap();
         assert_eq!(
-            read(dir.path(), "over").unwrap(),
+            read(dir.path(), "over", false).unwrap(),
             FileContent::TooLarge {
                 size: MAX_READ_BYTES + 1
             }
         );
 
-        assert_eq!(read(dir.path(), "nope.txt").unwrap(), FileContent::Missing);
         assert_eq!(
-            read(dir.path(), "no/such/dir.txt").unwrap(),
+            read(dir.path(), "nope.txt", false).unwrap(),
             FileContent::Missing
         );
-        assert!(read(dir.path(), "src").is_err());
+        assert_eq!(
+            read(dir.path(), "no/such/dir.txt", false).unwrap(),
+            FileContent::Missing
+        );
+        assert!(read(dir.path(), "src", false).is_err());
+    }
+
+    #[test]
+    fn a_binary_file_brings_its_bytes_only_when_asked_and_within_the_limit() {
+        let dir = tree();
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        std::fs::write(dir.path().join("shot.png"), &png).unwrap();
+        assert_eq!(
+            read(dir.path(), "shot.png", false).unwrap(),
+            FileContent::Binary {
+                size: png.len() as u64,
+                bytes: None,
+            }
+        );
+        assert_eq!(
+            read(dir.path(), "shot.png", true).unwrap(),
+            FileContent::Binary {
+                size: png.len() as u64,
+                bytes: Some(TerminalBytes(png)),
+            }
+        );
+        assert!(
+            matches!(
+                read(dir.path(), "README.md", true).unwrap(),
+                FileContent::Text { .. }
+            ),
+            "text reads as before"
+        );
+
+        let mut limit = vec![0u8; MAX_READ_BYTES as usize];
+        std::fs::write(dir.path().join("limit.bin"), &limit).unwrap();
+        assert!(matches!(
+            read(dir.path(), "limit.bin", true).unwrap(),
+            FileContent::Binary { size, bytes: Some(bytes) }
+                if size == MAX_READ_BYTES && bytes.0.len() == MAX_READ_BYTES as usize
+        ));
+        limit.push(0);
+        std::fs::write(dir.path().join("over.bin"), &limit).unwrap();
+        assert_eq!(
+            read(dir.path(), "over.bin", true).unwrap(),
+            FileContent::TooLarge {
+                size: MAX_READ_BYTES + 1
+            }
+        );
+
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.png"), b"\0secret").unwrap();
+        let absolute = outside.path().join("secret.png");
+        for path in [
+            "../secret.png",
+            "src/../../secret.png",
+            absolute.to_str().unwrap(),
+        ] {
+            assert!(read(dir.path(), path, true).is_err(), "{path} was read");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("out")).unwrap();
+            std::os::unix::fs::symlink(absolute, dir.path().join("linked.png")).unwrap();
+            assert!(read(dir.path(), "out/secret.png", true).is_err());
+            assert!(read(dir.path(), "linked.png", true).is_err());
+        }
     }
 }
