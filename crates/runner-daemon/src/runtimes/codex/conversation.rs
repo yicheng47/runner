@@ -42,9 +42,11 @@ fn find_rollout(dir: &Path, suffixes: &[String], depth: usize) -> std::io::Resul
 
 /// A key replaced by a foreign Codex session (#1109) leaves the row's first
 /// conversation on disk, opening with the row's capture marker. It is taken
-/// back only when it is the one such rollout and was still being written
-/// after the replacement key was minted, so a conversation the chat had
-/// already left behind (a restart or `/new`) is never revived.
+/// back only when it is the one such rollout, was still being written after
+/// the replacement key was minted, and is older than that key, as a worker
+/// thread is younger than its parent. A conversation the chat had already
+/// left (a restart or `/new`), or left for an older thread through Codex's
+/// own `/resume`, is never revived.
 pub(super) fn recover_conversation(
     home: &Path,
     session_id: &str,
@@ -68,10 +70,13 @@ pub(super) fn recover_conversation(
         {
             continue;
         }
-        if let Some(id) = opened_with_marker(&path, &marker) {
-            if recovered.replace(id).is_some() {
-                return None;
-            }
+        let Some(id) = opened_with_marker(&path, &marker) else {
+            continue;
+        };
+        if uuid_v7_time(&id).is_some_and(|opened| opened < minted)
+            && recovered.replace(id).is_some()
+        {
+            return None;
         }
     }
     recovered
@@ -283,12 +288,23 @@ mod tests {
         let minted = SystemTime::now() - Duration::from_secs(60);
         let missing = v7(minted);
         let original = v7(minted - Duration::from_secs(60));
+        let startup = runner_core::protocol::hook::codex_startup_output(
+            &session.to_string(),
+            &json!({"hook_event_name": "SessionStart", "source": "startup", "session_id": original}),
+            Some(&original),
+        )
+        .unwrap();
         write_rollout(
             &dir,
             &original,
             json!({}),
             &[
-                message("developer", &marker),
+                message(
+                    "developer",
+                    startup["hookSpecificOutput"]["additionalContext"]
+                        .as_str()
+                        .unwrap(),
+                ),
                 message("user", "Remember the word banana. Reply OK."),
                 message("assistant", "OK"),
             ],
@@ -310,6 +326,37 @@ mod tests {
     }
 
     #[test]
+    fn recovery_refuses_a_key_older_than_the_marked_conversation() {
+        let home = tempfile::tempdir().unwrap();
+        let session = ulid::Ulid::new();
+        let id = session.to_string();
+        let dir = day_dir(
+            home.path(),
+            DateTime::<Utc>::from(session.datetime()).into(),
+        );
+        let created = SystemTime::now() - Duration::from_secs(600);
+        let original = v7(created);
+        write_rollout(&dir, &original, json!({}), &opening(&prompt_marker(&id)));
+
+        let resumed_older = v7(created - Duration::from_secs(3600));
+        assert_eq!(
+            recover_conversation(home.path(), &id, &resumed_older),
+            None,
+            "a /resume into an older thread left the marked conversation"
+        );
+        assert_eq!(
+            recover_conversation(home.path(), &id, &v7(created)),
+            None,
+            "a key minted in the same millisecond is not after the original"
+        );
+        let foreign_worker = v7(created + Duration::from_secs(60));
+        assert_eq!(
+            recover_conversation(home.path(), &id, &foreign_worker),
+            Some(original)
+        );
+    }
+
+    #[test]
     fn recovery_refuses_stale_ambiguous_or_untimed_candidates() {
         let home = tempfile::tempdir().unwrap();
         let session = ulid::Ulid::new();
@@ -321,7 +368,8 @@ mod tests {
         );
         let minted = SystemTime::now() - Duration::from_secs(60);
         let missing = v7(minted);
-        let original = write_rollout(&dir, &v7(minted), json!({}), &opening(&marker));
+        let original_key = v7(minted - Duration::from_secs(30));
+        let original = write_rollout(&dir, &original_key, json!({}), &opening(&marker));
 
         assert_eq!(
             recover_conversation(home.path(), &id, &uuid::Uuid::new_v4().to_string()),
@@ -347,7 +395,16 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now())
             .unwrap();
-        write_rollout(&dir, &v7(minted), json!({}), &opening(&marker));
+        assert_eq!(
+            recover_conversation(home.path(), &id, &missing),
+            Some(original_key)
+        );
+        write_rollout(
+            &dir,
+            &v7(minted - Duration::from_secs(20)),
+            json!({}),
+            &opening(&marker),
+        );
         assert_eq!(recover_conversation(home.path(), &id, &missing), None);
     }
 }

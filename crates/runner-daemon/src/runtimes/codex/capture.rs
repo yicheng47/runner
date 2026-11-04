@@ -44,10 +44,8 @@ use rusqlite::params;
 
 const CAPTURE_TIMEOUT_SECS: u64 = 30;
 const POLL_INTERVAL_MS: u64 = 400;
-const PROMPT_MARKER_PREFIX: &str = "runner-codex-session-key-capture:";
-
 pub fn prompt_marker(session_id: &str) -> String {
-    format!("<!-- {PROMPT_MARKER_PREFIX}{session_id} -->")
+    runner_core::protocol::hook::codex_session_marker(session_id)
 }
 
 /// Process-shared set of rollout paths that some watcher has already

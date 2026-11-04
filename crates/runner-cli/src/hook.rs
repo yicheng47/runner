@@ -275,16 +275,10 @@ fn serve(
                     .map(str::to_owned);
                 let mut response = json!({});
                 if let Some(route) = route {
-                    if event == "SessionStart"
-                        && payload["source"] == "startup"
-                        && thread
-                            .as_deref()
-                            .is_some_and(|id| payload["session_id"].as_str() == Some(id))
+                    if let Some(output) =
+                        hook::codex_startup_output(&route.session, &payload, thread.as_deref())
                     {
-                        response = json!({"hookSpecificOutput": {
-                            "hookEventName": "SessionStart",
-                            "additionalContext": format!("<!-- runner-codex-session-key-capture:{} -->", route.session),
-                        }});
+                        response = output;
                     }
                     let _ = runtime.block_on(deliver(
                         &route.endpoint,
@@ -613,7 +607,7 @@ mod tests {
                     context,
                     json!({"hookSpecificOutput": {
                         "hookEventName": "SessionStart",
-                        "additionalContext": "<!-- runner-codex-session-key-capture:01M6K3Q2XF5NTWR80G0MREWQ2E -->",
+                        "additionalContext": hook::codex_session_marker(&route.session),
                     }})
                 );
             } else {
