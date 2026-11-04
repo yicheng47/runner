@@ -548,6 +548,23 @@ impl ConnectionWindows {
                 _ => unreachable!(),
             });
         }
+        if let Request::files_watch { root } = request {
+            // Under the owners lock, so a watch in flight cannot outlive `remove`.
+            let _owners = self.owners.lock().unwrap();
+            if self.closed.is_cancelled() {
+                return None;
+            }
+            return Some(Response::files_watch(
+                self.core
+                    .files
+                    .watch(self.id, root)
+                    .map_err(|error| ClientError::msg(error.to_string())),
+            ));
+        }
+        if let Request::files_unwatch { root } = request {
+            self.core.files.unwatch(self.id, &root);
+            return Some(Response::files_unwatch(Ok(())));
+        }
         if let Request::remote_follow { computer, follow } = request {
             return Some(Response::remote_follow(
                 super::block_on(async {
@@ -683,6 +700,7 @@ impl ConnectionWindows {
     fn remove(&self) {
         self.core.remote.owner_gone(self.id);
         let mut owners = self.owners.lock().unwrap();
+        self.core.files.client_gone(self.id);
         self.core.sessions.clear_connection_compositions(self.id);
         owners.retain(|label, owner| {
             if *owner != self.id {
@@ -1771,6 +1789,36 @@ mod tests {
             }
             response => panic!("unexpected response: {response:?}"),
         }
+    }
+
+    #[test]
+    fn a_disconnect_releases_the_connection_s_file_watches() {
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let connection = |id| ConnectionWindows {
+            core: core.clone(),
+            owners: Arc::new(Mutex::default()),
+            id,
+            closed: CancellationToken::new(),
+        };
+        let (first, second) = (connection(1), connection(2));
+        let watch = |windows: &ConnectionWindows| {
+            windows.dispatch(Request::files_watch {
+                root: root.path().to_path_buf(),
+            })
+        };
+        assert!(matches!(watch(&first), Some(Response::files_watch(Ok(())))));
+        assert!(matches!(
+            watch(&second),
+            Some(Response::files_watch(Ok(())))
+        ));
+        first.closed.cancel();
+        first.remove();
+        assert!(watch(&first).is_none());
+        assert_eq!(core.files.watched_roots(), [root.path().to_path_buf()]);
+        second.closed.cancel();
+        second.remove();
+        assert!(core.files.watched_roots().is_empty());
     }
 
     #[test]

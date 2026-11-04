@@ -13,9 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use runner_core::protocol::files::{DirEntry, FileContent, GitStatus, WorktreeEntry};
+use runner_core::protocol::files::{
+    DirEntry, FileContent, FilesRootOutcome, FilesSubject, GitStatus, WorktreeEntry,
+};
+use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::events::EventChannel;
 use crate::runtime_status::SharedShellEnv;
 use git::Git;
@@ -166,6 +169,95 @@ impl FilesService {
     pub(crate) fn watched_roots(&self) -> Vec<PathBuf> {
         self.watches.lock().unwrap().keys().cloned().collect()
     }
+}
+
+/// The subject's saved root and its own working directory (`None` for a
+/// chat or terminal outside a project).
+fn subject_dirs(
+    conn: &Connection,
+    subject: &FilesSubject,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let nonempty = |cwd: Option<String>| cwd.filter(|cwd| !cwd.trim().is_empty());
+    let project_cwd = |project_id: &str| -> Result<Option<String>> {
+        Ok(crate::repo::project::get(conn, project_id)?.map(|project| project.cwd))
+    };
+    let (saved, own) = match subject {
+        FilesSubject::Session(id) => {
+            let row = crate::repo::session::get_row(conn, id)?
+                .ok_or_else(|| Error::msg(format!("session {id} not found")))?;
+            let own = match row.project_id.as_deref() {
+                None => None,
+                Some(project_id) => match nonempty(row.cwd) {
+                    Some(cwd) => Some(cwd),
+                    None => project_cwd(project_id)?,
+                },
+            };
+            (crate::repo::session::files_root(conn, id)?, own)
+        }
+        FilesSubject::Mission(id) => {
+            let mission = crate::repo::mission::get(conn, id)?
+                .ok_or_else(|| Error::msg(format!("mission {id} not found")))?;
+            let own = match (nonempty(mission.cwd), mission.project_id.as_deref()) {
+                (Some(cwd), _) => Some(cwd),
+                (None, Some(project_id)) => project_cwd(project_id)?,
+                (None, None) => None,
+            };
+            (crate::repo::mission::files_root(conn, id)?, own)
+        }
+    };
+    Ok((saved.map(PathBuf::from), own.map(PathBuf::from)))
+}
+
+fn save_root(conn: &Connection, subject: &FilesSubject, root: Option<&str>) -> Result<()> {
+    let updated = match subject {
+        FilesSubject::Session(id) => crate::repo::session::set_files_root(conn, id, root)?,
+        FilesSubject::Mission(id) => crate::repo::mission::set_files_root(conn, id, root)?,
+    };
+    if updated == 0 {
+        return Err(Error::msg(format!("{subject:?} not found")));
+    }
+    Ok(())
+}
+
+pub fn root(core: &crate::AppCore, subject: &FilesSubject) -> Result<FilesRootOutcome> {
+    let (saved, own) = subject_dirs(&*core.db.get()?, subject)?;
+    let git = core.files.git();
+    let resolved = root::resolve(git.as_ref(), saved.as_deref(), own.as_deref());
+    if resolved.forget_saved {
+        save_root(&*core.db.get()?, subject, None)?;
+    }
+    Ok(resolved.outcome)
+}
+
+/// Saves `path` as the subject's root and adds it to the recent folders;
+/// `None` returns the subject to its own checkout.
+pub fn set_root(
+    core: &crate::AppCore,
+    subject: &FilesSubject,
+    path: Option<&Path>,
+) -> Result<FilesRootOutcome> {
+    let saved = match path {
+        Some(path) => {
+            fs::check_root(path)?;
+            Some(
+                path.to_str()
+                    .ok_or_else(|| Error::msg(format!("{} is not UTF-8", path.display())))?,
+            )
+        }
+        None => None,
+    };
+    save_root(&*core.db.get()?, subject, saved)?;
+    if let Some(path) = path {
+        crate::db::push_files_recent_folder(&core.db, path)?;
+    }
+    root(core, subject)
+}
+
+/// The recent folders that still exist, newest first.
+pub fn recent_folders(core: &crate::AppCore) -> Result<Vec<PathBuf>> {
+    let mut folders = crate::db::files_recent_folders(&core.db)?;
+    folders.retain(|folder| folder.is_dir());
+    Ok(folders)
 }
 
 pub fn read(root: &Path, path: &str) -> Result<FileContent> {
