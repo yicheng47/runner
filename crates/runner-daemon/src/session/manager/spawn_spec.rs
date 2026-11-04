@@ -1,7 +1,7 @@
 use super::*;
 
 const LOCALE_VARS: [&str; 3] = ["LANG", "LC_ALL", "LC_CTYPE"];
-use runner_core::protocol::SESSION_ID_ENV;
+use runner_core::protocol::{SESSION_CLI_ENV, SESSION_ID_ENV};
 
 /// Dock-launched GUI apps inherit no locale, so children run in the
 /// POSIX C locale and macOS clipboard tools (claude's `pbpaste`)
@@ -141,6 +141,16 @@ impl SessionManager {
         // from a chat links the mission to it (#748). Terminals cannot be linked.
         if !Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell) {
             env.insert(SESSION_ID_ENV.into(), session_id.clone());
+        }
+        // Login shells may put another build's `runner` ahead of these
+        // directories; that `runner` hands the invocation back to this one (#1149).
+        if let Some(cli) = shim_dir.as_ref().or(bundled_bin_dir.as_ref()) {
+            env.insert(
+                SESSION_CLI_ENV.into(),
+                cli.join(runner_core::cli_install::AGENT_DEST_BIN_NAME)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         SpawnSpec {
             agent_runtime: Runtime::parse(&role.runtime),

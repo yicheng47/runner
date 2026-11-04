@@ -23,6 +23,7 @@ use runner_core::command_install::{RunnerCommandState, RunnerCommandStatus};
 
 use runner_core::cli_install::{SessionShimConfig, AGENT_DEST_BIN_NAME, SESSION_SHIM_CONFIG_NAME};
 use runner_core::protocol::command::{CommandActionOutcome, CommandInstallInputs, CommandPlatform};
+use runner_core::protocol::SESSION_CLI_ENV;
 
 /// Drop a per-(mission,slot) `runner` shim into
 /// `$APPDATA/missions/<mission_id>/shims/<handle>/bin/runner` that
@@ -82,6 +83,8 @@ pub fn install_session_runner_shim(
     if let Some(cwd) = mission_cwd {
         script.push_str(&format!("export MISSION_CWD='{}'\n", sh_escape(cwd)));
     }
+    // The invocation has reached its slot's CLI; it must not hand off again (#1149).
+    script.push_str(&format!("unset {SESSION_CLI_ENV}\n"));
     script.push_str(&format!(
         "exec '{}' \"$@\"\n",
         sh_escape(&real_runner.to_string_lossy())
@@ -107,6 +110,7 @@ pub fn install_session_runner_shim(
                 "RUNNER_EVENT_LOG".to_owned(),
                 Some(event_log_str.into_owned()),
             ),
+            (SESSION_CLI_ENV.to_owned(), None),
         ]);
         if let Some(cwd) = mission_cwd {
             env.insert("MISSION_CWD".to_owned(), Some(cwd.to_owned()));
@@ -1199,7 +1203,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(shim_dir.join("runner")).unwrap(),
             format!(
-                "#!/bin/sh\n# Auto-generated session shim. See cli_install::install_session_runner_shim.\nexport RUNNER_CREW_ID='crew-1'\nexport RUNNER_MISSION_ID='mission-1'\nexport RUNNER_HANDLE='coder'\nexport RUNNER_EVENT_LOG='{}'\nexport MISSION_CWD='a'\\''b'\nexec '{}' \"$@\"\n",
+                "#!/bin/sh\n# Auto-generated session shim. See cli_install::install_session_runner_shim.\nexport RUNNER_CREW_ID='crew-1'\nexport RUNNER_MISSION_ID='mission-1'\nexport RUNNER_HANDLE='coder'\nexport RUNNER_EVENT_LOG='{}'\nexport MISSION_CWD='a'\\''b'\nunset RUNNER_SESSION_CLI\nexec '{}' \"$@\"\n",
                 event_log.display(), runner_path,
             ),
         );
@@ -1242,6 +1246,7 @@ mod tests {
                     "RUNNER_EVENT_LOG".to_owned(),
                     Some(event_log.display().to_string()),
                 ),
+                ("RUNNER_SESSION_CLI".to_owned(), None),
             ]);
             if let Some(cwd) = cwd {
                 env.insert("MISSION_CWD".to_owned(), Some(cwd.to_owned()));

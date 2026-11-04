@@ -176,3 +176,89 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
         );
     }
 }
+
+#[test]
+fn every_session_names_its_daemons_runner_and_a_slot_names_its_shim() {
+    use runner_core::cli_install::AGENT_DEST_BIN_NAME;
+    use runner_core::protocol::SESSION_CLI_ENV;
+
+    let pool = pool_with_schema();
+    let data = tempfile::tempdir().unwrap();
+    let cwd = data.path().to_str().unwrap();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let bundled = data.path().join("bin").join(AGENT_DEST_BIN_NAME);
+    let session_cli = || {
+        fake.last_spawn_spec()
+            .unwrap()
+            .env
+            .get(SESSION_CLI_ENV)
+            .map(PathBuf::from)
+    };
+
+    let chat = role("/bin/sh", &["-c", "true"]);
+    insert_role_row(&pool.get().unwrap(), &chat);
+    let spawned = mgr
+        .spawn_direct(
+            &chat,
+            None,
+            None,
+            None,
+            None,
+            Some(cwd),
+            None,
+            None,
+            data.path(),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(session_cli(), Some(bundled.clone()), "chat");
+    mgr.kill(&spawned.id).unwrap();
+
+    let shell = runtime_direct_role("shell", Some("/bin/sh"), None, None).unwrap();
+    let terminal = mgr
+        .spawn_runtime_direct(
+            &shell,
+            None,
+            Some(cwd),
+            None,
+            None,
+            data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+        .unwrap();
+    assert_eq!(session_cli(), Some(bundled), "terminal pane");
+    mgr.kill(&terminal.id).unwrap();
+
+    let mission = mission();
+    let member = role("/bin/sh", &["-c", "true"]);
+    insert_crew_role(&pool, &mission.id, &member.id);
+    let slot = slot_for(&member);
+    let slot_session = mgr
+        .spawn(
+            &mission,
+            &member,
+            &slot,
+            data.path(),
+            data.path().join("events.ndjson"),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let shim = data
+        .path()
+        .join("missions")
+        .join(&mission.id)
+        .join("shims")
+        .join(&slot.slot_handle)
+        .join("bin")
+        .join(AGENT_DEST_BIN_NAME);
+    assert_eq!(session_cli(), Some(shim.clone()), "mission slot");
+    #[cfg(unix)]
+    assert!(shim.is_file());
+    mgr.kill(&slot_session.id).unwrap();
+}

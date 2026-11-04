@@ -6,6 +6,11 @@ use std::collections::BTreeMap;
 /// and fork. An address, not a caller identity (#748).
 pub const SESSION_ID_ENV: &str = "RUNNER_SESSION_ID";
 
+/// The `runner` executable of the daemon that spawned the session: its bundled
+/// CLI, or a mission slot's shim. A bare `runner` that the shell resolves to
+/// another build hands its invocation to this one (#1149).
+pub const SESSION_CLI_ENV: &str = "RUNNER_SESSION_CLI";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MissionReadCursor {
     pub start_offset: u64,

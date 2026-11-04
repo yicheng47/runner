@@ -161,8 +161,13 @@ mod tests {
         assert!(debug.contains(r#""C:\Runner Dev\bin\runner.exe""#));
         assert!(!debug.contains("Use `runner` when it is on PATH"));
         assert!(debug.contains(
-            r#"Run "C:\Runner Dev\bin\runner.exe" help agents for the version-matched command guide."#
+            r#"Run RUNNER_SESSION_CLI= "C:\Runner Dev\bin\runner.exe" help agents for the version-matched command guide."#
         ));
+        assert!(debug.contains(r#"`RUNNER_SESSION_CLI= "C:\Runner Dev\bin\runner.exe" msg read`"#));
+        assert!(debug.contains(
+            r#"mission=$(RUNNER_SESSION_CLI= "C:\Runner Dev\bin\runner.exe" mission start"#
+        ));
+        assert!(!release.contains("RUNNER_SESSION_CLI"));
         assert!(release.contains("Use `runner` when it is on PATH"));
         assert!(release.contains("Run `runner help agents`"));
         assert!(debug_description.starts_with(
@@ -185,7 +190,7 @@ mod tests {
         for debug in [false, true] {
             let skill = render(debug, Path::new("/Runner Dev/bin/runner"));
             let command = if debug {
-                "\"/Runner Dev/bin/runner\""
+                "RUNNER_SESSION_CLI= \"/Runner Dev/bin/runner\""
             } else {
                 "runner"
             };

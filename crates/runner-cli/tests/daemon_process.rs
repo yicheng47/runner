@@ -51,6 +51,7 @@ fn fresh_headless_daemon_installs_real_shim_and_starts_shell_without_shell_env()
     .unwrap();
     let result = Command::new(shim_dir.join("runner"))
         .arg("--version")
+        .env_remove(runner_core::protocol::SESSION_CLI_ENV)
         .output()
         .unwrap();
     assert!(
