@@ -270,6 +270,7 @@ impl MissionWorkspace {
             duplicate_dismissed: false,
             primary_label: None,
             rail_view: PanelViewId::default(),
+            rail_files: Default::default(),
             action_menu,
             menu_actions: Vec::new(),
             menu_pinned: false,
@@ -350,6 +351,7 @@ impl MissionWorkspace {
 
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
+        self.rail_files.release(cx);
         if self.presentation.release_feed() {
             self.generation += 1;
         }

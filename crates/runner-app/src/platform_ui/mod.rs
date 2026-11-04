@@ -32,6 +32,29 @@ pub(crate) use windows::{
     SHORTCUT_REQUIREMENTS_KEY,
 };
 
+thread_local! {
+    static TITLEBAR_PRESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Capture-phase half of a titlebar press: a first click anywhere over a drag
+/// area, including on a control inside it, forgets the last titlebar press.
+pub(crate) fn capture_titlebar_press(event: &gpui::MouseDownEvent) {
+    if event.click_count == 1 {
+        TITLEBAR_PRESS.set(false);
+    }
+}
+
+/// Records a press that reached a drag area and says whether it completes a
+/// titlebar double-click. Both clicks must land on the drag area: a control
+/// that hides itself on the first click must not turn the second into a zoom
+/// on whatever it uncovered.
+pub(crate) fn titlebar_double_click(click_count: usize) -> bool {
+    if click_count == 1 {
+        TITLEBAR_PRESS.set(true);
+    }
+    click_count == 2 && TITLEBAR_PRESS.get()
+}
+
 #[cfg(any(windows, target_os = "linux"))]
 pub(crate) use desktop::titlebar_mouse_down;
 #[cfg(target_os = "macos")]

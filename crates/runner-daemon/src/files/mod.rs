@@ -165,8 +165,8 @@ impl FilesService {
         self.watches.lock().unwrap()[root]._watch.status_runs()
     }
 
-    #[cfg(test)]
-    pub(crate) fn watched_roots(&self) -> Vec<PathBuf> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn watched_roots(&self) -> Vec<PathBuf> {
         self.watches.lock().unwrap().keys().cloned().collect()
     }
 }
