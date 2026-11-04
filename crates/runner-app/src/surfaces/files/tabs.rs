@@ -87,6 +87,33 @@ impl FileTabs {
         }
     }
 
+    /// Opens `path` in a kept tab of its own beside the active one, as a
+    /// link does, leaving every other tab, the preview too, as it is; an
+    /// open file switches to its tab.
+    pub(crate) fn open_beside(&mut self, path: &str) -> Opened {
+        if let Some(index) = self.position(path) {
+            self.active = index;
+            return Opened::default();
+        }
+        let at = if self.tabs.is_empty() {
+            0
+        } else {
+            self.active + 1
+        };
+        self.tabs.insert(
+            at,
+            FileTab {
+                path: path.to_owned(),
+                preview: false,
+            },
+        );
+        self.active = at;
+        Opened {
+            new: true,
+            replaced: None,
+        }
+    }
+
     /// Keeps the tab, as a double-click on it or on its file does.
     pub(crate) fn keep(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get_mut(index) {
@@ -248,5 +275,41 @@ mod tests {
             preview: true,
         };
         assert_eq!((top.name(), top.folder()), ("README.md", ""));
+    }
+
+    #[test]
+    fn a_link_opens_beside_the_active_tab_and_never_replaces_the_preview() {
+        let mut tabs = FileTabs::default();
+        tabs.open("README.md", false);
+        let opened = tabs.open_beside("docs/guide.md");
+        assert_eq!(
+            opened,
+            Opened {
+                new: true,
+                replaced: None
+            }
+        );
+        assert_eq!(
+            paths(&tabs),
+            [("README.md", true), ("docs/guide.md", false)]
+        );
+        assert_eq!(tabs.active().unwrap().path, "docs/guide.md");
+        tabs.activate(0);
+        tabs.open_beside("a.md");
+        assert_eq!(
+            paths(&tabs),
+            [
+                ("README.md", true),
+                ("a.md", false),
+                ("docs/guide.md", false)
+            ]
+        );
+        assert_eq!(tabs.open_beside("README.md"), Opened::default());
+        assert_eq!(tabs.active_index(), Some(0));
+        assert_eq!(
+            paths(&tabs)[0],
+            ("README.md", true),
+            "following a link keeps nothing"
+        );
     }
 }

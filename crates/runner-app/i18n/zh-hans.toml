@@ -936,6 +936,8 @@
 "ui.show_all_items" = "显示全部"
 "ui.show_files_from_here" = "从这里显示文件"
 "ui.show_in_explorer" = "在资源管理器中显示"
+"ui.show_markdown_rendered" = "显示渲染后的 Markdown"
+"ui.show_markdown_source" = "显示 Markdown 源码"
 "ui.show_less" = "收起"
 "ui.show_terminal_drawer" = "显示终端抽屉"
 "ui.sign_in_to_claude_code_to_see_usage" = "登录 Claude Code 后可查看用量。"
