@@ -192,7 +192,7 @@ macro_rules! daemon_api {
         files_list(root: &std::path::Path => PathBuf = { root.to_path_buf() }, folder: &str => String = { folder.to_owned() }) -> Vec<files::DirEntry> [false] => |core: &crate::AppCore, root: PathBuf, folder: String| { core.files.list(&root, &folder) };
         files_status(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> files::GitStatus [false] => |core: &crate::AppCore, root: PathBuf| { core.files.status(&root) };
         files_worktrees(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> Vec<files::WorktreeEntry> [false] => |core: &crate::AppCore, root: PathBuf| { core.files.worktrees(&root) };
-        files_read(root: &std::path::Path => PathBuf = { root.to_path_buf() }, path: &str => String = { path.to_owned() }) -> files::FileContent [false] => |_core: &crate::AppCore, root: PathBuf, path: String| { crate::files::read(&root, &path) };
+        files_read(root: &std::path::Path => PathBuf = { root.to_path_buf() }, path: &str => String = { path.to_owned() }, want_bytes: bool => Option<bool> = { want_bytes.then_some(true) }) -> files::FileContent [false] => |_core: &crate::AppCore, root: PathBuf, path: String, want_bytes: Option<bool>| { crate::files::read(&root, &path, want_bytes.unwrap_or(false)) };
         files_watch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.watch(0, root) };
         files_unwatch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.unwatch(0, &root); Ok(()) };
         files_recent_folders() -> Vec<PathBuf> [false] => |core: &crate::AppCore| { crate::files::recent_folders(core) };

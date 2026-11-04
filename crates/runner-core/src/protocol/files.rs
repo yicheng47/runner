@@ -213,6 +213,10 @@ pub enum FileContent {
     },
     Binary {
         size: u64,
+        /// The file's bytes, only when `files_read` asked for them, as the
+        /// viewer does for a Markdown file's local images.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes: Option<TerminalBytes>,
     },
     /// Over [`MAX_READ_BYTES`], so not read.
     TooLarge {
@@ -329,5 +333,45 @@ mod tests {
             serde_json::to_value(&text).unwrap(),
             serde_json::json!({"kind": "text", "bytes": "aGkK", "size": 3, "modified": null})
         );
+    }
+
+    #[test]
+    fn binary_bytes_travel_only_when_asked_for_and_old_requests_still_read() {
+        let plain = FileContent::Binary {
+            size: 3,
+            bytes: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({"kind": "binary", "size": 3})
+        );
+        let with_bytes = FileContent::Binary {
+            size: 3,
+            bytes: Some(TerminalBytes(b"\0hi".to_vec())),
+        };
+        let wire = serde_json::to_value(&with_bytes).unwrap();
+        assert_eq!(wire["bytes"], "AGhp");
+        assert_eq!(
+            serde_json::from_value::<FileContent>(wire).unwrap(),
+            with_bytes
+        );
+        assert_eq!(
+            serde_json::from_value::<FileContent>(serde_json::json!({"kind": "binary", "size": 3}))
+                .unwrap(),
+            plain
+        );
+
+        // A client from before `want_bytes` leaves it out; it reads as false.
+        let old: crate::protocol::api::Request = serde_json::from_value(
+            serde_json::json!({"files_read": {"root": "/repo", "path": "a.png"}}),
+        )
+        .unwrap();
+        assert!(matches!(
+            old,
+            crate::protocol::api::Request::files_read {
+                want_bytes: None,
+                ..
+            }
+        ));
     }
 }

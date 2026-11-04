@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -1895,4 +1896,799 @@ fn code_that_becomes_a_placeholder_hands_focus_back_to_the_viewer() {
             h.wait("the file", |h| h.has("FILE_CODE"));
         }
     }
+}
+
+// ── Highlighting and Markdown (m5) ─────────────────────────────────────
+
+impl Harness {
+    fn highlighted(&mut self) -> bool {
+        let code = self.code();
+        code.read_with(&self.visual, |code, _| code.highlights().is_some())
+    }
+
+    /// The runs drawn for `line` in the last frame: text and colour.
+    fn painted(&mut self, line: usize) -> Vec<(String, gpui::Hsla)> {
+        let code = self.code();
+        code.read_with(&self.visual, |code, _| {
+            code.painted
+                .borrow()
+                .get(&line)
+                .cloned()
+                .unwrap_or_default()
+        })
+    }
+
+    fn set_terminal_themes(
+        &mut self,
+        dark: crate::app_settings::DarkTerminalTheme,
+        light: crate::app_settings::LightTerminalTheme,
+    ) {
+        self.store.update(&mut self.visual, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    settings.dark_terminal_theme = dark;
+                    settings.light_terminal_theme = light;
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        self.redraw();
+    }
+}
+
+fn color(hex: u32) -> gpui::Hsla {
+    gpui::rgb(hex).into()
+}
+
+#[test]
+fn code_is_highlighted_in_the_terminal_palette_of_each_theme() {
+    use crate::app_settings::{DarkTerminalTheme, LightTerminalTheme};
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("src/client.rs"),
+        "pub struct Client {\n    reader: u32,\n}\n",
+    )
+    .unwrap();
+    h.open("src/client.rs", true);
+    h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
+    for (variant, dark, light, keyword, ty) in [
+        // Appearance's defaults: Runner in dark, Rosé Pine Dawn in light.
+        (
+            ThemeVariant::Carbon,
+            DarkTerminalTheme::Runner,
+            LightTerminalTheme::RosePineDawn,
+            0xc792ea,
+            0xffcb6b,
+        ),
+        (
+            ThemeVariant::RunnerLight,
+            DarkTerminalTheme::Runner,
+            LightTerminalTheme::RosePineDawn,
+            0x286983,
+            0x56949f,
+        ),
+        (
+            ThemeVariant::Carbon,
+            DarkTerminalTheme::CatppuccinMocha,
+            LightTerminalTheme::RosePineDawn,
+            0xcba6f7,
+            0xf9e2af,
+        ),
+    ] {
+        theme::set_active_variant(variant);
+        h.set_terminal_themes(dark, light);
+        let line = h.painted(0);
+        assert!(
+            line.contains(&("pub".into(), color(keyword))),
+            "{variant:?} {line:?}"
+        );
+        assert!(
+            line.contains(&("struct".into(), color(keyword))),
+            "{line:?}"
+        );
+        assert!(line.contains(&("Client".into(), color(ty))), "{line:?}");
+        assert!(
+            line.contains(&(" ".into(), theme::text())),
+            "plain text keeps the text colour: {line:?}"
+        );
+        let field = h.painted(1);
+        assert!(
+            field.contains(&("u32".into(), color(ty))),
+            "type.builtin falls back to type: {field:?}"
+        );
+    }
+}
+
+#[test]
+fn a_file_in_no_bundled_language_stays_plain() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("notes.txt"), "fn not code\n").unwrap();
+    h.open("notes.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert!(!h.highlighted());
+    assert_eq!(h.painted(0), [("fn not code".to_owned(), theme::text())]);
+}
+
+#[test]
+fn a_ten_megabyte_file_is_highlighted_off_the_ui_thread_and_styles_only_visible_lines() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    let line = "let value: u32 = compute(1, \"text\"); // a note\n";
+    let limit = runner_core::protocol::files::MAX_READ_BYTES as usize;
+    let body = line.repeat(limit / line.len());
+    assert!(body.len() > limit - line.len() && body.len() <= limit);
+    std::fs::write(h.repo.join("src/big.rs"), &body).unwrap();
+    h.open("src/big.rs", true);
+    h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
+    let code = h.code();
+    let spans =
+        |h: &mut Harness| code.read_with(&h.visual, |code, _| code.highlights().cloned().unwrap());
+    let first = spans(&mut h);
+    let lines = code.read_with(&h.visual, |code, _| code.document().line_count());
+    assert_eq!(first.line_count(), lines);
+
+    // A reply lands and draws with no highlighting in its path: until the
+    // background executor brings the new spans, the last ones stay.
+    let read = h.read(|view| view.read_seq("src/big.rs")).unwrap();
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.reply_text("src/big.rs", read, &body, cx)
+    });
+    assert!(
+        Arc::ptr_eq(&spans(&mut h), &first),
+        "a new text is never highlighted on the UI thread"
+    );
+    h.wait("the new highlights", |h| !Arc::ptr_eq(&spans(h), &first));
+
+    let counts = crate::render_counts::RenderCounts::default();
+    h.visual.update(|_, cx| cx.set_global(counts.clone()));
+    counts.0.borrow_mut().clear();
+    h.redraw();
+    let styled = counts
+        .0
+        .borrow()
+        .get("file-code-styled-lines")
+        .copied()
+        .unwrap_or(0);
+    assert!(
+        styled > 0 && styled < 100,
+        "styled {styled} of {lines} lines"
+    );
+    assert!(h.painted(0).contains(&("let".into(), color(0xc792ea))));
+}
+
+#[test]
+fn a_reload_highlights_the_new_text() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("src/edit.rs"), "fn one() {}\n").unwrap();
+    h.open("src/edit.rs", true);
+    h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
+    // FSEvents can miss a write in the instant its stream starts, so write
+    // again until the watcher reports it.
+    let path = h.repo.join("src/edit.rs");
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the reload's highlights", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(&path, "// now a comment\nfn two() {}\n").unwrap();
+            touched = Instant::now();
+        }
+        h.line(0) == "// now a comment"
+            && h.painted(0) == [("// now a comment".to_owned(), color(0x6b6e7a))]
+    });
+    assert!(h.painted(1).contains(&("two".into(), color(0x82aaff))));
+}
+
+#[test]
+fn find_matches_over_highlighted_code() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("src/find_hl.rs"),
+        "struct Client;\nimpl Client {}\nfn make() -> Client { Client }\n",
+    )
+    .unwrap();
+    h.open("src/find_hl.rs", true);
+    h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    h.visual.simulate_input("Client");
+    h.wait("the matches", |h| {
+        h.read(|view| view.find_state())
+            .is_some_and(|(count, _)| count.as_deref() == Some("1 of 4"))
+    });
+    let code = h.code();
+    assert_eq!(
+        code.read_with(&h.visual, |code, _| code.find_highlights()),
+        (4, Some(0))
+    );
+    assert!(
+        h.painted(0).contains(&("Client".into(), color(0xffcb6b))),
+        "still highlighted"
+    );
+}
+
+const README: &str = "# Runner\n\
+\n\
+A local *cockpit* with `runner mission start` and [the guide](docs/guide.md).\n\
+\n\
+![Screenshot](assets/shot.png)\n\
+\n\
+| Role | Slots |\n\
+| :--- | ---: |\n\
+| coder | 1 |\n\
+\n\
+- [x] highlighting\n\
+- [ ] settings\n\
+\n\
+```rust\n\
+fn main() {}\n\
+```\n\
+\n\
+<p align=\"center\">centred</p>\n\
+\n\
+See [Zed](https://zed.dev) and [outside](../../outside.md).\n";
+
+/// A PNG's first bytes: it has NULs, so runnerd sees a binary file.
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x06\0\0\0\x1f\x15\xc4\x89\0\0\0\rIDATx\x9cc\xf8\x0f\0\0\x01\x01\0\x05\x18\xd8N\0\0\0\0IEND\xaeB`\x82";
+
+#[test]
+fn markdown_opens_rendered_in_both_themes_with_its_blocks_and_local_images() {
+    let _theme = ThemeGuard::new();
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("assets")).unwrap();
+    std::fs::write(h.repo.join("assets/shot.png"), PNG).unwrap();
+    std::fs::write(h.repo.join("README.md"), README).unwrap();
+    h.open("README.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    assert!(!h.has("FILE_CODE"), "Markdown opens rendered");
+    for selector in [
+        "FILE_MD_HEADING",
+        "FILE_MD_TABLE",
+        "FILE_MD_TASK_DONE",
+        "FILE_MD_TASK",
+        "FILE_MD_CODE",
+        "FILE_MD_HTML",
+        "FILE_MD_IMAGE",
+        "FILE_MARKDOWN_SOURCE",
+    ] {
+        assert!(h.has(selector), "{selector}");
+    }
+    assert!(
+        !h.has("FILE_MD_IMAGE_ALT"),
+        "the PNG came through files_read"
+    );
+    for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
+        theme::set_active_variant(variant);
+        h.redraw();
+        assert_text(&mut h.visual, "FILE_MD_HEADING", theme::text());
+        assert_text(&mut h.visual, "FILE_MD_PARAGRAPH", theme::muted());
+    }
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
+    assert_eq!(
+        rows, 10,
+        "heading, paragraph, image, 2 table rows, 2 items, a code line, HTML, the links"
+    );
+}
+
+#[test]
+fn the_source_toggle_switches_both_ways_and_find_opens_the_source() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("README.md"), README).unwrap();
+    h.open("README.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    h.click("FILE_MARKDOWN_SOURCE");
+    assert!(h.has("FILE_CODE") && !h.has("FILE_MARKDOWN"));
+    assert_eq!(h.line(0), "# Runner");
+    h.wait("the source's highlights", |h| h.highlighted());
+    assert!(h.painted(0).iter().any(|(text, _)| text == "Runner"));
+    h.click("FILE_MARKDOWN_SOURCE");
+    assert!(h.has("FILE_MARKDOWN") && !h.has("FILE_CODE"));
+
+    // ⌘F over the page searches its source.
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let focus = page.read_with(&h.visual, |page, _| page.focus_handle().clone());
+    h.visual.update(|window, cx| focus.focus(window, cx));
+    h.settle();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    assert!(h.has("FILE_FIND_BAR") && h.has("FILE_CODE"));
+    h.visual.simulate_input("guide");
+    h.wait("the matches", |h| {
+        h.read(|view| view.find_state())
+            .is_some_and(|(count, _)| count.as_deref() == Some("1 of 2"))
+    });
+    // Back to the page, find closes with the source.
+    h.click("FILE_MARKDOWN_SOURCE");
+    assert!(!h.has("FILE_FIND_BAR"));
+    assert_eq!(h.read(|view| view.find_state()), None);
+}
+
+#[test]
+fn links_open_the_browser_or_a_project_file_in_a_new_tab_and_never_leave_the_root() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(h.repo.join("docs/guide.md"), "# Guide\n").unwrap();
+    std::fs::write(h.repo.join("README.md"), README).unwrap();
+    // A single click opens the README in the preview tab: a link beside it
+    // keeps it.
+    h.open("README.md", false);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.follow_link("https://zed.dev", cx)
+    });
+    assert_eq!(h.read(|view| view.opened_urls()), ["https://zed.dev"]);
+    view.update(&mut h.visual, |view, cx| {
+        view.follow_link("../../outside.md", cx)
+    });
+    view.update(&mut h.visual, |view, cx| view.follow_link("#install", cx));
+    h.settle();
+    assert_eq!(
+        h.tabs(),
+        [("README.md".to_owned(), true)],
+        "nothing outside the root"
+    );
+    view.update(&mut h.visual, |view, cx| {
+        view.follow_link("docs/guide.md", cx)
+    });
+    h.wait("the linked file", |h| {
+        h.has("FILE_MARKDOWN") && h.read(|view| view.active_tab()) == Some("docs/guide.md".into())
+    });
+    assert_eq!(
+        h.tabs(),
+        [
+            ("README.md".to_owned(), true),
+            ("docs/guide.md".to_owned(), false)
+        ],
+        "a kept tab of its own beside the preview"
+    );
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.path().to_owned()),
+        "docs/guide.md"
+    );
+}
+
+#[test]
+fn a_rendered_page_reloads_on_change_keeping_its_place() {
+    let mut h = viewer(chat("in-project"));
+    let path = h.repo.join("NOTES.md");
+    let body = (0..200)
+        .map(|block| format!("Paragraph {block}.\n\n"))
+        .collect::<String>();
+    std::fs::write(&path, &body).unwrap();
+    h.open("NOTES.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    page.update(&mut h.visual, |page, _| page.scroll_to_row(120));
+    h.redraw();
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the reload", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(&path, format!("# Edited\n\n{body}")).unwrap();
+            touched = Instant::now();
+        }
+        page.read_with(&h.visual, |page, _| page.page().rows.len()) == 201
+    });
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.scroll_top().item_ix),
+        120,
+        "the reload keeps the block in view"
+    );
+}
+
+#[test]
+fn a_long_code_block_list_and_table_draw_only_their_rows_in_view() {
+    let mut h = viewer(chat("in-project"));
+    let mut text = String::from("```rust\n");
+    for line in 0..20_000 {
+        text.push_str(&format!("let v{line} = {line};\n"));
+    }
+    text.push_str("```\n\n");
+    for item in 0..5_000 {
+        text.push_str(&format!("- item {item}\n"));
+    }
+    text.push_str("\n| a | b |\n| - | - |\n");
+    for row in 0..5_000 {
+        text.push_str(&format!("| {row} | x |\n"));
+    }
+    std::fs::write(h.repo.join("BIG.md"), &text).unwrap();
+    h.open("BIG.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
+    assert_eq!(rows, 20_000 + 5_000 + 5_001);
+    let counts = crate::render_counts::RenderCounts::default();
+    h.visual.update(|_, cx| cx.set_global(counts.clone()));
+    for row in [0, 10_000, 22_000, 28_000] {
+        page.update(&mut h.visual, |page, _| page.scroll_to_row(row));
+        counts.0.borrow_mut().clear();
+        h.redraw();
+        let drawn = counts
+            .0
+            .borrow()
+            .get("file-markdown-rows")
+            .copied()
+            .unwrap_or(0);
+        assert!(drawn > 0 && drawn < 100, "drew {drawn} rows at {row}");
+    }
+}
+
+#[test]
+fn linked_and_table_images_load_and_a_linked_image_opens_its_link() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("assets")).unwrap();
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(h.repo.join("assets/shot.png"), PNG).unwrap();
+    std::fs::write(h.repo.join("docs/guide.md"), "# Guide\n").unwrap();
+    std::fs::write(
+        h.repo.join("TABLE.md"),
+        "| Logo |\n| --- |\n| ![Shot](assets/shot.png) |\n",
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("assets/logo.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("PICS.md"),
+        "[![Logo](assets/logo.svg)](docs/guide.md)\n",
+    )
+    .unwrap();
+    h.open("TABLE.md", true);
+    h.wait("the table's image", |h| {
+        h.has("FILE_MD_TABLE") && h.has("FILE_MD_IMAGE")
+    });
+    assert!(!h.has("FILE_MD_IMAGE_ALT"));
+    h.open("PICS.md", true);
+    h.wait("the linked image", |h| {
+        h.read(|view| view.active_tab()) == Some("PICS.md".into()) && h.has("FILE_MD_IMAGE")
+    });
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let images = page.read_with(&h.visual, |page, _| page.page().images());
+    assert_eq!(images, ["assets/logo.svg"]);
+    h.click("FILE_MD_IMAGE");
+    h.wait("the linked file", |h| {
+        h.read(|view| view.active_tab()) == Some("docs/guide.md".into())
+    });
+    assert_eq!(h.tabs().len(), 3);
+}
+
+#[test]
+fn a_deleted_rendered_page_keeps_closing_as_its_only_action() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("assets")).unwrap();
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(
+        h.repo.join("assets/logo.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(h.repo.join("docs/guide.md"), "# Guide\n").unwrap();
+    let path = h.repo.join("GONE.md");
+    std::fs::write(
+        &path,
+        "[![Logo](assets/logo.svg)](docs/guide.md)\n\nSee [Zed](https://zed.dev).\n",
+    )
+    .unwrap();
+    h.open("GONE.md", true);
+    h.wait("the page", |h| h.has("FILE_MD_IMAGE"));
+    // FSEvents can miss a change in the instant its stream starts: write
+    // until the watcher reports one, then delete.
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the watcher", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(
+                &path,
+                "[![Logo](assets/logo.svg)](docs/guide.md)\n\nSee [Zed](https://zed.dev).\n\nMore.\n",
+            )
+            .unwrap();
+            touched = Instant::now();
+        }
+        page.read_with(&h.visual, |page, _| page.page().rows.len()) == 3
+    });
+    std::fs::remove_file(&path).unwrap();
+    h.wait("the deleted state", |h| h.has("FILE_DELETED"));
+    assert!(h.has("FILE_MARKDOWN"), "the page stays, dimmed");
+    h.click("FILE_MD_IMAGE");
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.follow_link("https://zed.dev", cx)
+    });
+    h.settle();
+    assert_eq!(h.tabs(), [("GONE.md".to_owned(), false)], "no link opens");
+    assert!(h.read(|view| view.opened_urls()).is_empty());
+    h.click("FILE_MARKDOWN_SOURCE");
+    assert!(
+        h.has("FILE_MARKDOWN") && !h.has("FILE_CODE"),
+        "the toggle does nothing"
+    );
+    h.click("FILE_DELETED_CLOSE");
+    assert!(!h.has("FILE_VIEWER"));
+}
+
+#[test]
+fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("SELECT.md"),
+        "First paragraph here.\n\n```rust\nfn main() {}\nlet x = 1;\n```\n",
+    )
+    .unwrap();
+    h.open("SELECT.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let first = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    let middle = h.visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
+    let last = h.visual.debug_bounds("FILE_MD_TEXT 2").unwrap();
+    let start = gpui::point(first.left() + px(1.), first.center().y);
+    let end = gpui::point(last.right() - px(2.), last.center().y);
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    for point in [first.center(), middle.center(), last.center(), end] {
+        h.visual
+            .simulate_mouse_move(point, Some(gpui::MouseButton::Left), Modifiers::default());
+        h.settle();
+    }
+    h.visual
+        .simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h
+        .visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("copied text");
+    assert_eq!(copied, "First paragraph here.\nfn main() {}\nlet x = 1;");
+
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    page.update(&mut h.visual, |page, cx| {
+        use super::markdown::Position;
+        page.select(
+            Position { row: 1, offset: 3 },
+            Position { row: 1, offset: 7 },
+            cx,
+        )
+    });
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.selected_text()),
+        Some("main".into())
+    );
+}
+
+#[test]
+fn a_single_long_code_line_shapes_only_the_rows_in_view() {
+    let mut h = viewer(chat("in-project"));
+    let line = "let x = 1; ".repeat(500_000);
+    std::fs::write(h.repo.join("LINE.md"), format!("```\n{line}\n```\n")).unwrap();
+    h.open("LINE.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
+    assert!(rows > 10_000, "{rows} rows");
+    for row in [0, rows / 2, rows - 1] {
+        page.update(&mut h.visual, |page, _| page.scroll_to_row(row));
+        super::markdown::DRAWN_CODE_BYTES.set(0);
+        h.redraw();
+        let drawn = super::markdown::DRAWN_CODE_BYTES.get();
+        assert!(
+            drawn > 0 && drawn < 100 * 520,
+            "shaped {drawn} bytes at {row}"
+        );
+    }
+}
+
+#[test]
+fn list_markers_line_up_with_their_text_after_other_blocks() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("LIST.md"),
+        "A paragraph first.\n\n- one\n- two\n\nAnother.\n\n- [x] done\n- [ ] todo\n\n1. first\n",
+    )
+    .unwrap();
+    h.open("LIST.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    for row in [1, 2, 4, 5, 6] {
+        let marker = h
+            .visual
+            .debug_bounds(format!("FILE_MD_MARKER {row}").leak())
+            .unwrap_or_else(|| panic!("marker {row}"));
+        let text = h
+            .visual
+            .debug_bounds(format!("FILE_MD_TEXT {row}").leak())
+            .unwrap_or_else(|| panic!("text {row}"));
+        assert_eq!(marker.top(), text.top(), "row {row}");
+    }
+}
+
+#[test]
+fn each_linked_image_in_a_table_row_opens_its_own_link() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(h.repo.join(format!("docs/{name}.md")), "# Doc\n").unwrap();
+        std::fs::write(
+            h.repo.join(format!("docs/{name}.svg")),
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        h.repo.join("ROW.md"),
+        "| Links |\n| --- |\n| [![A](docs/a.svg)](docs/a.md) [![B](docs/b.svg)](docs/b.md) |\n",
+    )
+    .unwrap();
+    h.open("ROW.md", true);
+    h.wait("the images", |h| h.has("FILE_MD_IMAGE_LINK docs/b.md"));
+    h.click("FILE_MD_IMAGE_LINK docs/a.md");
+    h.wait("the first link", |h| {
+        h.read(|view| view.active_tab()) == Some("docs/a.md".into())
+    });
+    h.open("ROW.md", true);
+    h.wait("the page again", |h| h.has("FILE_MD_IMAGE_LINK docs/b.md"));
+    h.click("FILE_MD_IMAGE_LINK docs/b.md");
+    h.wait("the second link", |h| {
+        h.read(|view| view.active_tab()) == Some("docs/b.md".into())
+    });
+}
+
+#[test]
+fn a_drag_over_a_link_selects_it_and_a_click_opens_it() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("LINK.md"), "[the Zed site](https://zed.dev)\n").unwrap();
+    h.open("LINK.md", true);
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let text = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    let start = gpui::point(text.left() + px(1.), text.center().y);
+    let end = gpui::point(text.left() + px(60.), text.center().y);
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    h.visual
+        .simulate_mouse_move(end, Some(gpui::MouseButton::Left), Modifiers::default());
+    h.settle();
+    h.visual
+        .simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    assert!(
+        h.read(|view| view.opened_urls()).is_empty(),
+        "a drag selects, it does not open"
+    );
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h
+        .visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(
+        !copied.is_empty() && "the Zed site".starts_with(&copied),
+        "{copied:?}"
+    );
+
+    h.visual.simulate_click(
+        gpui::point(text.left() + px(20.), text.center().y),
+        Modifiers::default(),
+    );
+    h.settle();
+    assert_eq!(h.read(|view| view.opened_urls()), ["https://zed.dev"]);
+}
+
+#[test]
+fn a_drag_over_a_table_link_or_linked_image_selects_and_a_click_opens() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(h.repo.join("docs/a.md"), "# A\n").unwrap();
+    std::fs::write(
+        h.repo.join("docs/a.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("TLINK.md"),
+        "| Site | Logo |\n| --- | --- |\n| [the Zed site](https://zed.dev) | [![A](docs/a.svg)](docs/a.md) |\n",
+    )
+    .unwrap();
+    h.open("TLINK.md", true);
+    h.wait("the table", |h| h.has("FILE_MD_IMAGE_LINK docs/a.md"));
+    let drag = |h: &mut Harness, from: gpui::Point<gpui::Pixels>, to: gpui::Point<gpui::Pixels>| {
+        h.visual
+            .simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::default());
+        h.visual
+            .simulate_mouse_move(to, Some(gpui::MouseButton::Left), Modifiers::default());
+        h.settle();
+        h.visual
+            .simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::default());
+        h.settle();
+    };
+    let copied = |h: &mut Harness| {
+        h.visual.simulate_keystrokes(&primary("c"));
+        h.settle();
+        h.visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default()
+    };
+
+    // The text link: a drag selects the row and opens nothing.
+    let cell = h.visual.debug_bounds("FILE_MD_CELL 1-0").unwrap();
+    let link = gpui::point(cell.left() + px(14.), cell.center().y);
+    drag(&mut h, link, link + gpui::point(px(30.), px(0.)));
+    assert!(h.read(|view| view.opened_urls()).is_empty());
+    assert_eq!(copied(&mut h), "the Zed site\tA");
+
+    // The linked image: the same.
+    let image = h
+        .visual
+        .debug_bounds("FILE_MD_IMAGE_LINK docs/a.md")
+        .unwrap();
+    drag(
+        &mut h,
+        image.center(),
+        image.center() + gpui::point(px(10.), px(0.)),
+    );
+    assert_eq!(h.tabs(), [("TLINK.md".to_owned(), false)], "no file opens");
+    assert_eq!(copied(&mut h), "the Zed site\tA");
+
+    // Plain clicks open both.
+    h.visual.simulate_click(link, Modifiers::default());
+    h.settle();
+    assert_eq!(h.read(|view| view.opened_urls()), ["https://zed.dev"]);
+    h.click("FILE_MD_IMAGE_LINK docs/a.md");
+    h.wait("the linked file", |h| {
+        h.read(|view| view.active_tab()) == Some("docs/a.md".into())
+    });
+}
+
+#[test]
+fn a_selection_left_elsewhere_does_not_block_clicking_a_linked_image() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(h.repo.join("docs/a.md"), "# A\n").unwrap();
+    std::fs::write(
+        h.repo.join("docs/a.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("SEL.md"),
+        "Some text to select first.\n\n[![A](docs/a.svg)](docs/a.md)\n",
+    )
+    .unwrap();
+    h.open("SEL.md", true);
+    h.wait("the image", |h| h.has("FILE_MD_IMAGE_LINK docs/a.md"));
+    let text = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    let (from, to) = (
+        gpui::point(text.left() + px(1.), text.center().y),
+        gpui::point(text.left() + px(80.), text.center().y),
+    );
+    h.visual
+        .simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::default());
+    h.visual
+        .simulate_mouse_move(to, Some(gpui::MouseButton::Left), Modifiers::default());
+    h.settle();
+    h.visual
+        .simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    assert!(page
+        .read_with(&h.visual, |page, _| page.selected_text())
+        .is_some_and(|text| !text.is_empty()));
+    h.click("FILE_MD_IMAGE_LINK docs/a.md");
+    h.wait("the linked file", |h| {
+        h.read(|view| view.active_tab()) == Some("docs/a.md".into())
+    });
 }

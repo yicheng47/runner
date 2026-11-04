@@ -12,6 +12,8 @@ use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar as _;
 
+use super::highlight::Span;
+
 /// A tab advances to the next multiple of this many columns.
 pub(crate) const TAB_WIDTH: usize = 4;
 /// Lines longer than this many bytes get checkpoints.
@@ -36,6 +38,9 @@ pub(crate) struct Segment {
     /// Cells per character: 1, or 2 for a wide one.
     pub(crate) cells: usize,
     pub(crate) text: String,
+    /// `text` in runs of one highlight capture: each run's length in bytes
+    /// and its capture, if any.
+    pub(crate) runs: Vec<(usize, Option<u16>)>,
 }
 
 /// The cells `character` at `column` and byte `offset` takes. A combining
@@ -109,6 +114,16 @@ impl Document {
         self.lines
             .get(index)
             .map_or("", |range| &self.text[range.clone()])
+    }
+
+    /// The whole decoded text, with its line endings.
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Where `index`'s line sits in [`Self::text`], without its ending.
+    pub(crate) fn line_range(&self, index: usize) -> Range<usize> {
+        self.lines.get(index).cloned().unwrap_or_default()
     }
 
     pub(crate) fn columns(&self) -> usize {
@@ -226,24 +241,45 @@ impl Document {
         text.len()
     }
 
-    /// The cells of `line` from `from` to `to`, as runs to shape: the column
-    /// the first starts at may be before `from`, when a wide character or
-    /// a tab straddles it.
-    pub(crate) fn segments(&self, line: usize, from: usize, to: usize) -> Vec<Segment> {
+    /// The cells of `line` from `from` to `to`, as runs to shape, split
+    /// where `spans` (the line's highlights) change capture: the column the
+    /// first starts at may be before `from`, when a wide character or a tab
+    /// straddles it.
+    pub(crate) fn segments(
+        &self,
+        line: usize,
+        from: usize,
+        to: usize,
+        spans: &[Span],
+    ) -> Vec<Segment> {
         let mut segments: Vec<Segment> = Vec::new();
-        for (_, column, cells, character) in self.cells_from(line, from) {
+        let mut span = 0;
+        for (offset, column, cells, character) in self.cells_from(line, from) {
             if column >= to {
                 break;
             }
             if cells == 0 {
                 if let Some(last) = segments.last_mut() {
                     last.text.push(character);
+                    if let Some(run) = last.runs.last_mut() {
+                        run.0 += character.len_utf8();
+                    }
                 }
                 continue;
             }
             if column + cells <= from {
                 continue;
             }
+            while spans
+                .get(span)
+                .is_some_and(|found| found.end as usize <= offset)
+            {
+                span += 1;
+            }
+            let capture = spans
+                .get(span)
+                .filter(|found| found.start as usize <= offset)
+                .map(|found| found.capture);
             let wide = if character == '\t' { 1 } else { cells };
             let same = segments.last().is_some_and(|last| last.cells == wide);
             if !same {
@@ -251,13 +287,20 @@ impl Document {
                     column,
                     cells: wide,
                     text: String::new(),
+                    runs: Vec::new(),
                 });
             }
             let last = segments.last_mut().expect("a segment");
+            let before = last.text.len();
             if character == '\t' {
                 last.text.extend(std::iter::repeat_n(' ', cells));
             } else {
                 last.text.push(character);
+            }
+            let added = last.text.len() - before;
+            match last.runs.last_mut() {
+                Some(run) if run.1 == capture => run.0 += added,
+                _ => last.runs.push((added, capture)),
             }
         }
         segments
@@ -373,29 +416,32 @@ mod tests {
         assert_eq!(document.offset_near(2, 0.8), 3);
         assert_eq!(document.offset_near(2, 1.2), 3);
         assert_eq!(
-            document.segments(0, 0, 99),
+            document.segments(0, 0, 99, &[]),
             [Segment {
                 column: 0,
                 cells: 1,
-                text: "a   bc  d".into()
+                text: "a   bc  d".into(),
+                runs: vec![(9, None)],
             }]
         );
         assert_eq!(
-            document.segments(1, 1, 99),
+            document.segments(1, 1, 99, &[]),
             [
                 Segment {
                     column: 0,
                     cells: 2,
-                    text: "汉字".into()
+                    text: "汉字".into(),
+                    runs: vec![(6, None)],
                 },
                 Segment {
                     column: 4,
                     cells: 1,
-                    text: "x".into()
+                    text: "x".into(),
+                    runs: vec![(1, None)],
                 }
             ]
         );
-        assert_eq!(document.segments(2, 0, 99)[0].text, "e\u{301}f");
+        assert_eq!(document.segments(2, 0, 99, &[])[0].text, "e\u{301}f");
     }
 
     #[test]
@@ -416,7 +462,7 @@ mod tests {
         let column = walked(30_000);
         let near = document.offset_near(0, column as f32);
         assert_eq!(document.column_at(0, near), column);
-        let segments = document.segments(0, column, column + 40);
+        let segments = document.segments(0, column, column + 40, &[]);
         let shown: usize = segments
             .iter()
             .map(|segment| segment.text.chars().count())
