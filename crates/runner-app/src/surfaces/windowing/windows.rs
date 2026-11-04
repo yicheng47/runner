@@ -174,7 +174,11 @@ pub(crate) fn open_runner_window(
         let bounds = Bounds::new(origin, default_size);
         (WindowBounds::Windowed(bounds), None)
     };
-    core.window_register(&label)?;
+    // The window re-registers when runnerd reconnects, so a dropped daemon
+    // must not keep it from opening.
+    if let Err(error) = core.window_register(&label) {
+        eprintln!("Runner window {label} registration failed: {error:#}");
+    }
     let open_label = label.clone();
     let result = cx.open_window(
         WindowOptions {
@@ -279,6 +283,126 @@ pub(crate) fn focus_other_window(label: &str, cx: &mut App) {
     if let Some(target) = target {
         let _ = target.update(cx, |_, window, _| window.activate_window());
         cx.activate(true);
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::*;
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    struct DroppableDaemon {
+        core: runner_daemon::daemon::InProcessTransport,
+        down: Arc<AtomicBool>,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Transport for DroppableDaemon {
+        fn call(&self, request: Request) -> Result<Response, ClientError> {
+            let name = format!("{request:?}");
+            let name = name.split([' ', '{']).next().unwrap_or_default();
+            self.log.lock().unwrap().push(name.to_owned());
+            if self.down.load(Ordering::Acquire) {
+                return Err(ClientError::msg("runnerd connection closed"));
+            }
+            self.core.call(request)
+        }
+
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            self.log.lock().unwrap().push("subscribe".into());
+            self.core.subscribe()
+        }
+    }
+
+    struct Fixture {
+        cx: gpui::TestAppContext,
+        core: runner_daemon::AppCore,
+        down: Arc<AtomicBool>,
+        log: Arc<Mutex<Vec<String>>>,
+        _temp: tempfile::TempDir,
+    }
+
+    impl Fixture {
+        fn with_runnerd_down() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = gpui::TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            cx.update(|cx| {
+                cx.set_global(GlobalNativePaths(
+                    runner_core::daemon_process::NativePaths::new(
+                        temp.path().into(),
+                        temp.path().join("logs"),
+                    ),
+                ))
+            });
+            let core = store.read_with(&cx, |store, _| store.test_core.clone());
+            let down = Arc::new(AtomicBool::new(true));
+            let log = Arc::new(Mutex::new(Vec::new()));
+            store.update(&mut cx, |store, _| {
+                store.client =
+                    runner_core::protocol::DaemonClient::new(Arc::new(DroppableDaemon {
+                        core: runner_daemon::daemon::InProcessTransport(core.clone()),
+                        down: down.clone(),
+                        log: log.clone(),
+                    }));
+            });
+            Self {
+                cx,
+                core,
+                down,
+                log,
+                _temp: temp,
+            }
+        }
+
+        fn open_main(&mut self) -> String {
+            self.cx
+                .update(|cx| open_runner_window("main".into(), None, None, cx))
+                .expect("the window opens while runnerd is down")
+        }
+
+        fn registered(&self, label: &str) -> bool {
+            self.core
+                .windows
+                .snapshot()
+                .iter()
+                .any(|entry| entry.label == label)
+        }
+    }
+
+    #[test]
+    fn window_opens_while_runnerd_is_down_and_registers_once_it_reconnects() {
+        let mut fixture = Fixture::with_runnerd_down();
+        let label = fixture.open_main();
+        fixture.cx.run_until_parked();
+        assert!(fixture.cx.update(|cx| window_label_is_open(cx, &label)));
+        assert!(!fixture.registered(&label));
+
+        fixture.down.store(false, Ordering::Release);
+        fixture
+            .core
+            .events
+            .emit("daemon/reconnected", &serde_json::Value::Null);
+        fixture.cx.run_until_parked();
+        assert!(fixture.registered(&label));
+    }
+
+    #[test]
+    fn window_subscribes_before_its_first_reports_so_no_reconnect_is_lost() {
+        let mut fixture = Fixture::with_runnerd_down();
+        fixture.open_main();
+        // A reconnect before the last subscription reaches a later report;
+        // one after it reaches the listener.
+        let log = fixture.log.lock().unwrap().clone();
+        let subscribed = log.iter().rposition(|entry| entry == "subscribe").unwrap();
+        assert!(
+            log[subscribed..]
+                .iter()
+                .any(|entry| entry == "report_subjects"),
+            "{log:?}"
+        );
     }
 }
 

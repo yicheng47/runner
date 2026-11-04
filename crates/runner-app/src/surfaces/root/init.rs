@@ -378,6 +378,9 @@ impl NativeRoot {
             }));
         platform_ui::sync_traffic_lights(window, root.settings(cx).app_zoom);
         root.sync_theme(window, cx);
+        // Subscribed before the window's first reports, so a runnerd that
+        // reconnects after they fail still reaches the re-register.
+        root.start_focus_map_listener(window, cx);
         match root.route.clone() {
             AppRoute::Mission(mission_id) => root.open_mission(mission_id, window, cx),
             AppRoute::NewRole => root.open_create_role(window, cx),
@@ -411,7 +414,6 @@ impl NativeRoot {
             }
             root.focus_active_terminal(window, cx);
         }
-        root.start_focus_map_listener(window, cx);
         root
     }
 }
