@@ -80,6 +80,15 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
   </tr>
   <tr>
     <td width="50%" valign="middle">
+      <a href="assets/mission-link-reports-0.19.3.png"><img src="assets/mission-link-reports-0.19.3.png" alt="Claude Code chat 收到两条 [runner] 汇报并逐条回答，两个 mission 分组显示在侧边栏的 chat 下面" width="100%" /></a>
+    </td>
+    <td width="50%" valign="middle">
+      <h3>Mission 向 chat 汇报</h3>
+      <p>从 chat 启动的 mission 会关联到这个 chat，并在侧边栏归到它下面，agent 可以直接结束这一轮，不用再盯着。mission 需要你处理、失败或进入稳定状态时，Runner 会向 chat 输入一行提示，agent 再去读 mission 发生了什么。别处启动的 mission 也可以拖到 chat 上关联。<a href="./docs/guide/zh-CN/concepts/missions.md#关联聊天与汇报">关联聊天与汇报 →</a></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="middle">
       <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner 的电脑选择器列出这台 Mac 和同一账号下的另一台电脑" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">

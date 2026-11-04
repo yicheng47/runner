@@ -80,6 +80,15 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
   </tr>
   <tr>
     <td width="50%" valign="middle">
+      <a href="assets/mission-link-reports-0.19.3.png"><img src="assets/mission-link-reports-0.19.3.png" alt="A Claude Code chat receiving two [runner] reports and answering each, with both missions grouped under it in the sidebar" width="100%" /></a>
+    </td>
+    <td width="50%" valign="middle">
+      <h3>Missions report back to their chat</h3>
+      <p>A mission started from a chat links to it and groups under it in the sidebar, so the agent can end its turn instead of watching. When the mission needs you, fails or settles, Runner types one line into the chat and the agent reads what happened. Drag in a mission started elsewhere to link it too. <a href="./docs/guide/concepts/missions.md#linked-chat-and-reports">Linked chat and reports →</a></p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="middle">
       <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner's computer picker listing this Mac and another computer on the same account" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
