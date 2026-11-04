@@ -816,3 +816,69 @@ fn remote_pin_request_redacts_debug_and_trust_contains_no_pin() {
     assert!(Request::remote_trust {}.is_fast());
     assert!(!request.is_fast());
 }
+
+impl Sample for files::FilesSubject {
+    fn sample() -> Self {
+        Self::Mission("mission 样例".into())
+    }
+}
+impl Sample for files::FilesRootOutcome {
+    fn sample() -> Self {
+        Self::Root(files::FilesRoot {
+            path: PathBuf::sample(),
+            name: String::sample(),
+            git: Some(files::GitCheckout {
+                top: PathBuf::sample(),
+                worktree: files::WorktreeKind::Linked,
+                branch: Some("feat/634".into()),
+                commit: None,
+            }),
+            cwd: Some("src/deep".into()),
+            source: files::FilesRootSource::Saved,
+        })
+    }
+}
+impl Sample for files::DirEntry {
+    fn sample() -> Self {
+        Self {
+            name: String::sample(),
+            kind: files::EntryKind::Symlink,
+            ignored: true,
+            size: Some(7),
+        }
+    }
+}
+impl Sample for files::GitStatus {
+    fn sample() -> Self {
+        Self::new(
+            vec![files::StatusEntry {
+                path: "new 名.rs".into(),
+                status: files::FileStatus::Renamed {
+                    from: "old\nname.rs".into(),
+                },
+            }],
+            vec!["target/".into()],
+        )
+    }
+}
+impl Sample for files::WorktreeEntry {
+    fn sample() -> Self {
+        Self {
+            path: PathBuf::sample(),
+            branch: None,
+            commit: Some("0123456".into()),
+            kind: files::WorktreeKind::Main,
+            locked: true,
+            prunable: true,
+        }
+    }
+}
+impl Sample for files::FileContent {
+    fn sample() -> Self {
+        Self::Text {
+            bytes: crate::companion::TerminalBytes(vec![0, 255, 10]),
+            size: 3,
+            modified: Some(Sample::sample()),
+        }
+    }
+}

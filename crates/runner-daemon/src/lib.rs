@@ -85,6 +85,8 @@ pub struct AppCore {
     /// Broadcast channel every app-observable event flows through. The
     /// GPUI frontend subscribes and applies each event to its native state.
     pub events: EventChannel,
+    /// The Files view's roots, listings, status and watchers (#634).
+    pub files: Arc<files::FilesService>,
     pub session_event_observer: SessionEventObserverRegistry,
     /// Mission states and the reports they send to linked chats (#748).
     pub reports: Arc<ops::mission::report::Reports>,
