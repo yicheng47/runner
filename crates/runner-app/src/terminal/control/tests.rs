@@ -264,12 +264,12 @@ struct ControlView {
     chats: Vec<AttachedChat>,
 }
 impl Render for ControlView {
-    fn render(&mut self, _: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = super::super::element::TerminalStyle {
             palette: runner_terminal::palette::RUNNER,
             font: crate::app_settings::AppSettings::default()
                 .terminal_font_family
-                .font(),
+                .font(cx),
             font_size: 14.,
             app_zoom: 1.,
         };
@@ -436,12 +436,12 @@ fn hidden_mission_slots_use_the_slot_pane_and_closed_drawers_keep_the_grid() {
         chats: Vec<AttachedChat>,
     }
     impl Render for HiddenMission {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let style = super::super::element::TerminalStyle {
                 palette: runner_terminal::palette::RUNNER,
                 font: crate::app_settings::AppSettings::default()
                     .terminal_font_family
-                    .font(),
+                    .font(cx),
                 font_size: 14.,
                 app_zoom: 1.,
             };

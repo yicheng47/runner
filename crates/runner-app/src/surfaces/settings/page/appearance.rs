@@ -181,7 +181,7 @@ impl NativeRoot {
                 mode: PreviewMode::Light,
                 colors: theme::colors_for(light_variant),
                 palette: settings.light_terminal_theme.palette(),
-                font_family: settings.terminal_font_family.family(),
+                font: settings.terminal_font_family.font(cx),
                 caption: crate::i18n::tf(
                     "format.light",
                     &[
@@ -202,7 +202,7 @@ impl NativeRoot {
                 mode: PreviewMode::Dark,
                 colors: theme::colors_for(dark_variant),
                 palette: settings.dark_terminal_theme.palette(),
-                font_family: settings.terminal_font_family.family(),
+                font: settings.terminal_font_family.font(cx),
                 caption: crate::i18n::tf(
                     "format.dark",
                     &[
@@ -495,21 +495,6 @@ pub(super) fn parse_dark_theme(value: &str) -> Option<DarkTheme> {
     match value {
         "carbon" => Some(DarkTheme::Runner),
         "catppuccin-mocha" => Some(DarkTheme::CatppuccinMocha),
-        _ => None,
-    }
-}
-
-pub(super) fn terminal_font_value(value: TerminalFontFamily) -> &'static str {
-    match value {
-        TerminalFontFamily::JetBrainsMono => "JetBrains Mono",
-        TerminalFontFamily::Menlo => "Menlo",
-    }
-}
-
-pub(super) fn parse_terminal_font(value: &str) -> Option<TerminalFontFamily> {
-    match value {
-        "Menlo" => Some(TerminalFontFamily::Menlo),
-        "JetBrains Mono" => Some(TerminalFontFamily::JetBrainsMono),
         _ => None,
     }
 }

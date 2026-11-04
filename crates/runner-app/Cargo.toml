@@ -35,6 +35,7 @@ unicode-segmentation = "1"
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.7" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
+core-foundation = "0.10"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSButton", "NSControl", "NSEvent", "NSImage", "NSResponder", "NSScreen", "NSView", "NSWindow", "NSWorkspace"] }
@@ -56,6 +57,7 @@ gpui = { package = "gpui-pre", version = "=0.3.7", default-features = false, fea
 winresource = "0.1"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+core-text = "21"
 font-kit = { package = "zed-font-kit", version = "0.14.1-zed" }
 gpui = { package = "gpui-pre", version = "=0.3.7", features = ["test-support"] }
 

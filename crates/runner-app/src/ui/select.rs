@@ -12,6 +12,7 @@ use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use crate::theme;
 use crate::ui::app_zoom;
+use crate::ui::field::TextField;
 use crate::ui::menu::{DismissHandler, MenuItem, MenuKey, MenuState, PopupWidth};
 use crate::ui::scrollbar::{app_scrollbar_gutter, Scrollbar};
 
@@ -70,6 +71,7 @@ pub struct SelectOption {
     /// The trigger carries an amber dot while this option is chosen: a value
     /// that overrides another's.
     pub marked: bool,
+    section: Option<crate::i18n::Text>,
 }
 
 impl SelectOption {
@@ -89,7 +91,13 @@ impl SelectOption {
             swatch: None,
             leading: None,
             marked: false,
+            section: None,
         }
+    }
+
+    pub fn section(mut self, section: impl Into<crate::i18n::Text>) -> Self {
+        self.section = Some(section.into());
+        self
     }
 
     pub fn with_label(mut self, label: impl Into<crate::i18n::Text>) -> Self {
@@ -256,6 +264,13 @@ pub struct StyledSelect {
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
     on_change: SelectHandler,
+    search: Option<SelectSearch>,
+}
+
+struct SelectSearch {
+    input: Entity<TextField>,
+    query: String,
+    _subscription: gpui::Subscription,
 }
 
 impl StyledSelect {
@@ -295,7 +310,88 @@ impl StyledSelect {
             menu_scroll,
             menu_scrollbar,
             on_change,
+            search: None,
         }
+    }
+
+    pub fn searchable(
+        mut self,
+        placeholder: impl Into<crate::i18n::Text>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let owner = cx.entity().downgrade();
+        let input = cx.new(|cx| {
+            let mut input = TextField::new(cx.focus_handle(), "", placeholder, false)
+                .text_size(theme::text_ui())
+                .key_interceptor(Rc::new(move |event, window, cx| {
+                    if !matches!(
+                        event.keystroke.key.as_str(),
+                        "up" | "down" | "enter" | "escape"
+                    ) {
+                        return false;
+                    }
+                    owner
+                        .update(cx, |select, cx| {
+                            select.on_key_down(event, window, cx);
+                        })
+                        .is_ok()
+                }));
+            input.set_bare(true, cx);
+            input
+        });
+        let subscription = cx.observe(&input, |select, input, cx| {
+            let query = input.read(cx).text().to_lowercase();
+            let search = select.search.as_mut().unwrap();
+            if search.query == query {
+                return;
+            }
+            search.query = query;
+            let options = select
+                .visible_options()
+                .into_iter()
+                .map(|(_, option)| option)
+                .collect::<Vec<_>>();
+            if select.state.is_open() {
+                select.state.open(&options, 0);
+            }
+            select.menu_scroll.set_offset(gpui::point(px(0.), px(0.)));
+            cx.notify();
+        });
+        self.search = Some(SelectSearch {
+            input,
+            query: String::new(),
+            _subscription: subscription,
+        });
+        self
+    }
+
+    fn visible_options(&self) -> Vec<(usize, SelectOption)> {
+        let query = self
+            .search
+            .as_ref()
+            .map_or("", |search| search.query.as_str());
+        let mut section = None;
+        let mut shown_section = None;
+        self.options
+            .iter()
+            .enumerate()
+            .filter_map(|(index, option)| {
+                if option.section.is_some() {
+                    section = option.section.clone();
+                }
+                if !option.label.to_lowercase().contains(query) {
+                    return None;
+                }
+                let mut option = option.clone();
+                option.section = if section != shown_section {
+                    section.clone()
+                } else {
+                    None
+                };
+                shown_section = section.clone();
+                Some((index, option))
+            })
+            .collect()
     }
 
     pub fn runtime(
@@ -471,9 +567,15 @@ impl StyledSelect {
             .unwrap_or(0)
     }
 
-    fn toggle(&mut self, cx: &mut Context<Self>) {
+    fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.disabled || self.options.is_empty() {
             return;
+        }
+        if !self.state.is_open() {
+            if let Some(search) = &mut self.search {
+                search.query.clear();
+                search.input.update(cx, |input, cx| input.set_text("", cx));
+            }
         }
         self.state.toggle(
             &self.options,
@@ -481,6 +583,9 @@ impl StyledSelect {
         );
         if self.state.is_open() {
             self.menu_scroll.scroll_to_item(self.state.highlighted());
+            if let Some(search) = &self.search {
+                search.input.read(cx).focus_handle().focus(window, cx);
+            }
         }
         cx.notify();
     }
@@ -494,6 +599,7 @@ impl StyledSelect {
         }
         self.value = option.value.clone();
         self.state.close();
+        self.focus_handle.focus(window, cx);
         (self.on_change)(self.value.clone(), window, cx);
         cx.notify();
     }
@@ -507,29 +613,67 @@ impl StyledSelect {
             "down" => Some(MenuKey::Down),
             "home" if self.state.is_open() => Some(MenuKey::Home),
             "end" if self.state.is_open() => Some(MenuKey::End),
+            "space"
+                if self.search.as_ref().is_some_and(|search| {
+                    search.input.read(cx).focus_handle().is_focused(window)
+                }) =>
+            {
+                None
+            }
             "enter" | "space" => Some(MenuKey::Enter),
             "escape" if self.state.is_open() => Some(MenuKey::Escape),
             _ => None,
         };
         let Some(key) = key else { return };
         cx.stop_propagation();
-        let selected = self.selected_index();
-        if let SelectAction::Changed(index) = self.state.handle_key(key, &self.options, selected) {
-            self.choose(index, window, cx);
+        let was_open = self.state.is_open();
+        if !was_open {
+            if let Some(search) = &mut self.search {
+                search.query.clear();
+                search.input.update(cx, |input, cx| input.set_text("", cx));
+            }
+        }
+        let visible = self.visible_options();
+        let options = visible
+            .iter()
+            .map(|(_, option)| option.clone())
+            .collect::<Vec<_>>();
+        let selected = options
+            .iter()
+            .position(|option| option.value == self.value)
+            .unwrap_or(0);
+        if let SelectAction::Changed(index) = self.state.handle_key(key, &options, selected) {
+            if let Some((index, _)) = visible.get(index) {
+                self.choose(*index, window, cx);
+            }
         } else {
             if self.state.is_open() {
                 self.menu_scroll.scroll_to_item(self.state.highlighted());
+                if !was_open {
+                    if let Some(search) = &self.search {
+                        search.input.read(cx).focus_handle().focus(window, cx);
+                    }
+                }
+            } else if was_open {
+                self.focus_handle.focus(window, cx);
             }
             cx.notify();
         }
     }
+
     fn menu_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.state.is_open() {
             return None;
         }
         let select_entity = cx.weak_entity();
+        let visible = self.visible_options();
+        let options = visible
+            .iter()
+            .map(|(_, option)| option.clone())
+            .collect::<Vec<_>>();
+        let indices = visible.iter().map(|(index, _)| *index).collect::<Vec<_>>();
         let menu = option_menu(
-            &self.options,
+            &options,
             &self.value,
             self.state.highlighted(),
             OptionMenuStyle {
@@ -539,14 +683,56 @@ impl StyledSelect {
                 runtime_style: self.runtime_style,
                 mono_description: self.picker || self.mono_descriptions,
                 wrapped: self.wrapped_menu_width.is_some(),
+                searchable: self.search.is_some(),
             },
             &self.menu_scroll,
             self.menu_scrollbar.clone(),
             Rc::new(move |index, window, cx| {
-                let _ = select_entity.update(cx, |select, cx| select.choose(index, window, cx));
+                let _ = select_entity
+                    .update(cx, |select, cx| select.choose(indices[index], window, cx));
             }),
         );
-        Some(menu)
+        Some(if let Some(search) = &self.search {
+            div()
+                .flex()
+                .flex_col()
+                .rounded(rems(8. / 16.))
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::panel())
+                .shadow_xl()
+                .child(
+                    div()
+                        .h(rems(36. / 16.))
+                        .px(rems(10. / 16.))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(theme::border())
+                        .child(
+                            svg()
+                                .path("search.svg")
+                                .size(rems(13. / 16.))
+                                .text_color(theme::faint()),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child(search.input.clone())),
+                )
+                .when(options.is_empty(), |menu| {
+                    menu.child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("ui.no_matches")),
+                    )
+                })
+                .child(menu)
+                .into_any_element()
+        } else {
+            menu
+        })
     }
 }
 
@@ -691,7 +877,7 @@ impl Render for StyledSelect {
                                     return;
                                 }
                                 click_focus.focus(window, cx);
-                                click_entity.update(cx, |select, cx| select.toggle(cx));
+                                click_entity.update(cx, |select, cx| select.toggle(window, cx));
                             })
                     })
                     .focus_visible(move |style| {
@@ -824,8 +1010,13 @@ impl Render for StyledSelect {
         if let (true, Some(anchor)) = (open, self.anchor_bounds) {
             let menu = self.menu_content(window, cx).unwrap();
             let dismiss_entity: Entity<Self> = cx.entity();
-            let dismiss: DismissHandler = Rc::new(move |_, cx| {
-                dismiss_entity.update(cx, |select, cx| select.close(cx));
+            let dismiss: DismissHandler = Rc::new(move |window, cx| {
+                dismiss_entity.update(cx, |select, cx| {
+                    select.close(cx);
+                    if select.search.is_some() {
+                        select.focus_handle.focus(window, cx);
+                    }
+                });
             });
             let width = if self.picker {
                 PopupWidth::Fixed(anchor.size.width)
@@ -864,6 +1055,7 @@ pub(crate) struct OptionMenuStyle {
     /// Descriptions in monospace, for a list of commands or handles.
     pub mono_description: bool,
     pub wrapped: bool,
+    pub searchable: bool,
 }
 
 pub(crate) type OptionHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -888,31 +1080,39 @@ pub(crate) fn option_menu(
             theme::faint()
         } else if option.danger {
             theme::with_alpha(theme::danger(), if active { 1. } else { 0.8 })
-        } else if active || style.detailed || style.runtime_style {
+        } else if active || style.detailed || style.runtime_style || style.searchable {
             theme::text()
         } else {
             theme::muted()
         };
         let on_choose = Rc::clone(&on_choose);
-        div()
+        let section = option.section.clone();
+        let row = div()
             .id(("select-option", index))
             .debug_selector(|| format!("STYLED_SELECT_OPTION_{index}"))
             .w_full()
-            .px(rems(if style.compact {
+            .px(rems(if style.compact || style.searchable {
                 8. / 16.
             } else if style.detailed {
                 10. / 16.
             } else {
                 12. / 16.
             }))
-            .py(rems(if style.compact { 5. / 16. } else { 8. / 16. }))
+            .py(rems(if style.compact {
+                5. / 16.
+            } else if style.searchable {
+                6. / 16.
+            } else {
+                8. / 16.
+            }))
             .flex()
             .items_center()
             .gap_2()
             .when(stacked && option.leading.is_none(), |row| row.items_start())
-            .when(style.detailed || style.compact || style.wrapped, |row| {
-                row.rounded(rems(4. / 16.))
-            })
+            .when(
+                style.detailed || style.compact || style.wrapped || style.searchable,
+                |row| row.rounded(rems(4. / 16.)),
+            )
             .when(style.compact, |row| row.line_height(rems(18. / 16.)))
             .opacity(if option.disabled { 0.5 } else { 1. })
             .when(active || highlighted, |row| {
@@ -982,14 +1182,18 @@ pub(crate) fn option_menu(
                             .debug_selector(|| format!("STYLED_SELECT_LABEL_{index}"))
                             .when(style.compact, |label| label.flex_1().min_w(px(0.)))
                             .truncate()
-                            .text_size(if style.compact {
+                            .text_size(if style.compact || style.searchable {
                                 theme::text_ui()
                             } else if style.detailed {
                                 theme::text_body()
                             } else {
                                 theme::text_title()
                             })
-                            .font_weight(FontWeight::MEDIUM)
+                            .font_weight(if style.searchable {
+                                FontWeight::NORMAL
+                            } else {
+                                FontWeight::MEDIUM
+                            })
                             .text_color(foreground)
                             .when(style.monospace, |label| {
                                 label.font_family(theme::UI_MONOSPACE_FONT)
@@ -1039,7 +1243,22 @@ pub(crate) fn option_menu(
                 row.on_click(move |_, window, cx| {
                     on_choose(index, window, cx);
                 })
-            })
+            });
+        let Some(section) = section else {
+            return row.into_any_element();
+        };
+        div()
+            .child(
+                div()
+                    .px(rems(12. / 16.))
+                    .pt(rems(8. / 16.))
+                    .pb(rems(2. / 16.))
+                    .text_size(theme::text_caption())
+                    .text_color(theme::faint())
+                    .child(section.resolve()),
+            )
+            .child(row)
+            .into_any_element()
     });
     // A list that scrolls gives its scrollbar a lane of its own, so no row,
     // highlight or check sits under the thumb. Whether it scrolls is known
@@ -1058,11 +1277,12 @@ pub(crate) fn option_menu(
         .max_h(max_height)
         .overflow_hidden()
         .rounded(rems(if style.detailed { 6. / 16. } else { 4. / 16. }))
-        .border_1()
-        .border_color(if style.detailed {
-            theme::border()
-        } else {
-            theme::border_strong()
+        .when(!style.searchable, |menu| {
+            menu.border_1().border_color(if style.detailed {
+                theme::border()
+            } else {
+                theme::border_strong()
+            })
         })
         .bg(theme::panel())
         .when(cfg!(test), |menu| {
@@ -1071,7 +1291,7 @@ pub(crate) fn option_menu(
             #[cfg(not(test))]
             menu
         })
-        .shadow_xl()
+        .when(!style.searchable, |menu| menu.shadow_xl())
         .child(
             div()
                 .id("styled-select-scroll")
@@ -1261,6 +1481,63 @@ mod tests {
                 .p_4()
                 .child(self.select.clone())
         }
+    }
+
+    #[test]
+    fn searchable_select_filters_groups_and_chooses_the_visible_family() {
+        let mut cx = TestAppContext::single();
+        let choices = Rc::new(std::cell::RefCell::new(Vec::new()));
+        let host = cx.add_window(|window, cx| {
+            window.resize(gpui::size(px(800.), px(600.)));
+            let select = cx.new(|cx| {
+                let choices = choices.clone();
+                StyledSelect::new(
+                    "fonts",
+                    cx.focus_handle(),
+                    "bundled",
+                    vec![
+                        SelectOption::new("bundled", "JetBrains Mono").section("Bundled"),
+                        SelectOption::new("alpha", "Alpha Mono").section("Installed"),
+                        SelectOption::new("sf", "SF Mono"),
+                        SelectOption::new("serif", "Some Other Font"),
+                    ],
+                    Rc::new(move |value, _, _| choices.borrow_mut().push(value)),
+                    cx,
+                )
+                .searchable("Search fonts", cx)
+            });
+            SelectHost { select }
+        });
+        let select = host.read_with(&cx, |host, _| host.select.clone()).unwrap();
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+        let trigger = visual.debug_bounds("STYLED_SELECT_TRIGGER").unwrap();
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.simulate_keystrokes("s f space m");
+        visual.run_until_parked();
+        assert!(choices.borrow().is_empty());
+        assert!(visual.debug_bounds("STYLED_SELECT_MENU").is_some());
+        visual.update(|_, cx| {
+            assert_eq!(select.read(cx).search.as_ref().unwrap().query, "sf m");
+            let options = select.read(cx).visible_options();
+            assert_eq!(options.len(), 1);
+            assert_eq!(options[0].1.label.as_ref(), "SF Mono");
+            assert_eq!(
+                options[0].1.section.as_ref().unwrap().resolve().as_ref(),
+                "Installed"
+            );
+        });
+        press_key(&mut visual, "enter");
+        assert_eq!(&*choices.borrow(), &["sf"]);
+        assert!(visual.debug_bounds("STYLED_SELECT_MENU").is_none());
+        press_key(&mut visual, "enter");
+        visual.simulate_input("No such font");
+        visual.run_until_parked();
+        press_key(&mut visual, "enter");
+        assert_eq!(choices.borrow().len(), 1);
+        assert!(visual.debug_bounds("STYLED_SELECT_MENU").is_some());
+        press_key(&mut visual, "escape");
+        assert!(visual.debug_bounds("STYLED_SELECT_MENU").is_none());
     }
 
     #[test]

@@ -972,11 +972,12 @@ impl MissionPresentation {
     pub(super) fn terminal_style(
         &self,
         settings: &AppSettings,
+        cx: &App,
     ) -> crate::terminal::element::TerminalStyle {
         let host = self
             .remote()
             .and_then(|remote| remote.overview.as_ref()?.terminal_palette.clone());
-        let mut style = crate::surfaces::app_shell::terminal_style_for(settings);
+        let mut style = crate::surfaces::app_shell::terminal_style_for(settings, cx);
         if let Some(palette) = host {
             style.palette = runner_terminal::terminal::palette_from_wire(palette.into());
         }

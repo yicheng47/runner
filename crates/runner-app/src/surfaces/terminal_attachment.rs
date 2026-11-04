@@ -50,7 +50,7 @@ impl AttachedChat {
         }
         let store = app_store.read(cx);
         let terminal = store.bridge.session(session_id)?;
-        let style = terminal_style_for(&store.settings);
+        let style = terminal_style_for(&store.settings, cx);
         let settings = store.settings.clone();
         let mut attached = Self::new(terminal, &style, &settings, cx, on_write);
         let input = attached.terminal_input.clone();

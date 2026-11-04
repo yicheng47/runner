@@ -51,6 +51,7 @@ mod runtime_ui;
 mod single_instance;
 mod surfaces;
 mod terminal;
+mod terminal_fonts;
 mod window_state;
 
 mod startup;

@@ -93,10 +93,11 @@ fn app_update_hint_version(available: Option<&runner_app::updater::UpdateInfo>) 
 
 pub(crate) fn terminal_style_for(
     settings: &app_settings::AppSettings,
+    cx: &App,
 ) -> crate::terminal::element::TerminalStyle {
     crate::terminal::element::TerminalStyle {
         palette: app_settings::terminal_palette(settings, theme::active_variant()),
-        font: settings.terminal_font_family.font(),
+        font: settings.terminal_font_family.font(cx),
         font_size: settings.terminal_font_size as f32 * settings.app_zoom,
         app_zoom: settings.app_zoom,
     }

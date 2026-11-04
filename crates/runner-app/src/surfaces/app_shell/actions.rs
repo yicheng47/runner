@@ -2,7 +2,7 @@ use super::*;
 
 impl NativeRoot {
     pub(crate) fn terminal_style(&self, cx: &App) -> crate::terminal::element::TerminalStyle {
-        let mut style = terminal_style_for(self.settings(cx));
+        let mut style = terminal_style_for(self.settings(cx), cx);
         if let Some(palette) = self.remote_client.remote_terminal_palette(cx) {
             style.palette = palette;
         }
@@ -65,7 +65,7 @@ impl NativeRoot {
         self.app_store
             .read(cx)
             .bridge
-            .set_palette(terminal_style_for(self.settings(cx)).palette);
+            .set_palette(terminal_style_for(self.settings(cx), cx).palette);
     }
 
     pub(crate) fn save_settings(&self, cx: &App) {
