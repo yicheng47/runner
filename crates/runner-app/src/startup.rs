@@ -310,10 +310,14 @@ pub(crate) fn run() -> Result<()> {
             }
         }
         if restored_labels.is_empty() {
-            restored_labels.push(
-                open_runner_window("main".into(), None, None, cx)
-                    .expect("fallback Runner window must open after restore failures"),
-            );
+            match open_runner_window("main".into(), None, None, cx) {
+                Ok(label) => restored_labels.push(label),
+                Err(error) => {
+                    eprintln!("Runner could not open a window: {error:#}");
+                    // A normal quit would save this windowless layout over the saved one.
+                    std::process::exit(1);
+                }
+            }
         }
         if let Some(label) = restored_labels.last() {
             focus_other_window(label, cx);
