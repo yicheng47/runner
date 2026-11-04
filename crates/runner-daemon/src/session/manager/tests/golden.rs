@@ -17,6 +17,11 @@ impl Normalizer {
         let mut text = text.to_string();
         for root in roots {
             text = text.replace(root.to_string_lossy().as_ref(), "<TMP>");
+            #[cfg(windows)]
+            {
+                let root = crate::runtimes::ordinary_windows_path(root);
+                text = text.replace(&root.to_string_lossy().replace('\\', "/"), "<TMP>");
+            }
         }
         if let Some(home) = runner_core::app_paths::home_dir() {
             text = text.replace(&home.to_string_lossy().to_string(), "<HOME>");

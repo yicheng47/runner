@@ -2,6 +2,7 @@ pub(crate) mod launch;
 pub(crate) mod models;
 pub(crate) mod onboarding;
 pub(crate) mod skills;
+mod trust;
 pub(crate) mod usage;
 /// Minimum spacing between consecutive `claude-code` PTY launches.
 /// Long enough for one claude's OAuth refresh round-trip (network
@@ -277,6 +278,18 @@ impl RuntimeAdapter for ClaudeCode {
     }
     fn launch_gate(&self, session_id: &str, state: &Mutex<Option<Instant>>) {
         launch::enter_gate(session_id, state, CLAUDE_LAUNCH_GATE_GRACE);
+    }
+    fn seed_trust(
+        &self,
+        session_id: &str,
+        cwd: Option<&Path>,
+        _copilot_home: Option<&str>,
+        claude_config_dir: Option<&str>,
+    ) -> crate::error::Result<()> {
+        if let Some(cwd) = trust_cwd(session_id, Runtime::ClaudeCode, cwd) {
+            trust::seed_project_trust(cwd, claude_config_dir)?;
+        }
+        Ok(())
     }
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::Hook
