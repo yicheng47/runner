@@ -9,15 +9,15 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 | Area | File | Cases | Smoke | Additional full |
 | --- | --- | ---: | ---: | ---: |
 | Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 48 | 10 | 38 |
-| Native terminal rendering, input, resize, history and find | [terminal.md](terminal.md) | 35 | 5 | 30 |
+| Native terminal rendering, input, resize, history and find | [terminal.md](terminal.md) | 36 | 5 | 31 |
 | Windows, tabs, panes, sidebar and its Active view, cwd and drawers | [workspace.md](workspace.md) | 45 | 6 | 39 |
 | Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 47 | 5 | 42 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
 | Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, installation and updates | [settings.md](settings.md) | 49 | 4 | 45 |
-| Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 13 | 4 | 9 |
+| Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 14 | 4 | 10 |
 | Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 45 | 6 | 39 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 7 | 0 | 7 |
-| **Total** | | **311** | **44** | **267** |
+| **Total** | | **313** | **44** | **269** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately at `docs/tests/runs/YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same day append a separately identified candidate/attempt block to that file. No run record is needed merely to edit this suite.
 

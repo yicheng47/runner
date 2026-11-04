@@ -2,7 +2,7 @@
 
 > Tracking issue: [#826](https://github.com/yicheng47/runner/issues/826). Priority: P2, milestone 0.16. Platforms: macOS and Windows.
 > Status: spec from Jason's 2026-10-08 design discussion, refreshed on 2026-10-17 against the delivery model that [#921](https://github.com/yicheng47/runner/pull/921) shipped for #907, with its open questions settled by Jason the same day; he kept the one-line pointer notification rather than typing message text into agents. Development started on `feat/826-targeted-messaging`. No design: nothing new is drawn except the composer's multi-target picker, which follows its existing single-target chip.
-> Related: arch §4.2–§4.3 and §8.1/§8.5 (messages, inbox, delivery model), #907's [plan](../../impls/archive/907-reliable-delivery.md#relation-to-826), [#753](../../tests/archive/753-inbox-delivery.md) (Windows Codex input delivery), [748](../748-mission-link.md) (the starting chat's return path, on hold).
+> Related: arch §4.2–§4.3 and §8.1/§8.5 (messages, inbox, delivery model), #907's [plan](../../impls/archive/907-reliable-delivery.md#relation-to-826), [#753](../../tests/archive/753-inbox-delivery.md) (Windows Codex input delivery), [748](748-mission-link.md) (the starting chat's return path, on hold).
 > Implementation contract: the [implementation plan](https://github.com/yicheng47/runner/blob/5e153e10771235eef40d17d558963286d76426ed/docs/impls/826-targeted-messaging.md) is the source of truth, confirmed by Jason on 2026-10-17. This spec records the motivation and mirrors the plan's decisions.
 
 ## Motivation
@@ -60,7 +60,7 @@ Typing message text into an agent's terminal (decision 2); agent-side polling; t
 
 ## Relation to 748
 
-[748](../748-mission-link.md) is on hold for a new design since 2026-10-17. Nothing here depends on it.
+[748](748-mission-link.md) is on hold for a new design since 2026-10-17. Nothing here depends on it.
 
 ## Verification
 

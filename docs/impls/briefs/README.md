@@ -48,3 +48,5 @@ The 0.19.0 release sweep pruned five merged mission briefs: #1044, #1046, #1083,
 The 0.19.1 release sweep pruned the #1097 mission launcher and #1102/#1103 submit-recovery briefs. Their validation records are in [the test archive](../../tests/README.md). The three examples remain.
 
 The 0.19.2 release sweep pruned the #897 find in terminal, #984 usage, #1122 paired phone and #1125 confirmed-notice briefs. The #897 and #1125 validation records are in [the test archive](../../tests/README.md); #984 and #1122 had none of their own. The #1025 remote repaint brief stays while that issue is open. The three examples remain.
+
+The 0.19.3 release sweep pruned the #748 mission link, #931 installed fonts, #1067 Claude trust seed, #1149 session CLI and #1155 role permission flags briefs. The #748 and #1149 validation records are in [the test archive](../../tests/README.md), and #1067's run is in [the 2026-11-04 macOS run](../../tests/runs/2026-11-04-macos.md); #931 and #1155 had none of their own. The #1025 remote repaint brief stays while that issue is open, and the #1160 brief lives in its mission's worktree. The three examples remain.

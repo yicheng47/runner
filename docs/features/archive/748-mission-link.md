@@ -3,7 +3,7 @@
 > Tracking issue: [#748](https://github.com/yicheng47/runner/issues/748). Priority: P1, milestone 0.19. Platforms: macOS, Windows and Linux.
 > Status: draft, rewritten 2026-11-02 after Jason chose reports typed into the chat. The same day he chose the linked group (option E) for the sidebar, the Agents list (option H) for the Active view and linking by hand, and settled the remaining decisions. The design is signed off and the spec is ready for implementation; see [Decisions](#decisions).
 > Replaces the 2026-10-27 draft, in which the chat heard about its missions only when the person asked (last at `e42ec525`), and the 2026-10-20 side-panel options A–C in the design file; see [Superseded designs](#superseded-designs).
-> Related: #686's watch contract ([test record](../tests/archive/686-watch-cli-started-missions.md)), which this retires; [704](https://github.com/yicheng47/runner/issues/704), which first specified `RUNNER_SESSION_ID` and closed unbuilt; [#701](https://github.com/yicheng47/runner/issues/701)'s desktop notifications; [873](https://github.com/yicheng47/runner/blob/2a22742e0b89e1a8711c858c0b11532cb04497f4/docs/features/873-remove-mission-lead.md), which removed the mission lead; [#916](https://github.com/yicheng47/runner/issues/916)'s verbs; [#1108](https://github.com/yicheng47/runner/issues/1108)'s delivery setting for working agents.
+> Related: #686's watch contract ([test record](../../tests/archive/686-watch-cli-started-missions.md)), which this retires; [704](https://github.com/yicheng47/runner/issues/704), which first specified `RUNNER_SESSION_ID` and closed unbuilt; [#701](https://github.com/yicheng47/runner/issues/701)'s desktop notifications; [873](https://github.com/yicheng47/runner/blob/2a22742e0b89e1a8711c858c0b11532cb04497f4/docs/features/873-remove-mission-lead.md), which removed the mission lead; [#916](https://github.com/yicheng47/runner/issues/916)'s verbs; [#1108](https://github.com/yicheng47/runner/issues/1108)'s delivery setting for working agents.
 
 ## Motivation
 
@@ -129,9 +129,9 @@ Desktop notifications keep their current triggers, settings and targets. Clickin
 
 ### Docs
 
-- **Guide:** [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports, `mission link` and `--no-report`. [Missions](../guide/concepts/missions.md) describes the linked chat and reports. [Chats and windows](../guide/guides/chats-and-windows.md) describes the linked group in Projects, linking by drag and menu, and the Agents and Terminals headings in Active. `make guide-cli` regenerates the [CLI reference](../guide/reference/cli.md). The Chinese pages under `docs/guide/zh-CN/` change with them.
+- **Guide:** [Drive Runner from agents](../../guide/guides/drive-runner-from-agents.md) loses the external watch contract in "Start and follow a crew" and gains the link, reports, `mission link` and `--no-report`. [Missions](../../guide/concepts/missions.md) describes the linked chat and reports. [Chats and windows](../../guide/guides/chats-and-windows.md) describes the linked group in Projects, linking by drag and menu, and the Agents and Terminals headings in Active. `make guide-cli` regenerates the [CLI reference](../../guide/reference/cli.md). The Chinese pages under `docs/guide/zh-CN/` change with them.
 - **Architecture:** `docs/arch/arch.md` §8.5 adds report delivery beside the inbox dispatcher, §9.4 documents `RUNNER_SESSION_ID` and the link, §9.6 replaces the skill's start-and-watch contract, and §10.1 adds the two columns.
-- **Regression:** [MIS-WATCH-01 and MIS-WATCH-02](../tests/regression/missions.md) retire, replaced by rows for the link, a report reaching an idle chat, a report held by a draft, and the agent that does not watch.
+- **Regression:** [MIS-WATCH-01 and MIS-WATCH-02](../../tests/regression/missions.md) retire, replaced by rows for the link, a report reaching an idle chat, a report held by a draft, and the agent that does not watch.
 
 ## Decisions
 

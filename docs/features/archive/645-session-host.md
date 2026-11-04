@@ -159,7 +159,7 @@ Measuring named-pipe latency on the PC is part of 1c's preparation.
 
 ### Missions while the app is closed
 
-The router keeps running. Messages nudge inboxes, `session_status` flows, and deliveries pass the gate as usual. `ask_human` appends its `human_question` and waits, to be answered with `runner mission answer` or when the app opens. Desktop notifications ([#701](701-desktop-notifications.md)) are drawn by the app, so none appear while it is closed. Mission notices into a chat ([748](../748-mission-link.md)) keep flowing, which changes that spec's "Runner quits" case.
+The router keeps running. Messages nudge inboxes, `session_status` flows, and deliveries pass the gate as usual. `ask_human` appends its `human_question` and waits, to be answered with `runner mission answer` or when the app opens. Desktop notifications ([#701](701-desktop-notifications.md)) are drawn by the app, so none appear while it is closed. Mission notices into a chat ([748](748-mission-link.md)) keep flowing, which changes that spec's "Runner quits" case.
 
 This replaces 466's rule that the router is offline while the app is closed. Opening the app does not remount any router, because no router stopped, so there is nothing to deliver twice. Routers mount only when a daemon starts, with the replay rules of arch §7.2 unchanged.
 
