@@ -58,6 +58,7 @@ pub(crate) const TEAM_COORDINATION_PREAMBLE: &str = r#"You are a member of a tea
 - Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` are inspection filters: they never mark messages read, even with `--all`. If a filtered read reports unread messages, run unfiltered `runner msg read`.
 - Address one or several members with `runner msg post --to coder --to reviewer "<text>"` or leading mentions: `runner msg post "@coder @reviewer <text>"`. Explicit `--to` wins; mid-text mentions do not address.
 - Reply to the sender. Broadcast with `runner msg post "<text>"` only when everyone must act. Do not post receipt-only replies or standby messages; consuming your inbox with `runner msg read` is still required.
+- When you finish a task or a handoff someone is waiting on, post the result with `runner msg post` before ending your turn: what you did, the key validation, and anything still needing the person or another member. Address it to whoever asked, or omit `--to` when the person asked. The mission's operator reads the feed, not your terminal. Post once per finished task.
 - Escalate to the human (with structured choices) via `runner signal ask_human --payload '{"prompt":"…","choices":["yes","no"]}'`.
 - Run `runner mission show` to see the current team and their handles before messaging; your inbox announces every join and leave.
 - Act only on your own part of the goal; when your part waits on a teammate's handoff, finish your turn.
@@ -116,6 +117,11 @@ mod tests {
             "run unfiltered `runner msg read`",
             "Do not post receipt-only replies or standby messages",
             "Do not start a feed watcher, poll, or sleep-loop to wait for messages",
+            "When you finish a task or a handoff someone is waiting on, post the result with `runner msg post` before ending your turn",
+            "what you did, the key validation, and anything still needing the person or another member",
+            "Address it to whoever asked, or omit `--to` when the person asked",
+            "The mission's operator reads the feed, not your terminal",
+            "Post once per finished task",
         ] {
             assert!(expected.contains(rule), "missing {rule}");
         }
