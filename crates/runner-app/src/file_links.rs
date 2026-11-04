@@ -130,16 +130,18 @@ fn link_tooltip(
 }
 
 pub(crate) fn open_file_link(target: FileLinkTarget, cx: &mut App) {
-    let store = global_app_store(cx);
-    let (editor, path_env) = {
-        let store = store.read(cx);
-        (
-            store.settings.file_link_editor,
-            store.client.direct_chat_path().unwrap_or_default(),
-        )
-    };
-    cx.background_spawn(async move { launch(editor, &target, &path_env) })
-        .detach();
+    let editor = global_app_store(cx).read(cx).settings.file_link_editor;
+    open_file_with(editor, target, cx);
+}
+
+/// Opens `target` in `editor`, or the default app when its launcher fails.
+pub(crate) fn open_file_with(editor: FileLinkEditor, target: FileLinkTarget, cx: &mut App) {
+    let client = global_app_store(cx).read(cx).client.clone();
+    cx.background_spawn(async move {
+        let path_env = client.direct_chat_path().unwrap_or_default();
+        launch(editor, &target, &path_env)
+    })
+    .detach();
 }
 
 fn launch(editor: FileLinkEditor, target: &FileLinkTarget, path_env: &str) {

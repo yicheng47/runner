@@ -510,169 +510,214 @@ impl Render for TerminalFind {
         }
         let id = cx.entity_id();
         let root = cx.entity().downgrade();
-        let action = |root: &WeakEntity<Self>,
-                      act: fn(&mut Self, &mut Window, &mut Context<Self>)| {
+        let action = |act: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             let root = root.clone();
-            move |window: &mut Window, cx: &mut App| {
+            Rc::new(move |window: &mut Window, cx: &mut App| {
                 root.update(cx, |this, cx| act(this, window, cx)).ok();
-            }
+            }) as BarAction
         };
-        let can_step = self.can_step();
-        let count = self.count_label();
-        div()
-            .id(("terminal-find", id))
-            .key_context("TerminalFind")
-            .on_action(cx.listener(|this, _: &FindInTerminal, window, cx| this.open(window, cx)))
-            .occlude()
-            .debug_selector(|| "TERMINAL_FIND_BAR".into())
-            .w(rems(380. / 16.))
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .overflow_hidden()
-            .rounded(rems(8. / 16.))
-            .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::panel())
-            .shadow(vec![BoxShadow {
-                color: gpui::hsla(0., 0., 0., 0.35),
-                offset: gpui::point(px(0.), px(8.)),
-                blur_radius: px(24.),
-                spread_radius: px(0.),
-                inset: false,
-            }])
-            // In a narrow pane the count and the step and close buttons wrap
-            // onto a second line, so the query field keeps a usable width.
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_end()
-                    .gap(rems(6. / 16.))
-                    .min_h(rems(34. / 16.))
-                    .py(rems(6. / 16.))
-                    .pl(rems(10. / 16.))
-                    .pr(rems(6. / 16.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_w(rems(QUERY_GROUP_MIN_WIDTH / 16.))
-                            .items_center()
-                            .gap(rems(6. / 16.))
-                            .child(
-                                svg()
-                                    .flex_none()
-                                    .path("search.svg")
-                                    .size(rems(13. / 16.))
-                                    .text_color(theme::faint()),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "TERMINAL_FIND_QUERY".into())
-                                    .flex_1()
-                                    .min_w(rems(QUERY_MIN_WIDTH / 16.))
-                                    .child(self.field.clone()),
-                            )
-                            .child(bar_button(
-                                "terminal-find-match-case",
-                                BarContent::Label("Aa", false),
-                                "terminal.find_match_case",
-                                true,
-                                self.match_case,
-                                action(&root, |this, _, cx| this.toggle_match_case(cx)),
-                            ))
-                            .child(bar_button(
-                                "terminal-find-regex",
-                                BarContent::Label(".*", true),
-                                "terminal.find_regex",
-                                true,
-                                self.regex,
-                                action(&root, |this, _, cx| this.toggle_regex(cx)),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(rems(6. / 16.))
-                            .children(count.map(|(label, danger)| {
-                                div()
-                                    .debug_selector(|| "TERMINAL_FIND_COUNT".into())
-                                    .flex_none()
-                                    .text_size(theme::text_ui())
-                                    .text_color(if danger {
-                                        theme::danger()
-                                    } else {
-                                        theme::muted()
-                                    })
-                                    .child(label)
-                            }))
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(1.))
-                                    .h(rems(14. / 16.))
-                                    .bg(theme::border_strong()),
-                            )
-                            .child(bar_button(
-                                "terminal-find-previous",
-                                BarContent::Icon("chevron-up.svg", 14.),
-                                "terminal.find_previous",
-                                can_step,
-                                false,
-                                action(&root, |this, _, cx| this.step(false, cx)),
-                            ))
-                            .child(bar_button(
-                                "terminal-find-next",
-                                BarContent::Icon("chevron-down.svg", 14.),
-                                "terminal.find_next",
-                                can_step,
-                                false,
-                                action(&root, |this, _, cx| this.step(true, cx)),
-                            ))
-                            .child(bar_button(
-                                "terminal-find-close",
-                                BarContent::Icon("close.svg", 13.),
-                                "terminal.find_close",
-                                true,
-                                false,
-                                action(&root, |this, window, cx| this.close(window, cx)),
-                            )),
-                    ),
-            )
-            .when(self.alt_screen, |bar| {
-                bar.child(
+        let step_root = root.clone();
+        let footer = self.alt_screen.then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .pt(rems(6. / 16.))
+                .pb(rems(7. / 16.))
+                .px(rems(10. / 16.))
+                .border_t_1()
+                .border_color(theme::border())
+                .child(
+                    svg()
+                        .flex_none()
+                        .path("info.svg")
+                        .size(rems(12. / 16.))
+                        .text_color(theme::faint()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(theme::text_meta())
+                        .text_color(theme::muted())
+                        .child(crate::i18n::t("terminal.find_alternate_screen")),
+                )
+                .into_any_element()
+        });
+        find_bar_panel(FindBarParts {
+            prefix: "terminal-find",
+            field: self.field.clone(),
+            match_case: self.match_case,
+            regex: self.regex,
+            count: self.count_label(),
+            can_step: self.can_step(),
+            footer,
+            toggle_case: action(|this, _, cx| this.toggle_match_case(cx)),
+            toggle_regex: action(|this, _, cx| this.toggle_regex(cx)),
+            step: Rc::new(move |next, _, cx| {
+                step_root.update(cx, |this, cx| this.step(next, cx)).ok();
+            }),
+            close: action(|this, window, cx| this.close(window, cx)),
+        })
+        .id(("terminal-find", id))
+        .key_context("TerminalFind")
+        .on_action(cx.listener(|this, _: &FindInTerminal, window, cx| this.open(window, cx)))
+        .debug_selector(|| "TERMINAL_FIND_BAR".into())
+        .into_any_element()
+    }
+}
+
+pub(crate) type BarAction = Rc<dyn Fn(&mut Window, &mut App)>;
+/// Steps to the next match, or the previous with `false`.
+pub(crate) type StepAction = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+
+/// What a find bar shows and does, for the terminal's and the file viewer's.
+pub(crate) struct FindBarParts {
+    /// Names the bar's elements: `terminal-find`, `file-find`.
+    pub(crate) prefix: &'static str,
+    pub(crate) field: Entity<TextField>,
+    pub(crate) match_case: bool,
+    pub(crate) regex: bool,
+    /// The count, and whether it reads as a problem.
+    pub(crate) count: Option<(SharedString, bool)>,
+    pub(crate) can_step: bool,
+    pub(crate) footer: Option<AnyElement>,
+    pub(crate) toggle_case: BarAction,
+    pub(crate) toggle_regex: BarAction,
+    pub(crate) step: StepAction,
+    pub(crate) close: BarAction,
+}
+
+/// The find bar from #897: the query with its two toggles, the count, and
+/// previous, next and close.
+pub(crate) fn find_bar_panel(parts: FindBarParts) -> gpui::Div {
+    let prefix = parts.prefix;
+    let selector = |suffix: &str| format!("{}_{suffix}", prefix.to_uppercase().replace('-', "_"));
+    let count_selector = selector("COUNT");
+    let query_selector = selector("QUERY");
+    let previous = parts.step.clone();
+    let next = parts.step;
+    div()
+        .occlude()
+        .w(rems(380. / 16.))
+        .max_w_full()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(rems(8. / 16.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .bg(theme::panel())
+        .shadow(vec![BoxShadow {
+            color: gpui::hsla(0., 0., 0., 0.35),
+            offset: gpui::point(px(0.), px(8.)),
+            blur_radius: px(24.),
+            spread_radius: px(0.),
+            inset: false,
+        }])
+        // In a narrow pane the count and the step and close buttons wrap
+        // onto a second line, so the query field keeps a usable width.
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_end()
+                .gap(rems(6. / 16.))
+                .min_h(rems(34. / 16.))
+                .py(rems(6. / 16.))
+                .pl(rems(10. / 16.))
+                .pr(rems(6. / 16.))
+                .child(
                     div()
                         .flex()
+                        .flex_1()
+                        .min_w(rems(QUERY_GROUP_MIN_WIDTH / 16.))
                         .items_center()
                         .gap(rems(6. / 16.))
-                        .pt(rems(6. / 16.))
-                        .pb(rems(7. / 16.))
-                        .px(rems(10. / 16.))
-                        .border_t_1()
-                        .border_color(theme::border())
                         .child(
                             svg()
                                 .flex_none()
-                                .path("info.svg")
-                                .size(rems(12. / 16.))
+                                .path("search.svg")
+                                .size(rems(13. / 16.))
                                 .text_color(theme::faint()),
                         )
                         .child(
                             div()
+                                .debug_selector(move || query_selector)
                                 .flex_1()
-                                .min_w(px(0.))
-                                .text_size(theme::text_meta())
-                                .text_color(theme::muted())
-                                .child(crate::i18n::t("terminal.find_alternate_screen")),
-                        ),
+                                .min_w(rems(QUERY_MIN_WIDTH / 16.))
+                                .child(parts.field),
+                        )
+                        .child(bar_button(
+                            format!("{prefix}-match-case"),
+                            BarContent::Label("Aa", false),
+                            "terminal.find_match_case",
+                            true,
+                            parts.match_case,
+                            move |window, cx| (parts.toggle_case)(window, cx),
+                        ))
+                        .child(bar_button(
+                            format!("{prefix}-regex"),
+                            BarContent::Label(".*", true),
+                            "terminal.find_regex",
+                            true,
+                            parts.regex,
+                            move |window, cx| (parts.toggle_regex)(window, cx),
+                        )),
                 )
-            })
-            .into_any_element()
-    }
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(rems(6. / 16.))
+                        .children(parts.count.map(|(label, danger)| {
+                            div()
+                                .debug_selector(move || count_selector)
+                                .flex_none()
+                                .text_size(theme::text_ui())
+                                .text_color(if danger {
+                                    theme::danger()
+                                } else {
+                                    theme::muted()
+                                })
+                                .child(label)
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(px(1.))
+                                .h(rems(14. / 16.))
+                                .bg(theme::border_strong()),
+                        )
+                        .child(bar_button(
+                            format!("{prefix}-previous"),
+                            BarContent::Icon("chevron-up.svg", 14.),
+                            "terminal.find_previous",
+                            parts.can_step,
+                            false,
+                            move |window, cx| previous(false, window, cx),
+                        ))
+                        .child(bar_button(
+                            format!("{prefix}-next"),
+                            BarContent::Icon("chevron-down.svg", 14.),
+                            "terminal.find_next",
+                            parts.can_step,
+                            false,
+                            move |window, cx| next(true, window, cx),
+                        ))
+                        .child(bar_button(
+                            format!("{prefix}-close"),
+                            BarContent::Icon("close.svg", 13.),
+                            "terminal.find_close",
+                            true,
+                            false,
+                            move |window, cx| (parts.close)(window, cx),
+                        )),
+                ),
+        )
+        .children(parts.footer)
 }
 
 enum BarContent {
@@ -686,13 +731,14 @@ enum BarContent {
 /// hover, accent with an accent outline while toggled on, faint when it
 /// cannot act.
 fn bar_button(
-    name: &'static str,
+    name: String,
     content: BarContent,
     tooltip_key: &'static str,
     enabled: bool,
     active: bool,
     on_press: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let name = SharedString::from(name);
     let color = if active {
         theme::accent()
     } else if enabled {
@@ -718,7 +764,7 @@ fn bar_button(
             })
             .text_color(color)
             .when(enabled, |label| {
-                label.group_hover(name, |style| style.text_color(hover_color))
+                label.group_hover(name.clone(), |style| style.text_color(hover_color))
             })
             .child(label)
             .into_any_element(),
@@ -727,14 +773,15 @@ fn bar_button(
             .size(rems(size / 16.))
             .text_color(color)
             .when(enabled, |icon| {
-                icon.group_hover(name, |style| style.text_color(hover_color))
+                icon.group_hover(name.clone(), |style| style.text_color(hover_color))
             })
             .into_any_element(),
     };
+    let selector = name.to_uppercase();
     let button = div()
-        .id(name)
-        .debug_selector(move || name.to_uppercase())
-        .group(name)
+        .id(name.clone())
+        .debug_selector(move || selector)
+        .group(name.clone())
         .flex_none()
         .size(rems(22. / 16.))
         .flex()

@@ -1,23 +1,31 @@
 //! The side panel's Files view (#634): the root and its states, the root
 //! picker and the tree with git status, served by `runnerd`'s file service.
 
+mod code;
+mod document;
 pub(crate) mod picker;
+mod tabs;
 pub(crate) mod tree;
 mod view;
+mod viewer;
 
 #[cfg(test)]
 mod tests;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use futures::StreamExt as _;
-use gpui::{AnyElement, App, AppContext as _, Entity, EventEmitter, Global, IntoElement as _};
+use gpui::{
+    canvas, AnyElement, App, AppContext as _, Entity, EntityId, EventEmitter, Global,
+    IntoElement as _, Styled as _,
+};
 use runner_core::protocol::files::{
     FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
 };
 use runner_core::protocol::DaemonClient;
 
-use crate::surfaces::side_panel::{PanelContext, PanelSubject};
+use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 #[allow(unused_imports)]
 pub(crate) use view::FileOpen;
 pub(crate) use view::FilesView;
@@ -97,10 +105,22 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
 #[derive(Default)]
 pub(crate) struct FilesPanel {
     views: RefCell<Vec<(PanelSubject, Entity<FilesView>)>>,
+    /// The width the panel shares with its chat or mission, unzoomed, as
+    /// last drawn.
+    surface: Rc<Cell<f32>>,
 }
 
 impl FilesPanel {
-    pub(crate) fn show(&self, context: &PanelContext, cx: &mut App) -> AnyElement {
+    /// Shows the subject's view, telling it how the owner widened the panel
+    /// for an open file, and which entity to redraw when opening or closing
+    /// files changes the panel's width.
+    pub(crate) fn show_with(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        cx: &mut App,
+    ) -> AnyElement {
         let mut views = self.views.borrow_mut();
         let view = match views
             .iter()
@@ -117,12 +137,61 @@ impl FilesPanel {
         }
         view.update(cx, |view, cx| {
             view.set_context(context.clone(), cx);
+            view.set_widened(widened, cx);
+            view.set_owner(owner);
             view.set_shown(true, cx);
         });
         views.push((context.subject.clone(), view.clone()));
         let excess = views.len().saturating_sub(KEPT_VIEWS);
         views.drain(..excess);
         view.into_any_element()
+    }
+
+    /// Whether the subject's view has a file open, widening the panel, and
+    /// if so whether its tree toggle is on.
+    pub(crate) fn widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
+        self.views
+            .borrow()
+            .iter()
+            .find(|(shown, _)| shown == subject)
+            .and_then(|(_, view)| view.read(cx).widening())
+    }
+
+    /// Measures the width the panel shares with its chat or mission; drawn
+    /// over that surface. A change redraws the owner on the next frame.
+    pub(crate) fn measure(&self, zoom: f32) -> AnyElement {
+        let surface = self.surface.clone();
+        canvas(
+            move |bounds, window, _| {
+                let width = f32::from(bounds.size.width) / zoom;
+                if (surface.replace(width) - width).abs() > 0.5 {
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+
+    /// The panel's width for `subject`: `standard`, or widened by an open
+    /// file and its tree into the room the chat or mission leaves, less `gap`.
+    pub(crate) fn layout(
+        &self,
+        subject: Option<&PanelSubject>,
+        standard: f32,
+        file: f32,
+        tree_width: f32,
+        gap: f32,
+        cx: &App,
+    ) -> (f32, Option<Widened>) {
+        let Some(tree) = subject.and_then(|subject| self.widening(subject, cx)) else {
+            return (standard, None);
+        };
+        let layout =
+            side_panel::widened(self.surface.get() - gap, standard, file, tree_width, tree);
+        (layout.width(), Some(layout))
     }
 
     pub(crate) fn hide(&self, cx: &mut App) {

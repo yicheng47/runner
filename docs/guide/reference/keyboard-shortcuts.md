@@ -65,6 +65,20 @@ Copy with a selection, paste and zoom work in a terminal in both modes. The sett
 
 Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys inside the find bar are fixed. On Windows and Linux, **Ctrl+F** still reaches the terminal. Esc closes the find bar only while the bar has focus; once the terminal has focus, Esc goes to the program. See [Find in a terminal](../guides/chats-and-windows.md#find-in-a-terminal).
 
+## Files in the side panel
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Open the selected file in the tree in the preview tab | Space | Space |
+| Open the selected file in the tree in a kept tab | Return | Enter |
+| Next file tab | ⌃Tab | Ctrl+Tab |
+| Previous file tab | ⌃⇧Tab | Ctrl+Shift+Tab |
+| Close the active file tab | ⌘W | Ctrl+Shift+W |
+| Find in the file | ⌘F | Ctrl+F |
+| Copy the selected text | ⌘C | Ctrl+C |
+
+These keys act while the side panel's Files view has focus and are fixed. With focus elsewhere, or no file open, ⌘W (Ctrl+Shift+W) closes the pane as usual. In the file's find bar, Return and ⇧Return step through the matches and Esc closes the bar. See [Read a file in the side panel](../guides/chats-and-windows.md#read-a-file-in-the-side-panel).
+
 ## Dialogs
 
 | Action | macOS | Windows / Linux |
