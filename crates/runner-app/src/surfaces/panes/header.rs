@@ -109,6 +109,7 @@ impl NativeRoot {
         let width = self.settings(cx).chat_panel_width;
         let visible_width = width * visibility;
         if !show_panel {
+            self.chat_files.hide(cx);
             return div()
                 .id("chat-side-panel")
                 .relative()
@@ -180,16 +181,23 @@ impl NativeRoot {
         let files = detail
             .filter(|_| shown == Some(PanelViewId::Files))
             .map(|detail| {
-                side_panel::files_view(&PanelContext {
-                    subject: PanelSubject::Session(detail.session_id.clone()),
-                    cwd: detail
-                        .cwd
-                        .clone()
-                        .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone())),
-                    project: detail.project_id.clone(),
-                    remote: !self.remote_client.is_local(),
-                })
+                self.chat_files.show(
+                    &PanelContext {
+                        subject: PanelSubject::Session(detail.session_id.clone()),
+                        surface,
+                        cwd: detail
+                            .cwd
+                            .clone()
+                            .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone())),
+                        project: detail.project_id.clone(),
+                        remote: !self.remote_client.is_local(),
+                    },
+                    cx,
+                )
             });
+        if files.is_none() {
+            self.chat_files.hide(cx);
+        }
         let content = if let Some(detail) = detail {
             let open_root = cx.entity();
             let toggle_root = cx.entity();
