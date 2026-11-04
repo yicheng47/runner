@@ -70,9 +70,20 @@ impl Trust {
         file.as_file()
             .sync_all()
             .map_err(|_| "Could not sync remote trust")?;
-        file.persist(root.join("remote-trust.json"))
-            .map_err(|_| "Could not replace remote trust")?;
-        Ok(())
+        // Windows refuses to replace a file while anything holds it open, as a
+        // reader or a virus scanner checking the last write briefly does.
+        let mut attempts = if cfg!(windows) { 50 } else { 1 };
+        loop {
+            attempts -= 1;
+            match file.persist(root.join("remote-trust.json")) {
+                Ok(_) => return Ok(()),
+                Err(error) if attempts > 0 => {
+                    file = error.file;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => return Err("Could not replace remote trust"),
+            }
+        }
     }
     pub fn record_failed_pin(&mut self) {
         self.failed_pins = (self.failed_pins + 1).min(5);
@@ -239,5 +250,21 @@ mod tests {
                 bad
             );
         }
+    }
+
+    #[test]
+    fn save_replaces_the_file_once_a_reader_lets_go() {
+        let root = tempfile::tempdir().unwrap();
+        let mut trust = Trust::default();
+        trust.save(root.path()).unwrap();
+        let reader = std::fs::File::open(root.path().join("remote-trust.json")).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(reader);
+        });
+        trust.failed_pins = 1;
+        trust.save(root.path()).unwrap();
+        release.join().unwrap();
+        assert_eq!(Trust::load(root.path()).unwrap().failed_pins, 1);
     }
 }
