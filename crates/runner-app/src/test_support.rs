@@ -28,6 +28,7 @@ pub(crate) fn core(
         mission_grid_hint: Arc::new(Mutex::new(None)),
         windows: Arc::new(windows::WindowRegistry::new()),
         events: events::EventChannel::new(),
+        files: Default::default(),
         session_event_observer: Default::default(),
         reports: Default::default(),
         app_version: "0.0.0-test".into(),
