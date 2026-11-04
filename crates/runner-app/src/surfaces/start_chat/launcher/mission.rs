@@ -264,9 +264,7 @@ impl ChatLauncher {
         if self.pending.is_some() {
             return;
         }
-        let Some(origin) = self.origin.take() else {
-            return;
-        };
+        let origin = self.origin.take();
         let Some(root) = self.root.upgrade() else {
             return;
         };
@@ -603,17 +601,29 @@ impl NativeRoot {
 
     pub(crate) fn leave_launcher_page(
         &mut self,
-        origin: LauncherOrigin,
+        origin: Option<LauncherOrigin>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let origin = origin.or_else(|| {
+            (!self.remote_client.is_active() && !self.tabs.tabs().is_empty()).then_some(
+                LauncherOrigin::Local {
+                    route: AppRoute::Chat,
+                    tab: None,
+                },
+            )
+        });
+        let Some(origin) = origin else {
+            return;
+        };
         match origin {
             LauncherOrigin::Local {
                 route: AppRoute::Chat,
                 tab,
             } => {
-                if let Some(tab) =
-                    tab.filter(|tab| self.tabs.tabs().iter().any(|layout| &layout.id == tab))
+                if let Some(tab) = tab
+                    .filter(|tab| self.tabs.tabs().iter().any(|layout| &layout.id == tab))
+                    .or_else(|| self.recently_viewed_tab_id())
                 {
                     self.tabs.activate(&tab);
                 }
@@ -633,6 +643,24 @@ impl NativeRoot {
             LauncherOrigin::Remote(None) => {}
         }
         cx.notify();
+    }
+
+    fn recently_viewed_tab_id(&self) -> Option<String> {
+        let viewed = self.runtime_navigation_index.map_or(0, |index| index + 1);
+        self.runtime_navigation_history
+            .iter()
+            .take(viewed)
+            .rev()
+            .find_map(|location| match location {
+                RuntimeLocation::Chat(session_id) => self
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .find(|tab| tab.contains_session(session_id)),
+                _ => None,
+            })
+            .or_else(|| self.tabs.tabs().first())
+            .map(|tab| tab.id.clone())
     }
 
     fn launch_mission_from_launcher(

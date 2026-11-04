@@ -1609,7 +1609,8 @@ impl NativeRoot {
     }
 
     /// With no tab or page behind it the launcher is the window's empty state,
-    /// and there is nothing to close it back to.
+    /// and there is nothing to close it back to. A page with no recorded origin,
+    /// such as the one left after closing the active tab, closes to a tab.
     pub(crate) fn launcher_page_closable(&self, cx: &App) -> bool {
         self.launcher_page_visible()
             && self
@@ -1619,7 +1620,8 @@ impl NativeRoot {
                         route: AppRoute::Chat,
                         ..
                     }) => !self.tabs.tabs().is_empty(),
-                    Some(mission::LauncherOrigin::Remote(None)) | None => false,
+                    None => !self.remote_client.is_active() && !self.tabs.tabs().is_empty(),
+                    Some(mission::LauncherOrigin::Remote(None)) => false,
                     Some(_) => true,
                 })
     }
@@ -2279,6 +2281,89 @@ mod tests {
         });
         harness.act(close_tab);
         harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Crews));
+    }
+
+    #[test]
+    fn page_left_by_closing_the_active_tab_closes_to_the_last_viewed_tab() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let mut tabs = Vec::new();
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let core = root.app_store.read(cx).test_core.clone();
+            let conn = core.db.get().unwrap();
+            for (position, chat) in ["first-chat", "viewed-chat"].into_iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')",
+                    [chat],
+                )
+                .unwrap();
+                let layout = PaneLayout::single(Some(chat), &[chat.into()]);
+                tabs.push(
+                    runner_daemon::repo::node::create_tab(
+                        &conn,
+                        None,
+                        chat,
+                        position as i64,
+                        &layout.serialize().unwrap(),
+                    )
+                    .unwrap()
+                    .id,
+                );
+            }
+            drop(conn);
+            root.app_store.update(cx, |store, cx| {
+                store.refresh_sessions(cx);
+                store.refresh_nodes(cx).unwrap();
+            });
+            root.reload_tabs(cx).unwrap();
+            assert_eq!(root.tabs.tabs()[0].id, tabs[0]);
+            root.tabs.activate(&tabs[1]);
+            root.set_route(AppRoute::Chat, cx);
+        });
+        let close_active_empty_tab = |harness: &mut ModalHarness| {
+            harness.act(|root, window, cx| root.test_open_empty_tab(window, cx));
+            harness.act(close_tab);
+            harness.read_root(|root, _| {
+                assert_eq!(root.route, AppRoute::Chat);
+                assert!(root.tabs.active().is_none());
+                assert_eq!(root.tabs.tabs().len(), 2);
+            });
+        };
+
+        // The page the close lands on has a ×, which returns to the last viewed tab.
+        close_active_empty_tab(&mut harness);
+        let close = harness.bounds("LAUNCHER_PAGE_CLOSE").expect("close button");
+        harness
+            .visual
+            .simulate_click(close.center(), gpui::Modifiers::default());
+        harness.visual.run_until_parked();
+        harness.read_root(|root, _| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
+        });
+
+        // ⌘N from that page keeps both ×s, and ⌘W returns the same way.
+        close_active_empty_tab(&mut harness);
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        assert!(harness.bounds("LAUNCHER_PAGE_CLOSE").is_some());
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB_CLOSE").is_some());
+        harness.act(close_tab);
+        harness.read_root(|root, _| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
+        });
+
+        // With no tab in the navigation history, it returns to the first tab.
+        close_active_empty_tab(&mut harness);
+        harness.act(|root, _, _| {
+            root.runtime_navigation_history.clear();
+            root.runtime_navigation_index = None;
+        });
+        harness.act(close_tab);
+        harness.read_root(|root, _| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.active_tab_id(), Some(tabs[0].as_str()));
+        });
     }
 
     #[test]
