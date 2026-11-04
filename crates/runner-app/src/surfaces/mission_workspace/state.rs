@@ -269,7 +269,7 @@ impl MissionWorkspace {
             secondary: false,
             duplicate_dismissed: false,
             primary_label: None,
-            rail_view: MissionRailView::default(),
+            rail_view: PanelViewId::default(),
             action_menu,
             menu_actions: Vec::new(),
             menu_pinned: false,
@@ -283,11 +283,7 @@ impl MissionWorkspace {
         }
     }
 
-    pub(super) fn prepare_mission(
-        &mut self,
-        mission_id: String,
-        rail_view: MissionRailView,
-    ) -> u64 {
+    pub(super) fn prepare_mission(&mut self, mission_id: String, rail_view: PanelViewId) -> u64 {
         self.generation += 1;
         self.refresh_generation += 1;
         self.event_resync_generation += 1;

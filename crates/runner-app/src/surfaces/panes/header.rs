@@ -7,14 +7,9 @@ impl NativeRoot {
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let terminal_tab = super::super::chat::tab_is_terminal(layout, |id| {
-            self.front_page_session(id, cx)
-                .and_then(|entry| Runtime::parse(&entry.agent_runtime))
-        });
         if !self.remote_client.is_local()
             || start_surface_visible(Some(layout))
             || self.settings(cx).chat_panel_open
-            || terminal_tab
             || top_right_pane(&layout.root).id != pane_id
         {
             return None;
@@ -98,9 +93,11 @@ impl NativeRoot {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
+        surface: PanelSurface,
         session_key_copy: Entity<CopyValueButton>,
         visibility: f32,
         show_panel: bool,
@@ -132,6 +129,8 @@ impl NativeRoot {
                     .cloned()
             });
         let collapse_root = cx.entity();
+        let select_root = cx.entity();
+        let shown = side_panel::shown_view(surface, self.chat_panel_view);
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
             div()
@@ -147,7 +146,6 @@ impl NativeRoot {
                 .pr_2()
                 .flex()
                 .items_center()
-                .justify_end()
                 .border_b_1()
                 .border_color(theme::border())
                 .rounded_tr(rems(11. / 16.))
@@ -156,7 +154,15 @@ impl NativeRoot {
                     let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
                     element
                 })
-                .child(
+                .child(side_panel::header_views(
+                    surface,
+                    shown,
+                    Rc::new(move |view, cx| {
+                        select_root.update(cx, |this, cx| {
+                            this.chat_panel_view = view;
+                            cx.notify();
+                        })
+                    }),
                     IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip(crate::i18n::text("ui.collapse_side_panel"))
                         .on_press(move |_, cx| {
@@ -168,9 +174,22 @@ impl NativeRoot {
                                 cx.notify();
                             });
                         }),
-                ),
+                )),
             cx,
         );
+        let files = detail
+            .filter(|_| shown == Some(PanelViewId::Files))
+            .map(|detail| {
+                side_panel::files_view(&PanelContext {
+                    subject: PanelSubject::Session(detail.session_id.clone()),
+                    cwd: detail
+                        .cwd
+                        .clone()
+                        .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone())),
+                    project: detail.project_id.clone(),
+                    remote: !self.remote_client.is_local(),
+                })
+            });
         let content = if let Some(detail) = detail {
             let open_root = cx.entity();
             let toggle_root = cx.entity();
@@ -224,15 +243,16 @@ impl NativeRoot {
                     .flex()
                     .flex_col()
                     .pb(rems(8. / 16.))
-                    .child(
+                    .child(files.unwrap_or_else(|| {
                         div()
                             .id("chat-panel-scroll")
                             .flex_1()
                             .min_h(px(0.))
                             .overflow_y_scroll()
                             .p_5()
-                            .child(content),
-                    ),
+                            .child(content)
+                            .into_any_element()
+                    })),
             );
         div()
             .id("chat-side-panel")
