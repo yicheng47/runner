@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,8 @@ use gpui::{
 };
 
 use super::document::{Document, FileMatch, Position};
+use super::highlight::{self, Grammar, Highlights};
+use super::syntax::SyntaxTheme;
 use crate::theme;
 use crate::{Copy, SelectAll};
 
@@ -49,6 +52,14 @@ impl Metrics {
 
 pub(crate) struct CodeView {
     document: Arc<Document>,
+    /// The language the file is highlighted as; `None` stays plain.
+    grammar: Option<&'static Grammar>,
+    /// The spans of `document`, or of the text before a reload until the
+    /// new ones arrive.
+    highlights: Option<Arc<Highlights>>,
+    /// Set to stop the highlighting under way, when the text it reads is
+    /// replaced or the view goes.
+    cancel: Arc<AtomicUsize>,
     focus: FocusHandle,
     scroll: Point<Pixels>,
     /// The anchor and the head, which moves.
@@ -65,12 +76,22 @@ pub(crate) struct CodeView {
     /// The bytes shaped in the last frame.
     #[cfg(test)]
     pub(crate) shaped_bytes: Cell<usize>,
+    /// The runs drawn in the last frame, by line: each run's text and colour.
+    #[cfg(test)]
+    pub(crate) painted: std::cell::RefCell<std::collections::BTreeMap<usize, Vec<(String, Hsla)>>>,
 }
 
 impl CodeView {
-    pub(crate) fn new(document: Arc<Document>, cx: &mut Context<Self>) -> Self {
-        Self {
+    pub(crate) fn new(
+        document: Arc<Document>,
+        grammar: Option<&'static Grammar>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self {
             document,
+            grammar,
+            highlights: None,
+            cancel: Arc::default(),
             focus: cx.focus_handle(),
             scroll: Point::default(),
             selection: None,
@@ -84,7 +105,43 @@ impl CodeView {
             open_line: None,
             #[cfg(test)]
             shaped_bytes: Cell::new(0),
-        }
+            #[cfg(test)]
+            painted: Default::default(),
+        };
+        view.highlight(cx);
+        view
+    }
+
+    /// Highlights the text on the background executor; the spans arrive
+    /// for the text they were computed from, or not at all.
+    fn highlight(&mut self, cx: &mut Context<Self>) {
+        self.cancel.store(1, Ordering::Relaxed);
+        let Some(grammar) = self.grammar else {
+            return;
+        };
+        let cancel = Arc::new(AtomicUsize::new(0));
+        self.cancel = cancel.clone();
+        let document = self.document.clone();
+        let task = cx.background_spawn(async move {
+            highlight::highlight(&document, grammar, Some(&cancel)).map(|found| (document, found))
+        });
+        cx.spawn(async move |this, cx| {
+            let Some((document, found)) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |view, cx| {
+                if Arc::ptr_eq(&view.document, &document) {
+                    view.highlights = Some(Arc::new(found));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn highlights(&self) -> Option<&Arc<Highlights>> {
+        self.highlights.as_ref()
     }
 
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
@@ -100,6 +157,7 @@ impl CodeView {
     /// places in the old text, go until find searches the new one.
     pub(crate) fn set_document(&mut self, document: Arc<Document>, cx: &mut Context<Self>) {
         self.document = document;
+        self.highlight(cx);
         self.selection = self
             .selection
             .map(|(anchor, head)| (self.document.clamp(anchor), self.document.clamp(head)));
@@ -282,6 +340,12 @@ impl CodeView {
     }
 }
 
+impl Drop for CodeView {
+    fn drop(&mut self) {
+        self.cancel.store(1, Ordering::Relaxed);
+    }
+}
+
 impl Render for CodeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -302,14 +366,19 @@ impl Render for CodeView {
 struct Row {
     line: usize,
     segments: Vec<(usize, ShapedLine)>,
+    /// Each run's text and colour, for tests.
+    #[cfg(test)]
+    painted: Vec<(String, Hsla)>,
 }
 
-/// How a line is set: its font, size and colour, and the monospace advance.
+/// How a line is set: its font, size and colour, the monospace advance,
+/// and the colours of its highlights when it is highlighted.
 struct RowStyle<'a> {
     font: &'a Font,
     font_size: Pixels,
     char_width: Pixels,
     color: Hsla,
+    syntax: Option<(&'a Highlights, &'a SyntaxTheme)>,
 }
 
 /// Shapes the cells of `line` from column `from` to `to`, each run held to
@@ -321,28 +390,54 @@ fn shape_row(
     style: &RowStyle,
     window: &Window,
 ) -> Row {
+    let spans = style
+        .syntax
+        .map_or(&[][..], |(highlights, _)| highlights.line(line));
+    #[cfg(test)]
+    let mut painted = Vec::new();
     let segments = document
-        .segments(line, from, to)
+        .segments(line, from, to, spans)
         .into_iter()
         .map(|segment| {
-            let text: SharedString = segment.text.into();
-            let shaped = window.text_system().shape_line(
-                text.clone(),
-                style.font_size,
-                &[TextRun {
-                    len: text.len(),
+            let runs = segment
+                .runs
+                .iter()
+                .map(|&(len, capture)| TextRun {
+                    len,
                     font: style.font.clone(),
-                    color: style.color,
+                    color: capture
+                        .zip(style.syntax)
+                        .and_then(|(capture, (_, theme))| theme.color(capture))
+                        .unwrap_or(style.color),
                     background_color: None,
                     underline: None,
                     strikethrough: None,
-                }],
+                })
+                .collect::<Vec<_>>();
+            #[cfg(test)]
+            {
+                let mut at = 0;
+                for run in &runs {
+                    painted.push((segment.text[at..at + run.len].to_owned(), run.color));
+                    at += run.len;
+                }
+            }
+            let text: SharedString = segment.text.into();
+            let shaped = window.text_system().shape_line(
+                text,
+                style.font_size,
+                &runs,
                 Some(style.char_width * segment.cells as f32),
             );
             (segment.column, shaped)
         })
         .collect();
-    Row { line, segments }
+    Row {
+        line,
+        segments,
+        #[cfg(test)]
+        painted,
+    }
 }
 
 struct CodeElement {
@@ -453,15 +548,23 @@ impl Element for CodeElement {
         let mut rows = Vec::with_capacity(last.saturating_sub(first));
         let mut numbers = Vec::with_capacity(rows.capacity());
         let number_color = theme::faint();
+        let highlights = view.highlights.clone().filter(|_| !view.deleted);
+        let syntax = highlights.as_ref().map(|_| SyntaxTheme::current(cx));
         let style = RowStyle {
             font: &font,
             font_size,
             char_width,
             color: text_color,
+            syntax: highlights.as_deref().zip(syntax.as_ref()),
         };
         for line in first..last {
             #[cfg(test)]
-            crate::render_counts::count_render("file-code-lines", cx);
+            {
+                crate::render_counts::count_render("file-code-lines", cx);
+                if style.syntax.is_some() {
+                    crate::render_counts::count_render("file-code-styled-lines", cx);
+                }
+            }
             rows.push(shape_row(&document, line, (from, to), &style, window));
             let number: SharedString = (line + 1).to_string().into();
             let shaped = window.text_system().shape_line(
@@ -480,6 +583,12 @@ impl Element for CodeElement {
             let x = bounds.left() + text_left - px(GUTTER_PAD_RIGHT) - shaped.width;
             numbers.push((x, shaped));
         }
+        #[cfg(test)]
+        view.painted.replace(
+            rows.iter()
+                .map(|row| (row.line, row.painted.clone()))
+                .collect(),
+        );
         #[cfg(test)]
         view.shaped_bytes.set(
             rows.iter()

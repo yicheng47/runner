@@ -260,8 +260,10 @@ pub fn recent_folders(core: &crate::AppCore) -> Result<Vec<PathBuf>> {
     Ok(folders)
 }
 
-pub fn read(root: &Path, path: &str) -> Result<FileContent> {
-    fs::read(root, path)
+/// Reads a file under `root`; `want_bytes` brings a binary file's bytes
+/// back too.
+pub fn read(root: &Path, path: &str, want_bytes: bool) -> Result<FileContent> {
+    fs::read(root, path, want_bytes)
 }
 
 #[cfg(test)]
