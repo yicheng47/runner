@@ -48,3 +48,27 @@ impl HookReport {
                     }))
     }
 }
+
+/// Identifies a Runner session's own Codex conversation, in its first prompt
+/// or its startup context, so the daemon can find that conversation's rollout.
+pub fn codex_session_marker(session_id: &str) -> String {
+    format!("<!-- runner-codex-session-key-capture:{session_id} -->")
+}
+
+/// The SessionStart reply that marks a fresh startup of the session's own
+/// Codex thread; every other hook gets no output.
+pub fn codex_startup_output(
+    session_id: &str,
+    payload: &Value,
+    caller_thread_id: Option<&str>,
+) -> Option<Value> {
+    (payload["hook_event_name"] == "SessionStart"
+        && payload["source"] == "startup"
+        && caller_thread_id.is_some_and(|id| payload["session_id"].as_str() == Some(id)))
+    .then(|| {
+        serde_json::json!({"hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": codex_session_marker(session_id),
+        }})
+    })
+}

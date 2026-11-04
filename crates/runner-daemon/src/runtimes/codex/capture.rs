@@ -44,10 +44,8 @@ use rusqlite::params;
 
 const CAPTURE_TIMEOUT_SECS: u64 = 30;
 const POLL_INTERVAL_MS: u64 = 400;
-const PROMPT_MARKER_PREFIX: &str = "runner-codex-session-key-capture:";
-
 pub fn prompt_marker(session_id: &str) -> String {
-    format!("<!-- {PROMPT_MARKER_PREFIX}{session_id} -->")
+    runner_core::protocol::hook::codex_session_marker(session_id)
 }
 
 /// Process-shared set of rollout paths that some watcher has already
@@ -335,7 +333,10 @@ fn fallback_row_is_unambiguous(
     sibling_count.map(|count| count == 0).unwrap_or(false)
 }
 
-fn rollout_paths_for_dates(sessions_root: &Path, candidates: &[DateTime<Local>]) -> Vec<PathBuf> {
+pub(super) fn rollout_paths_for_dates(
+    sessions_root: &Path,
+    candidates: &[DateTime<Local>],
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for date in candidates {
         let dir = sessions_root
@@ -465,7 +466,7 @@ fn rollout_contains_marker(path: &Path, marker: &str) -> bool {
         .any(|line| line.contains(marker))
 }
 
-fn is_rollout_file(path: &Path) -> bool {
+pub(super) fn is_rollout_file(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("jsonl")
         && path
             .file_name()
@@ -566,6 +567,10 @@ enum ParseVerdict {
     /// valid JSON (codex created the file but hasn't flushed the
     /// meta line). Try again on the next poll.
     NotReady,
+}
+
+pub(super) fn session_meta(path: &Path) -> Option<serde_json::Value> {
+    read_complete_session_meta(path).ok()
 }
 
 fn read_complete_session_meta(path: &Path) -> std::result::Result<serde_json::Value, ParseVerdict> {
