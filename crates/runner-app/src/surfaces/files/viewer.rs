@@ -20,6 +20,7 @@ use runner_core::protocol::files::{FileContent, FilesChanged};
 
 use super::code::CodeView;
 use super::document::{self, Document, FileQuery, Found, MATCH_LIMIT};
+use super::markdown::{self, LinkTarget, MarkdownView, Page};
 use super::tabs::{FileTab, FileTabs};
 use super::tree::Letter;
 use super::view::{absolute, letter_color, reveal, reveal_label, FilesView};
@@ -55,10 +56,18 @@ pub(super) struct OpenFile {
     pub(super) content: Content,
     /// The newest read sent; an older reply arriving late is dropped.
     read: u64,
+    /// A Markdown file's rendered page, drawn instead of its source until
+    /// `</>` switches.
+    rendered: Option<Entity<MarkdownView>>,
+    /// Whether a Markdown file shows its source.
+    source: bool,
 }
 
+/// A Markdown file's page and the local images it shows.
+type Rendered = (Arc<Page>, HashMap<String, Arc<gpui::Image>>);
+
 enum Read {
-    Text(Arc<Document>),
+    Text(Arc<Document>, Option<Rendered>),
     Binary(u64),
     TooLarge(u64),
     Missing,
@@ -103,6 +112,31 @@ pub(super) struct Viewer {
     /// What would have opened outside the app, for tests.
     #[cfg(test)]
     pub(super) launched: Vec<(Option<FileLinkEditor>, PathBuf, Option<u32>)>,
+    /// The URLs links would have opened in the browser, for tests.
+    #[cfg(test)]
+    pub(super) opened_urls: Vec<String>,
+}
+
+fn is_markdown(path: &str) -> bool {
+    super::highlight::grammar_for_path(path).is_some_and(|grammar| grammar.name == "markdown")
+}
+
+/// A Markdown file's local image, read through runnerd with its bytes;
+/// `None` leaves its alt text showing.
+fn read_image(
+    client: &runner_core::protocol::DaemonClient,
+    root: &std::path::Path,
+    path: &str,
+) -> Option<Arc<gpui::Image>> {
+    let format = markdown::image_format(path)?;
+    let bytes = match client.files_read(root, path, true).ok()? {
+        FileContent::Text { bytes, .. } => bytes.0,
+        FileContent::Binary {
+            bytes: Some(bytes), ..
+        } => bytes.0,
+        _ => return None,
+    };
+    Some(Arc::new(gpui::Image::from_bytes(format, bytes)))
 }
 
 /// `bytes` for people: `512 B`, `1.2 MB`, `214 MB`.
@@ -225,6 +259,17 @@ impl FilesView {
     /// Opens `path` in the preview tab, or a kept tab with `keep`.
     pub(crate) fn open_file(&mut self, path: String, keep: bool, cx: &mut Context<Self>) {
         let opened = self.viewer.tabs.open(&path, keep);
+        self.after_open(path, opened, cx);
+    }
+
+    /// Opens `path` in a kept tab beside the active one, keeping every
+    /// other tab, as a link in a rendered page does.
+    fn open_beside(&mut self, path: String, cx: &mut Context<Self>) {
+        let opened = self.viewer.tabs.open_beside(&path);
+        self.after_open(path, opened, cx);
+    }
+
+    fn after_open(&mut self, path: String, opened: super::tabs::Opened, cx: &mut Context<Self>) {
         if let Some(replaced) = opened.replaced {
             self.viewer.files.remove(&replaced);
         }
@@ -234,6 +279,8 @@ impl FilesView {
                 OpenFile {
                     content: Content::Loading,
                     read: 0,
+                    rendered: None,
+                    source: false,
                 },
             );
             self.read_file(path.clone(), cx);
@@ -287,10 +334,14 @@ impl FilesView {
         if tree_shown && self.focus.is_focused(window) {
             return;
         }
-        match self.active_view() {
-            Some(view) => view.read(cx).focus_handle().clone().focus(window, cx),
-            None if tree_shown => self.focus.focus(window, cx),
-            None => self.viewer_focus.focus(window, cx),
+        if let Some(view) = self.active_view() {
+            view.read(cx).focus_handle().clone().focus(window, cx);
+        } else if let Some(page) = self.active_rendered() {
+            page.read(cx).focus_handle().clone().focus(window, cx);
+        } else if tree_shown {
+            self.focus.focus(window, cx);
+        } else {
+            self.viewer_focus.focus(window, cx);
         }
     }
 
@@ -320,6 +371,8 @@ impl FilesView {
             hold_search: viewer.hold_search,
             #[cfg(test)]
             launched: viewer.launched,
+            #[cfg(test)]
+            opened_urls: viewer.opened_urls,
             ..Viewer::default()
         };
     }
@@ -334,14 +387,28 @@ impl FilesView {
             file.read = read;
         }
         let relative = path.clone();
+        let markdown = is_markdown(&path);
         self.request(
             cx,
             move |client| {
-                Ok(match client.files_read(&root, &relative)? {
+                Ok(match client.files_read(&root, &relative, false)? {
                     FileContent::Text { bytes, .. } => {
-                        Read::Text(Arc::new(Document::decode(&bytes.0)))
+                        let document = Arc::new(Document::decode(&bytes.0));
+                        let rendered = markdown.then(|| {
+                            let page = Page::parse(document.text(), &relative);
+                            let images = page
+                                .images()
+                                .into_iter()
+                                .filter_map(|image| {
+                                    let decoded = read_image(client, &root, &image)?;
+                                    Some((image, decoded))
+                                })
+                                .collect();
+                            (Arc::new(page), images)
+                        });
+                        Read::Text(document, rendered)
                     }
-                    FileContent::Binary { size } => Read::Binary(size),
+                    FileContent::Binary { size, .. } => Read::Binary(size),
                     FileContent::TooLarge { size } => Read::TooLarge(size),
                     FileContent::Missing => Read::Missing,
                 })
@@ -358,6 +425,7 @@ impl FilesView {
         cx: &mut Context<Self>,
     ) {
         let open_line = self.open_line_handler(path.clone(), cx);
+        let open_link = self.open_link_handler(cx);
         let active = self
             .viewer
             .tabs
@@ -374,8 +442,28 @@ impl FilesView {
             Content::Text(view) | Content::Deleted(Some(view)) => Some(view),
             _ => None,
         };
+        if let Ok(Read::Text(_, Some((page, images)))) = &result {
+            let (page, images) = (page.clone(), images.clone());
+            match &file.rendered {
+                Some(view) => view.update(cx, |view, cx| {
+                    view.set_page(page, images, cx);
+                    view.set_deleted(false, cx);
+                }),
+                None => {
+                    let relative = path.clone();
+                    file.rendered = Some(cx.new(|cx| {
+                        let mut view = MarkdownView::new(page, relative, images, cx);
+                        view.set_open_link(open_link);
+                        view
+                    }));
+                }
+            }
+        }
+        if let (Ok(Read::Missing), Some(view)) = (&result, &file.rendered) {
+            view.update(cx, |view, cx| view.set_deleted(true, cx));
+        }
         file.content = match result {
-            Ok(Read::Text(document)) => match kept {
+            Ok(Read::Text(document, _)) => match kept {
                 Some(view) => {
                     view.update(cx, |view, cx| {
                         view.set_document(document, cx);
@@ -384,7 +472,8 @@ impl FilesView {
                     Content::Text(view)
                 }
                 None => Content::Text(cx.new(|cx| {
-                    let mut view = CodeView::new(document, cx);
+                    let mut view =
+                        CodeView::new(document, super::highlight::grammar_for_path(&path), cx);
                     view.set_open_line(open_line);
                     view
                 })),
@@ -461,11 +550,93 @@ impl FilesView {
         Some(absolute(root, &tab.path))
     }
 
+    /// The active file's code view, unless it shows its rendered page.
     fn active_view(&self) -> Option<&Entity<CodeView>> {
         let tab = self.viewer.tabs.active()?;
-        match &self.viewer.files.get(&tab.path)?.content {
+        let file = self.viewer.files.get(&tab.path)?;
+        if self.shows_rendered(file) {
+            return None;
+        }
+        match &file.content {
             Content::Text(view) | Content::Deleted(Some(view)) => Some(view),
             _ => None,
+        }
+    }
+
+    fn shows_rendered(&self, file: &OpenFile) -> bool {
+        file.rendered.is_some()
+            && !file.source
+            && matches!(file.content, Content::Text(_) | Content::Deleted(Some(_)))
+    }
+
+    /// The active file's rendered page, while it shows.
+    fn active_rendered(&self) -> Option<&Entity<MarkdownView>> {
+        let tab = self.viewer.tabs.active()?;
+        let file = self.viewer.files.get(&tab.path)?;
+        self.shows_rendered(file)
+            .then_some(file.rendered.as_ref())
+            .flatten()
+    }
+
+    /// Whether the active file is Markdown with a page, and if so whether
+    /// it shows its source.
+    fn active_markdown(&self) -> Option<bool> {
+        let tab = self.viewer.tabs.active()?;
+        let file = self.viewer.files.get(&tab.path)?;
+        file.rendered.as_ref().map(|_| file.source)
+    }
+
+    /// `</>`: the active Markdown file's source, or its page again. A
+    /// deleted file stays as it is: closing is its only action.
+    fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.active_markdown() else {
+            return;
+        };
+        if self.active_deleted() {
+            return;
+        }
+        if source {
+            // Find searches the source: it closes with it.
+            if let Some(view) = self.active_view().cloned() {
+                view.update(cx, |view, cx| view.set_find(Arc::default(), None, cx));
+            }
+            self.viewer.find = None;
+        }
+        if let Some(file) = self
+            .viewer
+            .tabs
+            .active()
+            .and_then(|tab| self.viewer.files.get_mut(&tab.path))
+        {
+            file.source = !source;
+        }
+        self.search(cx);
+        self.keep_focus(window, cx);
+        cx.notify();
+    }
+
+    fn open_link_handler(&self, cx: &mut Context<Self>) -> markdown::OpenLink {
+        let root = cx.weak_entity();
+        Rc::new(move |target, _, cx| {
+            let _ = root.update(cx, |this, cx| this.open_link(target, cx));
+        })
+    }
+
+    /// A link in a rendered page: a URL in the browser, a file in the root
+    /// in a tab of its own.
+    fn open_link(&mut self, target: LinkTarget, cx: &mut Context<Self>) {
+        if self.active_deleted() {
+            return;
+        }
+        match target {
+            LinkTarget::Url(url) => {
+                #[cfg(test)]
+                self.viewer.opened_urls.push(url);
+                #[cfg(not(test))]
+                cx.open_url(&url);
+            }
+            LinkTarget::File(path) => self.open_beside(path, cx),
+            LinkTarget::None => {}
         }
     }
 
@@ -570,7 +741,12 @@ impl FilesView {
 
     // ── Find ───────────────────────────────────────────────────────────
 
+    /// ⌘F: find over the active file; a rendered page switches to its
+    /// source, which find searches.
     pub(super) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_rendered().is_some() {
+            self.toggle_source(window, cx);
+        }
         if self.active_view().is_none() {
             return;
         }
@@ -1056,6 +1232,31 @@ impl FilesView {
                         })),
                 )
             })
+            .when_some(self.active_markdown(), |element, source| {
+                element.child(
+                    strip_button("file-markdown-source", source)
+                        .when(deleted, |element| element.opacity(0.4).cursor_default())
+                        .when(!source, |element| {
+                            element.border_color(gpui::transparent_black())
+                        })
+                        .tooltip(move |_, cx| {
+                            runner_app::ui::tooltip::tooltip_view(
+                                crate::i18n::t(if source {
+                                    "ui.show_markdown_rendered"
+                                } else {
+                                    "ui.show_markdown_source"
+                                }),
+                                cx,
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_source(window, cx)))
+                        .child(svg().size(px(14.)).path("code.svg").text_color(if source {
+                            theme::text()
+                        } else {
+                            theme::muted()
+                        })),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -1277,6 +1478,9 @@ impl FilesView {
                     .into_any_element(),
                 )
             }
+            Content::Text(_) if self.shows_rendered(file) => {
+                self.render_rendered(file.rendered.clone(), None)
+            }
             Content::Text(view) => self.render_code(view.clone(), None, window, cx),
             Content::Deleted(view) => {
                 let close_root = cx.weak_entity();
@@ -1343,6 +1547,9 @@ impl FilesView {
                     )
                     .into_any_element();
                 match view {
+                    Some(_) if self.shows_rendered(file) => {
+                        self.render_rendered(file.rendered.clone(), Some(banner))
+                    }
                     Some(view) => self.render_code(view.clone(), Some(banner), window, cx),
                     None => div()
                         .flex_1()
@@ -1353,6 +1560,21 @@ impl FilesView {
                 }
             }
         }
+    }
+
+    fn render_rendered(
+        &self,
+        page: Option<Entity<MarkdownView>>,
+        banner: Option<AnyElement>,
+    ) -> AnyElement {
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .children(banner)
+            .child(div().flex_1().min_h(px(0.)).children(page))
+            .into_any_element()
     }
 
     fn render_code(
@@ -1733,7 +1955,7 @@ impl FilesView {
     /// A read's reply arriving with `text`, as the daemon would send it.
     pub(crate) fn reply_text(&mut self, path: &str, read: u64, text: &str, cx: &mut Context<Self>) {
         let document = Arc::new(Document::decode(text.as_bytes()));
-        self.apply_read(path.to_owned(), read, Ok(Read::Text(document)), cx);
+        self.apply_read(path.to_owned(), read, Ok(Read::Text(document, None)), cx);
     }
 
     pub(crate) fn last_search(&self) -> Option<u64> {
@@ -1780,6 +2002,22 @@ impl FilesView {
 
     pub(crate) fn launched(&self) -> Vec<(Option<FileLinkEditor>, PathBuf, Option<u32>)> {
         self.viewer.launched.clone()
+    }
+
+    pub(crate) fn rendered_view(&self) -> Option<Entity<MarkdownView>> {
+        self.active_rendered().cloned()
+    }
+
+    pub(crate) fn opened_urls(&self) -> Vec<String> {
+        self.viewer.opened_urls.clone()
+    }
+
+    /// Follows `href` as a click on it in the active rendered page would.
+    pub(crate) fn follow_link(&mut self, href: &str, cx: &mut Context<Self>) {
+        let Some(from) = self.active_tab() else {
+            return;
+        };
+        self.open_link(markdown::route(href, &from), cx);
     }
 
     pub(crate) fn find_state(&self) -> Option<(Option<String>, Option<usize>)> {

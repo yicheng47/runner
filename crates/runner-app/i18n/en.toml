@@ -936,6 +936,8 @@
 "ui.show_all_items" = "Show all"
 "ui.show_files_from_here" = "Show files from here"
 "ui.show_in_explorer" = "Show in Explorer"
+"ui.show_markdown_rendered" = "Show the rendered Markdown"
+"ui.show_markdown_source" = "Show the Markdown source"
 "ui.show_less" = "Show less"
 "ui.show_terminal_drawer" = "Show terminal drawer"
 "ui.sign_in_to_claude_code_to_see_usage" = "Sign in to Claude Code to see usage."
