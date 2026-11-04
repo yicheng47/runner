@@ -40,6 +40,8 @@ use crate::surfaces::roles::logic::{role_setting_label, runtime_display_name};
 
 use runner_app::ui::RoleAvatar;
 
+use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface, PanelViewId};
+
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 
 pub(crate) const UNFOCUSED_PANE_OPACITY: f32 = 0.7;
@@ -276,8 +278,16 @@ fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'s
     }
 }
 
-fn side_panel_open(setting_open: bool, terminal_tab: bool) -> bool {
-    setting_open && !terminal_tab
+fn side_panel_surface(terminal_tab: bool) -> PanelSurface {
+    if terminal_tab {
+        PanelSurface::Terminal
+    } else {
+        PanelSurface::Chat
+    }
+}
+
+fn side_panel_open(setting_open: bool, surface: PanelSurface) -> bool {
+    setting_open && side_panel::views(surface).next().is_some()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -463,10 +473,11 @@ mod tests {
     use super::{
         adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
         header_fork_state, pane_action_items_for, pane_body_opacity, pane_close_behavior,
-        pane_identity_icon, pane_rename_key, side_panel_open, split_allowed, split_decision,
-        split_menu_items, split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
-        HeaderForkState, PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
-        MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+        pane_identity_icon, pane_rename_key, side_panel_open, side_panel_surface, split_allowed,
+        split_decision, split_menu_items, split_tab_archiving, starting_overlay_label,
+        terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior, PaneRenameKey, PanelSurface,
+        SplitDecision, MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT,
+        UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
     use gpui::{point, px, size, AppContext, Bounds};
@@ -1111,12 +1122,253 @@ mod tests {
                 "focused {focused}"
             );
             assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_some());
+            assert!(visual.debug_bounds("PANEL_VIEW Info").is_some());
+            assert!(visual.debug_bounds("PANEL_VIEW Files").is_some());
         }
 
         store.update(&mut visual, |store, _| {
             store.settings.chat_panel_open = false
         });
         assert_eq!(focus("busy-shell", &mut visual).0, 0.);
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+    }
+
+    fn panel_root(
+        session: &'static str,
+    ) -> (
+        tempfile::TempDir,
+        gpui::TestAppContext,
+        gpui::Entity<crate::app_store::AppStore>,
+        gpui::WindowHandle<crate::NativeRoot>,
+        gpui::VisualTestContext,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute_batch(
+                    "UPDATE sessions SET status = 'stopped' WHERE mission_id IS NULL;
+                     UPDATE sessions SET cwd = '/tmp/panel-' || id WHERE mission_id IS NULL;",
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            store.settings.chat_panel_open = true;
+        });
+        let host = cx.add_window(|window, cx| {
+            let mut root = crate::NativeRoot::new(
+                "side-panel-views".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session(session));
+            root.route = crate::AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root
+        });
+        let visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(900.)));
+        visual.run_until_parked();
+        (temp, cx, store, host, visual)
+    }
+
+    fn set_panel_theme(
+        store: &gpui::Entity<crate::app_store::AppStore>,
+        visual: &mut gpui::VisualTestContext,
+        intent: crate::theme::ThemeIntent,
+    ) {
+        store.update(visual, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    settings.app_theme = intent;
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+    }
+
+    #[test]
+    fn chat_panel_header_puts_info_left_and_files_right_in_both_themes() {
+        use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
+        use crate::theme::{self, ThemeIntent};
+        use crate::theme_snapshot::{assert_border, assert_fill_color};
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+        let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
+        let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
+        assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_none());
+        assert!(info.left() - panel.left() <= px(20.), "{info:?} {panel:?}");
+        assert!(info.right() < files.left());
+        assert_eq!(info.center().y, files.center().y);
+        assert!(
+            panel.right() - files.right() >= px(36.) && panel.right() - files.right() <= px(56.),
+            "the divider and collapse control follow Files: {files:?} {panel:?}"
+        );
+        assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
+
+        let selected = || Some(theme::with_alpha(theme::sidebar_selected(), 0.6));
+        for (intent, variant) in [
+            (ThemeIntent::Dark, theme::ThemeVariant::Carbon),
+            (ThemeIntent::Light, theme::ThemeVariant::RunnerLight),
+        ] {
+            set_panel_theme(&store, &mut visual, intent);
+            assert_eq!(theme::active_variant(), variant);
+            assert_fill_color(&mut visual, "PANEL_VIEW Info", selected());
+            assert_fill_color(&mut visual, "PANEL_VIEW Files", None);
+            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            use crate::platform_ui::{take_titlebar_actions, TitlebarAction};
+            let gap = gpui::point((info.right() + files.left()) / 2., info.center().y);
+            take_titlebar_actions();
+            visual.simulate_mouse_down(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
+            visual.simulate_mouse_up(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
+            assert_eq!(take_titlebar_actions(), [TitlebarAction::Move]);
+            for view in [info, files] {
+                for click_count in [1, 2] {
+                    visual.simulate_event(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position: view.center(),
+                        modifiers: gpui::Modifiers::default(),
+                        click_count,
+                        first_mouse: false,
+                    });
+                    visual.simulate_event(gpui::MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position: view.center(),
+                        modifiers: gpui::Modifiers::default(),
+                        click_count,
+                    });
+                    visual.run_until_parked();
+                    assert!(
+                        take_titlebar_actions().is_empty(),
+                        "{view:?} x{click_count}"
+                    );
+                }
+            }
+        }
+
+        visual.simulate_click(files.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            host.read_with(&visual, |root, _| root.chat_panel_view)
+                .unwrap(),
+            PanelViewId::Files
+        );
+        let context = PanelContext {
+            subject: PanelSubject::Session("direct-agent".into()),
+            cwd: Some("/tmp/panel-direct-agent".into()),
+            project: None,
+            remote: false,
+        };
+        assert!(visual
+            .debug_bounds(format!("FILES_VIEW {context:?}").leak())
+            .is_some());
+        assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_none());
+        for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
+            set_panel_theme(&store, &mut visual, intent);
+            assert_fill_color(&mut visual, "PANEL_VIEW Info", None);
+            assert_fill_color(&mut visual, "PANEL_VIEW Files", selected());
+            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+        }
+
+        let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
+        visual.simulate_click(info.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
+    }
+
+    #[test]
+    fn terminal_tab_panel_holds_files_alone_and_shares_the_chat_panel_state() {
+        use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
+        use crate::theme::{self, ThemeIntent};
+        use crate::theme_snapshot::{assert_border, assert_fill_color};
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, _cx, store, host, mut visual) = panel_root("busy-shell");
+        let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        let width = store.read_with(&visual, |store, _| store.settings.chat_panel_width);
+        assert!((panel.size.width - px(width)).abs() <= px(1.), "{panel:?}");
+        assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_some());
+        assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
+        assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_none());
+        let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
+        assert!(panel.right() - files.right() <= px(56.));
+        let context = PanelContext {
+            subject: PanelSubject::Session("busy-shell".into()),
+            cwd: Some("/tmp/panel-busy-shell".into()),
+            project: None,
+            remote: false,
+        };
+        assert!(visual
+            .debug_bounds(format!("FILES_VIEW {context:?}").leak())
+            .is_some());
+        assert_eq!(
+            host.read_with(&visual, |root, _| root.chat_panel_view)
+                .unwrap(),
+            PanelViewId::Info,
+            "showing Files alone keeps the chat's chosen view"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform_ui::take_titlebar_actions();
+            visual.simulate_click(files.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+            assert!(crate::platform_ui::take_titlebar_actions().is_empty());
+        }
+        for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
+            set_panel_theme(&store, &mut visual, intent);
+            assert_fill_color(
+                &mut visual,
+                "PANEL_VIEW Files",
+                Some(theme::with_alpha(theme::sidebar_selected(), 0.6)),
+            );
+            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+        }
+
+        host.update(&mut visual, |root, _, cx| {
+            root.update_app_settings(cx, false, |settings| {
+                settings.chat_panel_width = 400.;
+                true
+            });
+        })
+        .unwrap();
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        assert!((panel.size.width - px(400.)).abs() <= px(1.), "{panel:?}");
+
+        host.update(&mut visual, |root, _, cx| {
+            root.update_app_settings(cx, false, |settings| {
+                settings.chat_panel_open = false;
+                true
+            });
+        })
+        .unwrap();
+        visual.run_until_parked();
+        assert_eq!(
+            host.read_with(&visual, |root, _| root.chat_panel_visibility.target)
+                .unwrap(),
+            0.
+        );
         assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
     }
 
@@ -1727,7 +1979,11 @@ mod tests {
             pane_identity_icon(Some("shell")).asset_path(),
             "square-terminal.svg"
         );
-        assert!(!side_panel_open(true, true));
+        assert_eq!(side_panel_surface(true), PanelSurface::Terminal);
+        assert_eq!(side_panel_surface(false), PanelSurface::Chat);
+        assert!(side_panel_open(true, PanelSurface::Terminal));
+        assert!(side_panel_open(true, PanelSurface::Chat));
+        assert!(!side_panel_open(false, PanelSurface::Terminal));
 
         assert_eq!(pane_identity_icon(None).asset_path(), "plus.svg");
         assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
