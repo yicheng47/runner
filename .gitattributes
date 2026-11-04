@@ -8,3 +8,4 @@ make.cmd text eol=crlf
 crates/runner-daemon/src/session/fixtures/scenarios/**/*.ndjson text eol=lf
 crates/runner-daemon/src/session/fixtures/expectations/**/*.txt text eol=lf
 vendor/alacritty_terminal/tests/ref/**/alacritty.recording -text -diff
+assets/file-icons/LICENSE-* text eol=lf

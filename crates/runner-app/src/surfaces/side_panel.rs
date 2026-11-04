@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, rems, svg, AnyElement, App, Div, ElementId, MouseButton};
+use gpui::{div, prelude::*, rems, svg, App, Div, ElementId, MouseButton};
 
 use crate::theme;
 
@@ -100,19 +100,10 @@ pub(crate) enum PanelSubject {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PanelContext {
     pub(crate) subject: PanelSubject,
+    pub(crate) surface: PanelSurface,
     pub(crate) cwd: Option<String>,
     pub(crate) project: Option<String>,
     pub(crate) remote: bool,
-}
-
-pub(crate) fn files_view(context: &PanelContext) -> AnyElement {
-    div()
-        .when(cfg!(test), |view| {
-            view.debug_selector(|| format!("FILES_VIEW {context:?}"))
-        })
-        .flex_1()
-        .min_h(gpui::px(0.))
-        .into_any_element()
 }
 
 pub(crate) type SelectView = Rc<dyn Fn(PanelViewId, &mut App)>;
