@@ -1484,15 +1484,11 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
     visual.run_until_parked();
     for (view, viewport_selector, final_selector) in [
         (
-            MissionRailView::Roles,
+            PanelViewId::Sessions,
             "MISSION_ROLES_SCROLL",
             "MISSION_CARD slot-19",
         ),
-        (
-            MissionRailView::Meta,
-            "MISSION_META_SCROLL",
-            "MISSION_META_END",
-        ),
+        (PanelViewId::Info, "MISSION_META_SCROLL", "MISSION_META_END"),
     ] {
         host.update(&mut visual, |host, _, cx| {
             host.workspace
@@ -1521,6 +1517,111 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
             "{view:?}: {last:?} {viewport:?}"
         );
     }
+}
+
+#[test]
+fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_themes() {
+    use crate::surfaces::side_panel::{PanelContext, PanelSubject};
+    use crate::theme_snapshot::{assert_border, assert_fill_color, ThemeGuard};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store);
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE missions SET cwd = '/tmp/panel-mission' WHERE id = 'test-mission'",
+                [],
+            )
+            .unwrap();
+    });
+    let mission = store.read_with(&cx, |store, _| {
+        runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
+    });
+    let host = cx.add_window(|window, cx| {
+        let workspace = cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "rail-header".into(),
+                WeakEntity::new_invalid(),
+                store,
+                window,
+                cx,
+            );
+            workspace.mission = Some(mission);
+            workspace
+        });
+        MissionRailLayoutTest { workspace }
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(960.), px(600.)));
+    visual.run_until_parked();
+    let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
+    let sessions = visual.debug_bounds("PANEL_VIEW Sessions").unwrap();
+    let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
+    let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
+    assert!(
+        sessions.left() - rail.left() <= px(20.),
+        "{sessions:?} {rail:?}"
+    );
+    assert!(sessions.right() <= info.left() && info.right() < files.left());
+    assert_eq!(sessions.center().y, files.center().y);
+    assert!(
+        rail.right() - files.right() >= px(36.) && rail.right() - files.right() <= px(64.),
+        "the divider and collapse control follow Files: {files:?} {rail:?}"
+    );
+    assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+
+    let selected = || Some(theme::with_alpha(theme::sidebar_selected(), 0.6));
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert_fill_color(&mut visual, "PANEL_VIEW Sessions", selected());
+        assert_fill_color(&mut visual, "PANEL_VIEW Info", None);
+        assert_fill_color(&mut visual, "PANEL_VIEW Files", None);
+        assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+    }
+
+    visual.simulate_click(files.center(), Modifiers::default());
+    visual.run_until_parked();
+    let context = PanelContext {
+        subject: PanelSubject::Mission("test-mission".into()),
+        cwd: Some("/tmp/panel-mission".into()),
+        project: None,
+        remote: false,
+    };
+    assert!(visual
+        .debug_bounds(format!("FILES_VIEW {context:?}").leak())
+        .is_some());
+    assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_none());
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        assert_fill_color(&mut visual, "PANEL_VIEW Sessions", None);
+        assert_fill_color(&mut visual, "PANEL_VIEW Files", selected());
+    }
+
+    let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
+    visual.simulate_click(info.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("MISSION_META_SCROLL").is_some());
+    let sessions = visual.debug_bounds("PANEL_VIEW Sessions").unwrap();
+    visual.simulate_click(sessions.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
 }
 
 impl gpui::Render for MissionRailLayoutTest {
@@ -1846,7 +1947,7 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 workspace.mission_id_copy.update(cx, |copy, cx| {
                     copy.set_value(Some(mission_id.into()), cx);
                 });
-                workspace.rail_view = MissionRailView::Meta;
+                workspace.rail_view = PanelViewId::Info;
             });
             cx.notify();
         })
@@ -2649,7 +2750,7 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
         this.rebuild_event_projection();
         assert!(this.feed_selection.is_none());
         assert!(!this.feed_markdown.borrow().is_empty());
-        this.prepare_mission("another-mission".into(), MissionRailView::Roles);
+        this.prepare_mission("another-mission".into(), PanelViewId::Sessions);
         assert!(this.feed_markdown.borrow().is_empty());
         assert!(this.event_ids.is_empty());
         assert!(this.feed_selection.is_none());
@@ -3287,7 +3388,7 @@ fn feed_scrollbar_hides_for_fitting_content_and_resets_with_the_mission() {
     assert_eq!(gutter.size.width, px(10.));
     assert_eq!(gutter.right(), px(600.));
     workspace.update(&mut visual, |this, cx| {
-        this.prepare_mission("short-mission".into(), MissionRailView::Roles);
+        this.prepare_mission("short-mission".into(), PanelViewId::Sessions);
         this.events = long_feed_events().into_iter().take(1).collect();
         this.rebuild_event_projection();
         cx.notify();
