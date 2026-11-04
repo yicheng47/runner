@@ -7,7 +7,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 ## Active
 
 - [748 — Link a chat to the missions it starts](./748-mission-link.md) — Runner records the chat that starts a mission, groups the mission with that chat in the sidebar and types a one-line report into the chat when the mission needs the person, fails or settles, so the agent no longer watches the feed; draft spec, design before implementation ([#748](https://github.com/yicheng47/runner/issues/748)).
-- [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
+- [634 — File preview](./634-file-preview.md) — a project tree with git status and a read-only file viewer in the side panel, with a chosen root; the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141) ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [931 — Installed terminal fonts](./931-installed-terminal-fonts.md) — the terminal's Font family lists every installed monospace font, searchable, beside the bundled JetBrains Mono; #634's file viewer reuses the list ([#931](https://github.com/yicheng47/runner/issues/931)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 
