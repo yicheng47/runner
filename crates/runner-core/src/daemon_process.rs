@@ -23,7 +23,8 @@ pub const DAEMON_STOP_TIMEOUT: Duration = Duration::from_secs(
 // An app that quits keeping its sessions disconnects only when its process
 // exits, which can trail an updater's relaunch of the new build.
 pub const IN_USE_GRACE: Duration = Duration::from_secs(3);
-// A starter may wait out another app, then replace an old daemon before starting the new one.
+// A starter may wait out another app and, within one stop budget, an old daemon that is slow,
+// stopping or being replaced, before starting the new one.
 pub const STARTUP_LOCK_TIMEOUT: Duration = Duration::from_secs(
     IN_USE_GRACE.as_secs() + DAEMON_STOP_TIMEOUT.as_secs() + DAEMON_START_TIMEOUT.as_secs() + 5,
 );
@@ -144,6 +145,14 @@ impl Launch {
         &self,
         hash: &str,
     ) -> Result<(Arc<SocketTransport>, bool), ConnectError> {
+        self.connect_or_spawn_within(hash, DAEMON_STOP_TIMEOUT)
+    }
+    /// `stop_budget` covers both waiting out a slow or stopping daemon and replacing one.
+    fn connect_or_spawn_within(
+        &self,
+        hash: &str,
+        stop_budget: Duration,
+    ) -> Result<(Arc<SocketTransport>, bool), ConnectError> {
         let mut restarted = false;
         let hello = || Hello {
             exe_sha256: hash.to_owned(),
@@ -157,12 +166,28 @@ impl Launch {
         let _starter = startup_lock(&self.paths.app_data_dir)
             .map_err(|error| ConnectError::Protocol(format!("runnerd startup lock: {error}")))?;
         let in_use_deadline = Instant::now() + IN_USE_GRACE;
+        let stop_deadline = in_use_deadline + stop_budget;
         loop {
             match SocketTransport::connect(&self.daemon_endpoint, hello()) {
                 Ok(client) => return Ok((client, restarted)),
+                // runnerd holds its lock while it serves and while it stops, so a handshake
+                // that fails meanwhile came from a slow or stopping daemon, not a missing one.
+                Err(ConnectError::NotRunning) if daemon_locked(&self.paths.app_data_dir) => {
+                    if Instant::now() >= stop_deadline {
+                        return Err(ConnectError::Protocol(format!(
+                            "runnerd holds its lock but did not answer within {}s; log: {}",
+                            (IN_USE_GRACE + stop_budget).as_secs(),
+                            self.paths.log_dir.join("runnerd.log").display()
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 Err(ConnectError::Mismatch(welcome)) if self.app => {
                     let refused = if welcome.app_clients == 0 {
-                        self.take_over()?
+                        self.take_over_within(
+                            stop_budget
+                                .min(stop_deadline.saturating_duration_since(Instant::now())),
+                        )?
                     } else {
                         Some(welcome)
                     };
@@ -416,6 +441,11 @@ pub fn lock_file(data: &Path) -> io::Result<LockFile> {
         .open(data.join("runnerd.lock"))
         .map(LockFile)
 }
+fn daemon_locked(data: &Path) -> bool {
+    lock_file(data)
+        .and_then(|lock| lock.try_lock_exclusive())
+        .is_err_and(|error| error.raw_os_error() == fs2::lock_contended_error().raw_os_error())
+}
 pub fn wait_unlocked(data: &Path, timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
     let lock = lock_file(data)?;
@@ -566,6 +596,162 @@ mod tests {
         );
         assert!(error.contains("did not stop"), "{error}");
         server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    fn locked_launch() -> (tempfile::TempDir, Launch, LockFile) {
+        let root = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(
+            NativePaths::new(root.path().join("data"), root.path().join("logs")),
+            root.path().join("runner"),
+            true,
+        );
+        std::fs::create_dir_all(&launch.paths.app_data_dir).unwrap();
+        launch.daemon_endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        let daemon = lock_file(&launch.paths.app_data_dir).unwrap();
+        daemon.try_lock_exclusive().unwrap();
+        (root, launch, daemon)
+    }
+
+    /// A fake runnerd that hands every handshake to `answer` until the returned
+    /// closer sends its own.
+    #[cfg(unix)]
+    fn serve_handshakes(
+        launch: &Launch,
+        mut answer: impl FnMut(crate::protocol::wire::Hello, std::os::unix::net::UnixStream)
+            + Send
+            + 'static,
+    ) -> impl FnOnce() {
+        use crate::protocol::wire::{self, Frame};
+        let endpoint = launch.daemon_endpoint.0.clone();
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let hello: wire::Hello = Frame::read(&mut stream).unwrap().decode().unwrap();
+                if hello.client == "done" {
+                    return;
+                }
+                answer(hello, stream);
+            }
+        });
+        move || {
+            let mut done = std::os::unix::net::UnixStream::connect(endpoint).unwrap();
+            Frame::json(
+                wire::HELLO,
+                &wire::Hello {
+                    exe_sha256: String::new(),
+                    client: "done".into(),
+                },
+            )
+            .unwrap()
+            .write(&mut done)
+            .unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    /// Answers nothing until the client gives up on this connection.
+    #[cfg(unix)]
+    fn stall(mut stream: std::os::unix::net::UnixStream) {
+        use std::io::Read;
+        let _ = stream.read(&mut [0]);
+    }
+
+    #[cfg(unix)]
+    fn reply(stream: &mut std::os::unix::net::UnixStream, kind: u8, app_clients: u32) {
+        use crate::protocol::wire::{Frame, Welcome};
+        Frame::json(
+            kind,
+            &Welcome {
+                exe_sha256: "other".into(),
+                pid: 1,
+                started_at: "now".into(),
+                app_clients,
+            },
+        )
+        .unwrap()
+        .write(stream)
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_handshake_from_a_running_daemon_still_pauses_an_app_as_in_use() {
+        let (_root, launch, _daemon) = locked_launch();
+        let mut handshakes = 0;
+        let finish = serve_handshakes(&launch, move |_, mut stream| {
+            handshakes += 1;
+            // The probe and the first handshake under the start lock miss their deadline.
+            if handshakes <= 2 {
+                return stall(stream);
+            }
+            reply(&mut stream, crate::protocol::wire::MISMATCH, 1);
+        });
+        match launch.connect_or_spawn("this") {
+            Err(ConnectError::InUse(welcome)) => assert_eq!(welcome.app_clients, 1),
+            result => panic!(
+                "a slow running daemon was taken for a missing one: {:?}",
+                result.map(|client| client.welcome.pid)
+            ),
+        }
+        finish();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_daemon_that_keeps_its_lock_without_answering_is_never_started_over() {
+        let (_root, launch, _daemon) = locked_launch();
+        let budget = Duration::from_millis(300);
+        let started = Instant::now();
+        let error = match launch.connect_or_spawn_within("this", budget) {
+            Err(error) => error.to_string(),
+            Ok((client, _)) => panic!("connected to {}", client.welcome.pid),
+        };
+        assert!(error.contains("did not answer"), "{error}");
+        assert!(started.elapsed() < IN_USE_GRACE + budget + Duration::from_secs(1));
+        assert!(
+            !launch.paths.app_data_dir.join("bin").exists(),
+            "a second daemon was installed while the first held its lock"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn waiting_out_a_slow_daemon_and_replacing_it_share_one_stop_budget() {
+        use crate::protocol::wire::{self, Frame};
+        let (_root, launch, _daemon) = locked_launch();
+        let budget = Duration::from_secs(4);
+        // The daemon stays silent into the stop budget, leaving its takeover about a second.
+        let answers_from = Instant::now() + IN_USE_GRACE + budget - Duration::from_secs(1);
+        let (stopping, takeover) = std::sync::mpsc::channel();
+        let finish = serve_handshakes(&launch, move |hello, mut stream| {
+            if hello.client == "stop" {
+                stopping.send(Instant::now()).unwrap();
+                reply(&mut stream, wire::WELCOME, 0);
+                let stop: wire::Shutdown = Frame::read(&mut stream).unwrap().decode().unwrap();
+                assert!(stop.takeover);
+                stall(stream)
+            } else if Instant::now() < answers_from {
+                stall(stream)
+            } else {
+                reply(&mut stream, wire::MISMATCH, 0)
+            }
+        });
+        let error = match launch.connect_or_spawn_within("this", budget) {
+            Err(error) => error.to_string(),
+            Ok((client, _)) => panic!("connected to {}", client.welcome.pid),
+        };
+        assert!(error.contains("did not stop"), "{error}");
+        let takeover = takeover
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .elapsed();
+        assert!(
+            takeover < budget - Duration::from_millis(1500),
+            "the takeover started a fresh stop budget: {takeover:?}"
+        );
+        finish();
     }
 
     #[test]

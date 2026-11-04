@@ -747,6 +747,11 @@ async fn connection(
         anyhow::bail!("expected Hello");
     }
     let hello: wire::Hello = hello.decode()?;
+    // The listener can still accept once a stop has begun; an app welcomed then would
+    // reconnect to a daemon about to exit instead of meeting the one that replaces it.
+    if shutdown.is_cancelled() {
+        return Ok(());
+    }
     let matches = hello.exe_sha256.is_empty() || hello.exe_sha256 == welcome.exe_sha256;
     // An app is counted before its welcome, so a takeover cannot slip in between.
     let _app = match (matches && hello.client == "app").then(|| apps.admit()) {
@@ -1432,6 +1437,50 @@ mod tests {
         })
         .await
         .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopping_daemon_welcomes_no_new_client() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(root.path().to_owned());
+        #[cfg(unix)]
+        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        #[cfg(windows)]
+        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-stopping-welcome-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let server = tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            remote_test_connection(stream, core, 1, shutdown).await
+        });
+        let connected = tokio::task::spawn_blocking(move || {
+            runner_core::protocol::socket::SocketTransport::connect(
+                &endpoint,
+                wire::Hello {
+                    exe_sha256: "remote-test".into(),
+                    client: "app".into(),
+                },
+            )
+            .map(|socket| socket.welcome.pid)
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                connected,
+                Err(runner_core::protocol::socket::ConnectError::NotRunning)
+            ),
+            "{connected:?}"
+        );
         tokio::time::timeout(Duration::from_secs(5), server)
             .await
             .unwrap()
