@@ -3,8 +3,6 @@ use std::rc::Rc;
 
 use chrono::Utc;
 use gpui::prelude::*;
-#[cfg(any(windows, target_os = "linux"))]
-use gpui::MouseButton;
 use gpui::{
     div, px, rems, svg, AnyElement, BoxShadow, FontWeight, KeyDownEvent, SharedString, Window,
 };
@@ -14,6 +12,7 @@ use runner_app::ui::{
 };
 
 use super::*;
+use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface};
 use crate::*;
 
 impl MissionWorkspace {
@@ -37,11 +36,9 @@ impl MissionWorkspace {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let root = cx.entity();
-        let roles_root = root.clone();
-        let meta_root = root.clone();
-        let collapse_root = root;
-        let rail_view = self.rail_view;
+        let select_root = cx.entity();
+        let collapse_root = cx.entity();
+        let shown = side_panel::shown_view(PanelSurface::Mission, self.rail_view);
         let header = div()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
@@ -57,54 +54,36 @@ impl MissionWorkspace {
                 let element = crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
                 element
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        rail_view_button(
-                            "mission-rail-roles",
-                            "users.svg",
-                            rail_view == MissionRailView::Roles,
-                        )
-                        .on_click(move |_, _, cx| {
-                            roles_root.update(cx, |this, cx| {
-                                this.set_mission_rail_view(MissionRailView::Roles, cx)
+            .child(side_panel::header_views(
+                PanelSurface::Mission,
+                shown,
+                Rc::new(move |view, cx| {
+                    select_root.update(cx, |this, cx| this.set_mission_rail_view(view, cx));
+                }),
+                IconButton::new("collapse-mission-rail", "panel-right-open.svg")
+                    .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))
+                    .on_press(move |_, cx| {
+                        collapse_root.update(cx, |this, cx| {
+                            this.update_app_settings(cx, true, |settings| {
+                                settings.mission_rail_open = false;
+                                true
                             });
-                        }),
-                    )
-                    .child(
-                        rail_view_button(
-                            "mission-rail-meta",
-                            "info.svg",
-                            rail_view == MissionRailView::Meta,
-                        )
-                        .on_click(move |_, _, cx| {
-                            meta_root.update(cx, |this, cx| {
-                                this.set_mission_rail_view(MissionRailView::Meta, cx)
-                            });
-                        }),
-                    ),
-            )
-            .child(
-                div().ml_auto().child(
-                    IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                        .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))
-                        .on_press(move |_, cx| {
-                            collapse_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.mission_rail_open = false;
-                                    true
-                                });
-                                cx.notify();
-                            });
-                        }),
-                ),
-            );
-        let body = match rail_view {
-            MissionRailView::Roles => self.render_roles_rail(window, cx),
-            MissionRailView::Meta => self.render_mission_meta_panel(cx),
+                            cx.notify();
+                        });
+                    }),
+            ));
+        let body = match shown {
+            Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
+            Some(PanelViewId::Files) => match self.mission_view() {
+                Some(mission) => side_panel::files_view(&PanelContext {
+                    subject: PanelSubject::Mission(mission.id),
+                    cwd: mission.cwd,
+                    project: mission.project_id,
+                    remote: self.presentation.is_remote(),
+                }),
+                None => div().into_any_element(),
+            },
+            Some(PanelViewId::Sessions) | None => self.render_roles_rail(window, cx),
         };
         let rail = div()
             .relative()
@@ -153,7 +132,7 @@ impl MissionWorkspace {
             .into_any_element()
     }
 
-    fn set_mission_rail_view(&mut self, view: MissionRailView, cx: &mut Context<Self>) {
+    fn set_mission_rail_view(&mut self, view: PanelViewId, cx: &mut Context<Self>) {
         self.rail_view = view;
         cx.notify();
     }
@@ -831,54 +810,6 @@ impl MissionWorkspace {
         .footer(footer)
         .into_any_element()
     }
-}
-
-fn rail_view_button(
-    id: impl Into<gpui::ElementId>,
-    icon: &'static str,
-    active: bool,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .map(|button| {
-            #[cfg(any(windows, target_os = "linux"))]
-            let button = button.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-            button
-        })
-        .group("mission-rail-view-button")
-        .size(rems(28. / 16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_sm()
-        .cursor_pointer()
-        .text_color(if active {
-            theme::text()
-        } else {
-            theme::muted()
-        })
-        .when(active, |button| {
-            button.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-        })
-        .hover(|button| {
-            button
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                .text_color(theme::text())
-        })
-        .child(
-            svg()
-                .flex_none()
-                .path(icon)
-                .size(rems(14. / 16.))
-                .text_color(if active {
-                    theme::text()
-                } else {
-                    theme::muted()
-                })
-                .group_hover("mission-rail-view-button", |icon| {
-                    icon.text_color(theme::text())
-                }),
-        )
 }
 
 fn rail_section_label(label: &'static str) -> AnyElement {
