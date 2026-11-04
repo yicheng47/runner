@@ -96,12 +96,31 @@ impl NativeRoot {
         ))
     }
 
+    /// The chat panel's width, widened while its Files view has a file open.
+    pub(super) fn chat_panel_layout(
+        &self,
+        detail: Option<&DirectSessionEntry>,
+        cx: &App,
+    ) -> (f32, Option<crate::surfaces::side_panel::Widened>) {
+        let settings = self.settings(cx);
+        let subject = detail.map(|detail| PanelSubject::Session(detail.session_id.clone()));
+        self.chat_files.layout(
+            subject.as_ref(),
+            settings.chat_panel_width,
+            settings.file_viewer_width,
+            settings.file_tree_width,
+            6.,
+            cx,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn render_chat_side_panel(
         &self,
         detail: Option<&DirectSessionEntry>,
         surface: PanelSurface,
         session_key_copy: Entity<CopyValueButton>,
+        (width, widened): (f32, Option<crate::surfaces::side_panel::Widened>),
         visibility: f32,
         show_panel: bool,
         border_on: bool,
@@ -109,7 +128,6 @@ impl NativeRoot {
     ) -> AnyElement {
         #[cfg(test)]
         crate::render_counts::count_render("side-panel", cx);
-        let width = self.settings(cx).chat_panel_width;
         let visible_width = width * visibility;
         if !show_panel {
             self.chat_files.hide(cx);
@@ -184,7 +202,7 @@ impl NativeRoot {
         let files = detail
             .filter(|_| shown == Some(PanelViewId::Files))
             .map(|detail| {
-                self.chat_files.show(
+                self.chat_files.show_with(
                     &PanelContext {
                         subject: PanelSubject::Session(detail.session_id.clone()),
                         surface,
@@ -195,6 +213,8 @@ impl NativeRoot {
                         project: detail.project_id.clone(),
                         remote: !self.remote_client.is_local(),
                     },
+                    widened,
+                    Some(cx.entity_id()),
                     cx,
                 )
             });

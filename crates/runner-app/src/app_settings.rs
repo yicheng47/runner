@@ -31,6 +31,12 @@ pub const CHAT_PANEL_DEFAULT: f32 = 320.;
 pub const MISSION_RAIL_MIN: f32 = 200.;
 pub const MISSION_RAIL_MAX: f32 = 480.;
 pub const MISSION_RAIL_DEFAULT: f32 = 288.;
+pub const FILE_VIEWER_MIN: f32 = 200.;
+pub const FILE_VIEWER_MAX: f32 = 1200.;
+pub const FILE_VIEWER_DEFAULT: f32 = 440.;
+pub const FILE_TREE_MIN: f32 = 160.;
+pub const FILE_TREE_MAX: f32 = 480.;
+pub const FILE_TREE_DEFAULT: f32 = 240.;
 
 /// The terminal palette used while the app resolves to a light variant.
 /// Unknown keys (including the retired `match-app` and `monokai`) load as
@@ -359,6 +365,10 @@ pub struct AppSettings {
     pub chat_panel_width: f32,
     pub mission_rail_open: bool,
     pub mission_rail_width: f32,
+    /// The file's width in a side panel widened by an open file, beside the tree.
+    pub file_viewer_width: f32,
+    /// The tree's width on the outer edge of a panel widened by an open file.
+    pub file_tree_width: f32,
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
     pub default_working_dir: String,
@@ -418,6 +428,8 @@ impl Default for AppSettings {
             chat_panel_width: CHAT_PANEL_DEFAULT,
             mission_rail_open: true,
             mission_rail_width: MISSION_RAIL_DEFAULT,
+            file_viewer_width: FILE_VIEWER_DEFAULT,
+            file_tree_width: FILE_TREE_DEFAULT,
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
             default_working_dir: String::new(),
@@ -486,6 +498,8 @@ impl AppSettings {
         self.crews_page_size = runner_app::ui::list::normalize_page_size(self.crews_page_size);
         self.chat_panel_width = normalize_chat_panel_width(self.chat_panel_width);
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
+        self.file_viewer_width = normalize_file_viewer_width(self.file_viewer_width);
+        self.file_tree_width = normalize_file_tree_width(self.file_tree_width);
         self.last_mission_terminal_ids
             .retain(|mission_id, session_id| !mission_id.is_empty() && !session_id.is_empty());
         self.default_crew_id = self.default_crew_id.trim().to_owned();
@@ -608,6 +622,30 @@ pub fn normalize_chat_panel_width(value: f32) -> f32 {
 
 pub fn clamp_chat_panel_width(value: f32) -> f32 {
     value.clamp(CHAT_PANEL_MIN, CHAT_PANEL_MAX)
+}
+
+pub fn normalize_file_viewer_width(value: f32) -> f32 {
+    if value.is_finite() && (FILE_VIEWER_MIN..=FILE_VIEWER_MAX).contains(&value) {
+        value
+    } else {
+        FILE_VIEWER_DEFAULT
+    }
+}
+
+pub fn clamp_file_viewer_width(value: f32) -> f32 {
+    value.clamp(FILE_VIEWER_MIN, FILE_VIEWER_MAX)
+}
+
+pub fn normalize_file_tree_width(value: f32) -> f32 {
+    if value.is_finite() && (FILE_TREE_MIN..=FILE_TREE_MAX).contains(&value) {
+        value
+    } else {
+        FILE_TREE_DEFAULT
+    }
+}
+
+pub fn clamp_file_tree_width(value: f32) -> f32 {
+    value.clamp(FILE_TREE_MIN, FILE_TREE_MAX)
 }
 
 pub fn normalize_mission_rail_width(value: f32) -> f32 {
@@ -826,6 +864,15 @@ mod tests {
         assert_eq!(normalize_chat_panel_width(376.), 376.);
         assert_eq!(normalize_chat_panel_width(f32::NAN), 320.);
         assert_eq!(clamp_chat_panel_width(999.), 480.);
+        assert_eq!(normalize_file_viewer_width(f32::NAN), 440.);
+        assert_eq!(normalize_file_viewer_width(9999.), 440.);
+        assert_eq!(clamp_file_viewer_width(9999.), 1200.);
+        assert_eq!(normalize_file_tree_width(320.), 320.);
+        assert_eq!(normalize_file_tree_width(f32::NAN), 240.);
+        assert_eq!(normalize_file_tree_width(100.), 240.);
+        assert_eq!(normalize_file_tree_width(481.), 240.);
+        assert_eq!(clamp_file_tree_width(100.), 160.);
+        assert_eq!(clamp_file_tree_width(9999.), 480.);
 
         let serialized = serde_json::to_value(AppSettings {
             terminal_cursor_style: TerminalCursorStyle::Bar,

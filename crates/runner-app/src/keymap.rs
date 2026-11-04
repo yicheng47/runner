@@ -6,6 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[cfg(target_os = "macos")]
 use crate::{Hide, HideOthers, Minimize, Quit, QuitAndStopSessions};
 
+use crate::{CloseFileTab, FindInFile, NextFileTab, PreviousFileTab};
 use crate::{
     CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FindInTerminal, FocusNextPane,
     FocusPreviousPane, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage,
@@ -1057,6 +1058,33 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
     }
 }
 
+/// The file viewer's keys, while focus is in a side panel's Files view:
+/// ⌘W there closes the file tab, and with none open falls through to the
+/// pane. A binding without a context counts as matching the deepest one, so
+/// these go after the pane's ⌘W to win the tie, and ⌘W gets a second binding
+/// for the view's text fields.
+pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
+    let context = Some("FileViewer");
+    cx.bind_keys([
+        KeyBinding::new(&platform_default("cmd-w"), CloseFileTab, context),
+        KeyBinding::new(
+            &platform_default("cmd-w"),
+            CloseFileTab,
+            Some("FileViewer > TextInput"),
+        ),
+        KeyBinding::new("ctrl-tab", NextFileTab, context),
+        KeyBinding::new("ctrl-shift-tab", PreviousFileTab, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInFile, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-c", Copy, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-f", FindInFile, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-c", Copy, context),
+    ]);
+}
+
 pub(crate) fn install_bindings(
     cx: &mut App,
     overrides: &KeymapOverrides,
@@ -1094,6 +1122,7 @@ pub(crate) fn install_bindings(
             cx.bind_keys([KeyBinding::new(&binding, CloseTab, None)]);
         }
     }
+    install_file_viewer_bindings(cx);
     if let Some(combo) = effective_binding("system-close-window", overrides) {
         for binding in binding_strings(&combo) {
             cx.bind_keys([KeyBinding::new(&binding, CloseWindow, None)]);

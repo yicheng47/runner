@@ -184,6 +184,40 @@ impl FileTree {
         true
     }
 
+    /// The status letter git gives `path`.
+    pub(crate) fn letter(&self, path: &str) -> Option<Letter> {
+        self.letters.get(path).copied()
+    }
+
+    /// Selects `path` with every folder above it open, as switching file
+    /// tabs does; the folders still unlisted are returned to load.
+    pub(crate) fn reveal(&mut self, path: &str) -> Moved {
+        let mut load = Vec::new();
+        let mut opened = false;
+        let mut folder = parent(path);
+        let mut folders = Vec::new();
+        while let Some(path) = folder.filter(|path| !path.is_empty()) {
+            folders.push(path.to_owned());
+            folder = parent(path);
+        }
+        for folder in folders.into_iter().rev() {
+            if self.expanded.insert(folder.clone()) {
+                opened = true;
+                if !self.listings.contains_key(&folder) {
+                    load.push(folder);
+                }
+            }
+        }
+        if opened {
+            self.rebuild();
+        }
+        let selected = self.select(path);
+        Moved {
+            load,
+            changed: opened || selected,
+        }
+    }
+
     /// Opens a collapsed folder or closes an open one.
     pub(crate) fn toggle(&mut self, path: &str) -> Moved {
         if self.expanded.contains(path) {
@@ -511,6 +545,24 @@ mod tests {
         tree.set_listing("", vec![target, folder("src")]);
         assert!(tree.rows()[0].ignored);
         assert!(!tree.rows()[1].ignored);
+    }
+
+    #[test]
+    fn revealing_a_file_opens_its_folders_and_selects_it() {
+        let mut tree = sample();
+        tree.toggle("crates");
+        tree.set_listing("crates", vec![folder("app"), file("lib.rs")]);
+        tree.toggle("crates");
+        let moved = tree.reveal("crates/app/src/main.rs");
+        assert_eq!(moved.load, ["crates/app", "crates/app/src"]);
+        assert!(moved.changed);
+        assert_eq!(tree.selected(), Some("crates/app/src/main.rs"));
+        assert!(tree.rows().iter().any(|row| row.path == "crates/app"));
+        tree.set_listing("crates/app", vec![folder("src")]);
+        tree.set_listing("crates/app/src", vec![file("main.rs")]);
+        assert!(tree.selected_index().is_some());
+        assert_eq!(tree.reveal("crates/app/src/main.rs"), Moved::default());
+        assert_eq!(tree.letter("crates/app/src/main.rs"), None);
     }
 
     #[test]
