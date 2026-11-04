@@ -91,10 +91,13 @@ pub struct UpdateRoleInput {
     /// Form's "Permission mode" segmented control. `Some(mode)`
     /// rewrites the runtime's permission flags to the canonical args
     /// for that mode (replacing any prior occurrence so duplicates
-    /// can't accumulate). `None` preserves the args as-is — callers
-    /// that don't surface the control (CLI patches, programmatic
-    /// updates) shouldn't have to reason about it. See
-    /// `router::runtime::apply_permission_mode`.
+    /// can't accumulate), and drops flags another runtime's mode left
+    /// behind. `None` preserves the args as-is — callers that don't
+    /// surface the control (CLI patches, programmatic updates)
+    /// shouldn't have to reason about it — except on a runtime change
+    /// that sends no `args`: the role keeps the mode its args carry,
+    /// rewritten for the new runtime (Default if that runtime lacks
+    /// it). See `router::runtime::apply_permission_mode`.
     pub permission_mode: Option<super::permissions::PermissionMode>,
 }
 

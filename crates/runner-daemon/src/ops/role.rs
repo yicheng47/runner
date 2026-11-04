@@ -12,6 +12,7 @@ use crate::model::CodexSpeed;
 // module only owns the role rows themselves.
 
 use crate::model::Runtime;
+use crate::router::runtime::PermissionMode;
 use std::collections::HashMap;
 
 use chrono::Utc;
@@ -244,9 +245,8 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
     }
 
     let display_name = input.display_name.unwrap_or(existing.display_name);
-    // Snapshot the prior runtime *before* unwrap_or moves it, so
-    // we can strip the old runtime's bypass flags when the patch
-    // changes runtime alongside the toggle.
+    // Snapshot the prior runtime *before* unwrap_or moves it, so a
+    // runtime change can rewrite the old runtime's permission flags.
     let prior_runtime = existing.runtime.clone();
     let runtime = input
         .runtime
@@ -254,30 +254,35 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
         .unwrap_or(existing.runtime);
     let runtime_changed = prior_runtime != runtime;
     let command = input.command.unwrap_or(existing.command);
-    // Compose the new args from the user-provided list (or the
-    // existing one when the patch omits `args`) and the form's
-    // "Permission mode" segmented control. `None` mode = leave args
-    // alone so non-form callers don't have to think about
-    // permission flags. When the mode is provided AND the runtime
-    // is being changed in the same patch, we also strip the *prior*
-    // runtime's permission flags so a switch doesn't leave orphans
-    // (the control owns these flags per-runtime). See
-    // `router::runtime::apply_permission_mode`.
-    let args = match input.permission_mode {
-        Some(mode) => {
-            let base = input.args.unwrap_or(existing.args);
-            let cleared = if runtime_changed {
-                crate::runtimes::for_key(&prior_runtime)
-                    .permissions()
-                    .strip(&base)
+    let prior_permissions = crate::runtimes::for_key(&prior_runtime).permissions();
+    let permissions = crate::runtimes::for_key(&runtime).permissions();
+    // A runtime change that sends neither a mode nor args keeps the mode the role shows,
+    // falling back to Default where either runtime lacks it, as the Roles form does on a
+    // switch (#1155). Args sent without a mode are stored as sent.
+    let mode = input.permission_mode.or_else(|| {
+        (runtime_changed && input.args.is_none()).then(|| {
+            let mode = prior_permissions.infer(&existing.args);
+            if prior_permissions.offered.contains(&mode) && permissions.offered.contains(&mode) {
+                mode
             } else {
-                base
+                PermissionMode::Default
+            }
+        })
+    });
+    let base = input.args.unwrap_or(existing.args);
+    let args = match mode {
+        Some(mode) => {
+            // Before the prior runtime's strip, which can split another runtime's flags:
+            // Grok's or Cursor's table takes `--sandbox workspace-write` out of Codex's.
+            let cleaned = without_other_runtimes_mode_args(base, &runtime);
+            let cleared = if runtime_changed {
+                prior_permissions.strip(&cleaned)
+            } else {
+                cleaned
             };
-            crate::runtimes::for_key(&runtime)
-                .permissions()
-                .apply(&cleared, mode)
+            permissions.apply(&cleared, mode)
         }
-        None => input.args.unwrap_or(existing.args),
+        None => base,
     };
     let working_dir = input.working_dir.unwrap_or(existing.working_dir);
     let system_prompt = input.system_prompt.unwrap_or(existing.system_prompt);
@@ -353,6 +358,32 @@ pub fn update(conn: &Connection, id: &str, input: UpdateRoleInput) -> Result<Rol
     }
     tx.commit()?;
     get(conn, id)
+}
+
+/// Drops other runtimes' permission flags exactly as their `apply` writes them, which a
+/// runtime change without a mode used to leave behind (#1155). Matching the written flags,
+/// not another runtime's strip table, keeps a flag this runtime accepts itself under a
+/// shared name: Antigravity's bare `--sandbox`, or Copilot's and pi's `--mode <value>`.
+fn without_other_runtimes_mode_args(mut args: Vec<String>, runtime: &str) -> Vec<String> {
+    for other in Runtime::ALL
+        .into_iter()
+        .filter(|other| other.key() != runtime)
+    {
+        let permissions = crate::runtimes::adapter(other).permissions();
+        for &mode in permissions.offered {
+            let written = permissions.mode_args(mode);
+            if written.is_empty() {
+                continue;
+            }
+            while let Some(at) = args
+                .windows(written.len())
+                .position(|window| window == written.as_slice())
+            {
+                args.drain(at..at + written.len());
+            }
+        }
+    }
+    args
 }
 
 pub(crate) fn ensure_delete_allowed(conn: &Connection, id: &str) -> Result<()> {
@@ -1753,6 +1784,359 @@ mod tests {
             "codex bypass pair must be applied on runtime switch: {:?}",
             r.args,
         );
+    }
+
+    fn make_agent_role(
+        conn: &Connection,
+        handle: &str,
+        runtime: Runtime,
+        args: &[&str],
+        permission_mode: PermissionMode,
+    ) -> Role {
+        create(
+            conn,
+            CreateRoleInput {
+                handle: handle.into(),
+                display_name: handle.into(),
+                runtime,
+                command: "agent".into(),
+                args: args.iter().map(|arg| (*arg).into()).collect(),
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                codex_speed: None,
+                permission_mode,
+            },
+        )
+        .unwrap()
+    }
+
+    fn update_args(conn: &Connection, role: &Role, args: &[&str]) -> Role {
+        update(
+            conn,
+            &role.id,
+            UpdateRoleInput {
+                args: Some(args.iter().map(|arg| (*arg).into()).collect()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn switch_runtime(conn: &Connection, role: &Role, runtime: Runtime) -> Role {
+        update(
+            conn,
+            &role.id,
+            UpdateRoleInput {
+                runtime: Some(runtime),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn runtime_change_without_mode_rewrites_codex_bypass_for_claude_code() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = make_agent_role(
+            &conn,
+            "codex-to-claude",
+            Runtime::Codex,
+            &["--debug", "--add-dir", "/tmp/shared"],
+            PermissionMode::Bypass,
+        );
+        let role = switch_runtime(&conn, &role, Runtime::ClaudeCode);
+        assert_eq!(
+            role.args,
+            [
+                "--debug",
+                "--add-dir",
+                "/tmp/shared",
+                "--permission-mode",
+                "bypassPermissions"
+            ],
+        );
+    }
+
+    #[test]
+    fn runtime_change_without_mode_rewrites_claude_code_bypass_for_codex() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = make_agent_role(
+            &conn,
+            "claude-to-codex",
+            Runtime::ClaudeCode,
+            &["--mcp-debug"],
+            PermissionMode::Bypass,
+        );
+        let role = switch_runtime(&conn, &role, Runtime::Codex);
+        assert_eq!(
+            role.args,
+            [
+                "--mcp-debug",
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "workspace-write"
+            ],
+        );
+    }
+
+    #[test]
+    fn runtime_change_without_mode_keeps_other_modes_or_falls_back_to_default() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        for (index, (from, mode, to, expected)) in [
+            (
+                Runtime::Codex,
+                PermissionMode::Auto,
+                Runtime::ClaudeCode,
+                &["--keep", "--permission-mode", "auto"][..],
+            ),
+            (
+                Runtime::ClaudeCode,
+                PermissionMode::AcceptEdits,
+                Runtime::Copilot,
+                &["--keep", "--allow-tool=write"][..],
+            ),
+            (
+                Runtime::ClaudeCode,
+                PermissionMode::AcceptEdits,
+                Runtime::Codex,
+                &["--keep"][..],
+            ),
+            (
+                Runtime::ClaudeCode,
+                PermissionMode::Auto,
+                Runtime::Antigravity,
+                &["--keep"][..],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let role = make_agent_role(&conn, &format!("mode-{index}"), from, &["--keep"], mode);
+            let role = switch_runtime(&conn, &role, to);
+            assert_eq!(role.args, expected, "{from} {mode:?} -> {to}");
+        }
+    }
+
+    #[test]
+    fn runtime_change_with_sent_args_and_no_mode_stores_them_as_sent() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = make_agent_role(
+            &conn,
+            "sent-args",
+            Runtime::Codex,
+            &[],
+            PermissionMode::Bypass,
+        );
+        let sent = vec!["--debug".to_string()];
+        let role = update(
+            &conn,
+            &role.id,
+            UpdateRoleInput {
+                runtime: Some(Runtime::ClaudeCode),
+                args: Some(sent.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(role.args, sent);
+    }
+
+    #[test]
+    fn runtime_change_to_or_from_a_runtime_without_permission_flags() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = make_agent_role(
+            &conn,
+            "codex-to-pi",
+            Runtime::Codex,
+            &["--debug"],
+            PermissionMode::Bypass,
+        );
+        assert_eq!(switch_runtime(&conn, &role, Runtime::Pi).args, ["--debug"]);
+
+        let role = make_agent_role(
+            &conn,
+            "pi-to-claude",
+            Runtime::Pi,
+            &["--mode", "json"],
+            PermissionMode::Bypass,
+        );
+        assert_eq!(role.args, ["--mode", "json"]);
+        assert_eq!(
+            switch_runtime(&conn, &role, Runtime::ClaudeCode).args,
+            ["--mode", "json"],
+        );
+    }
+
+    #[test]
+    fn update_with_mode_repairs_another_runtimes_leftover_flags() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        // The issue's role: switched from Codex before the fix, then given the mode again.
+        let role = make_agent_role(
+            &conn,
+            "demo-release",
+            Runtime::ClaudeCode,
+            &[],
+            PermissionMode::Default,
+        );
+        update_args(
+            &conn,
+            &role,
+            &[
+                "--debug",
+                "--ask-for-approval",
+                "never",
+                "--sandbox",
+                "workspace-write",
+                "--permission-mode",
+                "bypassPermissions",
+            ],
+        );
+        let repaired = update(
+            &conn,
+            &role.id,
+            UpdateRoleInput {
+                runtime: Some(Runtime::ClaudeCode),
+                permission_mode: Some(PermissionMode::Bypass),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            repaired.args,
+            ["--debug", "--permission-mode", "bypassPermissions"]
+        );
+
+        // Grok's and Cursor's tables strip `--sandbox <value>`, which would split Codex's
+        // leftover flags if they ran first on the switch away from them.
+        for runtime in [Runtime::Grok, Runtime::Cursor] {
+            let role = make_agent_role(
+                &conn,
+                &format!("repair-switch-{runtime}"),
+                runtime,
+                &[],
+                PermissionMode::Default,
+            );
+            update_args(
+                &conn,
+                &role,
+                &[
+                    "--debug",
+                    "--ask-for-approval",
+                    "never",
+                    "--sandbox",
+                    "workspace-write",
+                ],
+            );
+            let repaired = update(
+                &conn,
+                &role.id,
+                UpdateRoleInput {
+                    runtime: Some(Runtime::ClaudeCode),
+                    permission_mode: Some(PermissionMode::Bypass),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                repaired.args,
+                ["--debug", "--permission-mode", "bypassPermissions"],
+                "{runtime}",
+            );
+        }
+
+        // Flags these runtimes accept themselves share names with other runtimes'
+        // value-taking permission flags, and survive the repair.
+        for (index, (runtime, planted, mode, expected)) in [
+            (
+                Runtime::Antigravity,
+                &[
+                    "--sandbox",
+                    "--ask-for-approval",
+                    "never",
+                    "--sandbox",
+                    "workspace-write",
+                ][..],
+                PermissionMode::Bypass,
+                &["--sandbox", "--dangerously-skip-permissions"][..],
+            ),
+            (
+                Runtime::Copilot,
+                &["--mode", "autopilot", "--plan", "--mode", "accept-edits"][..],
+                PermissionMode::AcceptEdits,
+                &["--mode", "autopilot", "--plan", "--allow-tool=write"][..],
+            ),
+            (
+                Runtime::Pi,
+                &["--mode", "json", "--permission-mode", "bypassPermissions"][..],
+                PermissionMode::Default,
+                &["--mode", "json"][..],
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let role = make_agent_role(
+                &conn,
+                &format!("repair-{index}"),
+                runtime,
+                &[],
+                PermissionMode::Default,
+            );
+            update_args(&conn, &role, planted);
+            let repaired = update(
+                &conn,
+                &role.id,
+                UpdateRoleInput {
+                    permission_mode: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(repaired.args, expected, "{runtime}");
+        }
+    }
+
+    #[test]
+    fn update_without_runtime_change_or_mode_leaves_leftover_flags_alone() {
+        let pool = ctx();
+        let conn = pool.get().unwrap();
+        let role = make_agent_role(
+            &conn,
+            "left-alone",
+            Runtime::ClaudeCode,
+            &[],
+            PermissionMode::Default,
+        );
+        let planted = [
+            "--debug",
+            "--ask-for-approval",
+            "never",
+            "--sandbox",
+            "workspace-write",
+        ];
+        update_args(&conn, &role, &planted);
+        for input in [
+            UpdateRoleInput {
+                display_name: Some("renamed".into()),
+                ..Default::default()
+            },
+            UpdateRoleInput {
+                runtime: Some(Runtime::ClaudeCode),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(update(&conn, &role.id, input).unwrap().args, planted);
+        }
     }
 
     #[test]
