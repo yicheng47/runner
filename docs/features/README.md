@@ -6,7 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
-- [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
+- [634 — File preview](./634-file-preview.md) — a project tree with git status and a read-only file viewer in the side panel, with a chosen root; the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141) ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [1118 — Host button in the sidebar footer](./1118-host-button.md) — the computer picker moves from a full-width trigger under the brand to a footer host button, with this computer marked first and green in its popup ([#1118](https://github.com/yicheng47/runner/issues/1118)).
 - [1177 — Ctrl keys in terminals](./1177-terminal-ctrl-keys.md) — Windows and Linux shortcuts stop taking the Ctrl keys terminals need, with a Runner first / Terminal first setting and a sectioned shortcuts page ([#1177](https://github.com/yicheng47/runner/issues/1177)).
 - [1187 — Interrupted missions](./1187-interrupted-missions.md) — a mission whose members were mid-turn when runnerd stopped reads and reports Interrupted, not Settled, until they run again ([#1187](https://github.com/yicheng47/runner/issues/1187)).
