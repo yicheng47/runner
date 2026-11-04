@@ -9,7 +9,7 @@ use gpui::{
 use runner_core::protocol::files::{FilesRootSource, WorktreeKind};
 
 use super::{FileOpen, FilesPanel, FilesView};
-use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface};
+use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
 use crate::theme::{self, ThemeVariant};
 use crate::theme_snapshot::{assert_border, assert_fill_color, assert_text, ThemeGuard};
 
@@ -18,6 +18,11 @@ struct Host {
     context: Option<PanelContext>,
     /// A view drawn without the panel, so never shown and never watching.
     unshown: Option<Entity<FilesView>>,
+    /// Focus outside the Files view, and how often the pane's ⌘W reached it.
+    elsewhere: Option<gpui::FocusHandle>,
+    closed_panes: usize,
+    /// Whether the owner has room for the tree beside an open file.
+    tree_fits: bool,
 }
 
 impl Render for Host {
@@ -26,13 +31,32 @@ impl Render for Host {
             return div().size_full().flex().flex_col().child(view);
         }
         let body = match &self.context {
-            Some(context) => Some(self.panel.show(context, cx)),
+            Some(context) => {
+                let settings = &crate::app_store::global_app_store(cx).read(cx).settings;
+                let widened = Widened {
+                    file: settings.file_viewer_width.max(288.),
+                    tree: self.tree_fits,
+                    tree_width: settings.file_tree_width,
+                    standard: 288.,
+                };
+                Some(self.panel.show_with(context, Some(widened), None, cx))
+            }
             None => {
                 self.panel.hide(cx);
                 None
             }
         };
-        div().size_full().flex().flex_col().children(body)
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .on_action(cx.listener(|host, _: &crate::CloseTab, _, _| host.closed_panes += 1))
+            .children(
+                self.elsewhere
+                    .clone()
+                    .map(|focus| div().h(px(4.)).track_focus(&focus)),
+            )
+            .children(body)
     }
 }
 
@@ -150,10 +174,13 @@ fn harness(context: Option<PanelContext>) -> Harness {
             .unwrap();
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
-    let host = cx.add_window(|_, _| Host {
+    let host = cx.add_window(|_, cx| Host {
         panel: FilesPanel::default(),
         context,
         unshown: None,
+        elsewhere: Some(cx.focus_handle()),
+        closed_panes: 0,
+        tree_fits: true,
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(340.), px(900.)));
@@ -310,6 +337,9 @@ fn status_letters_selection_and_dimmed_entries_follow_both_themes() {
     h.show(Some(chat("in-project")));
     h.wait("the status", |h| h.has("FILES_LETTER a.txt"));
     h.click("FILES_ROW a.txt");
+    // The click also opens the file, read in the background: let it land
+    // before the tree is drawn for each theme.
+    h.wait("the file", |h| h.has("FILE_CODE"));
     for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
         theme::set_active_variant(variant);
         h.redraw();
@@ -899,4 +929,970 @@ fn overlapping_root_choices_save_the_last_one() {
         panic!("{saved:?}")
     };
     assert_same(Some(&saved.path), &last);
+}
+
+// ── The file viewer (m4) ───────────────────────────────────────────────
+
+impl Harness {
+    fn double_click(&mut self, selector: impl Into<String>) {
+        let selector: String = selector.into();
+        let bounds = self
+            .visual
+            .debug_bounds(selector.clone().leak())
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        for click_count in [1, 2] {
+            self.visual.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            self.visual.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+        self.settle();
+    }
+
+    fn tabs(&mut self) -> Vec<(String, bool)> {
+        self.read(|view| view.open_tabs())
+    }
+
+    fn open(&mut self, path: &str, keep: bool) {
+        let view = self.view();
+        view.update(&mut self.visual, |view, cx| {
+            view.open_file(path.into(), keep, cx)
+        });
+        self.settle();
+    }
+
+    fn code(&mut self) -> Entity<super::code::CodeView> {
+        self.read(|view| view.code_view())
+            .expect("a file shown as code")
+    }
+
+    fn line(&mut self, line: usize) -> String {
+        let code = self.code();
+        code.read_with(&self.visual, |code, _| {
+            code.document().line(line).to_owned()
+        })
+    }
+
+    fn focus_code(&mut self) {
+        let code = self.code();
+        let focus = code.read_with(&self.visual, |code, _| code.focus_handle().clone());
+        self.visual.update(|window, cx| focus.focus(window, cx));
+        self.settle();
+    }
+}
+
+fn viewer(context: PanelContext) -> Harness {
+    let mut h = harness(Some(context));
+    h.visual.simulate_resize(size(px(900.), px(700.)));
+    h.visual.update(|_, cx| {
+        cx.bind_keys([gpui::KeyBinding::new(
+            &crate::keymap::platform_default("cmd-w"),
+            crate::CloseTab,
+            None,
+        )]);
+        crate::keymap::install_file_viewer_bindings(cx);
+    });
+    h.wait("the root", |h| h.has("FILES_ROW a.txt"));
+    h
+}
+
+fn primary(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("cmd-{key}")
+    } else {
+        format!("ctrl-{key}")
+    }
+}
+
+#[test]
+fn a_click_previews_a_file_and_a_double_click_on_it_or_its_tab_keeps_it() {
+    let mut h = viewer(chat("in-project"));
+    h.click("FILES_ROW a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.tabs(), [("a.txt".to_owned(), true)]);
+    assert!(h.has("FILE_TAB_PREVIEW"), "the preview tab is italic");
+    assert_eq!(h.line(0), "a");
+
+    h.click("FILES_ROW old.txt");
+    h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
+    assert_eq!(
+        h.tabs(),
+        [("old.txt".to_owned(), true)],
+        "the preview is replaced"
+    );
+
+    // The selected row answers to its selected-row snapshot id.
+    h.double_click("FILES_ROW_SELECTED");
+    assert_eq!(h.tabs(), [("old.txt".to_owned(), false)]);
+    assert!(!h.has("FILE_TAB_PREVIEW"));
+
+    h.click("FILES_ROW .gitignore");
+    h.wait("a preview beside it", |h| h.has("FILE_TAB .gitignore"));
+    assert_eq!(
+        h.tabs(),
+        [
+            ("old.txt".to_owned(), false),
+            (".gitignore".to_owned(), true)
+        ]
+    );
+    h.double_click("FILE_TAB .gitignore");
+    assert_eq!(
+        h.tabs(),
+        [
+            ("old.txt".to_owned(), false),
+            (".gitignore".to_owned(), false)
+        ]
+    );
+
+    // Opening a file already open switches to its tab.
+    h.click("FILES_ROW old.txt");
+    assert_eq!(h.read(|view| view.active_tab()), Some("old.txt".into()));
+    assert_eq!(h.tabs().len(), 2);
+
+    h.click("FILE_TAB_CLOSE old.txt");
+    assert_eq!(h.read(|view| view.active_tab()), Some(".gitignore".into()));
+    h.click("FILE_TAB_CLOSE .gitignore");
+    assert!(
+        !h.has("FILE_VIEWER"),
+        "closing the last tab returns to the tree"
+    );
+    assert!(h.has("FILES_ROW a.txt"));
+}
+
+#[test]
+fn switching_tabs_reveals_the_file_in_the_tree_and_marks_changed_files() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("a.txt"), "changed\n").unwrap();
+    h.wait("the status", |h| h.has("FILES_LETTER a.txt"));
+    h.click("FILES_ROW src");
+    assert!(!h.has("FILES_ROW src/deep"));
+    h.open("src/deep/x.rs", true);
+    h.open("a.txt", true);
+    h.wait("the letter", |h| h.has("FILE_TAB_LETTER a.txt M"));
+    h.click("FILE_TAB src/deep/x.rs");
+    h.wait("the revealed row", |h| {
+        h.read(|view| view.selected()).as_deref() == Some("src/deep/x.rs")
+    });
+    assert!(h.has("FILES_ROW src/deep"), "its folders opened");
+}
+
+#[test]
+fn the_tab_strip_overflows_into_a_list_of_every_open_file() {
+    let mut h = viewer(chat("in-project"));
+    for index in 0..9 {
+        std::fs::write(h.repo.join(format!("src/file_{index}.rs")), "x\n").unwrap();
+    }
+    for index in 0..9 {
+        h.open(&format!("src/file_{index}.rs"), true);
+    }
+    h.redraw();
+    h.redraw();
+    assert!(
+        h.has("FILE_TAB_LIST"),
+        "the list button shows while tabs are cut off"
+    );
+    h.click("FILE_TAB_LIST");
+    assert!(h.has("FILE_TAB_LIST_POPUP"));
+    for index in 0..9 {
+        assert!(h.has(format!("FILE_LIST_ITEM src/file_{index}.rs")));
+    }
+    h.click("FILE_LIST_ITEM src/file_2.rs");
+    assert!(!h.has("FILE_TAB_LIST_POPUP"));
+    assert_eq!(
+        h.read(|view| view.active_tab()),
+        Some("src/file_2.rs".into())
+    );
+}
+
+#[test]
+fn cmd_w_closes_the_file_tab_only_while_the_files_view_has_focus() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt", true);
+    h.open("old.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+
+    h.focus_code();
+    h.visual.simulate_keystrokes("ctrl-tab");
+    h.settle();
+    assert_eq!(h.read(|view| view.active_tab()), Some("a.txt".into()));
+    h.visual.simulate_keystrokes("ctrl-shift-tab");
+    h.settle();
+    assert_eq!(h.read(|view| view.active_tab()), Some("old.txt".into()));
+
+    let close = crate::keymap::platform_default("cmd-w");
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    let closed = |h: &mut Harness| {
+        h.host
+            .read_with(&h.visual, |host, _| host.closed_panes)
+            .unwrap()
+    };
+    assert_eq!(closed(&mut h), 0, "the pane stays");
+
+    // With focus outside the panel ⌘W keeps closing the pane.
+    let elsewhere = h
+        .host
+        .read_with(&h.visual, |host, _| host.elsewhere.clone())
+        .unwrap()
+        .unwrap();
+    h.visual.update(|window, cx| elsewhere.focus(window, cx));
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert_eq!(closed(&mut h), 1);
+    assert_eq!(h.tabs().len(), 1);
+
+    // In find's field ⌘W still closes the file tab.
+    h.open("old.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    assert_eq!(closed(&mut h), 1);
+
+    // In the tree with the last tab closed, ⌘W falls through to the pane.
+    h.click("FILES_ROW src");
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert!(h.tabs().is_empty());
+    assert_eq!(closed(&mut h), 1);
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert_eq!(closed(&mut h), 2);
+}
+
+#[test]
+fn find_over_a_file_counts_steps_and_closes_back_to_the_code() {
+    let mut h = viewer(chat("in-project"));
+    let mut text = String::new();
+    for line in 0..300 {
+        text.push_str(if line % 100 == 7 {
+            "let needle = 1;\n"
+        } else {
+            "filler\n"
+        });
+    }
+    std::fs::write(h.repo.join("src/find.rs"), text).unwrap();
+    h.open("src/find.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    assert!(h.has("FILE_FIND_BAR"));
+    h.visual.simulate_input("needle");
+    h.wait("the matches", |h| {
+        h.read(|view| view.find_state())
+            .is_some_and(|(count, _)| count.as_deref() == Some("1 of 3"))
+    });
+    h.visual.simulate_keystrokes("enter");
+    h.settle();
+    assert_eq!(
+        h.read(|view| view.find_state()),
+        Some((Some("2 of 3".into()), Some(1)))
+    );
+    h.visual.simulate_keystrokes("shift-enter shift-enter");
+    h.settle();
+    assert_eq!(
+        h.read(|view| view.find_state()).unwrap().1,
+        Some(2),
+        "wraps back"
+    );
+    h.visual.simulate_keystrokes("escape");
+    h.settle();
+    assert!(!h.has("FILE_FIND_BAR"));
+    let code = h.code();
+    let focused = h
+        .visual
+        .update(|window, cx| code.read(cx).focus_handle().is_focused(window));
+    assert!(focused, "Esc returns focus to the file");
+}
+
+#[test]
+fn an_open_file_reloads_on_change_keeping_its_scroll_and_dims_when_deleted() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    let path = h.repo.join("src/live.rs");
+    let body = (0..400)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(&path, &body).unwrap();
+    h.open("src/live.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let code = h.code();
+    code.update(&mut h.visual, |code, cx| {
+        code.scroll_to(gpui::point(px(0.), px(600.)), cx)
+    });
+    h.redraw();
+    let scrolled = code.read_with(&h.visual, |code, _| code.scroll_offset());
+    assert_eq!(scrolled.y, px(600.));
+
+    // FSEvents can miss a write in the instant its stream starts, so write
+    // again until the watcher reports it.
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the reload", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(&path, format!("edited\n{body}")).unwrap();
+            touched = Instant::now();
+        }
+        h.line(0) == "edited"
+    });
+    assert_eq!(
+        code.read_with(&h.visual, |code, _| code.scroll_offset()),
+        scrolled,
+        "the reload keeps the scroll position"
+    );
+
+    // The Open in menu was open when the file went.
+    h.click("FILE_OPEN_IN_MENU");
+    assert!(h.has("FILE_OPEN_IN_POPUP"));
+    std::fs::remove_file(&path).unwrap();
+    h.wait("the deleted state", |h| h.has("FILE_DELETED"));
+    assert!(h.has("FILE_TAB_LETTER src/live.rs D"));
+    assert!(h.has("FILE_CODE"), "the last version read stays");
+    assert_text(&mut h.visual, "FILE_DELETED_TEXT", theme::text());
+    assert!(
+        !h.has("FILE_OPEN_IN_POPUP"),
+        "the menu closes with the file"
+    );
+
+    // Nothing opens the deleted path: not Open in, its menu, nor ⌘-click.
+    h.click("FILE_OPEN_IN");
+    h.click("FILE_OPEN_IN_MENU");
+    assert!(!h.has("FILE_OPEN_IN_POPUP"));
+    let bounds = h.visual.debug_bounds("FILE_CODE").unwrap();
+    let open = if cfg!(target_os = "macos") {
+        Modifiers::command()
+    } else {
+        Modifiers::control()
+    };
+    h.visual.simulate_click(bounds.center(), open);
+    h.settle();
+    assert!(h.read(|view| view.launched()).is_empty());
+
+    // The retained version still reads and copies.
+    h.focus_code();
+    h.visual.dispatch_action(crate::SelectAll);
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h.visual.read_from_clipboard().and_then(|item| item.text());
+    assert!(copied.is_some_and(|text| text.starts_with("edited\nline 0")));
+
+    h.click("FILE_DELETED_CLOSE");
+    assert!(h.tabs().is_empty());
+}
+
+#[test]
+fn binary_and_large_files_show_their_placeholders() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("runnerd.sqlite"), b"SQLite\0\x01\x02").unwrap();
+    let large = std::fs::File::create(h.repo.join("events.ndjson")).unwrap();
+    large
+        .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+        .unwrap();
+    h.open("runnerd.sqlite", true);
+    h.wait("the binary placeholder", |h| h.has("FILE_BINARY"));
+    assert!(h.has("FILE_OPEN_DEFAULT"));
+    assert_text(&mut h.visual, "FILE_STATE_TITLE", theme::text());
+    h.open("events.ndjson", true);
+    h.wait("the large placeholder", |h| h.has("FILE_TOO_LARGE"));
+    assert!(h.has("FILE_OPEN_LARGE"));
+    assert_text(&mut h.visual, "FILE_STATE_TITLE", theme::text());
+    assert!(!h.has("FILE_CODE"));
+}
+
+#[test]
+fn a_large_file_draws_only_the_visible_lines() {
+    let mut h = viewer(chat("in-project"));
+    let body = (0..10_000)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(h.repo.join("src/big.rs"), body).unwrap();
+    let counts = crate::render_counts::RenderCounts::default();
+    h.visual.update(|_, cx| cx.set_global(counts.clone()));
+    h.open("src/big.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    counts.0.borrow_mut().clear();
+    h.redraw();
+    let shaped = counts
+        .0
+        .borrow()
+        .get("file-code-lines")
+        .copied()
+        .unwrap_or(0);
+    assert!(shaped > 0 && shaped < 100, "shaped {shaped} lines");
+    assert_eq!(
+        h.code()
+            .read_with(&h.visual, |code, _| code.document().line_count()),
+        10_000
+    );
+}
+
+#[test]
+fn a_drag_selects_across_lines_that_scroll_out_of_view_and_copies_them() {
+    let mut h = viewer(chat("in-project"));
+    let body = (0..300)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    std::fs::write(h.repo.join("src/select.rs"), body).unwrap();
+    h.open("src/select.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let bounds = h.visual.debug_bounds("FILE_CODE").unwrap();
+    let start = gpui::point(bounds.left() + px(60.), bounds.top() + px(12.));
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    let below = gpui::point(bounds.left() + px(200.), bounds.bottom() + px(400.));
+    for _ in 0..6 {
+        h.visual
+            .simulate_mouse_move(below, Some(gpui::MouseButton::Left), Modifiers::default());
+        h.settle();
+    }
+    h.visual
+        .simulate_mouse_up(below, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    let code = h.code();
+    assert!(code.read_with(&h.visual, |code, _| code.scroll_offset().y) > px(0.));
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h
+        .visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("copied text");
+    let first = copied.lines().next().unwrap();
+    assert!(!first.is_empty() && "line 0".ends_with(first), "{copied:?}");
+    let lines = copied.lines().count();
+    assert!(
+        lines > 60,
+        "the selection reaches past the first screen: {lines}"
+    );
+}
+
+#[test]
+fn open_in_lists_the_default_app_and_the_reveal_row() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert!(h.has("FILE_OPEN_IN"));
+    h.click("FILE_OPEN_IN_MENU");
+    assert!(h.has("FILE_OPEN_IN_POPUP"));
+    assert!(h.has("FILE_OPEN_IN_ITEM file-open-in-default 0"));
+    assert!(h.has("FILE_OPEN_IN_ITEM file-open-in-reveal 0"));
+}
+
+#[test]
+fn the_tree_toggle_hides_the_tree_beside_an_open_file() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert!(h.has("FILES_TREE_COLUMN"));
+    assert_eq!(h.read(|view| view.widening()), Some(true));
+    h.click("FILE_TREE_TOGGLE");
+    assert!(!h.has("FILES_TREE_COLUMN"));
+    assert_eq!(h.read(|view| view.widening()), Some(false));
+    // A panel with no room for the tree hides it with the toggle still on.
+    h.click("FILE_TREE_TOGGLE");
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    assert!(!h.has("FILES_TREE_COLUMN"));
+    assert!(h.has("FILE_TREE_TOGGLE"));
+}
+
+#[test]
+fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
+    let mut h = viewer(mission("on-worktree"));
+    let subject = PanelSubject::Mission("on-worktree".into());
+    let layout = |h: &mut Harness, surface: f32| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.panel.surface.set(surface);
+                host.panel.layout(Some(&subject), 288., 440., 240., 6., cx)
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        layout(&mut h, 1200.),
+        (288., None),
+        "no file, the standard width"
+    );
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    // 6 + 420 + 440 + 240: the tree fits beside the file.
+    let (width, widened) = layout(&mut h, 1106.);
+    assert_eq!(width, 680.);
+    assert!(widened.unwrap().tree);
+    // Narrower: the tree hides first, then the file gives way to the mission.
+    assert_eq!(layout(&mut h, 1105.).0, 440.);
+    assert!(!layout(&mut h, 1105.).1.unwrap().tree);
+    assert_eq!(layout(&mut h, 800.).0, 374.);
+    assert_eq!(
+        layout(&mut h, 600.).0,
+        288.,
+        "never below the standard width"
+    );
+}
+
+#[test]
+fn a_saved_tree_width_widens_the_panel_and_still_hides_before_the_file_narrows() {
+    let mut h = viewer(mission("on-worktree"));
+    let subject = PanelSubject::Mission("on-worktree".into());
+    let layout = |h: &mut Harness, surface: f32| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.panel.surface.set(surface);
+                host.panel.layout(Some(&subject), 288., 440., 320., 6., cx)
+            })
+            .unwrap()
+    };
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    // 6 + 420 + 440 + 320: the wider tree fits beside the file.
+    let (width, widened) = layout(&mut h, 1186.);
+    assert_eq!(width, 760.);
+    assert!(widened.unwrap().tree);
+    // Narrower: the tree hides first, then the file gives way to the mission.
+    let (width, widened) = layout(&mut h, 1185.);
+    assert_eq!(width, 440.);
+    assert!(!widened.unwrap().tree);
+    assert_eq!(layout(&mut h, 800.).0, 374.);
+    assert_eq!(layout(&mut h, 600.).0, 288.);
+}
+
+#[test]
+fn dragging_the_tree_divider_sizes_the_tree_against_the_file_and_saves_both() {
+    let mut h = viewer(chat("in-project"));
+    h.visual.simulate_resize(size(px(800.), px(900.)));
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let settings = |h: &mut Harness| {
+        h.store.read_with(&h.visual, |store, _| {
+            (
+                store.settings.file_tree_width,
+                store.settings.file_viewer_width,
+            )
+        })
+    };
+    assert_eq!(settings(&mut h), (240., 440.));
+    let gutter = h.visual.debug_bounds("FILE_TREE_GUTTER").unwrap();
+    let column = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
+    assert_eq!(gutter.center().x, column.left());
+    let start = gutter.center();
+    let to = |h: &mut Harness, dx: f32| {
+        for _ in 0..3 {
+            h.visual.simulate_mouse_move(
+                start + gpui::point(px(dx), px(0.)),
+                Some(gpui::MouseButton::Left),
+                Modifiers::default(),
+            );
+            h.settle();
+        }
+    };
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    // Toward the file: the tree widens by what the file gives up.
+    to(&mut h, -60.);
+    assert_eq!(settings(&mut h), (300., 380.));
+    let column = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
+    assert_eq!(column.size.width, px(300.));
+    // The file stops at the panel's standard width.
+    to(&mut h, -400.);
+    assert_eq!(settings(&mut h), (392., 288.));
+    // Toward the edge: the tree stops at its minimum.
+    to(&mut h, 200.);
+    assert_eq!(settings(&mut h), (160., 520.));
+    to(&mut h, -60.);
+    h.visual.simulate_mouse_up(
+        start + gpui::point(px(-60.), px(0.)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.settle();
+    let saved =
+        crate::app_settings::AppSettings::load(&h.temp.path().join("settings.json")).unwrap();
+    assert_eq!(
+        (saved.file_tree_width, saved.file_viewer_width),
+        (300., 380.)
+    );
+}
+
+#[test]
+fn dragging_the_tree_divider_beside_the_widest_file_keeps_the_panel_width() {
+    let mut h = viewer(chat("in-project"));
+    h.visual.simulate_resize(size(px(800.), px(900.)));
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 1100.;
+                settings.file_tree_width = 300.;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let start = h.visual.debug_bounds("FILE_TREE_GUTTER").unwrap().center();
+    let end = start + gpui::point(px(250.), px(0.));
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        h.visual
+            .simulate_mouse_move(end, Some(gpui::MouseButton::Left), Modifiers::default());
+        h.settle();
+    }
+    h.visual
+        .simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    // The file reaches its maximum, so the tree keeps what the panel holds.
+    let saved =
+        crate::app_settings::AppSettings::load(&h.temp.path().join("settings.json")).unwrap();
+    assert_eq!(
+        (saved.file_viewer_width, saved.file_tree_width),
+        (1200., 200.)
+    );
+}
+
+#[test]
+fn a_reload_drops_find_results_for_the_old_text_before_they_draw_or_step() {
+    let mut h = viewer(chat("in-project"));
+    let ascii = format!("{}needle and more\n", "x".repeat(601));
+    std::fs::write(h.repo.join("src/long.rs"), &ascii).unwrap();
+    h.open("src/long.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.visual.simulate_input("needle");
+    h.wait("the match", |h| {
+        h.read(|view| view.find_state())
+            .is_some_and(|(count, _)| count.as_deref() == Some("1 of 1"))
+    });
+    let code = h.code();
+    h.redraw();
+    assert!(
+        code.read_with(&h.visual, |code, _| code.scroll_offset().x) > px(0.),
+        "scrolled to the match at byte 601"
+    );
+    // The file comes back as wide text whose byte 601 is inside a
+    // character, and find steps before its new search answers.
+    let view = h.view();
+    let read = h.read(|view| view.read_seq("src/long.rs")).unwrap();
+    view.update(&mut h.visual, |view, cx| {
+        view.hold_search(true, cx);
+        view.reply_text("src/long.rs", read, &format!("{}\n", "汉".repeat(700)), cx);
+        view.step(true, cx);
+    });
+    h.redraw();
+    assert_eq!(
+        code.read_with(&h.visual, |code, _| code.find_highlights()),
+        (0, None)
+    );
+    assert_eq!(h.read(|view| view.find_state()), Some((None, None)));
+    view.update(&mut h.visual, |view, cx| view.hold_search(false, cx));
+    h.settle();
+    assert_eq!(
+        h.read(|view| view.find_state()).unwrap().0.as_deref(),
+        Some("No results")
+    );
+}
+
+#[test]
+fn opening_from_a_focused_tree_that_then_hides_keeps_the_viewer_keys() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("data.bin"), b"\0\x01").unwrap();
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    // The tree has focus, opens the file and leaves the panel.
+    h.click("FILES_ROW a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert!(!h.has("FILES_TREE_COLUMN"));
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    assert!(h.has("FILE_FIND_BAR"), "find reaches the file");
+    h.visual.simulate_keystrokes("escape");
+    h.settle();
+    // A placeholder, with nothing to focus inside it, keeps the keys too.
+    h.double_click("FILE_TAB a.txt");
+    h.open("data.bin", true);
+    h.wait("the placeholder", |h| h.has("FILE_BINARY"));
+    h.visual.simulate_keystrokes("ctrl-tab");
+    h.settle();
+    assert_eq!(h.read(|view| view.active_tab()), Some("a.txt".into()));
+    h.visual.simulate_keystrokes("ctrl-tab");
+    h.settle();
+    assert_eq!(h.read(|view| view.active_tab()), Some("data.bin".into()));
+    let close = crate::keymap::platform_default("cmd-w");
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    h.visual.simulate_keystrokes(&close);
+    h.settle();
+    assert!(h.tabs().is_empty());
+    let closed = h
+        .host
+        .read_with(&h.visual, |host, _| host.closed_panes)
+        .unwrap();
+    assert_eq!(closed, 0, "the pane stays");
+}
+
+#[test]
+fn find_after_a_long_tab_prefix_scrolls_to_the_match() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("src/tabs.rs"),
+        format!("{}needle\n", "\t".repeat(200)),
+    )
+    .unwrap();
+    h.open("src/tabs.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.visual.simulate_input("needle");
+    h.wait("the match", |h| {
+        h.read(|view| view.find_state())
+            .is_some_and(|(count, _)| count.as_deref() == Some("1 of 1"))
+    });
+    h.redraw();
+    let code = h.code();
+    let (char_width, text_left, bounds) = code.read_with(&h.visual, |code, _| code.geometry());
+    let scroll = code.read_with(&h.visual, |code, _| code.scroll_offset()).x;
+    let at = char_width * 800.;
+    assert!(
+        at >= scroll && at + char_width * 6. <= scroll + bounds.size.width - text_left,
+        "column 800 in view: scrolled {scroll:?}"
+    );
+}
+
+#[test]
+fn a_long_line_of_wide_and_combining_text_selects_what_is_drawn() {
+    let mut h = viewer(chat("in-project"));
+    let wide = "汉".repeat(2000);
+    let combining = "e\u{301}".repeat(2000);
+    std::fs::write(h.repo.join("src/wide.rs"), format!("{wide}\n{combining}\n")).unwrap();
+    h.open("src/wide.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let code = h.code();
+    code.update(&mut h.visual, |code, cx| {
+        code.scroll_to(gpui::point(px(0.), px(0.)), cx)
+    });
+    h.redraw();
+    let (char_width, text_left, bounds) = code.read_with(&h.visual, |code, _| code.geometry());
+    // Scrolled to column 1000, character 500 of the wide line.
+    code.update(&mut h.visual, |code, cx| {
+        code.scroll_to(gpui::point(char_width * 1000., px(0.)), cx)
+    });
+    h.redraw();
+    let x = |column: f32| bounds.left() + text_left + char_width * column;
+    let first_row = code.read_with(&h.visual, |code, _| code.row_y(0));
+    let second_row = code.read_with(&h.visual, |code, _| code.row_y(1));
+    // Columns 10 to 30 in view: characters 505 to 515.
+    h.visual.simulate_mouse_down(
+        gpui::point(x(10.), first_row),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.visual.simulate_mouse_up(
+        gpui::point(x(10.), first_row),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.visual
+        .simulate_click(gpui::point(x(30.), first_row), Modifiers::shift());
+    h.settle();
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h
+        .visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(copied, "汉".repeat(10));
+    // The combining line: one cell per letter, its accent never split off.
+    h.visual.simulate_mouse_down(
+        gpui::point(x(4.), second_row),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.visual.simulate_mouse_up(
+        gpui::point(x(4.), second_row),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.visual
+        .simulate_click(gpui::point(x(7.), second_row), Modifiers::shift());
+    h.settle();
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h
+        .visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap();
+    assert_eq!(copied, "e\u{301}".repeat(3));
+}
+
+#[test]
+fn a_very_long_single_line_shapes_only_what_is_in_view() {
+    let mut h = viewer(chat("in-project"));
+    let line = "\tlet x = 1;".repeat(400_000);
+    std::fs::write(h.repo.join("src/minified.js"), format!("{line}\n")).unwrap();
+    h.open("src/minified.js", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.redraw();
+    let code = h.code();
+    let shaped = code.read_with(&h.visual, |code, _| code.shaped_bytes.get());
+    assert!(
+        shaped > 0 && shaped < 2048,
+        "shaped {shaped} bytes at the start"
+    );
+    let (char_width, _, _) = code.read_with(&h.visual, |code, _| code.geometry());
+    code.update(&mut h.visual, |code, cx| {
+        code.scroll_to(gpui::point(char_width * 3_000_000., px(0.)), cx)
+    });
+    h.redraw();
+    let shaped = code.read_with(&h.visual, |code, _| code.shaped_bytes.get());
+    assert!(
+        shaped > 0 && shaped < 2048,
+        "shaped {shaped} bytes far right"
+    );
+}
+
+#[test]
+fn a_reply_for_a_closed_tab_never_passes_for_the_file_reopened() {
+    let mut h = viewer(chat("in-project"));
+    let view = h.view();
+    let first = view.update(&mut h.visual, |view, cx| {
+        view.open_file("a.txt".into(), true, cx);
+        view.read_seq("a.txt").unwrap()
+    });
+    h.visual
+        .update(|window, cx| view.update(cx, |view, cx| view.close_tab(0, window, cx)));
+    let second = view.update(&mut h.visual, |view, cx| {
+        view.open_file("a.txt".into(), true, cx);
+        view.read_seq("a.txt").unwrap()
+    });
+    assert_ne!(first, second);
+    h.settle();
+    assert_eq!(h.line(0), "a");
+    // The first read's reply arrives late, with what the file held then.
+    view.update(&mut h.visual, |view, cx| {
+        view.reply_text("a.txt", first, "stale\n", cx)
+    });
+    h.settle();
+    assert_eq!(h.line(0), "a");
+}
+
+#[test]
+fn a_late_reply_from_a_closed_find_never_passes_for_the_reopened_one() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("src/many.rs"), "aaaa aaaa\n").unwrap();
+    h.open("src/many.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| view.hold_search(true, cx));
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.visual.simulate_input("aaaa");
+    h.settle();
+    let first = h.read(|view| view.last_search()).unwrap();
+    // The bar closes and reopens on the same file with another query.
+    h.visual.simulate_keystrokes("escape");
+    h.settle();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.visual.simulate_input("a a");
+    h.settle();
+    let second = h.read(|view| view.last_search()).unwrap();
+    assert_ne!(first, second);
+    view.update(&mut h.visual, |view, cx| view.reply_search(second, 1, cx));
+    // The first query's reply arrives after the second's.
+    view.update(&mut h.visual, |view, cx| view.reply_search(first, 7, cx));
+    h.settle();
+    assert_eq!(
+        h.read(|view| view.find_state()).unwrap().0.as_deref(),
+        Some("1 of 1")
+    );
+}
+
+#[test]
+fn code_that_becomes_a_placeholder_hands_focus_back_to_the_viewer() {
+    let mut h = viewer(chat("in-project"));
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    h.open("a.txt", true);
+    h.open("old.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let close = crate::keymap::platform_default("cmd-w");
+    let closed = |h: &mut Harness| {
+        h.host
+            .read_with(&h.visual, |host, _| host.closed_panes)
+            .unwrap()
+    };
+    for with_find in [false, true] {
+        h.focus_code();
+        if with_find {
+            h.visual.simulate_keystrokes(&primary("f"));
+            h.settle();
+            assert!(h.has("FILE_FIND_BAR"));
+        }
+        // The focused file is read again and is now binary.
+        let active = h.read(|view| view.active_tab()).unwrap();
+        let read = h.read(|view| view.read_seq(&active)).unwrap();
+        let view = h.view();
+        view.update(&mut h.visual, |view, cx| {
+            view.reply_binary(&active, read, 9, cx)
+        });
+        h.settle();
+        assert!(h.has("FILE_BINARY"));
+        h.visual.simulate_keystrokes("ctrl-tab");
+        h.settle();
+        assert_ne!(
+            h.read(|view| view.active_tab()),
+            Some(active.clone()),
+            "⌃Tab still acts"
+        );
+        h.visual.simulate_keystrokes("ctrl-tab");
+        h.settle();
+        h.visual.simulate_keystrokes(&close);
+        h.settle();
+        assert!(
+            !h.tabs().iter().any(|(path, _)| *path == active),
+            "⌘W closed the tab"
+        );
+        assert_eq!(closed(&mut h), 0, "the pane stays");
+        if !with_find {
+            h.open("old.txt", true);
+            h.wait("the file", |h| h.has("FILE_CODE"));
+        }
+    }
 }

@@ -1425,6 +1425,7 @@ fn cached_mission_header_tabs_and_feed_span_the_content_column() {
 
 struct MissionRailLayoutTest {
     workspace: Entity<MissionWorkspace>,
+    width: Option<f32>,
 }
 
 #[cfg(unix)]
@@ -1477,7 +1478,10 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
                 .collect();
             workspace
         });
-        MissionRailLayoutTest { workspace }
+        MissionRailLayoutTest {
+            workspace,
+            width: None,
+        }
     });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(960.), px(300.)));
@@ -1519,6 +1523,87 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_rail_widened_by_an_open_file_lays_the_roster_two_per_row() {
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{TestAppContext, VisualTestContext};
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let mission = store.read_with(&cx, |store, _| {
+        runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
+    });
+    let host = cx.add_window(|window, cx| {
+        let workspace = cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "rail-two-up".into(),
+                WeakEntity::new_invalid(),
+                store,
+                window,
+                cx,
+            );
+            workspace.mission = Some(mission);
+            workspace.sessions = (0..3)
+                .map(|index| SessionRow {
+                    session: runner_core::protocol::model::Session {
+                        id: format!("slot-{index}"),
+                        mission_id: Some("test-mission".into()),
+                        role_id: "test-shell-role".into(),
+                        slot_id: None,
+                        cwd: None,
+                        status: SessionStatus::Stopped,
+                        pid: None,
+                        started_at: None,
+                        stopped_at: None,
+                    },
+                    handle: format!("worker-{index}"),
+                    role_handle: String::new(),
+                    lead: index == 0,
+                    runtime: "shell".into(),
+                    live_title: None,
+                    agent_session_key: None,
+                })
+                .collect();
+            workspace
+        });
+        MissionRailLayoutTest {
+            workspace,
+            width: None,
+        }
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(2400.), px(900.)));
+    for zoom in [1., 1.1, 1.2, 1.3] {
+        for width in [560., 607.3, 640., 680., 733.7] {
+            host.update(&mut visual, |host, window, cx| {
+                window.set_rem_size(px(16. * zoom));
+                host.width = Some(width);
+                cx.notify();
+            })
+            .unwrap();
+            visual.run_until_parked();
+            let [first, second, third] = [0, 1, 2].map(|index| {
+                visual
+                    .debug_bounds(format!("MISSION_CARD slot-{index}").leak())
+                    .unwrap()
+            });
+            let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
+            let at = format!("zoom {zoom}, width {width}: {first:?} {second:?} {third:?}");
+            assert_eq!(first.top(), second.top(), "{at}");
+            assert!(second.left() > first.right(), "{at}");
+            assert!(second.right() <= rail.right(), "{at}");
+            assert!(third.top() > first.bottom(), "{at}");
+            assert_eq!(third.left(), first.left(), "{at}");
+            assert_eq!(third.size.width, first.size.width, "{at}");
+        }
+    }
+}
+
 #[test]
 fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_themes() {
     use crate::surfaces::side_panel::{PanelContext, PanelSubject};
@@ -1556,7 +1641,10 @@ fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_them
             workspace.mission = Some(mission);
             workspace
         });
-        MissionRailLayoutTest { workspace }
+        MissionRailLayoutTest {
+            workspace,
+            width: None,
+        }
     });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(960.), px(600.)));
@@ -1628,7 +1716,11 @@ fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_them
 impl gpui::Render for MissionRailLayoutTest {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rail = self.workspace.update(cx, |workspace, cx| {
-            workspace.render_mission_rail(1., true, window, cx)
+            let layout = match self.width {
+                Some(width) => (width, None),
+                None => workspace.rail_layout(cx),
+            };
+            workspace.render_mission_rail(layout, 1., true, window, cx)
         });
         let handle_text = |selector: &'static str, text: &'static str| {
             div()
@@ -1786,7 +1878,10 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 );
                 workspace
             });
-            MissionRailLayoutTest { workspace }
+            MissionRailLayoutTest {
+                workspace,
+                width: None,
+            }
         });
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
         visual.simulate_resize(size(px(960.), px(600.)));
