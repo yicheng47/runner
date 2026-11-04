@@ -139,7 +139,9 @@ A fallback that ships gets a follow-up issue in the next milestone.
 
 ## Windows
 
-`git.exe` must be on PATH, and without it every root is plain (m1). Porcelain paths use `/` and are converted; path comparison is case-insensitive; CRLF files show no stray characters (m4); a `ReadDirectoryChangesW` buffer overflow triggers a full rescan of the root (m1). Shortcuts are the spec's Windows forms.
+`git.exe` must be on PATH, and without it every root is plain (m1). Porcelain paths use `/` and are converted; path comparison is case-insensitive; CRLF files show no stray characters (m4). Shortcuts are the spec's Windows forms.
+
+The watcher cannot see a `ReadDirectoryChangesW` buffer overflow: notify 6, which the event bus also uses, drops it silently, and a build's churn in ignored folders fills the same buffer as an agent's edits, so an edit in that burst would be lost without a signal (found in m1, 2026-11-04). Windows therefore runs a `git status` every five seconds while a root is watched, as Linux does on its fallback, and sends `files/status`, with `files/changed` for the root, only when the status changed; an edit to a file that was already changed can still wait for the next event. Upgrading notify, which might report the overflow, stays out of the program because it touches the event bus (Jason, 2026-11-04).
 
 ## The gate before landing
 
