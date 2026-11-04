@@ -156,21 +156,25 @@ impl NativeRoot {
                 .as_ref()
                 .map(|chat| chat.session_id.clone()),
         );
+        let panel_layout = self.chat_panel_layout(self.archived_chat_detail.as_ref(), cx);
         let side_panel = self.render_chat_side_panel(
             self.archived_chat_detail.as_ref(),
             PanelSurface::Chat,
             self.archived_session_key_copy.clone(),
+            panel_layout,
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
             cx,
         );
         div()
+            .relative()
             .track_focus(&self.chat_focus)
             .flex_1()
             .min_w(px(0.))
             .h_full()
             .flex()
+            .child(self.chat_files.measure(self.settings(cx).app_zoom))
             .child(chat_column)
             .child(side_panel)
             .into_any_element()
@@ -359,12 +363,11 @@ impl NativeRoot {
                 .as_ref()
                 .map(|chat| chat.session_id.clone()),
         );
+        let panel_layout = self.chat_panel_layout(self.active_chat_detail.as_ref(), cx);
         let side_panel = self.cached_region(
             "side-panel",
             gpui::StyleRefinement::default()
-                .w(rems(
-                    self.settings(cx).chat_panel_width * panel_visibility / 16.,
-                ))
+                .w(rems(panel_layout.0 * panel_visibility / 16.))
                 .h_full()
                 .flex_none(),
             move |root, _, cx| {
@@ -372,6 +375,7 @@ impl NativeRoot {
                     root.active_chat_detail.as_ref(),
                     surface,
                     root.session_key_copy.clone(),
+                    panel_layout,
                     panel_visibility,
                     panel_open || panel_animating,
                     panel_open && !panel_animating,
@@ -380,9 +384,10 @@ impl NativeRoot {
             },
             cx,
         );
+        let widened = panel_layout.1;
         let panel_resize = (panel_open || panel_animating).then(|| {
             let zoom = self.settings(cx).app_zoom;
-            let panel_width = self.settings(cx).chat_panel_width * panel_visibility * zoom;
+            let panel_width = panel_layout.0 * panel_visibility * zoom;
             resize_strip(
                 "chat-panel-resize",
                 ResizeAxis::Columns,
@@ -417,6 +422,7 @@ impl NativeRoot {
             .min_w(px(0.))
             .h_full()
             .flex()
+            .child(self.chat_files.measure(self.settings(cx).app_zoom))
             .child(chat_column)
             .children(
                 (panel_open || panel_animating)
@@ -441,14 +447,27 @@ impl NativeRoot {
                 }),
             )
             .on_drag_move::<ChatPanelResizeDrag>(cx.listener(
-                |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
+                move |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    let width = app_settings::clamp_chat_panel_width(width);
                     if !this.chat_panel_resizing {
                         this.chat_panel_resizing = true;
                         cx.notify();
                     }
+                    // With a file open the drag sizes the file beside the tree.
+                    if let Some(widened) = widened {
+                        let tree = if widened.tree { widened.tree_width } else { 0. };
+                        let width = app_settings::clamp_file_viewer_width(width - tree);
+                        this.update_app_settings(cx, false, |settings| {
+                            if settings.file_viewer_width == width {
+                                return false;
+                            }
+                            settings.file_viewer_width = width;
+                            true
+                        });
+                        return;
+                    }
+                    let width = app_settings::clamp_chat_panel_width(width);
                     this.update_app_settings(cx, false, |settings| {
                         if settings.chat_panel_width == width {
                             return false;

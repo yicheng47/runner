@@ -55,6 +55,20 @@ Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制，否则作为中�
 
 可在 **设置 → 键盘快捷键** 中更改“在终端中查找”；查找栏内的按键固定不变。Windows 和 Linux 上， **Ctrl+F** 仍会送入终端。只有查找栏获得焦点时 Esc 才关闭查找栏；终端获得焦点后，Esc 会送给程序。参见[在终端中查找](../guides/chats-and-windows.md#在终端中查找)。
 
+## 侧面板中的文件
+
+| 操作 | macOS | Windows / Linux |
+| --- | --- | --- |
+| 在预览标签页中打开树中选中的文件 | 空格 | 空格 |
+| 在保持打开的标签页中打开树中选中的文件 | Return | Enter |
+| 下一个文件标签页 | ⌃Tab | Ctrl+Tab |
+| 上一个文件标签页 | ⌃⇧Tab | Ctrl+Shift+Tab |
+| 关闭当前文件标签页 | ⌘W | Ctrl+Shift+W |
+| 在文件中查找 | ⌘F | Ctrl+F |
+| 复制选中的文本 | ⌘C | Ctrl+C |
+
+这些按键在侧面板的文件视图获得焦点时生效，且固定不变。焦点在其他位置或没有打开文件时，⌘W（Ctrl+Shift+W）照常关闭窗格。在文件的查找栏中，Return 和 ⇧Return 在匹配项之间跳转，Esc 关闭查找栏。参见[在侧面板中阅读文件](../guides/chats-and-windows.md#在侧面板中阅读文件)。
+
 ## 对话框
 
 | 操作 | macOS | Windows / Linux |

@@ -40,6 +40,11 @@ const APP_ICON: &[u8] = include_bytes!("../../../assets/icon.png");
 const ANTIGRAVITY_ICON: &[u8] = include_bytes!("../../../assets/antigravity-icon.png");
 // Source: https://opencode.ai/favicon-v3.ico (lossless ICO frame conversion).
 const OPENCODE_ICON: &[u8] = include_bytes!("../../../assets/opencode-icon.png");
+// The file viewer's Open in icons, from the design (`runner/desktop/specs/images/634-open-in`).
+const OPEN_IN_ZED: &[u8] = include_bytes!("../../../assets/open-in/zed.png");
+const OPEN_IN_VSCODE: &[u8] = include_bytes!("../../../assets/open-in/vscode.png");
+const OPEN_IN_CURSOR: &[u8] = include_bytes!("../../../assets/open-in/cursor.png");
+const OPEN_IN_FINDER: &[u8] = include_bytes!("../../../assets/open-in/finder.png");
 
 const BRAND_MARK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 72 72"><path d="M14 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path d="M29 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/><path d="M44 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 const BRAND_MARK_LIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 72 72"><path d="M14 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity=".28"/><path d="M29 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/><path d="M44 22l14 14-14 14" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
@@ -184,10 +189,23 @@ const CURSOR: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2
 // Source: https://raw.githubusercontent.com/lobehub/lobe-icons/a94750e3f5f8fc33757b839d85030e742284e43a/packages/static-svg/icons/grok.svg
 const GROK: &[u8] = br#"<svg fill="currentColor" fill-rule="evenodd" viewBox="-2 -2 28 28" xmlns="http://www.w3.org/2000/svg"><path d="M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815"/></svg>"#;
 
+const LIST_TREE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12h-8"/><path d="M21 6H8"/><path d="M21 18h-8"/><path d="M3 6v4c0 1.1.9 2 2 2h3"/><path d="M3 10v6c0 1.1.9 2 2 2h3"/></svg>"#;
+const FILES: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7h-3a2 2 0 0 1-2-2V2"/><path d="M9 18a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h7l4 4v10a2 2 0 0 1-2 2Z"/><path d="M3 7.6v12.8A1.6 1.6 0 0 0 4.6 22h9.8"/></svg>"#;
+const FILE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>"#;
+const FILE_X: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m14.5 12.5-5 5"/><path d="m9.5 12.5 5 5"/></svg>"#;
+
 const ASSETS: &[(&str, &[u8])] = &[
+    ("list-tree.svg", LIST_TREE),
+    ("files.svg", FILES),
+    ("file.svg", FILE),
+    ("file-x.svg", FILE_X),
     ("app-icon.png", APP_ICON),
     ("antigravity-icon.png", ANTIGRAVITY_ICON),
     ("opencode-icon.png", OPENCODE_ICON),
+    ("open-in/zed.png", OPEN_IN_ZED),
+    ("open-in/vscode.png", OPEN_IN_VSCODE),
+    ("open-in/cursor.png", OPEN_IN_CURSOR),
+    ("open-in/finder.png", OPEN_IN_FINDER),
     ("brand-mark.svg", BRAND_MARK),
     ("brand-mark-light.svg", BRAND_MARK_LIGHT),
     ("panel-left-hidden.svg", PANEL_LEFT_HIDDEN),
