@@ -12,7 +12,7 @@ struct SavedPresentation {
     active: MissionTab,
     open_handles: Vec<String>,
     selected_handle: Option<String>,
-    rail: MissionRailView,
+    rail: PanelViewId,
 }
 
 pub(super) struct RemoteMission {
@@ -104,7 +104,7 @@ impl MissionWorkspace {
                 },
             );
             if let Some(id) = mission_id.clone() {
-                self.prepare_mission(id.clone(), MissionRailView::Roles);
+                self.prepare_mission(id.clone(), PanelViewId::Sessions);
                 if let Some(saved) = saved {
                     self.layout = saved.layout;
                     self.active_tab = saved.active;

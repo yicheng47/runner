@@ -158,6 +158,7 @@ impl NativeRoot {
         );
         let side_panel = self.render_chat_side_panel(
             self.archived_chat_detail.as_ref(),
+            PanelSurface::Chat,
             self.archived_session_key_copy.clone(),
             panel_visibility,
             panel_open || panel_animating,
@@ -341,9 +342,10 @@ impl NativeRoot {
             .children(error_banner)
             .children(warning_banner)
             .child(tab_body);
+        let surface = side_panel_surface(terminal_tab);
         let panel_open = self.remote_client.is_local()
             && !show_start
-            && side_panel_open(self.settings(cx).chat_panel_open, terminal_tab);
+            && side_panel_open(self.settings(cx).chat_panel_open, surface);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),
@@ -368,6 +370,7 @@ impl NativeRoot {
             move |root, _, cx| {
                 root.render_chat_side_panel(
                     root.active_chat_detail.as_ref(),
+                    surface,
                     root.session_key_copy.clone(),
                     panel_visibility,
                     panel_open || panel_animating,

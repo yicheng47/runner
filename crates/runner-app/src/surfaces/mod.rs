@@ -20,6 +20,7 @@ pub(crate) mod render_cache;
 pub(crate) mod roles;
 pub(crate) mod root;
 pub(crate) mod settings;
+pub(crate) mod side_panel;
 pub(crate) mod sidebar;
 pub(crate) mod sidebar_logic;
 pub(crate) mod start_chat;
