@@ -6,7 +6,9 @@ A plan is written on its feature's branch and lands in the pull request with the
 
 ## Active
 
-No plan is active. The post-0.17 cleanup ([#977](https://github.com/yicheng47/runner/issues/977)) closed on 2026-10-29; its four plans were deleted in the 0.19.0 sweep, with their outcomes in the [maintenance history](archive/maintenance-history.md#977--post-017-cleanup-outcomes) and their validation records in the [test archive](../tests/README.md).
+File preview ([#634](https://github.com/yicheng47/runner/issues/634)) is a seven-mission program on the umbrella branch `feat/634-file-preview`; its [program record](634-file-preview/README.md) holds the state and decisions, and its [plan](634-file-preview/plan.md) the phases. The directory lives on the umbrella and reaches `main` with it.
+
+The post-0.17 cleanup ([#977](https://github.com/yicheng47/runner/issues/977)) closed on 2026-10-29; its four plans were deleted in the 0.19.0 sweep, with their outcomes in the [maintenance history](archive/maintenance-history.md#977--post-017-cleanup-outcomes) and their validation records in the [test archive](../tests/README.md).
 
 Remote control's [program record](archive/836-web-remote-control/README.md) shipped in 0.18.0. Linux shipped as a beta in 0.18.2; its [integration record](archive/982-linux-remote-compat.md) is archived, and the [brief](briefs/823-linux.md) remains as the large example.
 
