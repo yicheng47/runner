@@ -1822,6 +1822,62 @@ mod tests {
         visual.run_until_parked();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn double_clicking_the_panel_collapse_control_does_not_zoom_the_window() {
+        use crate::platform_ui::{take_titlebar_actions, TitlebarAction};
+        use gpui::{point, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+
+        let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+        let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
+        let collapse = point(panel.right() - px(22.), info.center().y);
+        let click = |visual: &mut gpui::VisualTestContext, click_count| {
+            visual.simulate_event(MouseDownEvent {
+                position: collapse,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(MouseUpEvent {
+                position: collapse,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+            visual.run_until_parked();
+        };
+        take_titlebar_actions();
+        click(&mut visual, 1);
+        assert!(!store.read_with(&visual, |store, _| store.settings.chat_panel_open));
+        assert!(take_titlebar_actions().is_empty());
+        host.update(&mut visual, |root, _, cx| {
+            // Hold the collapse halfway, where a real double-click's second
+            // press lands while the panel is still shrinking.
+            root.chat_panel_visibility.start = 0.5;
+            root.chat_panel_visibility.target = 0.;
+            root.chat_panel_visibility.started_at =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        click(&mut visual, 2);
+        assert_eq!(
+            take_titlebar_actions(),
+            [TitlebarAction::Move],
+            "the second click lands on the uncovered drag area as a fresh press"
+        );
+        click(&mut visual, 1);
+        click(&mut visual, 2);
+        assert_eq!(
+            take_titlebar_actions(),
+            [TitlebarAction::Move, TitlebarAction::Zoom],
+            "a double-click on the drag area itself still zooms"
+        );
+    }
+
     #[test]
     fn chat_panel_header_puts_info_left_and_files_right_in_both_themes() {
         use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
@@ -1896,6 +1952,7 @@ mod tests {
         );
         let context = PanelContext {
             subject: PanelSubject::Session("direct-agent".into()),
+            surface: crate::surfaces::side_panel::PanelSurface::Chat,
             cwd: Some("/tmp/panel-direct-agent".into()),
             project: None,
             remote: false,
@@ -1935,6 +1992,7 @@ mod tests {
         assert!(panel.right() - files.right() <= px(56.));
         let context = PanelContext {
             subject: PanelSubject::Session("busy-shell".into()),
+            surface: crate::surfaces::side_panel::PanelSurface::Terminal,
             cwd: Some("/tmp/panel-busy-shell".into()),
             project: None,
             remote: false,

@@ -26,6 +26,7 @@ impl MissionWorkspace {
         let width = self.settings(cx).mission_rail_width;
         let visible_width = width * visibility;
         if !show_rail {
+            self.rail_files.hide(cx);
             return div()
                 .id("mission-rail")
                 .debug_selector(|| "MISSION_RAIL".into())
@@ -72,17 +73,25 @@ impl MissionWorkspace {
                         });
                     }),
             ));
-        let body = match shown {
-            Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
-            Some(PanelViewId::Files) => match self.mission_view() {
-                Some(mission) => side_panel::files_view(&PanelContext {
+        let files = match (shown, self.mission_view()) {
+            (Some(PanelViewId::Files), Some(mission)) => Some(self.rail_files.show(
+                &PanelContext {
                     subject: PanelSubject::Mission(mission.id),
+                    surface: PanelSurface::Mission,
                     cwd: mission.cwd,
                     project: mission.project_id,
                     remote: self.presentation.is_remote(),
-                }),
-                None => div().into_any_element(),
-            },
+                },
+                cx,
+            )),
+            _ => {
+                self.rail_files.hide(cx);
+                None
+            }
+        };
+        let body = match shown {
+            Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
+            Some(PanelViewId::Files) => files.unwrap_or_else(|| div().into_any_element()),
             Some(PanelViewId::Sessions) | None => self.render_roles_rail(window, cx),
         };
         let rail = div()
