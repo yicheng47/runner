@@ -65,6 +65,18 @@ Copy with a selection, paste and zoom work in a terminal in both modes. The sett
 
 Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys inside the find bar are fixed. On Windows and Linux, **Ctrl+F** still reaches the terminal. Esc closes the find bar only while the bar has focus; once the terminal has focus, Esc goes to the program. See [Find in a terminal](../guides/chats-and-windows.md#find-in-a-terminal).
 
+## Side panel surfaces
+
+| Action | Keys |
+| --- | --- |
+| Open Info, or switch to it | I |
+| Open Files, or switch to it | F |
+| Move through the surfaces | ↑ / ↓ |
+| Open the highlighted surface | Return (Enter) |
+| Close the **+** list | Esc |
+
+These keys act only while the **+** list of a side panel, or a panel's **Open a surface** list, has focus; they are fixed. See [Chats, tabs and windows](../guides/chats-and-windows.md).
+
 ## Files in the side panel
 
 | Action | macOS | Windows / Linux |
