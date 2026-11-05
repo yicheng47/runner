@@ -284,7 +284,11 @@ impl NativeRoot {
         if self.remote_client.is_local() {
             self.prune_pane_state(&layout);
         }
-        let pane_tree = self.render_pane_node(&layout.root, &layout, cx);
+        prune_maximized(&mut self.maximized_panes, &layout);
+        let pane_tree = match maximized_leaf(&self.maximized_panes, &layout).cloned() {
+            Some(leaf) => self.render_pane_node(&PaneNode::Leaf(leaf), &layout, cx),
+            None => self.render_pane_node(&layout.root, &layout, cx),
+        };
         let tab_archiving =
             split_tab_archiving(&layout, |id| self.sidebar_archiving_session(id, cx));
         let tab_body = div()

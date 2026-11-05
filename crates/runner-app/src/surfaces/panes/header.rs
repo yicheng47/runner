@@ -15,7 +15,10 @@ impl NativeRoot {
             || start_surface_visible(Some(layout))
             || self.settings(cx).chat_panel_open
             || terminal_tab
-            || top_right_pane(&layout.root).id != pane_id
+            || maximized_leaf(&self.maximized_panes, layout)
+                .unwrap_or_else(|| top_right_pane(&layout.root))
+                .id
+                != pane_id
         {
             return None;
         }

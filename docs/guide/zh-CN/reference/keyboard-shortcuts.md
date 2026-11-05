@@ -34,6 +34,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 下一个聊天窗格 | ⌘] | Ctrl+] |
 | 向右拆分 | ⌘D | Ctrl+Shift+D |
 | 向下拆分 | ⇧⌘D | Alt+Shift+D |
+| 最大化拆分标签页中的焦点窗格，或恢复拆分 | ⇧⌘↩ | Ctrl+Shift+Enter |
 | 隐藏焦点任务抽屉、关闭焦点窗格、聊天标签页或启动器页面 | ⌘W | Ctrl+Shift+W |
 | 停止焦点聊天或任务成员 | ⇧⌘X | Ctrl+Shift+X |
 | 恢复焦点已停止聊天或任务成员 | ⇧⌘R | Ctrl+Shift+R |

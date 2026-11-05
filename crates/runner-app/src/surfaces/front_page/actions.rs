@@ -480,45 +480,16 @@ impl NativeRoot {
 }
 
 impl NativeRoot {
-    pub(crate) fn submit_workspace_rename(
-        &mut self,
-        pane: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let (input, target, original) = if pane {
-            let Some(rename) = &self.pane_rename else {
-                return;
-            };
-            (
-                rename.input.clone(),
-                ActionTarget {
-                    kind: ActionKind::Session,
-                    id: rename.session_id.clone(),
-                },
-                rename.original.clone(),
-            )
-        } else {
-            let Some(modal) = &self.chat_rename_modal else {
-                return;
-            };
-            if modal.submitting {
-                return;
-            }
-            let (target, original) = match &modal.target {
-                ChatRenameTarget::Session {
-                    session_id,
-                    original,
-                } => (
-                    ActionTarget {
-                        kind: ActionKind::Session,
-                        id: session_id.clone(),
-                    },
-                    original.clone(),
-                ),
-            };
-            (modal.input.clone(), target, original)
+    pub(crate) fn submit_workspace_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = &self.pane_rename else {
+            return;
         };
+        let input = rename.input.clone();
+        let target = ActionTarget {
+            kind: ActionKind::Session,
+            id: rename.session_id.clone(),
+        };
+        let original = rename.original.clone();
         if input.read(cx).is_composing() {
             return;
         }
@@ -528,29 +499,17 @@ impl NativeRoot {
         }
         let remote = client.is_remote();
         let name = input.read(cx).text().trim().to_owned();
-        let (unchanged, title) = if pane && !remote {
+        let (unchanged, title) = if remote {
+            (false, Some(name))
+        } else {
             match crate::surfaces::chat::pane_rename_change(&original, &name) {
                 crate::surfaces::chat::PaneRenameChange::Unchanged => (true, None),
                 crate::surfaces::chat::PaneRenameChange::Persist(title) => (false, title),
             }
-        } else {
-            (!remote && name == original.trim(), Some(name))
         };
-        if unchanged && !pane {
-            self.close_chat_rename(window, cx);
-            return;
-        }
         let key = format!("rename:{}", target.id);
         if !self.remote_client.begin_named_action(&key) {
             return;
-        }
-        if let Some(modal) = self
-            .chat_rename_modal
-            .as_mut()
-            .filter(|modal| modal.input == input)
-        {
-            modal.submitting = true;
-            modal.error = None;
         }
         let epoch = self.remote_client.ui.epoch;
         let guard = client.clone();
@@ -563,29 +522,21 @@ impl NativeRoot {
                     .map_err(|error| error.to_string())
             }
         };
-        if pane && !remote {
+        if !remote {
             let result = operation();
-            self.finish_workspace_rename(pane, input, remote.then_some(key), result, window, cx);
+            self.finish_workspace_rename(input, None, result, window, cx);
         } else {
             let task = cx.background_spawn(async move { operation() });
             cx.spawn_in(window, async move |weak, cx| {
                 let result = task.await;
                 let _ = weak.update_in(cx, |root, window, cx| {
                     if root.remote_client.ui.epoch != epoch
-                        || (remote
-                            && (!guard.valid()
-                                || root.front_page_client(cx).target != guard.target))
+                        || !guard.valid()
+                        || root.front_page_client(cx).target != guard.target
                     {
                         return;
                     }
-                    root.finish_workspace_rename(
-                        pane,
-                        input,
-                        remote.then_some(key),
-                        result,
-                        window,
-                        cx,
-                    );
+                    root.finish_workspace_rename(input, Some(key), result, window, cx);
                 });
             })
             .detach();
@@ -595,7 +546,6 @@ impl NativeRoot {
 
     fn finish_workspace_rename(
         &mut self,
-        pane: bool,
         input: Entity<runner_app::ui::TextField>,
         remote_key: Option<String>,
         result: Result<(), String>,
@@ -603,29 +553,20 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let remote = remote_key.is_some();
+        let kept_focus = input.read(cx).focus_handle().is_focused(window);
         if let Some(key) = remote_key {
             self.remote_client.finish_named_action(&key);
         }
         match result {
             Ok(()) => {
-                if pane
-                    && (!remote
-                        || self
-                            .pane_rename
-                            .as_ref()
-                            .is_some_and(|rename| rename.input == input))
+                if !remote
+                    || self
+                        .pane_rename
+                        .as_ref()
+                        .is_some_and(|rename| rename.input == input)
                 {
                     self.pane_rename = None;
                     self._pane_rename_focus_subscription = None;
-                }
-                if !pane
-                    && (!remote
-                        || self
-                            .chat_rename_modal
-                            .as_ref()
-                            .is_some_and(|modal| modal.input == input))
-                {
-                    self.chat_rename_modal = None;
                 }
                 if !remote {
                     self.refresh_sessions(cx);
@@ -634,21 +575,16 @@ impl NativeRoot {
                     }
                     self.sync_active_chat_detail(cx);
                 }
-                self.focus_active_terminal(window, cx);
+                if kept_focus {
+                    self.focus_active_terminal(window, cx);
+                }
             }
             Err(error) => {
-                if let Some(modal) = self
-                    .chat_rename_modal
-                    .as_mut()
-                    .filter(|modal| (remote && modal.input == input) || (!remote && !pane))
-                {
-                    modal.submitting = false;
-                    modal.error = Some(error);
-                } else if remote {
+                if remote {
                     self.remote_client.set_error(error);
                 } else {
                     self.chat_error = Some(error.into());
-                    if let Some(rename) = &self.pane_rename {
+                    if let Some(rename) = self.pane_rename.as_ref().filter(|_| kept_focus) {
                         rename.input.read(cx).focus_handle().focus(window, cx);
                     }
                 }

@@ -46,7 +46,9 @@ pub use list::{
     clamp_page, count_label, page_window, EmptyStateCard, PageHandler, PageWindowItem, Pager,
     PaginatedListPage, SearchHandler, SearchInput, DEFAULT_PAGE_SIZE,
 };
-pub use menu::{ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, PopoverMenu};
+pub use menu::{
+    ContextMenu, MenuAction, MenuItem, MenuKey, MenuState, MenuTriggerLabel, PopoverMenu,
+};
 pub use model_field::ModelField;
 pub use overlay::{ConfirmDialog, ConfirmDialogState, Drawer, Modal, OverlayWidth};
 pub use scrollbar::{

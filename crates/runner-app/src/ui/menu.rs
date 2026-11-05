@@ -18,6 +18,13 @@ pub type MenuHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub type SubmenuHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// Text shown in place of a popover's icon trigger, followed by a chevron.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuTriggerLabel {
+    pub text: SharedString,
+    pub color: gpui::Hsla,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MenuItem {
     pub label: SharedString,
@@ -377,6 +384,9 @@ pub struct PopoverMenu {
     trigger_size: IconButtonSize,
     trigger_icon: SharedString,
     trigger_tooltip: Option<crate::i18n::Text>,
+    trigger_label: Option<MenuTriggerLabel>,
+    on_trigger_press: Option<DismissHandler>,
+    on_trigger_double_click: Option<DismissHandler>,
     return_focus: Option<FocusHandle>,
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
@@ -406,6 +416,9 @@ impl PopoverMenu {
             trigger_size: IconButtonSize::Md,
             trigger_icon: "more-horizontal.svg".into(),
             trigger_tooltip: Some(crate::i18n::message("ui.more_actions")),
+            trigger_label: None,
+            on_trigger_press: None,
+            on_trigger_double_click: None,
             return_focus: None,
             menu_scroll,
             menu_scrollbar,
@@ -446,6 +459,30 @@ impl PopoverMenu {
     pub fn without_trigger_tooltip(mut self) -> Self {
         self.trigger_tooltip = None;
         self
+    }
+
+    /// A press on a text trigger runs `handler` first; the focus it leaves
+    /// is where the menu returns focus when it closes.
+    pub fn on_trigger_press(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_trigger_press = Some(Rc::new(handler));
+        self
+    }
+
+    /// A double-click on a text trigger runs `handler` instead of opening
+    /// the menu.
+    pub fn on_trigger_double_click(
+        mut self,
+        handler: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_trigger_double_click = Some(Rc::new(handler));
+        self
+    }
+
+    pub fn set_trigger_label(&mut self, label: MenuTriggerLabel, cx: &mut Context<Self>) {
+        if self.trigger_label.as_ref() != Some(&label) {
+            self.trigger_label = Some(label);
+            cx.notify();
+        }
     }
 
     pub fn set_items_and_handler(
@@ -746,16 +783,79 @@ impl Render for PopoverMenu {
         let zoom = app_zoom(window);
         let entity = cx.entity();
         let click_entity = entity.clone();
-        let trigger = IconButton::new("popover-trigger", self.trigger_icon.clone())
-            .size(self.trigger_size)
-            .focus_handle(self.focus_handle.clone())
-            .keyboard_activation(false)
-            .on_press(move |window, cx| {
-                click_entity.update(cx, |menu, cx| menu.toggle(window, cx));
-            });
-        let trigger = match self.trigger_tooltip.clone() {
-            Some(tooltip) => trigger.tooltip(tooltip.resolve()),
-            None => trigger,
+        let labelled = self.trigger_label.is_some();
+        let trigger = if let Some(label) = self.trigger_label.clone() {
+            let mouse_focus = self.focus_handle.clone();
+            let press = self.on_trigger_press.clone();
+            let press_entity = entity.clone();
+            let double_click = self.on_trigger_double_click.clone();
+            div()
+                .id("popover-trigger")
+                .max_w_full()
+                .h_full()
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(rems(4. / 16.))
+                .px(rems(6. / 16.))
+                .rounded(rems(6. / 16.))
+                .cursor_pointer()
+                .when(self.state.open, |trigger| trigger.bg(theme::raised()))
+                .hover(|trigger| trigger.bg(theme::raised()))
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(theme::text_ui())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(label.color)
+                        .child(label.text),
+                )
+                .child(
+                    svg()
+                        .flex_none()
+                        .path("chevron-down.svg")
+                        .size(rems(12. / 16.))
+                        .text_color(theme::faint()),
+                )
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(press) = &press {
+                        press(window, cx);
+                        let focused = window.focused(cx);
+                        press_entity.update(cx, |menu, _| {
+                            if !menu.state.open {
+                                menu.return_focus = focused;
+                            }
+                        });
+                    }
+                    mouse_focus.focus(window, cx);
+                })
+                .on_click(move |event, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(double_click) =
+                        double_click.as_ref().filter(|_| event.click_count() >= 2)
+                    {
+                        click_entity.update(cx, |menu, cx| menu.close(cx));
+                        double_click(window, cx);
+                        return;
+                    }
+                    click_entity.update(cx, |menu, cx| menu.toggle(window, cx));
+                })
+                .into_any_element()
+        } else {
+            let trigger = IconButton::new("popover-trigger", self.trigger_icon.clone())
+                .size(self.trigger_size)
+                .focus_handle(self.focus_handle.clone())
+                .keyboard_activation(false)
+                .on_press(move |window, cx| {
+                    click_entity.update(cx, |menu, cx| menu.toggle(window, cx));
+                });
+            match self.trigger_tooltip.clone() {
+                Some(tooltip) => trigger.tooltip(tooltip.resolve()),
+                None => trigger,
+            }
+            .into_any_element()
         };
         let capture = cx.entity();
         let mut root = div()
@@ -772,8 +872,18 @@ impl Render for PopoverMenu {
                 trigger.debug_selector(|| "POPOVER_TRIGGER".into())
             })
             .relative()
-            .size(rems(self.trigger_size.button_size() / 16.))
-            .flex_none()
+            .map(|root| {
+                if labelled {
+                    root.w_full()
+                        .min_w(px(0.))
+                        .h(rems(26. / 16.))
+                        .flex()
+                        .items_center()
+                } else {
+                    root.size(rems(self.trigger_size.button_size() / 16.))
+                        .flex_none()
+                }
+            })
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .child(trigger)

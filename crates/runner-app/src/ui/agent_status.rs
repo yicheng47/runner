@@ -1419,12 +1419,7 @@ pub fn pane_lifecycle_control(
                             PANE_LIFECYCLE_ICON_COLOR.with(|painted| painted.set(Some(color)));
                             if let Err(error) = window.paint_svg(
                                 bounds,
-                                if stop {
-                                    "circle-stop.svg"
-                                } else {
-                                    "circle-play.svg"
-                                }
-                                .into(),
+                                if stop { "square.svg" } else { "play.svg" }.into(),
                                 None,
                                 Default::default(),
                                 color,
@@ -1451,18 +1446,31 @@ pub fn pane_lifecycle_control(
                 key_press(window, cx);
             }
         });
+    Tooltip::new(
+        (ElementId::from(id), "tooltip"),
+        pane_lifecycle_tooltip(action, shortcut.as_deref()),
+        button,
+    )
+    .focus_handle(focus)
+    .into_any_element()
+}
+
+/// The lifecycle button's place after the status, and the divider before the
+/// pane controls. The slot keeps the button's width while there is no
+/// action, as during Starting and Resuming, so the status does not move when
+/// the button appears.
+pub fn pane_lifecycle_slot(control: Option<AnyElement>) -> AnyElement {
     div()
         .flex_none()
         .flex()
         .items_center()
         .gap_1()
         .child(
-            Tooltip::new(
-                (ElementId::from(id), "tooltip"),
-                pane_lifecycle_tooltip(action, shortcut.as_deref()),
-                button,
-            )
-            .focus_handle(focus),
+            div()
+                .debug_selector(|| "PANE_LIFECYCLE_SLOT".into())
+                .flex_none()
+                .size(rems(22. / 16.))
+                .children(control),
         )
         .child(
             div()
@@ -1511,7 +1519,7 @@ mod pane_control_tests {
                     window,
                     cx,
                 ))
-                .children(self.action.map(|action| {
+                .child(pane_lifecycle_slot(self.action.map(|action| {
                     pane_lifecycle_control(
                         "probe-lifecycle".into(),
                         action,
@@ -1526,7 +1534,7 @@ mod pane_control_tests {
                         window,
                         cx,
                     )
-                }))
+                })))
         }
     }
 

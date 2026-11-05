@@ -121,6 +121,41 @@ impl Sidebar {
         cx.notify();
     }
 
+    /// Whether the sidebar row of tab `tab_id` is pinned, or `None` when the
+    /// tab has no row to pin.
+    pub(crate) fn tab_pinned(&self, tab_id: &str, cx: &App) -> Option<bool> {
+        if self.front_page.is_remote() {
+            self.source_nodes(cx)
+                .into_iter()
+                .find(|node| node.id == tab_id)
+                .map(|node| node.pinned_position.is_some())
+        } else {
+            self.app_store
+                .read(cx)
+                .nodes
+                .iter()
+                .find(|node| node.id == tab_id)
+                .map(|node| node.pinned_position.is_some())
+        }
+    }
+
+    pub(crate) fn toggle_tab_pin(
+        &mut self,
+        tab_id: String,
+        pinned: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.handle_sidebar_menu_action(
+            SidebarMenuAction::TogglePin {
+                node_id: tab_id,
+                pinned,
+            },
+            window,
+            cx,
+        );
+    }
+
     pub(super) fn open_tab_menu(
         &mut self,
         node: NodeRow,
@@ -161,6 +196,7 @@ impl Sidebar {
         let entries = tab_menu_entries(
             &node.id,
             node.pinned_position.is_some(),
+            multi_pane,
             rename_original,
             rename_session_id,
             archive_all,
@@ -500,10 +536,13 @@ impl Sidebar {
     }
 }
 
+/// One ordered list for a tab row, matching the pane title menu: Rename… ·
+/// Fork chat · Pin, then the destructive end action after a separator.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tab_menu_entries(
     node_id: &str,
     pinned: bool,
+    split: bool,
     original: String,
     rename_session_id: Option<String>,
     archive_all: bool,
@@ -518,28 +557,19 @@ pub(super) fn tab_menu_entries(
         .then(|| keymap::effective_binding("close-pane", overrides))
         .flatten()
         .map(|combo| keymap::format_combo(&combo).into());
-    let mut entries = vec![
-        (
-            UiMenuItem::new(if pinned {
-                crate::i18n::message("ui.unpin")
-            } else {
-                crate::i18n::message("ui.pin")
-            })
-            .icon(if pinned { "pin-off.svg" } else { "pin.svg" }),
-            SidebarMenuAction::TogglePin {
-                node_id: node_id.to_owned(),
-                pinned,
-            },
-        ),
-        (
-            UiMenuItem::new(crate::i18n::message("ui.rename_tab")).icon("pencil.svg"),
-            SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
-                node_id: node_id.to_owned(),
-                original,
-                session_id: rename_session_id,
-            }),
-        ),
-    ];
+    let mut entries = vec![(
+        UiMenuItem::new(if split {
+            crate::i18n::message("ui.rename_tab_action")
+        } else {
+            crate::i18n::message("ui.rename_chat_action")
+        })
+        .icon("pencil.svg"),
+        SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+            node_id: node_id.to_owned(),
+            original,
+            session_id: rename_session_id,
+        }),
+    )];
     if let Some(target) = fork_target {
         let mut item = UiMenuItem::new(crate::i18n::message("ui.fork_chat_action"))
             .icon("git-fork.svg")
@@ -549,10 +579,27 @@ pub(super) fn tab_menu_entries(
         }
         entries.push((item, SidebarMenuAction::ForkChat(target.session_id)));
     }
+    entries.push((
+        UiMenuItem::new(if pinned {
+            crate::i18n::message("ui.unpin")
+        } else {
+            crate::i18n::message("ui.pin")
+        })
+        .icon(if pinned { "pin-off.svg" } else { "pin.svg" }),
+        SidebarMenuAction::TogglePin {
+            node_id: node_id.to_owned(),
+            pinned,
+        },
+    ));
     if !chat_session_ids.is_empty() {
-        let mut item = UiMenuItem::new(crate::i18n::message("ui.archive"))
-            .icon("archive.svg")
-            .destructive(true);
+        let mut item = UiMenuItem::new(if split {
+            crate::i18n::message("ui.archive_all")
+        } else {
+            crate::i18n::message("ui.archive")
+        })
+        .icon("archive.svg")
+        .separator_before(true)
+        .destructive(true);
         item.shortcut = close_shortcut;
         entries.push((
             item,
@@ -568,6 +615,7 @@ pub(super) fn tab_menu_entries(
     } else if let Some(session_id) = terminal_session_id {
         let mut item = UiMenuItem::new(crate::i18n::message("ui.close_terminal"))
             .icon("close.svg")
+            .separator_before(true)
             .destructive(true);
         item.shortcut = close_shortcut;
         entries.push((

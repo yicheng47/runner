@@ -20,7 +20,7 @@ use gpui::{canvas, quad, svg, BorderStyle, Div, FontWeight, Pixels, Point, Size}
 
 use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 
-use runner_app::ui::{ButtonVariant, Modal, OverlayWidth, SessionOverlay, SessionOverlayKind};
+use runner_app::ui::{ButtonVariant, SessionOverlay, SessionOverlayKind};
 
 use runner_core::protocol::model::Runtime;
 
@@ -363,66 +363,172 @@ fn top_right_pane(node: &PaneNode) -> &PaneLeaf {
     }
 }
 
-fn pane_action_indexes(
-    entry: &SessionDisplay,
-    client: &crate::surfaces::front_page::FrontPageClient,
-    secondary: bool,
-) -> Vec<usize> {
-    let mut indexes = Vec::new();
-    if entry.agent_runtime != "shell" && !secondary {
-        if client.supports(&[if entry.status == SessionStatus::Running {
-            "stop"
-        } else {
-            "resume"
-        }]) {
-            indexes.push(0);
-        }
-        if client.supports(&["catalog", "fork"]) {
-            indexes.push(1);
-        }
-    }
-    if client.supports(&["rename"]) {
-        indexes.push(2);
-    }
-    indexes
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PaneMenuAction {
+    Rename,
+    Fork,
+    Pin,
 }
 
-fn pane_action_items_for(
+/// The title menu's actions: the sidebar row's chat operations minus
+/// Archive, which the pane's × already does. A terminal cannot be forked,
+/// and a secondary pane leaves forking to the window that controls it.
+fn pane_menu_actions(
     runtime: &str,
-    running: bool,
-    disabled: bool,
-    stop_shortcut: Option<String>,
-    resume_shortcut: Option<String>,
-) -> Vec<UiMenuItem> {
-    let rename = UiMenuItem::new(crate::i18n::message("ui.rename_chat_action"))
-        .icon("pencil.svg")
-        .disabled(disabled);
-    if runtime == "shell" {
-        return vec![rename];
+    secondary: bool,
+    pinnable: bool,
+    supports: impl Fn(&[&str]) -> bool,
+) -> Vec<PaneMenuAction> {
+    let mut actions = Vec::new();
+    if supports(&["rename"]) {
+        actions.push(PaneMenuAction::Rename);
     }
-    let (label, icon, shortcut) = if running {
-        (crate::i18n::message("ui.stop"), "square.svg", stop_shortcut)
-    } else {
-        (
-            crate::i18n::message("ui.resume"),
-            "play.svg",
-            resume_shortcut,
-        )
+    if runtime != "shell" && !secondary && supports(&["catalog", "fork"]) {
+        actions.push(PaneMenuAction::Fork);
+    }
+    if pinnable && supports(&["pin"]) {
+        actions.push(PaneMenuAction::Pin);
+    }
+    actions
+}
+
+fn pane_menu_items(
+    actions: &[PaneMenuAction],
+    pinned: bool,
+    disabled: bool,
+    fork_disabled: bool,
+    fork_reason: Option<&'static str>,
+) -> Vec<UiMenuItem> {
+    actions
+        .iter()
+        .map(|action| match action {
+            PaneMenuAction::Rename => {
+                UiMenuItem::new(crate::i18n::message("ui.rename_chat_action"))
+                    .icon("pencil.svg")
+                    .disabled(disabled)
+            }
+            PaneMenuAction::Fork => {
+                let item = UiMenuItem::new(crate::i18n::message("ui.fork_chat_action"))
+                    .icon("git-fork.svg")
+                    .disabled(disabled || fork_disabled);
+                match fork_reason {
+                    Some(reason) => item.tooltip(reason),
+                    None => item,
+                }
+            }
+            PaneMenuAction::Pin => UiMenuItem::new(if pinned {
+                crate::i18n::message("ui.unpin")
+            } else {
+                crate::i18n::message("ui.pin")
+            })
+            .icon(if pinned { "pin-off.svg" } else { "pin.svg" })
+            .disabled(disabled),
+        })
+        .collect()
+}
+
+/// The pane a tab shows alone. Maximize lasts only while that pane is in a
+/// split and holds the tab's focus, so anything that moves the focus to
+/// another pane, closes the pane or collapses the split shows the split again.
+pub(crate) fn maximized_leaf<'a>(
+    maximized: &HashMap<String, String>,
+    layout: &'a PaneLayout,
+) -> Option<&'a PaneLeaf> {
+    let pane_id = maximized.get(&layout.id)?;
+    let leaves = layout.root.leaves();
+    (leaves.len() > 1 && layout.focused_pane_id == *pane_id)
+        .then(|| leaves.into_iter().find(|leaf| leaf.id == *pane_id))
+        .flatten()
+}
+
+/// Maximizes `pane_id`, which the caller has focused, or restores the split
+/// when it already is maximized. Returns whether the pane is maximized now.
+pub(crate) fn toggle_maximized(
+    maximized: &mut HashMap<String, String>,
+    layout: &PaneLayout,
+    pane_id: &str,
+) -> bool {
+    if maximized_leaf(maximized, layout).is_some_and(|leaf| leaf.id == pane_id) {
+        maximized.remove(&layout.id);
+        return false;
+    }
+    maximized.insert(layout.id.clone(), pane_id.to_owned());
+    if maximized_leaf(maximized, layout).is_none() {
+        maximized.remove(&layout.id);
+        return false;
+    }
+    true
+}
+
+/// A maximized pane's measured size once its split is restored, from the
+/// size measured while it fills the tab. Like the pane tree, each split first
+/// gives its resize strip a fixed width and shares the rest by its sizes. The
+/// measurement excludes the island's 1 px border, which every pane keeps.
+fn restored_pane_size(
+    filled: Size<Pixels>,
+    layout: &PaneLayout,
+    pane_id: &str,
+    zoom: f32,
+) -> Size<Pixels> {
+    fn descend(
+        node: &PaneNode,
+        size: Size<Pixels>,
+        pane_id: &str,
+        grab: Pixels,
+    ) -> Option<Size<Pixels>> {
+        match node {
+            PaneNode::Leaf(leaf) => (leaf.id == pane_id).then_some(size),
+            PaneNode::Split(split) => {
+                let total = split.sizes[0] + split.sizes[1];
+                let share = |weight: f32| match split.orientation {
+                    SplitOrientation::Row => Size {
+                        width: (size.width - grab).max(px(0.)) * (weight / total),
+                        height: size.height,
+                    },
+                    SplitOrientation::Column => Size {
+                        width: size.width,
+                        height: (size.height - grab).max(px(0.)) * (weight / total),
+                    },
+                };
+                descend(&split.a, share(split.sizes[0]), pane_id, grab)
+                    .or_else(|| descend(&split.b, share(split.sizes[1]), pane_id, grab))
+            }
+        }
+    }
+    let border = px(2.);
+    let outer = Size {
+        width: filled.width + border,
+        height: filled.height + border,
     };
-    let primary = UiMenuItem::new(label)
-        .icon(icon)
-        .disabled(disabled)
-        .destructive(running)
-        .accent(!running);
-    let primary = match shortcut {
-        Some(shortcut) => primary.shortcut(shortcut),
-        None => primary,
-    };
-    vec![
-        primary,
-        UiMenuItem::new(crate::i18n::message("ui.fork_chat_action")).icon("git-fork.svg"),
-        rename,
-    ]
+    descend(
+        &layout.root,
+        outer,
+        pane_id,
+        px(runner_app::ui::resize::RESIZE_GRAB * zoom),
+    )
+    .map_or(filled, |restored| Size {
+        width: (restored.width - border).max(px(0.)),
+        height: (restored.height - border).max(px(0.)),
+    })
+}
+
+/// Whether a pane of `layout` shows `session_id`; a pane hidden behind a
+/// maximized neighbour does not, though it keeps running.
+pub(crate) fn pane_shows_session(
+    maximized: &HashMap<String, String>,
+    layout: &PaneLayout,
+    session_id: &str,
+) -> bool {
+    match maximized_leaf(maximized, layout) {
+        Some(leaf) => leaf.session_id.as_deref() == Some(session_id),
+        None => layout.contains_session(session_id),
+    }
+}
+
+pub(crate) fn prune_maximized(maximized: &mut HashMap<String, String>, layout: &PaneLayout) {
+    if maximized.contains_key(&layout.id) && maximized_leaf(maximized, layout).is_none() {
+        maximized.remove(&layout.id);
+    }
 }
 
 pub(crate) fn pane_fractions(node: &PaneNode, pane_id: &str) -> Option<(f32, f32)> {
@@ -462,10 +568,11 @@ pub(crate) fn adjacent_pane_index(
 mod tests {
     use super::{
         adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
-        header_fork_state, pane_action_items_for, pane_body_opacity, pane_close_behavior,
-        pane_identity_icon, pane_rename_key, side_panel_open, split_allowed, split_decision,
-        split_menu_items, split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
-        HeaderForkState, PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
+        header_fork_state, maximized_leaf, pane_body_opacity, pane_close_behavior,
+        pane_identity_icon, pane_menu_actions, pane_menu_items, pane_rename_key, prune_maximized,
+        side_panel_open, split_allowed, split_decision, split_menu_items, split_tab_archiving,
+        starting_overlay_label, terminal_drawer_tooltip, toggle_maximized, HeaderForkState,
+        PaneCloseBehavior, PaneRenameKey, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
         MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
     };
     use crate::keymap;
@@ -766,7 +873,396 @@ mod tests {
     }
 
     #[test]
-    fn pane_menu_lifecycle_labels_fit_one_line_beside_their_shortcuts() {
+    fn a_maximized_pane_fills_the_tab_and_its_toggle_restores_the_split() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let other = store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store.settings.chat_panel_open = false;
+            let conn = store.test_core.db.get().unwrap();
+            let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
+            let other = layout.split("p1", SplitOrientation::Row).unwrap();
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            drop(conn);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            other
+        });
+        let other_island: &str = Box::leak(format!("PANE_ISLAND:{other}").into_boxed_str());
+        let other_toggle: &str = Box::leak(format!("PANE_MAXIMIZE:{other}").into_boxed_str());
+        let window = cx.add_window(|window, cx| {
+            let mut root = crate::NativeRoot::new(
+                "maximize-pane".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.tabs.activate_session("direct-agent");
+            root.route = crate::AppRoute::Chat;
+            root
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(800.)));
+        visual.run_until_parked();
+        let split_left = visual.debug_bounds("PANE_ISLAND:p1").unwrap();
+        let split_right = visual.debug_bounds(other_island).unwrap();
+        assert!(visual.debug_bounds("PANE_MAXIMIZE:p1").is_some());
+        assert!(visual.debug_bounds(other_toggle).is_some());
+        let persisted = window
+            .read_with(&visual, |root, _| {
+                root.tabs.active().unwrap().serialize().unwrap()
+            })
+            .unwrap();
+
+        let toggle = visual.debug_bounds("PANE_MAXIMIZE:p1").unwrap();
+        visual.simulate_click(toggle.center(), Default::default());
+        visual.run_until_parked();
+        let maximized = visual.debug_bounds("PANE_ISLAND:p1").unwrap();
+        assert!(visual.debug_bounds(other_island).is_none());
+        assert_eq!(maximized.left(), split_left.left());
+        assert_eq!(maximized.right(), split_right.right());
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(root.tabs.active().unwrap().serialize().unwrap(), persisted);
+            })
+            .unwrap();
+
+        let toggle = visual.debug_bounds("PANE_MAXIMIZE:p1").unwrap();
+        visual.simulate_click(toggle.center(), Default::default());
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("PANE_ISLAND:p1"), Some(split_left));
+        assert_eq!(visual.debug_bounds(other_island), Some(split_right));
+
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.toggle_maximize_pane(&other, window, cx);
+                assert_eq!(root.tabs.active().unwrap().focused_pane_id, other);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("PANE_ISLAND:p1").is_none());
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.focus_next_chat_pane(&crate::FocusNextPane, window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert_eq!(visual.debug_bounds("PANE_ISLAND:p1"), Some(split_left));
+        assert_eq!(visual.debug_bounds(other_island), Some(split_right));
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(root.tabs.active().unwrap().focused_pane_id, "p1");
+                assert!(root.maximized_panes.is_empty());
+            })
+            .unwrap();
+
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.toggle_maximize_pane("p1", window, cx);
+                root.split_pane("p1", SplitOrientation::Column, window, cx);
+                assert!(root.maximized_panes.is_empty());
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds(other_island).is_some());
+    }
+
+    #[test]
+    fn a_maximized_pane_splits_by_its_restored_size() {
+        let filled = size(px(958.), px(698.));
+        let mut layout = PaneLayout::single(Some("chat"), &[]);
+        let left = layout.focused_pane_id.clone();
+        let right = layout.split(&left, SplitOrientation::Row).unwrap();
+        let restored = super::restored_pane_size(filled, &layout, &left, 1.);
+        assert_eq!(
+            restored,
+            size(px(475.), px(698.)),
+            "neither the gutter nor the borders are shared"
+        );
+        assert!(matches!(
+            split_decision(Some(filled), SplitOrientation::Row, 1.),
+            SplitDecision::Allowed
+        ));
+        assert!(matches!(
+            split_decision(Some(restored), SplitOrientation::Row, 1.),
+            SplitDecision::Blocked(_)
+        ));
+        assert!(matches!(
+            split_decision(Some(restored), SplitOrientation::Column, 1.),
+            SplitDecision::Allowed
+        ));
+
+        let lower = layout.split(&right, SplitOrientation::Column).unwrap();
+        assert_eq!(
+            super::restored_pane_size(filled, &layout, &lower, 1.5),
+            size(px((960. - 9.) / 2. - 2.), px((700. - 9.) / 2. - 2.)),
+            "nested splits each take their zoomed gutter"
+        );
+    }
+
+    #[test]
+    fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconnects() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let right = store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store.settings.chat_panel_open = false;
+            let conn = store.test_core.db.get().unwrap();
+            conn.execute_batch("UPDATE sessions SET title='Left chat' WHERE id='direct-agent'; UPDATE sessions SET title='Right shell' WHERE id='busy-shell';").unwrap();
+            let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
+            let right = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&right, "busy-shell").unwrap();
+            assert!(layout.focus_pane("p1"));
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap()).unwrap();
+            drop(conn);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            right
+        });
+        let window = cx.add_window(|window, cx| {
+            let mut root = crate::NativeRoot::new(
+                "title-focus".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.tabs.activate_session("direct-agent");
+            root.route = crate::AppRoute::Chat;
+            root
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(800.)));
+        visual.run_until_parked();
+        let focused = |visual: &mut gpui::VisualTestContext| {
+            window
+                .read_with(visual, |root, _| {
+                    root.tabs.active().unwrap().focused_pane_id.clone()
+                })
+                .unwrap()
+        };
+        assert_eq!(focused(&mut visual), "p1");
+
+        let title = visual.debug_bounds("PANE_TITLE:Right shell").unwrap();
+        visual.simulate_click(title.center(), Default::default());
+        visual.run_until_parked();
+        assert_eq!(
+            focused(&mut visual),
+            right,
+            "a title click selects its pane"
+        );
+        assert!(visual.debug_bounds("POPOVER_MENU_PANEL").is_some());
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("POPOVER_MENU_PANEL").is_none());
+        assert_eq!(focused(&mut visual), right);
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.toggle_maximize_pane_action(&crate::ToggleMaximizePane, window, cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(root.maximized_panes.values().collect::<Vec<_>>(), [&right]);
+            })
+            .unwrap();
+        assert!(visual.debug_bounds("PANE_ISLAND:p1").is_none());
+
+        store.update(&mut visual, |store, cx| {
+            store.daemon_disconnected = true;
+            store.revisions.error = store.revisions.error.wrapping_add(1);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| assert!(root.maximized_panes.is_empty()))
+            .unwrap();
+        store.update(&mut visual, |store, cx| {
+            store.daemon_disconnected = false;
+            store.revisions.error = store.revisions.error.wrapping_add(1);
+            cx.notify();
+        });
+
+        // At the floor's edge: side by side each pane is a few pixels short
+        // of a split, though it is wide enough while it fills the tab, and
+        // maximize must reach the same decision as the split view.
+        let split_width = |visual: &mut gpui::VisualTestContext| {
+            let left = visual.debug_bounds("PANE_ISLAND:p1").unwrap();
+            let right: &str = Box::leak(format!("PANE_ISLAND:{right}").into_boxed_str());
+            let right = visual.debug_bounds(right).unwrap();
+            (left, right.right() - left.left())
+        };
+        let (_, tab_width) = split_width(&mut visual);
+        let chrome = f32::from(px(1600.) - tab_width);
+        for zoom in [1., 1.3] {
+            window
+                .update(&mut visual, |root, window, cx| {
+                    root.set_zoom(zoom, window, cx)
+                })
+                .unwrap();
+            visual.simulate_resize(size(
+                px(chrome * zoom + 2. * MIN_SPLIT_PANE_WIDTH * zoom * 2. + 3.),
+                px(800.),
+            ));
+            visual.run_until_parked();
+            let split = window
+                .read_with(&visual, |root, _| {
+                    let tab = root.tabs.active().unwrap().id.clone();
+                    root.front_page_pane_bounds()[&super::PaneKey::new(&tab, "p1")]
+                })
+                .unwrap();
+            assert!(
+                split.width < px(2. * MIN_SPLIT_PANE_WIDTH * zoom),
+                "{split:?}"
+            );
+            assert!(matches!(
+                split_decision(Some(split), SplitOrientation::Row, zoom),
+                SplitDecision::Blocked(_)
+            ));
+            window
+                .update(&mut visual, |root, window, cx| {
+                    root.toggle_maximize_pane("p1", window, cx)
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let filled = visual.debug_bounds("PANE_ISLAND:p1").unwrap();
+            assert!(matches!(
+                split_decision(Some(filled.size), SplitOrientation::Row, zoom),
+                SplitDecision::Allowed
+            ));
+            window
+                .update(&mut visual, |root, window, cx| {
+                    let tab = root.tabs.active().unwrap().id.clone();
+                    let restored = root.split_pane_bounds(&tab, "p1", cx).unwrap();
+                    assert!(
+                        (restored.width - split.width).abs() < px(0.5)
+                            && (restored.height - split.height).abs() < px(0.5),
+                        "zoom {zoom}: estimated {restored:?}, measured {split:?}"
+                    );
+                    assert!(matches!(
+                        split_decision(Some(restored), SplitOrientation::Row, zoom),
+                        SplitDecision::Blocked(_)
+                    ));
+                    root.split_pane("p1", SplitOrientation::Row, window, cx);
+                    assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 2);
+                    assert!(
+                        !root.maximized_panes.is_empty(),
+                        "a refused split stays maximized"
+                    );
+                    root.toggle_maximize_pane("p1", window, cx);
+                })
+                .unwrap();
+            visual.run_until_parked();
+        }
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.set_zoom(1., window, cx);
+                root.toggle_maximize_pane("p1", window, cx);
+            })
+            .unwrap();
+
+        visual.simulate_resize(size(px(1600.), px(800.)));
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.split_pane("p1", SplitOrientation::Row, window, cx);
+                assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 3);
+                assert!(root.maximized_panes.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn clicking_away_from_an_inline_rename_saves_it() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store.settings.chat_panel_open = false;
+            let conn = store.test_core.db.get().unwrap();
+            conn.execute_batch("UPDATE sessions SET title='Before' WHERE id='direct-agent'; UPDATE sessions SET title='Right' WHERE id='busy-shell';").unwrap();
+            let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
+            let right = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&right, "busy-shell").unwrap();
+            assert!(layout.focus_pane("p1"));
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            drop(conn);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        let window = cx.add_window(|window, cx| {
+            let mut root = crate::NativeRoot::new(
+                "rename-blur".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.tabs.activate_session("direct-agent");
+            root.route = crate::AppRoute::Chat;
+            root
+        });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(800.)));
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let input = window
+            .update(&mut visual, |root, window, cx| {
+                root.begin_pane_rename(
+                    "direct-agent".into(),
+                    "Before".into(),
+                    "codex".into(),
+                    window,
+                    cx,
+                );
+                root.pane_rename.as_ref().unwrap().input.clone()
+            })
+            .unwrap();
+        input.update(&mut visual, |field, cx| field.set_text("After", cx));
+        visual.run_until_parked();
+        let other = visual.debug_bounds("PANE_TITLE:Right").unwrap();
+        visual.simulate_click(other.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, cx| {
+                assert!(root.pane_rename.is_none(), "losing focus ends the rename");
+                assert_eq!(
+                    root.front_page_session("direct-agent", cx)
+                        .and_then(|entry| entry.title),
+                    Some("After".into())
+                );
+            })
+            .unwrap();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(
+                    root.pane_rename
+                        .as_ref()
+                        .map(|rename| rename.session_id.as_str()),
+                    Some("busy-shell"),
+                    "the clicked title's menu keeps the keyboard"
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn pane_title_menu_labels_fit_one_line() {
         use crate::i18n::{testing::with_locale, Language, Locale};
         use gpui::{Focusable, TestAppContext, VisualTestContext};
         let _theme = crate::theme_snapshot::ThemeGuard::new();
@@ -822,12 +1318,9 @@ mod tests {
                             "menu must stay inside the window: {panel:?}"
                         );
                         for (label, key) in [
-                            (
-                                "POPOVER_LABEL_0",
-                                if running { "ui.stop" } else { "ui.resume" },
-                            ),
+                            ("POPOVER_LABEL_0", "ui.rename_chat_action"),
                             ("POPOVER_LABEL_1", "ui.fork_chat_action"),
-                            ("POPOVER_LABEL_2", "ui.rename_chat_action"),
+                            ("POPOVER_LABEL_2", "ui.pin"),
                         ] {
                             let bounds = visual.debug_bounds(label).unwrap();
                             let full_text_width = visual.update(|window, _| {
@@ -849,7 +1342,7 @@ mod tests {
                             );
                             assert!(
                                 bounds.size.width >= full_text_width,
-                                "full lifecycle label must fit: {bounds:?}"
+                                "full menu label must fit: {bounds:?}"
                             );
                         }
                     }
@@ -992,6 +1485,133 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn status_grows_leftward_and_the_lifecycle_slot_never_moves() {
+        use gpui::{TestAppContext, VisualTestContext};
+        use runner_core::protocol::status::{
+            Activity, AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason,
+        };
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let status = |activity, approval: bool| AgentStatus {
+            lifecycle: Lifecycle::Running,
+            observation: AgentObservation {
+                activity,
+                interactions: if approval {
+                    vec![HumanInteraction {
+                        id: "approval".into(),
+                        reason: WaitReason::Approval,
+                        owners: vec![],
+                        since: chrono::Utc::now().timestamp_millis(),
+                    }]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET title='Slot fixture' WHERE id='direct-agent'",
+                    [],
+                )
+                .unwrap();
+            store.settings.chat_panel_open = false;
+            store.settings.sidebar_collapsed = false;
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        let sidebar_width = store.read_with(&cx, |store, _| store.settings.sidebar_width);
+        let host = cx.add_window(|window, cx| {
+            let mut root = crate::NativeRoot::new(
+                "lifecycle-slot".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session("direct-agent"));
+            root.route = crate::AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        for zoom in [1., 1.3] {
+            host.update(&mut visual, |root, window, cx| {
+                root.chat_transitions.remove("direct-agent");
+                root.set_zoom(zoom, window, cx)
+            })
+            .unwrap();
+            visual.simulate_resize(size(px((700. + sidebar_width + 14.) * zoom), px(900.)));
+            let mut slot_at = None;
+            for (activity, approval) in [
+                (Activity::Working, false),
+                (Activity::Ready, false),
+                (Activity::Working, true),
+            ] {
+                host.update(&mut visual, |_, _, cx| {
+                    store.update(cx, |store, _| {
+                        store
+                            .session_statuses
+                            .insert("direct-agent".into(), status(activity, approval));
+                    });
+                    cx.notify();
+                })
+                .unwrap();
+                visual.run_until_parked();
+                assert!(
+                    visual.debug_bounds("PANE_MAXIMIZE:p1").is_none(),
+                    "a single pane has no maximize toggle"
+                );
+                let title = visual.debug_bounds("PANE_TITLE:Slot fixture").unwrap();
+                let indicator = visual.debug_bounds("ISLAND_STATUS_INDICATOR").unwrap();
+                let slot = visual.debug_bounds("PANE_LIFECYCLE_SLOT").unwrap();
+                let stop = visual.debug_bounds("PANE_LIFECYCLE:Stop chat").unwrap();
+                assert_eq!(stop, slot);
+                assert!(title.right() < indicator.left());
+                assert!(
+                    (slot.left() - indicator.right() - px(8. * zoom)).abs() < px(1.),
+                    "{activity:?}/{approval}: status {indicator:?}, slot {slot:?}"
+                );
+                assert_eq!(
+                    *slot_at.get_or_insert(slot),
+                    slot,
+                    "{activity:?}/{approval}"
+                );
+            }
+            host.update(&mut visual, |root, _, cx| {
+                root.chat_transitions.insert(
+                    "direct-agent".into(),
+                    crate::ChatTransition {
+                        kind: crate::surfaces::chat_lifecycle::TransitionKind::Starting,
+                        started_at: std::time::Instant::now(),
+                        baseline_seq: 0,
+                        generation: 0,
+                    },
+                );
+                cx.notify();
+            })
+            .unwrap();
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("PANE_LIFECYCLE:Stop chat").is_none());
+            let slot = visual.debug_bounds("PANE_LIFECYCLE_SLOT").unwrap();
+            assert_eq!(Some(slot), slot_at, "Starting keeps the button's place");
+            let indicator = visual.debug_bounds("ISLAND_STATUS_INDICATOR").unwrap();
+            assert!((slot.left() - indicator.right() - px(8. * zoom)).abs() < px(1.));
         }
     }
 
@@ -1742,74 +2362,166 @@ mod tests {
     }
 
     #[test]
-    fn pane_actions_follow_session_status_and_terminals_cannot_be_archived() {
-        let chat = pane_action_items_for(
-            "codex",
-            true,
-            false,
-            Some("⇧⌘X".to_owned()),
-            Some("⇧⌘R".to_owned()),
+    fn title_menu_lists_rename_fork_and_pin_and_never_stop_or_archive() {
+        use super::PaneMenuAction::{Fork, Pin, Rename};
+        let every = |_: &[&str]| true;
+        assert_eq!(
+            pane_menu_actions("codex", false, true, every),
+            [Rename, Fork, Pin]
         );
+        assert_eq!(
+            pane_menu_actions("shell", false, true, every),
+            [Rename, Pin]
+        );
+        assert_eq!(
+            pane_menu_actions("codex", true, true, every),
+            [Rename, Pin],
+            "a secondary pane leaves forking to the window that controls it"
+        );
+        assert_eq!(
+            pane_menu_actions("codex", false, false, every),
+            [Rename, Fork]
+        );
+
+        let only = |offered: &'static [&'static str]| {
+            move |features: &[&str]| features.iter().all(|feature| offered.contains(feature))
+        };
+        assert_eq!(
+            pane_menu_actions("codex", false, true, only(&["rename"])),
+            [Rename]
+        );
+        assert_eq!(pane_menu_actions("codex", false, true, only(&["fork"])), []);
+        assert_eq!(
+            pane_menu_actions("codex", false, true, only(&["catalog", "fork", "pin"])),
+            [Fork, Pin]
+        );
+        assert_eq!(
+            pane_menu_actions("shell", false, true, only(&["catalog", "fork"])),
+            []
+        );
+
+        let labels = |items: &[crate::UiMenuItem]| {
+            items
+                .iter()
+                .map(|item| item.label.to_string())
+                .collect::<Vec<_>>()
+        };
+        let chat = pane_menu_items(&[Rename, Fork, Pin], false, false, false, None);
+        assert_eq!(labels(&chat), ["Rename…", "Fork chat", "Pin"]);
         assert_eq!(
             chat.iter()
-                .map(|item| item.label.as_ref())
+                .map(|item| item.icon.as_deref())
                 .collect::<Vec<_>>(),
-            ["Stop", "Fork chat", "Rename…"]
+            [Some("pencil.svg"), Some("git-fork.svg"), Some("pin.svg")]
         );
-        assert_eq!(
-            chat[0].shortcut.as_ref().map(|shortcut| shortcut.as_ref()),
-            Some("⇧⌘X")
-        );
-        assert!(chat[0].destructive);
-        assert!(!chat[2].separator_before);
-        assert!(chat.iter().all(|item| item.label.as_ref() != "Close pane"));
+        assert!(chat.iter().all(|item| !item.disabled
+            && !item.destructive
+            && item.shortcut.is_none()
+            && !item.separator_before));
 
-        let stopped_chat = pane_action_items_for(
-            "codex",
+        let pinned = pane_menu_items(&[Rename, Pin], true, false, false, None);
+        assert_eq!(labels(&pinned), ["Rename…", "Unpin"]);
+        assert_eq!(pinned[1].icon.as_deref(), Some("pin-off.svg"));
+
+        let waiting = pane_menu_items(
+            &[Rename, Fork, Pin],
             false,
             false,
-            Some("⇧⌘X".to_owned()),
-            Some("⇧⌘R".to_owned()),
+            true,
+            Some("No session key captured yet"),
         );
-        assert_eq!(stopped_chat[0].label.as_ref(), "Resume");
-        assert!(stopped_chat[0].accent);
+        assert!(!waiting[0].disabled && waiting[1].disabled && !waiting[2].disabled);
         assert_eq!(
-            stopped_chat[0]
-                .shortcut
-                .as_ref()
-                .map(|shortcut| shortcut.as_ref()),
-            Some("⇧⌘R")
+            waiting[1].tooltip.as_deref(),
+            Some("No session key captured yet")
         );
 
-        let terminal = pane_action_items_for(
-            "shell",
-            false,
-            false,
-            Some("⇧⌘X".to_owned()),
-            Some("⇧⌘R".to_owned()),
+        let secondary = pane_menu_items(&[Rename, Pin], false, true, false, None);
+        assert!(secondary.iter().all(|item| item.disabled));
+    }
+
+    #[test]
+    fn maximize_holds_the_focused_pane_and_ends_on_navigation_split_close_or_single_pane() {
+        use std::collections::HashMap;
+        let mut layout = PaneLayout::single(Some("chat"), &[]);
+        let left = layout.focused_pane_id.clone();
+        let mut maximized = HashMap::new();
+        assert!(!toggle_maximized(&mut maximized, &layout, &left));
+        assert!(
+            maximized.is_empty(),
+            "a single pane has nothing to maximize"
         );
+
+        let right = layout.split(&left, SplitOrientation::Row).unwrap();
+        let runner_app::pane_layout::PaneNode::Split(split) = &layout.root else {
+            unreachable!("the tab was just split");
+        };
+        let split_id = split.id.clone();
+        assert!(layout.set_split_sizes(&split_id, [70., 30.]));
+        let before = layout.serialize().unwrap();
+        assert!(layout.focus_pane(&left));
+        assert!(toggle_maximized(&mut maximized, &layout, &left));
+        assert_eq!(maximized_leaf(&maximized, &layout).unwrap().id, left);
         assert_eq!(
-            terminal
-                .iter()
-                .map(|item| item.label.as_ref())
-                .collect::<Vec<_>>(),
-            ["Rename…"]
+            layout.serialize().unwrap(),
+            before,
+            "maximize is view state and never reaches the persisted layout"
         );
+
+        assert!(!toggle_maximized(&mut maximized, &layout, &left));
+        assert!(maximized_leaf(&maximized, &layout).is_none());
+        assert!(maximized.is_empty());
+
+        assert!(toggle_maximized(&mut maximized, &layout, &left));
+        assert!(layout.focus_pane(&right));
+        assert!(
+            maximized_leaf(&maximized, &layout).is_none(),
+            "focusing a hidden pane restores the split"
+        );
+        prune_maximized(&mut maximized, &layout);
+        assert!(maximized.is_empty());
+        assert!(layout.focus_pane(&left));
+        assert!(
+            maximized_leaf(&maximized, &layout).is_none(),
+            "returning to the pane does not maximize it again"
+        );
+
+        assert!(toggle_maximized(&mut maximized, &layout, &left));
+        assert!(layout.close_pane(&left));
+        assert!(maximized_leaf(&maximized, &layout).is_none());
+        prune_maximized(&mut maximized, &layout);
+        assert!(
+            maximized.is_empty(),
+            "a tab reduced to one pane drops the state"
+        );
+
+        let mut layout = PaneLayout::single(Some("chat"), &[]);
+        let first = layout.focused_pane_id.clone();
+        let second = layout.split(&first, SplitOrientation::Row).unwrap();
+        let third = layout.split(&second, SplitOrientation::Column).unwrap();
+        assert!(layout.focus_pane(&second));
+        assert!(toggle_maximized(&mut maximized, &layout, &second));
+        assert!(layout.close_pane(&second));
+        prune_maximized(&mut maximized, &layout);
+        assert!(
+            maximized.is_empty(),
+            "closing the maximized pane leaves the rest unmaximized"
+        );
+        assert_eq!(layout.root.leaves().len(), 2);
+
+        assert!(layout.focus_pane(&third));
+        assert!(toggle_maximized(&mut maximized, &layout, &third));
+        let mut other = PaneLayout::single(Some("other"), &[]);
+        other.id = "other-tab".into();
+        let other_left = other.focused_pane_id.clone();
+        other.split(&other_left, SplitOrientation::Row).unwrap();
+        prune_maximized(&mut maximized, &other);
         assert_eq!(
-            terminal[0]
-                .shortcut
-                .as_ref()
-                .map(|shortcut| shortcut.as_ref()),
-            None
+            maximized_leaf(&maximized, &layout).unwrap().id,
+            third,
+            "each tab keeps its own maximized pane"
         );
-        assert_eq!(
-            pane_close_behavior(Some("shell")),
-            PaneCloseBehavior::CloseTerminal
-        );
-        assert_eq!(
-            pane_close_behavior(Some("codex")),
-            PaneCloseBehavior::ArchiveChat
-        );
+        assert!(maximized_leaf(&maximized, &other).is_none());
     }
 
     #[test]

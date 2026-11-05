@@ -6667,3 +6667,107 @@ fn remote_library_pages_keep_the_lower_titlebar_band_draggable() {
         visual.run_until_parked();
     }
 }
+
+#[test]
+fn remote_title_menu_pin_runs_after_the_root_update() {
+    use gpui::Focusable;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "title-pin");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(workspace::Item::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let menu = window
+        .read_with(&visual, |root, _| root.pane_action_menus.get("s").cloned())
+        .unwrap()
+        .expect("the remote chat's title menu");
+    visual.update(|window, cx| menu.read(cx).focus_handle(cx).focus(window, cx));
+    visual.simulate_keystrokes("down end enter");
+    visual.run_until_parked();
+    let pins = action_trace(&fake, "pin");
+    assert_eq!(pins.len(), 1, "{pins:?}");
+    assert_eq!(
+        pins[0]["pinned"], false,
+        "the pinned remote tab is unpinned"
+    );
+}
+
+#[test]
+fn reconnecting_to_or_leaving_a_host_restores_a_maximized_split() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "maximize-reconnect");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.choose_computer(computers()[1].clone(), false, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let mut pushed = overview();
+    pushed.tabs[0].panes = serde_json::from_value(serde_json::json!({"split":"row","sizes":[0.5,0.5],"a":{"session":"s"},"b":{"session":null}})).unwrap();
+    fake.set_overview(pushed);
+    cx.run_until_parked();
+    let maximize = |cx: &mut TestAppContext| {
+        window
+            .update(cx, |root, window, cx| {
+                let pane = root.front_page_layout().unwrap().focused_pane_id.clone();
+                root.toggle_maximize_pane(&pane, window, cx);
+                let layout = root.front_page_layout().unwrap();
+                assert_eq!(layout.root.leaves().len(), 2);
+                assert_eq!(
+                    crate::surfaces::panes::maximized_leaf(&root.maximized_panes, layout)
+                        .map(|leaf| leaf.id.clone()),
+                    Some(pane.clone())
+                );
+                pane
+            })
+            .unwrap()
+    };
+    let pane = maximize(&mut cx);
+    window
+        .update(&mut cx, |root, _, cx| {
+            let clients = root.app_store.read(cx).remote_clients.clone();
+            clients.update(cx, |clients, cx| {
+                clients.apply_event(ClientEvent {
+                    name: "daemon/reconnected".into(),
+                    payload: serde_json::json!({}),
+                });
+                cx.notify();
+            });
+            root.sync_remote_state(cx);
+            let layout = root.front_page_layout().unwrap();
+            assert_eq!(layout.root.leaves().len(), 2);
+            assert_eq!(
+                layout.focused_pane_id, pane,
+                "the split and its focus are intact"
+            );
+            assert!(root.maximized_panes.is_empty());
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    maximize(&mut cx);
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.return_to_this_computer(window, cx);
+            assert!(root.maximized_panes.is_empty());
+        })
+        .unwrap();
+}

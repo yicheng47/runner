@@ -97,14 +97,6 @@ pub(crate) struct ChatTransition {
     pub(crate) generation: u64,
 }
 
-#[derive(Clone)]
-pub(crate) enum ChatRenameTarget {
-    Session {
-        session_id: String,
-        original: String,
-    },
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloseTarget {
     ChatDrawer,
@@ -131,16 +123,6 @@ pub(crate) fn close_target(
     } else {
         CloseTarget::None
     }
-}
-
-pub(crate) struct ChatRenameModal {
-    pub(crate) target: ChatRenameTarget,
-    pub(crate) input: Entity<runner_app::ui::TextField>,
-    pub(crate) close_focus: FocusHandle,
-    pub(crate) cancel_focus: FocusHandle,
-    pub(crate) submit_focus: FocusHandle,
-    pub(crate) submitting: bool,
-    pub(crate) error: Option<String>,
 }
 
 pub(crate) struct PaneRename {
@@ -330,6 +312,8 @@ pub(crate) struct NativeRoot {
     pub(crate) pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
     pub(crate) split_menus: HashMap<SplitMenuKey, Entity<PopoverMenu>>,
     pub(crate) pane_bounds: HashMap<PaneKey, Size<Pixels>>,
+    /// Tab id → the pane maximized in it; view state only, never persisted.
+    pub(crate) maximized_panes: HashMap<String, String>,
     pub(crate) pane_drop: Option<(PaneKey, DropSide)>,
     pub(crate) pane_rename: Option<PaneRename>,
     pub(crate) _pane_rename_focus_subscription: Option<Subscription>,
@@ -342,7 +326,6 @@ pub(crate) struct NativeRoot {
     pub(crate) agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     pub(crate) fork_confirm: Option<ForkConfirm>,
     pub(crate) forking_sessions: HashMap<String, String>,
-    pub(crate) chat_rename_modal: Option<ChatRenameModal>,
     pub(crate) last_focused_role_id: Option<String>,
     pub(crate) split_sizes_dirty: bool,
     pub(crate) drawer_resizing: bool,
