@@ -119,6 +119,12 @@ impl CodeView {
         let Some(grammar) = self.grammar else {
             return;
         };
+        if !highlighting(cx) {
+            // Spans for earlier text must not be drawn over this text when
+            // highlighting comes back on.
+            self.highlights = None;
+            return;
+        }
         let cancel = Arc::new(AtomicUsize::new(0));
         self.cancel = cancel.clone();
         let document = self.document.clone();
@@ -137,6 +143,21 @@ impl CodeView {
             });
         })
         .detach();
+    }
+
+    /// Settings → Side panel → Files changed: highlights the text if
+    /// highlighting came on before it was, and redraws.
+    pub(crate) fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        if highlighting(cx) && self.highlights.is_none() {
+            self.highlight(cx);
+        }
+        cx.notify();
+    }
+
+    /// The line height of the last frame, which follows the font size.
+    #[cfg(test)]
+    pub(crate) fn line_height(&self) -> Option<Pixels> {
+        self.metrics.get().map(|metrics| metrics.line_height)
     }
 
     #[cfg(test)]
@@ -327,17 +348,19 @@ impl CodeView {
     }
 
     fn font(cx: &App) -> (Font, Pixels) {
-        match cx.try_global::<crate::app_store::GlobalAppStore>() {
-            Some(store) => {
-                let settings = &store.0.read(cx).settings;
-                (
-                    settings.terminal_font_family.font(cx),
-                    px(settings.terminal_font_size as f32),
-                )
-            }
+        match super::settings(cx) {
+            Some(settings) => (
+                settings.files_font(cx),
+                px(settings.files_font_size() as f32),
+            ),
             None => (gpui::font(theme::UI_MONOSPACE_FONT), px(13.)),
         }
     }
+}
+
+/// Settings → Side panel → Files → Syntax highlighting; on without a store.
+fn highlighting(cx: &App) -> bool {
+    super::settings(cx).is_none_or(|settings| settings.files_syntax_highlighting)
 }
 
 impl Drop for CodeView {
@@ -548,7 +571,10 @@ impl Element for CodeElement {
         let mut rows = Vec::with_capacity(last.saturating_sub(first));
         let mut numbers = Vec::with_capacity(rows.capacity());
         let number_color = theme::faint();
-        let highlights = view.highlights.clone().filter(|_| !view.deleted);
+        let highlights = view
+            .highlights
+            .clone()
+            .filter(|_| !view.deleted && highlighting(cx));
         let syntax = highlights.as_ref().map(|_| SyntaxTheme::current(cx));
         let style = RowStyle {
             font: &font,

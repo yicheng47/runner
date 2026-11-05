@@ -2,11 +2,13 @@ mod appearance;
 mod general;
 mod render;
 mod shortcuts;
+mod side_panel;
 
 use appearance::*;
 pub(crate) use general::*;
 #[cfg(test)]
 use shortcuts::*;
+use side_panel::*;
 
 use std::path::{Path, PathBuf};
 
@@ -26,8 +28,8 @@ use runner_app::terminal_ime::OptionAsMeta;
 
 use runner_app::ui::{
     working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize,
-    PaneHeader, Scrollbar, SelectHandler, SelectOption, SettingsCard, SettingsRow, StepHandler,
-    Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
+    PaneHeader, Scrollbar, SelectHandler, SelectLeading, SelectOption, SettingsCard, SettingsRow,
+    StepHandler, Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
 };
 
 use runner_core::protocol::command::{
@@ -58,6 +60,8 @@ const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 /// app and terminal rows of each mode line up.
 const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
 
+const FILE_ICONS_SELECT_WIDTH: Pixels = px(200.);
+
 const TAB_SHORTCUT_ID: &str = "select-tab";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -77,6 +81,8 @@ pub(crate) enum SettingsPane {
     Remote,
     Terminal,
     Shortcuts,
+    SidePanel,
+    Files,
     Agents,
     Skills,
     Mcp,
@@ -96,6 +102,8 @@ impl SettingsPane {
             Some("notifications") => Self::Notifications,
             Some("terminal") => Self::Terminal,
             Some("shortcuts") => Self::Shortcuts,
+            Some("side-panel") => Self::SidePanel,
+            Some("files") => Self::Files,
             Some("agents") => Self::Agents,
             Some("mcp") => Self::Mcp,
             Some("skills") => Self::Skills,
@@ -117,6 +125,8 @@ impl SettingsPane {
             Self::Notifications => "notifications",
             Self::Terminal => "terminal",
             Self::Shortcuts => "shortcuts",
+            Self::SidePanel => "side-panel",
+            Self::Files => "files",
             Self::Agents => "agents",
             Self::Skills => "skills",
             Self::Mcp => "mcp",
@@ -137,6 +147,8 @@ impl SettingsPane {
             Self::Notifications => crate::i18n::text("ui.notifications"),
             Self::Terminal => crate::i18n::text("ui.terminal"),
             Self::Shortcuts => crate::i18n::text("ui.keyboard_shortcuts"),
+            Self::SidePanel => crate::i18n::text("side_panel.panel"),
+            Self::Files => crate::i18n::text("ui.files"),
             Self::Agents => crate::i18n::text("ui.agents"),
             Self::Skills => crate::i18n::text("ui.skills"),
             Self::Mcp => "MCP",
@@ -157,6 +169,8 @@ impl SettingsPane {
             Self::Notifications => "bell.svg",
             Self::Terminal => "terminal.svg",
             Self::Shortcuts => "keyboard.svg",
+            Self::SidePanel => "panel-right-open.svg",
+            Self::Files => "folder.svg",
             Self::Agents => "bot.svg",
             Self::Skills => "file-text.svg",
             Self::Mcp => "plug.svg",
@@ -178,6 +192,8 @@ const APP_PANES: &[SettingsPane] = &[
     SettingsPane::Archived,
 ];
 
+const SIDE_PANEL_PANES: &[SettingsPane] = &[SettingsPane::SidePanel, SettingsPane::Files];
+
 const INTEGRATION_PANES: &[SettingsPane] = &[
     SettingsPane::Agents,
     SettingsPane::Skills,
@@ -194,6 +210,7 @@ const SYSTEM_PANES: &[SettingsPane] = &[
 
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.app", APP_PANES),
+    ("side_panel.group", SIDE_PANEL_PANES),
     ("ui.integrations", INTEGRATION_PANES),
     ("ui.cloud", CLOUD_PANES),
     ("ui.system", SYSTEM_PANES),
@@ -237,6 +254,9 @@ enum SettingsSelection {
     OptionAsMeta,
     FileLinkEditor,
     QuitBehavior,
+    FileIcons,
+    FilesFont,
+    MarkdownOpenAs,
 }
 
 pub(crate) struct SettingsState {
@@ -262,6 +282,9 @@ pub(crate) struct SettingsState {
     #[cfg(target_os = "macos")]
     pub(crate) option_as_meta: Entity<StyledSelect>,
     file_link_editor: Entity<StyledSelect>,
+    file_icons: Entity<StyledSelect>,
+    files_font: Entity<StyledSelect>,
+    markdown_open_as: Entity<StyledSelect>,
     pub(crate) language: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
@@ -426,6 +449,30 @@ impl SettingsState {
             SettingsSelection::FileLinkEditor,
             cx,
         );
+        let file_icons = settings_select(
+            &root,
+            "settings-file-icons",
+            settings.file_icons.key(),
+            file_icon_options(),
+            SettingsSelection::FileIcons,
+            cx,
+        );
+        let files_font = settings_select(
+            &root,
+            "settings-files-font",
+            files_font_value(settings.files_font_family.as_ref()),
+            files_font_options(settings.files_font_family.as_ref(), cx),
+            SettingsSelection::FilesFont,
+            cx,
+        );
+        let markdown_open_as = settings_select(
+            &root,
+            "settings-markdown-open-as",
+            settings.markdown_open_as.key(),
+            markdown_open_as_options(),
+            SettingsSelection::MarkdownOpenAs,
+            cx,
+        );
         let language = settings_select(
             &root,
             "settings-language",
@@ -504,6 +551,9 @@ impl SettingsState {
             #[cfg(target_os = "macos")]
             option_as_meta,
             file_link_editor,
+            file_icons,
+            files_font,
+            markdown_open_as,
             language,
             quit_behavior,
             agents: None,
@@ -638,6 +688,8 @@ fn settings_select(
     });
     let value = value.into();
     let width = match selection {
+        // Room for the sample icons beside the longest name, Catppuccin.
+        SettingsSelection::FileIcons => Some(FILE_ICONS_SELECT_WIDTH),
         SettingsSelection::Language
         | SettingsSelection::LightTheme
         | SettingsSelection::DarkTheme
@@ -647,7 +699,9 @@ fn settings_select(
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
         | SettingsSelection::FileLinkEditor
-        | SettingsSelection::QuitBehavior => None,
+        | SettingsSelection::QuitBehavior
+        | SettingsSelection::FilesFont
+        | SettingsSelection::MarkdownOpenAs => None,
         #[cfg(target_os = "macos")]
         SettingsSelection::OptionAsMeta => None,
     };
@@ -660,7 +714,10 @@ fn settings_select(
             handler,
             select_cx,
         );
-        let select = if matches!(selection, SettingsSelection::TerminalFont) {
+        let select = if matches!(
+            selection,
+            SettingsSelection::TerminalFont | SettingsSelection::FilesFont
+        ) {
             select
                 .searchable(crate::i18n::message("ui.search_fonts"), select_cx)
                 .width(px(220.))
@@ -890,6 +947,8 @@ impl NativeRoot {
             | SettingsPane::Appearance
             | SettingsPane::Terminal
             | SettingsPane::Shortcuts
+            | SettingsPane::SidePanel
+            | SettingsPane::Files
             | SettingsPane::Notifications => {}
         }
         window.focus(&self.settings_page.focus, cx);
@@ -949,6 +1008,14 @@ impl NativeRoot {
                 .is_some_and(|value| update_if_changed(&mut settings.quit_behavior, value)),
             SettingsSelection::FileLinkEditor => FileLinkEditor::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.file_link_editor, value)),
+            SettingsSelection::FileIcons => crate::file_icons::IconSet::from_key(value)
+                .is_some_and(|value| update_if_changed(&mut settings.file_icons, value)),
+            SettingsSelection::FilesFont => update_if_changed(
+                &mut settings.files_font_family,
+                (!value.is_empty()).then(|| TerminalFontFamily::new(value)),
+            ),
+            SettingsSelection::MarkdownOpenAs => crate::app_settings::MarkdownOpenAs::parse(value)
+                .is_some_and(|value| update_if_changed(&mut settings.markdown_open_as, value)),
         });
         if !changed {
             if matches!(selection, SettingsSelection::Language) {
@@ -966,6 +1033,33 @@ impl NativeRoot {
             select.set_value(family.family(), cx);
             select.set_options(options, cx);
         });
+        self.sync_files_font_options(cx);
+    }
+
+    fn sync_files_font_options(&self, cx: &mut Context<Self>) {
+        let files = self.settings(cx).files_font_family.clone();
+        let options = files_font_options(files.as_ref(), cx);
+        self.settings_page.files_font.update(cx, |select, cx| {
+            select.set_value(files_font_value(files.as_ref()), cx);
+            select.set_options(options, cx);
+        });
+    }
+
+    /// Settings → Side panel → Files' selects follow a change made in
+    /// another window, as the General selects do.
+    pub(crate) fn sync_side_panel_selects(&self, cx: &mut Context<Self>) {
+        let settings = self.settings(cx);
+        let (icons, markdown) = (settings.file_icons.key(), settings.markdown_open_as.key());
+        let font = files_font_value(settings.files_font_family.as_ref());
+        self.settings_page
+            .file_icons
+            .update(cx, |select, cx| select.set_value(icons, cx));
+        self.settings_page
+            .markdown_open_as
+            .update(cx, |select, cx| select.set_value(markdown, cx));
+        if self.settings_page.files_font.read(cx).value() != font {
+            self.sync_files_font_options(cx);
+        }
     }
 
     fn set_theme_intent(&mut self, intent: ThemeIntent, cx: &mut Context<Self>) {
@@ -1726,9 +1820,9 @@ mod tests {
             let all = filtered_nav_groups("");
             assert_eq!(
                 all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
-                ["App", "Integrations", "Cloud", "System"]
+                ["App", "Side panel", "Integrations", "Cloud", "System"]
             );
-            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
+            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 17);
             assert_eq!(
                 all[0],
                 (
@@ -1748,6 +1842,22 @@ mod tests {
             assert_eq!(
                 all[1],
                 (
+                    "Side panel",
+                    vec![SettingsPane::SidePanel, SettingsPane::Files]
+                )
+            );
+            assert_eq!(
+                filtered_nav_groups("files"),
+                vec![("Side panel", vec![SettingsPane::Files])]
+            );
+            assert_eq!(
+                SettingsPane::from_route(Some("side-panel")),
+                SettingsPane::SidePanel
+            );
+            assert_eq!(SettingsPane::from_route(Some("files")), SettingsPane::Files);
+            assert_eq!(
+                all[2],
+                (
                     "Integrations",
                     vec![
                         SettingsPane::Agents,
@@ -1757,7 +1867,7 @@ mod tests {
                 )
             );
             assert_eq!(
-                all[2],
+                all[3],
                 ("Cloud", vec![SettingsPane::Account, SettingsPane::Remote])
             );
             assert_eq!(

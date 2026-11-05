@@ -8,22 +8,34 @@ use std::io::Read as _;
 use std::sync::OnceLock;
 
 use gpui::SharedString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const ASSET_PREFIX: &str = "file-icons/";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum IconSet {
-    #[default]
-    Catppuccin,
-    #[allow(dead_code)]
+/// Unknown keys load as Catppuccin, which serde requires to be the last
+/// variant.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IconSet {
     Material,
-    #[allow(dead_code)]
     Minimal,
+    #[default]
+    #[serde(other)]
+    Catppuccin,
 }
 
 impl IconSet {
-    fn key(self) -> &'static str {
+    pub(crate) const ALL: [Self; 3] = [Self::Catppuccin, Self::Material, Self::Minimal];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Catppuccin => "Catppuccin",
+            Self::Material => "Material",
+            Self::Minimal => "Minimal",
+        }
+    }
+
+    pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Catppuccin => "catppuccin",
             Self::Material => "material",
@@ -31,7 +43,7 @@ impl IconSet {
         }
     }
 
-    fn from_key(key: &str) -> Option<Self> {
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
         match key {
             "catppuccin" => Some(Self::Catppuccin),
             "material" => Some(Self::Material),

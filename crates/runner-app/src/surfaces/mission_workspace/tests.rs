@@ -1634,7 +1634,7 @@ fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_them
             let mut workspace = MissionWorkspace::new(
                 "rail-header".into(),
                 WeakEntity::new_invalid(),
-                store,
+                store.clone(),
                 window,
                 cx,
             );
@@ -1711,6 +1711,24 @@ fn mission_panel_header_puts_sessions_and_info_left_and_files_right_in_both_them
     visual.simulate_click(sessions.center(), Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+
+    // Settings → Side panel turning Info and Files off leaves Sessions.
+    store.update(&mut visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.info_view = false;
+                settings.files_view = false;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    visual.refresh().unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_some());
+    assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
+    assert!(visual.debug_bounds("PANEL_VIEW Files").is_none());
 }
 
 impl gpui::Render for MissionRailLayoutTest {

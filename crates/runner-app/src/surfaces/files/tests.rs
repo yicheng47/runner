@@ -2692,3 +2692,216 @@ fn a_selection_left_elsewhere_does_not_block_clicking_a_linked_image() {
         h.read(|view| view.active_tab()) == Some("docs/a.md".into())
     });
 }
+
+// ── Settings → Side panel → Files ──────────────────────────────────────
+
+impl Harness {
+    fn set(&mut self, update: impl FnOnce(&mut crate::app_settings::AppSettings)) {
+        self.store.update(&mut self.visual, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    update(settings);
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        self.settle();
+    }
+}
+
+#[test]
+fn with_single_click_off_every_click_opens_a_kept_tab() {
+    let mut h = viewer(chat("in-project"));
+    h.set(|settings| settings.files_single_click = false);
+    h.click("FILES_ROW a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.click("FILES_ROW old.txt");
+    h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
+    assert_eq!(
+        h.tabs(),
+        [("a.txt".to_owned(), false), ("old.txt".to_owned(), false)],
+        "no preview tab: the second click keeps the first file open"
+    );
+    assert!(!h.has("FILE_TAB_PREVIEW"));
+
+    // Turned back on, the next single click previews again.
+    h.set(|settings| settings.files_single_click = true);
+    h.click("FILES_ROW .gitignore");
+    h.wait("a preview", |h| h.has("FILE_TAB_PREVIEW"));
+    assert_eq!(h.tabs().last(), Some(&(".gitignore".to_owned(), true)));
+}
+
+#[test]
+fn markdown_set_to_open_as_source_opens_the_highlighted_source() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("README.md"), README).unwrap();
+    h.set(|settings| settings.markdown_open_as = crate::app_settings::MarkdownOpenAs::Source);
+    h.open("README.md", true);
+    h.wait("the source", |h| h.has("FILE_CODE"));
+    assert!(!h.has("FILE_MARKDOWN"), "Markdown opens as its source");
+    assert_eq!(h.line(0), "# Runner");
+    // `</>` still switches the tab to the page.
+    h.wait("the page beside it", |h| h.has("FILE_MARKDOWN_SOURCE"));
+    h.click("FILE_MARKDOWN_SOURCE");
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    assert!(!h.has("FILE_CODE"));
+}
+
+#[test]
+fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file() {
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(ThemeVariant::Carbon);
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("src/client.rs"),
+        "pub struct Client {\n    reader: u32,\n}\n",
+    )
+    .unwrap();
+    h.set(|settings| settings.files_syntax_highlighting = false);
+    h.open("src/client.rs", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.redraw();
+    assert!(!h.highlighted(), "nothing is highlighted while it is off");
+    assert_eq!(
+        h.painted(0),
+        [("pub struct Client {".to_owned(), theme::text())]
+    );
+
+    h.set(|settings| settings.files_syntax_highlighting = true);
+    h.wait("the highlights", |h| h.highlighted());
+    h.redraw();
+    assert!(
+        h.painted(0).contains(&("pub".into(), color(0xc792ea))),
+        "{:?}",
+        h.painted(0)
+    );
+
+    h.set(|settings| settings.files_syntax_highlighting = false);
+    h.redraw();
+    assert_eq!(
+        h.painted(0),
+        [("pub struct Client {".to_owned(), theme::text())],
+        "turned off again, the spans it has are not drawn"
+    );
+
+    // A reload while it is off drops the old spans, and turning it on
+    // highlights the new text rather than drawing them over it.
+    // FSEvents can miss a write in the instant its stream starts, so write
+    // again until the watcher reports it.
+    let path = h.repo.join("src/client.rs");
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the reload", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(&path, "// note\nfn go() {}\n").unwrap();
+            touched = Instant::now();
+        }
+        h.line(0) == "// note"
+    });
+    assert!(!h.highlighted());
+    h.set(|settings| settings.files_syntax_highlighting = true);
+    h.wait("the new highlights", |h| h.highlighted());
+    h.redraw();
+    assert!(
+        h.painted(1).contains(&("fn".into(), color(0xc792ea))),
+        "{:?}",
+        h.painted(1)
+    );
+}
+
+#[test]
+fn the_viewer_font_size_follows_the_terminal_until_set() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt", true);
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let line_height = |h: &mut Harness| {
+        h.redraw();
+        let code = h.code();
+        code.read_with(&h.visual, |code, _| code.line_height())
+            .map(f32::from)
+    };
+    let expected = |size: f32| (size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+    assert_eq!(line_height(&mut h), Some(expected(13.)));
+    h.set(|settings| settings.terminal_font_size = 16);
+    assert_eq!(
+        line_height(&mut h),
+        Some(expected(16.)),
+        "follows the terminal"
+    );
+    h.set(|settings| settings.files_font_size = Some(19));
+    assert_eq!(line_height(&mut h), Some(expected(19.)), "its own size");
+    h.set(|settings| settings.terminal_font_size = 11);
+    assert_eq!(
+        line_height(&mut h),
+        Some(expected(19.)),
+        "no longer follows"
+    );
+    h.set(|settings| settings.files_font_size = None);
+    assert_eq!(
+        line_height(&mut h),
+        Some(expected(11.)),
+        "Reset follows again"
+    );
+}
+
+#[test]
+fn the_tree_draws_the_chosen_icon_set() {
+    use crate::file_icons::IconSet;
+    let mut h = viewer(chat("in-project"));
+    assert_eq!(
+        h.read(|view| view.look.as_ref().map(|look| look.icons)),
+        Some(IconSet::Catppuccin)
+    );
+    for set in [IconSet::Material, IconSet::Minimal, IconSet::Catppuccin] {
+        h.set(|settings| settings.file_icons = set);
+        assert_eq!(
+            h.read(|view| view.look.as_ref().map(|look| look.icons)),
+            Some(set)
+        );
+        assert!(h.has("FILES_ROW a.txt"));
+    }
+}
+
+#[test]
+fn turning_single_click_off_keeps_open_previews_in_shown_and_hidden_views() {
+    let mut h = viewer(chat("in-project"));
+    h.click("FILES_ROW a.txt");
+    h.wait("the preview", |h| h.has("FILE_TAB_PREVIEW"));
+    let hidden = h.view();
+
+    // The mission's view, shown now, gets its own preview.
+    h.show(Some(mission("on-worktree")));
+    h.wait("the mission's root", |h| h.has("FILES_ROW a.txt"));
+    h.click("FILES_ROW a.txt");
+    h.wait("its preview", |h| h.has("FILE_TAB_PREVIEW"));
+
+    h.set(|settings| settings.files_single_click = false);
+    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    assert!(!h.has("FILE_TAB_PREVIEW"), "the shown strip redraws");
+    let kept = hidden.read_with(&h.visual, |view, _| view.open_tabs());
+    assert_eq!(kept, [("a.txt".to_owned(), false)], "the hidden view too");
+
+    // Back on the chat: the next click opens beside the kept tab rather
+    // than replacing it.
+    h.show(Some(chat("in-project")));
+    h.click("FILES_ROW old.txt");
+    h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
+    assert_eq!(
+        h.tabs(),
+        [("a.txt".to_owned(), false), ("old.txt".to_owned(), false)]
+    );
+
+    // Previews back on: the kept tabs stay kept.
+    h.set(|settings| settings.files_single_click = true);
+    h.click("FILES_ROW .gitignore");
+    h.wait("a preview", |h| h.has("FILE_TAB .gitignore"));
+    assert_eq!(
+        h.tabs(),
+        [
+            ("a.txt".to_owned(), false),
+            ("old.txt".to_owned(), false),
+            (".gitignore".to_owned(), true)
+        ]
+    );
+}

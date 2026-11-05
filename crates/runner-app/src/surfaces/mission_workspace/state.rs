@@ -32,7 +32,7 @@ impl MissionWorkspace {
     ) -> Self {
         let settings = &app_store.read(cx).settings;
         let sidebar_collapsed = settings.sidebar_collapsed;
-        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_open);
+        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_shown());
         let root_focus = cx.focus_handle();
         let drawer_focus = cx.focus_handle();
         let drawer_focus_subscriptions = vec![

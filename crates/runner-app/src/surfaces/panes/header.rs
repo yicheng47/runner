@@ -7,9 +7,11 @@ impl NativeRoot {
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
         if !self.remote_client.is_local()
             || start_surface_visible(Some(layout))
             || self.settings(cx).chat_panel_open
+            || !side_panel_available(self.settings(cx), surface)
             || top_right_pane(&layout.root).id != pane_id
         {
             return None;
@@ -100,7 +102,9 @@ impl NativeRoot {
         cx: &App,
     ) -> (f32, Option<crate::surfaces::side_panel::Widened>) {
         let settings = self.settings(cx);
-        let subject = detail.map(|detail| PanelSubject::Session(detail.session_id.clone()));
+        let subject = detail
+            .filter(|_| settings.files_view)
+            .map(|detail| PanelSubject::Session(detail.session_id.clone()));
         self.chat_files.layout(
             subject.as_ref(),
             settings.chat_panel_width,
@@ -149,7 +153,8 @@ impl NativeRoot {
             });
         let collapse_root = cx.entity();
         let select_root = cx.entity();
-        let shown = side_panel::shown_view(surface, self.chat_panel_view);
+        let settings = self.settings(cx).clone();
+        let shown = side_panel::shown_view(surface, &settings, self.chat_panel_view);
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
             div()
@@ -175,6 +180,7 @@ impl NativeRoot {
                 })
                 .child(side_panel::header_views(
                     surface,
+                    &settings,
                     shown,
                     Rc::new(move |view, cx| {
                         select_root.update(cx, |this, cx| {
