@@ -2345,7 +2345,7 @@ mod tests {
             &runtime,
             &left_terminal,
             b"\x1b[?1000l\x1b[?1006lcopy me please\r\n",
-            |terminal| !terminal.mode().contains(TermMode::SGR_MOUSE),
+            |terminal| !terminal.cell_is_whitespace(GridPoint::new(Line(0), Column(0))),
         );
         let mut cx = TestAppContext::single();
         let (left, right) = (
