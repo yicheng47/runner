@@ -155,7 +155,7 @@ impl NativeRoot {
         } else {
             self.front_page_sidebar_width(cx) * self.settings(cx).app_zoom
         };
-        let chat_panel_width = if self.settings(cx).chat_panel_open {
+        let chat_panel_width = if self.settings(cx).chat_panel_shown() {
             self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
         } else {
             0.
@@ -187,7 +187,7 @@ impl NativeRoot {
         } else {
             self.front_page_sidebar_width(cx) * self.settings(cx).app_zoom
         };
-        let chat_panel_width = if self.settings(cx).chat_panel_open {
+        let chat_panel_width = if self.settings(cx).chat_panel_shown() {
             self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
         } else {
             0.

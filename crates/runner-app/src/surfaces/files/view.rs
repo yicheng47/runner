@@ -125,7 +125,10 @@ pub(crate) struct FilesView {
     reported: Option<bool>,
     /// Whether the divider between the file and the tree is being dragged.
     tree_resizing: bool,
+    /// Settings → Side panel → Files as last drawn.
+    pub(super) look: Option<super::Look>,
     _hub: Subscription,
+    _settings: Subscription,
 }
 
 impl EventEmitter<FileOpen> for FilesView {}
@@ -206,6 +209,8 @@ impl FilesView {
         let hub_subscription = cx.subscribe(&hub, |this, _: Entity<FilesHub>, event, cx| {
             this.on_files_event(event, cx)
         });
+        let store = crate::app_store::global_app_store(cx);
+        let settings_subscription = cx.observe(&store, |this, _, cx| this.settings_changed(cx));
         // Weak: the view owns this field, so a strong handle would keep the
         // view, and its watch, alive forever.
         let root = cx.weak_entity();
@@ -266,7 +271,9 @@ impl FilesView {
             owner: None,
             reported: None,
             tree_resizing: false,
+            look: super::Look::current(cx),
             _hub: hub_subscription,
+            _settings: settings_subscription,
         };
         view.resolve(cx);
         cx.on_release(|this: &mut Self, cx| {
@@ -1134,7 +1141,10 @@ impl FilesView {
 
     fn icon(&self, row: &Row) -> AnyElement {
         let dark = !theme::active_variant().is_light();
-        let set = IconSet::default();
+        let set = self
+            .look
+            .as_ref()
+            .map_or_else(IconSet::default, |look| look.icons);
         let icon = if row.folder {
             file_icons::folder_icon(set, dark, &row.name, row.expanded)
         } else {

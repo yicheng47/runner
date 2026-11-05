@@ -296,7 +296,7 @@ impl MissionWorkspace {
             .absolute()
             .inset_0()
         }));
-        let rail_open = self.settings(cx).mission_rail_open;
+        let rail_open = self.settings(cx).mission_rail_shown();
         let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
             if rail_open { 1. } else { 0. },
             Instant::now(),
@@ -584,20 +584,22 @@ impl MissionWorkspace {
             })
             .into_any_element()
         });
-        let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
-            IconButton::new("open-mission-rail", "panel-right-hidden.svg")
-                .tooltip(crate::i18n::text("ui.open_sessions_panel"))
-                .on_press(move |_, cx| {
-                    open_rail_root.update(cx, |this, cx| {
-                        this.update_app_settings(cx, true, |settings| {
-                            settings.mission_rail_open = true;
-                            true
+        let rail_action = (self.settings(cx).show_side_panel
+            && !self.settings(cx).mission_rail_open)
+            .then(|| {
+                IconButton::new("open-mission-rail", "panel-right-hidden.svg")
+                    .tooltip(crate::i18n::text("ui.open_sessions_panel"))
+                    .on_press(move |_, cx| {
+                        open_rail_root.update(cx, |this, cx| {
+                            this.update_app_settings(cx, true, |settings| {
+                                settings.mission_rail_open = true;
+                                true
+                            });
+                            cx.notify();
                         });
-                        cx.notify();
-                    });
-                })
-                .into_any_element()
-        });
+                    })
+                    .into_any_element()
+            });
         let row = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
             ChatIcon::mission().render(rems(15. / 16.), theme::accent(), true),

@@ -114,6 +114,13 @@ impl FileTabs {
         }
     }
 
+    /// Keeps every tab, the preview too.
+    pub(crate) fn keep_all(&mut self) {
+        for tab in &mut self.tabs {
+            tab.preview = false;
+        }
+    }
+
     /// Keeps the tab, as a double-click on it or on its file does.
     pub(crate) fn keep(&mut self, index: usize) {
         if let Some(tab) = self.tabs.get_mut(index) {

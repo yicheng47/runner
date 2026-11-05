@@ -1105,33 +1105,33 @@ fn with_selection(runs: Vec<TextRun>, selected: Range<usize>, color: Hsla) -> Ve
     out
 }
 
-/// The page's sizes, from the base font size, as Settings → Side panel →
-/// Files → Font size will set them.
+/// The page's sizes, from Settings → Side panel → Files → Font size, its
+/// code font and whether code blocks are highlighted.
 #[derive(Clone)]
 struct Look {
     base: f32,
     ui: Font,
     mono: Font,
     syntax: SyntaxTheme,
+    highlighting: bool,
 }
 
 impl Look {
     fn current(window: &Window, cx: &App) -> Self {
-        let (mono, size) = match cx.try_global::<crate::app_store::GlobalAppStore>() {
-            Some(store) => {
-                let settings = &store.0.read(cx).settings;
-                (
-                    settings.terminal_font_family.font(cx),
-                    settings.terminal_font_size as f32,
-                )
-            }
-            None => (gpui::font(theme::UI_MONOSPACE_FONT), 13.),
+        let (mono, size, highlighting) = match super::settings(cx) {
+            Some(settings) => (
+                settings.files_font(cx),
+                settings.files_font_size() as f32,
+                settings.files_syntax_highlighting,
+            ),
+            None => (gpui::font(theme::UI_MONOSPACE_FONT), 13., true),
         };
         Self {
             base: size,
             ui: window.text_style().font(),
             mono,
             syntax: SyntaxTheme::current(cx),
+            highlighting,
         }
     }
 
@@ -1570,6 +1570,7 @@ impl Draw<'_> {
             .into_iter()
             .map(|(len, capture)| {
                 let color = capture
+                    .filter(|_| look.highlighting)
                     .and_then(|capture| look.syntax.color(capture))
                     .unwrap_or(theme::text());
                 self.run(len, look.mono.clone(), color)

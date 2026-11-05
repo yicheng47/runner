@@ -134,8 +134,20 @@ pub(crate) fn open_file_link(target: FileLinkTarget, cx: &mut App) {
     open_file_with(editor, target, cx);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What `open_file_with` would have launched on this thread.
+    pub(crate) static LAUNCHED: std::cell::RefCell<Vec<(FileLinkEditor, FileLinkTarget)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Opens `target` in `editor`, or the default app when its launcher fails.
 pub(crate) fn open_file_with(editor: FileLinkEditor, target: FileLinkTarget, cx: &mut App) {
+    #[cfg(test)]
+    if cfg!(test) {
+        LAUNCHED.with(|launched| launched.borrow_mut().push((editor, target)));
+        return;
+    }
     let client = global_app_store(cx).read(cx).client.clone();
     cx.background_spawn(async move {
         let path_env = client.direct_chat_path().unwrap_or_default();
@@ -228,6 +240,32 @@ mod tests {
             line: Some(1311),
             column: None,
         }
+    }
+
+    #[test]
+    fn a_cmd_click_on_a_path_opens_it_with_the_side_panel_and_files_off() {
+        use gpui::TestAppContext;
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    settings.show_side_panel = false;
+                    settings.files_view = false;
+                    settings.file_link_editor = FileLinkEditor::Zed;
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        LAUNCHED.with(|launched| launched.borrow_mut().clear());
+        cx.update(|cx| open_file_link(target(Some(4), None), cx));
+        assert_eq!(
+            LAUNCHED.with(|launched| launched.borrow().clone()),
+            [(FileLinkEditor::Zed, target(Some(4), None))]
+        );
     }
 
     #[test]
