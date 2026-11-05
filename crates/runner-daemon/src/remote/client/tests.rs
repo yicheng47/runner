@@ -1517,6 +1517,43 @@ async fn receive_terminal(
     .await
     .unwrap()
 }
+#[tokio::test]
+async fn host_clipboard_writes_reach_the_viewer_whole_under_the_remote_address() {
+    let fixture = Fixture::new().await;
+    fixture.pair().await;
+    let attachment = fixture.client.attach(terminal_config()).await.unwrap();
+    let mut events = fixture.client.0.events.subscribe();
+    let cap = runner_terminal::terminal::MAX_CLIPBOARD_BYTES;
+    let escaped = "\n\\\"\u{1}é"
+        .repeat(cap)
+        .chars()
+        .take(cap / 2)
+        .collect::<String>();
+    let escaped = format!("{escaped}{}", "\n".repeat(cap - escaped.len()));
+    for text in [escaped, "copied".into()] {
+        fixture.core.fake.events.emit(
+            "session/clipboard",
+            &serde_json::json!({"session_id":"session","target":"selection","text":text}),
+        );
+        let event = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.name == "session/clipboard" {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            event.payload["session_id"],
+            remote::terminal_address("2", "session")
+        );
+        assert_eq!(event.payload["target"], "selection");
+        assert!(event.payload["text"] == text.as_str());
+    }
+    drop(attachment);
+}
 fn terminal_config() -> RemoteTerminal {
     RemoteTerminal {
         computer: "2".into(),

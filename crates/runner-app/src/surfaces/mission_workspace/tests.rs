@@ -4103,3 +4103,107 @@ fn leaving_a_slot_tab_closes_find_in_its_terminal() {
         .update(&mut cx, |_, window, _| window.remove_window())
         .unwrap();
 }
+
+#[test]
+fn osc52_visibility_follows_the_mission_terminals_a_window_draws() {
+    use gpui::{TestAppContext, WeakEntity};
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let mission = store.read_with(&cx, |store, _| {
+        runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
+    });
+    let visual = cx.add_empty_window();
+    let workspace = visual.update(|window, cx| {
+        cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "osc52".into(),
+                WeakEntity::new_invalid(),
+                store.clone(),
+                window,
+                cx,
+            );
+            workspace.active = true;
+            workspace.loading = false;
+            workspace.mission_id = Some("test-mission".into());
+            workspace.mission = Some(mission);
+            workspace.sessions = vec![SessionRow {
+                session: runner_core::protocol::model::Session {
+                    id: "member".into(),
+                    mission_id: Some("test-mission".into()),
+                    role_id: "test-shell-role".into(),
+                    slot_id: None,
+                    cwd: None,
+                    status: SessionStatus::Running,
+                    pid: None,
+                    started_at: None,
+                    stopped_at: None,
+                },
+                handle: "coder".into(),
+                role_handle: String::new(),
+                lead: true,
+                runtime: "shell".into(),
+                live_title: None,
+                agent_session_key: None,
+            }];
+            workspace.active_tab = MissionTab::Session("member".into());
+            workspace.layout.drawer.add("shell".into());
+            workspace.layout.drawer.set_open(true);
+            workspace
+        })
+    });
+    let mut shown = |change: &dyn Fn(&mut MissionWorkspace), mission: &str| {
+        workspace.update(visual, |workspace, _| change(workspace));
+        workspace.read_with(visual, |workspace, cx| {
+            workspace.shown_terminals(mission, cx)
+        })
+    };
+
+    assert_eq!(shown(&|_| {}, "test-mission"), ["member", "shell"]);
+    assert!(shown(&|_| {}, "other-mission").is_empty());
+    assert!(
+        shown(&|workspace| workspace.secondary = true, "test-mission").is_empty(),
+        "a secondary window draws the feed and no drawer, whatever tab it remembers"
+    );
+    assert_eq!(
+        shown(
+            &|workspace| {
+                workspace.secondary = false;
+                workspace.active_tab = MissionTab::Session("departed".into());
+            },
+            "test-mission"
+        ),
+        ["shell"],
+        "a missing member falls back to the feed"
+    );
+    assert!(shown(
+        &|workspace| {
+            workspace.active_tab = MissionTab::Feed;
+            workspace.layout.drawer.set_open(false);
+        },
+        "test-mission"
+    )
+    .is_empty());
+    assert_eq!(
+        shown(
+            &|workspace| {
+                workspace.active_tab = MissionTab::Session("member".into());
+                workspace.layout.drawer.set_open(true);
+            },
+            "test-mission"
+        ),
+        ["member", "shell"]
+    );
+    assert!(shown(&|workspace| workspace.loading = true, "test-mission").is_empty());
+    assert!(shown(
+        &|workspace| {
+            workspace.loading = false;
+            workspace.active = false;
+        },
+        "test-mission"
+    )
+    .is_empty());
+}

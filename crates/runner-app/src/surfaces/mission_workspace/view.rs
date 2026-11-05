@@ -108,10 +108,7 @@ impl MissionWorkspace {
         let group_control = crate::terminal::control::mission_covered(
             control_ids.iter().map(|id| self.attached.get(id)),
         );
-        let drawer_visible = !self.loading
-            && self.mission_view().is_some()
-            && mission_drawer_available(self.archived(), self.secondary && !group_control)
-            && self.layout.drawer.open();
+        let drawer_visible = self.drawer_visible(group_control);
         let drawer_focused = drawer_visible && self.drawer_focused(window, cx);
         let drawer = drawer_visible.then(|| self.render_mission_terminal_drawer(cx));
         let focus_border = theme::with_alpha(
@@ -1237,5 +1234,40 @@ impl MissionWorkspace {
             .children(can_compose.then(|| self.render_mission_composer(window, cx)))
             .children(paused.then(|| self.render_mission_paused_overlay(cx)))
             .into_any_element()
+    }
+}
+
+impl MissionWorkspace {
+    fn drawer_visible(&self, group_control: bool) -> bool {
+        !self.loading
+            && self.mission_view().is_some()
+            && mission_drawer_available(self.archived(), self.secondary && !group_control)
+            && self.layout.drawer.open()
+    }
+
+    /// The terminals this workspace draws for `mission`: the member tab a
+    /// primary window shows and the open drawer's selected shell.
+    pub(crate) fn shown_terminals(&self, mission: &str, cx: &App) -> Vec<String> {
+        if !self.active
+            || self.loading
+            || self.mission_id.as_deref() != Some(mission)
+            || self.mission_view().is_none()
+        {
+            return Vec::new();
+        }
+        let mut ids = Vec::new();
+        if let MissionTab::Session(id) = &self.active_tab {
+            if !self.secondary && self.members().iter().any(|member| member.session.id == *id) {
+                ids.push(id.clone());
+            }
+        }
+        let control_ids = self.control_session_ids(cx);
+        let group_control = crate::terminal::control::mission_covered(
+            control_ids.iter().map(|id| self.attached.get(id)),
+        );
+        if self.drawer_visible(group_control) {
+            ids.extend(self.layout.drawer.active_shell().map(str::to_owned));
+        }
+        ids
     }
 }

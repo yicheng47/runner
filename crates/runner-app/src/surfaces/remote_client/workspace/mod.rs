@@ -164,6 +164,25 @@ impl RemoteClient {
         }
     }
 
+    pub(crate) fn shows_remote_terminal(&self, address: &str, cx: &App) -> bool {
+        let Some((computer, session)) = runner_core::remote::terminal_target(address) else {
+            return false;
+        };
+        self.workspace.as_ref().is_some_and(|remote| {
+            remote.computer.id == computer
+                && state(&self.app_store, cx)
+                    .read(cx)
+                    .overviews
+                    .get(computer)
+                    .is_some_and(|overview| {
+                        remote
+                            .visible_sessions(overview, cx)
+                            .iter()
+                            .any(|id| id == session)
+                    })
+        })
+    }
+
     pub(crate) fn remote_terminal_interactive(&self, id: &str, cx: &App) -> bool {
         self.workspace.as_ref().is_some_and(|remote| {
             remote.connection == Connection::Connected

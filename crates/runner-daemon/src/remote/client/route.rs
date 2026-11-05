@@ -77,6 +77,43 @@ fn input_error(client: &Client, computer: &str, session: &str, message: &str) {
         }),
     );
 }
+/// Reassembles the pieces of each terminal's OSC 52 writes, per target, on one route.
+#[derive(Default)]
+struct Clipboards(HashMap<(String, String), String>);
+impl Clipboards {
+    /// The whole write once its last piece arrives. A piece that does not
+    /// continue the write in progress, or would take it past the cap, drops it.
+    fn receive(&mut self, mut push: c::ClipboardPush) -> Option<c::ClipboardPush> {
+        let key = (push.session.clone(), push.target.clone());
+        let partial = self.0.remove(&key);
+        let mut text = if push.offset == 0 {
+            String::new()
+        } else {
+            partial.filter(|text| text.len() as u64 == push.offset)?
+        };
+        if text.len() + push.text.len() > runner_terminal::terminal::MAX_CLIPBOARD_BYTES {
+            return None;
+        }
+        text.push_str(&push.text);
+        if push.more {
+            self.0.insert(key, text);
+            return None;
+        }
+        push.text = text;
+        push.offset = 0;
+        Some(push)
+    }
+}
+fn clipboard(client: &Client, computer: &str, push: c::ClipboardPush) {
+    client.0.events.emit(
+        "session/clipboard",
+        &serde_json::json!({
+            "session_id": remote::terminal_address(computer, &push.session),
+            "target": push.target,
+            "text": push.text,
+        }),
+    );
+}
 pub(super) fn spawn(
     client: Client,
     computer: Computer,
@@ -478,6 +515,7 @@ async fn run(
             let _ = session.queue(c::ClientMessage::Overview(c::OverviewRequest { id }));
         }
         let connected_at = Instant::now();
+        let mut clipboards = Clipboards::default();
         let outcome: Result<()> = async {
             loop {
                 if !session.records.sending() {
@@ -534,6 +572,9 @@ async fn run(
                                 c::HostMessage::FeedAppended(feed) => { client.0.events.emit("remote/feed", &serde_json::json!({"computer":computer.id,"feed":feed})); }
                                 c::HostMessage::Overview(overview) => { if !followers.is_empty() { client.0.events.emit("remote/overview", &serde_json::json!({"computer":computer.id,"overview":overview})); } }
                                 c::HostMessage::Status(status) => { if !followers.is_empty() { client.0.events.emit("remote/session-status", &serde_json::json!({"computer":computer.id,"status":status})); } }
+                                c::HostMessage::Clipboard(push) => {
+                                    if let Some(push) = clipboards.receive(push) { clipboard(&client, &computer.id, push); }
+                                }
                                 message => terminals.message(message, &handle)?,
                             }
                             session.records.handled();
@@ -628,6 +669,66 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_pieces_reassemble_only_in_order_and_within_the_cap() {
+        let piece = |session: &str, text: &str, offset: u64, more: bool| c::ClipboardPush {
+            session: session.into(),
+            target: "clipboard".into(),
+            text: text.into(),
+            offset,
+            more,
+        };
+        let mut clipboards = Clipboards::default();
+        assert!(clipboards.receive(piece("a", "he", 0, true)).is_none());
+        assert!(clipboards.receive(piece("b", "other", 0, true)).is_none());
+        let whole = clipboards.receive(piece("a", "llo", 2, false)).unwrap();
+        assert_eq!(
+            (whole.text.as_str(), whole.offset, whole.more),
+            ("hello", 0, false)
+        );
+
+        assert!(clipboards
+            .receive(piece("b", "skipped", 9, false))
+            .is_none());
+        assert!(clipboards.receive(piece("b", "late", 5, false)).is_none());
+
+        assert!(clipboards.receive(piece("a", "old", 0, true)).is_none());
+        assert_eq!(
+            clipboards
+                .receive(piece("a", "new", 0, false))
+                .unwrap()
+                .text,
+            "new"
+        );
+
+        let mut selection = piece("a", "pri", 0, true);
+        selection.target = "selection".into();
+        assert!(clipboards.receive(piece("a", "cli", 0, true)).is_none());
+        assert!(clipboards.receive(selection.clone()).is_none());
+        selection.text = "mary".into();
+        selection.offset = 3;
+        selection.more = false;
+        let primary = clipboards.receive(selection).unwrap();
+        assert_eq!(
+            (primary.target.as_str(), primary.text.as_str()),
+            ("selection", "primary")
+        );
+        let board = clipboards.receive(piece("a", "pboard", 3, false)).unwrap();
+        assert_eq!(
+            (board.target.as_str(), board.text.as_str()),
+            ("clipboard", "clipboard")
+        );
+
+        let cap = runner_terminal::terminal::MAX_CLIPBOARD_BYTES;
+        assert!(clipboards
+            .receive(piece("a", &"x".repeat(cap), 0, true))
+            .is_none());
+        assert!(clipboards
+            .receive(piece("a", "x", cap as u64, false))
+            .is_none());
+        assert!(clipboards.0.is_empty());
+    }
     #[tokio::test]
     async fn relay_closures_have_fixed_diagnostics_without_the_close_reason() {
         use tokio_tungstenite::{

@@ -1605,3 +1605,145 @@ fn every_action_and_served_feed_request_is_advertised() {
         assert!(FEATURES.contains(&name), "{name}");
     }
 }
+
+async fn drain(adapter: &mut Adapter) {
+    while !adapter.events.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+}
+#[tokio::test]
+async fn clipboard_writes_reach_attached_channels_in_bounded_pieces_up_to_the_cap() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    attach(&mut adapter, "a").await;
+    next(&mut adapter).await;
+    next(&mut adapter).await;
+    quiet(&mut adapter);
+    let write = |session: &str, text: &str| {
+        fake.events.emit(
+            "session/clipboard",
+            &serde_json::json!({"session_id":session,"target":"selection","text":text}),
+        );
+    };
+    let cap = runner_terminal::terminal::MAX_CLIPBOARD_BYTES;
+    let escaped = "\n\\\"\u{1}é"
+        .repeat(cap)
+        .chars()
+        .take(cap / 2)
+        .collect::<String>();
+    let escaped = format!("{escaped}{}", "\n".repeat(cap - escaped.len()));
+    for text in ["x".repeat(cap), escaped] {
+        assert_eq!(text.len(), cap);
+        write("other", "unattached");
+        drain(&mut adapter).await;
+        write("a", &text);
+        drain(&mut adapter).await;
+        let mut received = String::new();
+        loop {
+            let bytes = adapter.next(true).await.unwrap().expect("clipboard piece");
+            assert!(bytes.len() <= TERMINAL_CHUNK_SIZE * 7);
+            let piece: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(piece["type"], "clipboard");
+            assert_eq!(piece["session"], "a");
+            assert_eq!(piece["target"], "selection");
+            assert_eq!(piece["offset"], received.len() as u64);
+            received.push_str(piece["text"].as_str().unwrap());
+            if piece["more"] == false {
+                break;
+            }
+        }
+        assert!(received == text);
+        assert!(adapter.next(true).await.unwrap().is_none());
+    }
+
+    write("a", &"y".repeat(TERMINAL_CHUNK_SIZE * 2));
+    drain(&mut adapter).await;
+    let first: serde_json::Value =
+        serde_json::from_slice(&adapter.next(true).await.unwrap().unwrap()).unwrap();
+    assert_eq!(first["more"], true);
+    write("a", "newer");
+    drain(&mut adapter).await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&adapter.next(true).await.unwrap().unwrap())
+            .unwrap(),
+        serde_json::json!({"type":"clipboard","session":"a","target":"selection","text":"newer","offset":0,"more":false})
+    );
+    assert!(adapter.next(true).await.unwrap().is_none());
+    assert!(
+        adapter.overview_due.is_none(),
+        "a write is not an overview change"
+    );
+}
+
+#[tokio::test]
+async fn clipboard_and_selection_writes_both_complete_once() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    attach(&mut adapter, "a").await;
+    next(&mut adapter).await;
+    next(&mut adapter).await;
+    quiet(&mut adapter);
+    let write = |target: &str, text: &str| {
+        fake.events.emit(
+            "session/clipboard",
+            &serde_json::json!({"session_id":"a","target":target,"text":text}),
+        );
+    };
+    let piece = |bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+    let large = "c".repeat(TERMINAL_CHUNK_SIZE * 3);
+    for selection_after_first_piece in [false, true] {
+        write("clipboard", &large);
+        let mut pieces = Vec::new();
+        if selection_after_first_piece {
+            drain(&mut adapter).await;
+            pieces.push(piece(adapter.next(true).await.unwrap().unwrap()));
+            assert_eq!(pieces[0]["more"], true);
+        }
+        write("selection", "primary");
+        drain(&mut adapter).await;
+        while let Some(bytes) = adapter.next(true).await.unwrap() {
+            pieces.push(piece(bytes));
+        }
+        let mut whole = Vec::new();
+        let mut text = String::new();
+        for piece in pieces {
+            assert_eq!(piece["offset"], text.len() as u64);
+            text.push_str(piece["text"].as_str().unwrap());
+            if piece["more"] == false {
+                whole.push((
+                    piece["target"].as_str().unwrap().to_owned(),
+                    std::mem::take(&mut text),
+                ));
+            }
+        }
+        assert_eq!(
+            whole,
+            [
+                ("clipboard".to_owned(), large.clone()),
+                ("selection".to_owned(), "primary".to_owned())
+            ]
+        );
+    }
+
+    write("clipboard", "one");
+    write("selection", "two");
+    write("clipboard", "three");
+    drain(&mut adapter).await;
+    let mut whole = Vec::new();
+    while let Some(bytes) = adapter.next(true).await.unwrap() {
+        let piece = piece(bytes);
+        assert_eq!(piece["more"], false);
+        whole.push((
+            piece["target"].as_str().unwrap().to_owned(),
+            piece["text"].as_str().unwrap().to_owned(),
+        ));
+    }
+    assert_eq!(
+        whole,
+        [
+            ("selection".to_owned(), "two".to_owned()),
+            ("clipboard".to_owned(), "three".to_owned())
+        ],
+        "the latest write lands last, where both targets share one clipboard"
+    );
+}

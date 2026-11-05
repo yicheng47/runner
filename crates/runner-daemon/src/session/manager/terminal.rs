@@ -5,7 +5,9 @@ use runner_core::protocol::terminal::{
     TerminalAttachment, TerminalFrame, TerminalMetadata, TerminalPalette, TerminalSubscription,
 };
 use runner_core::protocol::ClientError;
-use runner_terminal::terminal::{HostResult, ModelOptions, TerminalHost, TerminalModel};
+use runner_terminal::terminal::{
+    ClipboardTarget, HostResult, ModelOptions, TerminalHost, TerminalModel,
+};
 
 use super::*;
 
@@ -235,6 +237,9 @@ impl TerminalHost for Host {
     }
     fn is_local_host(&self, host: &str) -> bool {
         crate::shell_integration::is_local_host(host)
+    }
+    fn clipboard_store(&self, id: &str, target: ClipboardTarget, text: &str) {
+        self.events.clipboard(id, target, text);
     }
 }
 

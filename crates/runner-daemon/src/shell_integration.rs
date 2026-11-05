@@ -586,6 +586,8 @@ mod real_shells {
         fn is_local_host(&self, _: &str) -> bool {
             true
         }
+        fn clipboard_store(&self, _: &str, _: runner_terminal::terminal::ClipboardTarget, _: &str) {
+        }
     }
 
     /// An agent started by hand reports Working and marks its transcript

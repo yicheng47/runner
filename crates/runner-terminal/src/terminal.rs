@@ -13,7 +13,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler, KeyboardModes};
 use anyhow::{Context as _, Result};
 use regex::Regex;
@@ -25,7 +25,7 @@ use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 
 pub mod find;
 mod model;
-pub use model::{ModelOptions, TerminalHost, TerminalModel};
+pub use model::{ClipboardTarget, ModelOptions, TerminalHost, TerminalModel, MAX_CLIPBOARD_BYTES};
 
 use crate::palette;
 use crate::{

@@ -118,6 +118,7 @@ pub(crate) fn run() -> Result<()> {
         keymap::install_bindings(cx, &keymap_overrides, terminal_ctrl_keys, false);
         cx.set_global(GlobalAppStore(app_store));
         notifications::install(cx);
+        crate::terminal_clipboard::install(cx);
         cx.set_global(GlobalNativePaths(paths.clone()));
         #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(automatically_check_for_updates, cx));

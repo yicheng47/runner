@@ -612,6 +612,70 @@ fn queued_user_input_reports_backend_errors_without_blocking_the_caller() {
         .contains("session not found"));
 }
 
+/// OSC 52 writes leave the daemon only as an in-memory `session/clipboard` event.
+#[test]
+fn osc52_writes_are_emitted_as_session_clipboard_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    let role = crate::ops::role::create(
+        &core.db.get().unwrap(),
+        crate::ops::role::CreateRoleInput {
+            handle: "probe".into(),
+            display_name: "Probe".into(),
+            runtime: crate::model::Runtime::Trae,
+            command: "probe".into(),
+            args: Vec::new(),
+            working_dir: None,
+            system_prompt: None,
+            env: Default::default(),
+            model: None,
+            effort: None,
+            codex_speed: None,
+            permission_mode: crate::router::runtime::PermissionMode::Auto,
+        },
+    )
+    .unwrap();
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(temp.path().to_str().unwrap()),
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            Arc::clone(&core.db),
+            Arc::new(core.session_events()),
+            None,
+        )
+        .unwrap();
+    let mut events = core.events.subscribe();
+    runtime.push_output(b"\x1b]52;c;cnVubmVyLW9zYzUy\x07\x1b]52;p;cHJpbWFyeQ==\x1b\\");
+
+    let mut received = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while received.len() < 2 && std::time::Instant::now() < deadline {
+        match events.try_recv() {
+            Ok(event) if event.name == "session/clipboard" => received.push(event.payload),
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+    assert_eq!(
+        received,
+        [
+            serde_json::json!({"session_id": spawned.id, "target": "clipboard", "text": "runner-osc52"}),
+            serde_json::json!({"session_id": spawned.id, "target": "selection", "text": "primary"}),
+        ]
+    );
+    assert!(runtime.writes().is_empty(), "a write is not answered");
+    core.sessions.kill(&spawned.id).ok();
+}
+
 /// Stands in for the PTY: hands the manager a live output channel
 /// and records every byte the manager writes back to stdin.
 #[derive(Default)]

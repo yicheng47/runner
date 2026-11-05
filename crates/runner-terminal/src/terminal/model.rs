@@ -7,6 +7,33 @@ pub trait TerminalHost: Send + Sync + 'static {
     fn set_live_title(&self, session_id: &str, title: &str) -> Result<()>;
     fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()>;
     fn is_local_host(&self, host: &str) -> bool;
+    /// An OSC 52 write from the program in the pane; `text` is never empty and
+    /// at most [`MAX_CLIPBOARD_BYTES`].
+    fn clipboard_store(&self, session_id: &str, target: ClipboardTarget, text: &str);
+}
+
+pub const MAX_CLIPBOARD_BYTES: usize = 1 << 20;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardTarget {
+    Clipboard,
+    /// The primary selection on Linux; the clipboard elsewhere.
+    Selection,
+}
+impl ClipboardTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clipboard => "clipboard",
+            Self::Selection => "selection",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "clipboard" => Some(Self::Clipboard),
+            "selection" => Some(Self::Selection),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -221,6 +248,15 @@ impl TerminalModel {
                                     log::warn!("persist terminal title for {session_id}: {error}");
                                 }
                             }
+                        }
+                        Event::ClipboardStore(target, text)
+                            if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
+                        {
+                            let target = match target {
+                                ClipboardType::Clipboard => ClipboardTarget::Clipboard,
+                                ClipboardType::Selection => ClipboardTarget::Selection,
+                            };
+                            host.clipboard_store(&session_id, target, &text);
                         }
                         _ => {}
                     }
@@ -573,6 +609,7 @@ mod delivery_tests {
         fn is_local_host(&self, _: &str) -> bool {
             true
         }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
     }
 
     #[test]
@@ -599,6 +636,7 @@ mod delivery_tests {
             fn is_local_host(&self, _: &str) -> bool {
                 true
             }
+            fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
         }
         for terminator in ["\x07", "\x1b\\"] {
             let bytes = format!("\x1b]7501;?{terminator}\x1b[c");
@@ -714,6 +752,108 @@ mod delivery_tests {
         drop(model);
         for worker in workers {
             worker.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[derive(Default)]
+    struct Host {
+        stores: Mutex<Vec<(ClipboardTarget, String)>>,
+        replies: Mutex<Vec<Vec<u8>>>,
+    }
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, bytes: &[u8]) -> Result<()> {
+            if !bytes.is_empty() {
+                self.replies.lock().unwrap().push(bytes.to_vec());
+            }
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, session_id: &str, target: ClipboardTarget, text: &str) {
+            assert_eq!(session_id, "osc52");
+            self.stores.lock().unwrap().push((target, text.to_owned()));
+        }
+    }
+
+    fn feed(output: &[u8]) -> Arc<Host> {
+        let host = Arc::new(Host::default());
+        let model =
+            TerminalModel::new(host.clone(), "osc52".into(), 80, 4, ModelOptions::default())
+                .unwrap();
+        model.feed_output(1, output);
+        model.flush_events();
+        let workers = model.take_workers();
+        drop(model);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        host
+    }
+
+    fn osc52(selector: &str, payload: &str, terminator: &str) -> Vec<u8> {
+        format!("\x1b]52;{selector};{payload}{terminator}").into_bytes()
+    }
+
+    fn encode(text: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    #[test]
+    fn osc52_writes_reach_the_host_decoded() {
+        for terminator in ["\x07", "\x1b\\"] {
+            let host = feed(&osc52("c", &encode("runner-osc52 ✓"), terminator));
+            assert_eq!(
+                *host.stores.lock().unwrap(),
+                [(ClipboardTarget::Clipboard, "runner-osc52 ✓".to_owned())]
+            );
+        }
+        for selector in ["p", "s"] {
+            let host = feed(&osc52(selector, &encode("primary"), "\x07"));
+            assert_eq!(
+                *host.stores.lock().unwrap(),
+                [(ClipboardTarget::Selection, "primary".to_owned())]
+            );
+        }
+    }
+
+    #[test]
+    fn empty_oversize_and_invalid_osc52_writes_are_ignored() {
+        let largest = "a".repeat(MAX_CLIPBOARD_BYTES);
+        let host = feed(&osc52("c", &encode(&largest), "\x07"));
+        assert_eq!(host.stores.lock().unwrap().len(), 1);
+        for payload in [
+            String::new(),
+            encode(&format!("{largest}a")),
+            "not base64!".into(),
+        ] {
+            let host = feed(&osc52("c", &payload, "\x07"));
+            assert!(host.stores.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn osc52_reads_are_refused_without_a_reply() {
+        for terminator in ["\x07", "\x1b\\"] {
+            let host = feed(&osc52("c", "?", terminator));
+            assert!(host.stores.lock().unwrap().is_empty());
+            assert!(host.replies.lock().unwrap().is_empty());
         }
     }
 }
