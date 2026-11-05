@@ -1,47 +1,6 @@
 use super::*;
 
 impl RemoteClient {
-    pub(crate) fn render_remote_connection(&self, _cx: &mut Context<NativeRoot>) -> AnyElement {
-        let remote = self.workspace.as_ref().unwrap();
-        let (key, glyph, color) = match remote.connection {
-            Connection::Connected => ("client.connection_live", "shield-check.svg", theme::muted()),
-            Connection::Opening => (
-                "client.connection_opening",
-                "refresh-cw.svg",
-                theme::muted(),
-            ),
-            Connection::Reconnecting => (
-                "client.connection_reconnecting",
-                "refresh-cw.svg",
-                theme::warning(),
-            ),
-            Connection::Unreachable => (
-                "client.connection_unreachable",
-                "cloud-off.svg",
-                theme::warning(),
-            ),
-            Connection::Revoked => ("client.connection_revoked", "lock.svg", theme::danger()),
-            Connection::Forgotten => ("client.connection_forgotten", "unplug.svg", theme::muted()),
-        };
-        div()
-            .debug_selector(|| "REMOTE_CONNECTION_ROW".into())
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .items_center()
-            .gap_2()
-            .text_size(theme::text_meta())
-            .text_color(color)
-            .child(icon(glyph, color))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .child(label(key, &remote.computer.name)),
-            )
-            .into_any_element()
-    }
-
     pub(crate) fn mission_surface(&self, cx: &mut Context<NativeRoot>) -> Entity<MissionWorkspace> {
         let remote = self.workspace.as_ref().unwrap();
         let mut sizes = remote.sizes.clone();

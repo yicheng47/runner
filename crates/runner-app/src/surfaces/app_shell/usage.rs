@@ -537,7 +537,7 @@ impl NativeRoot {
                         let _ = owner.update(cx, |this, cx| {
                             if id == "manage" {
                                 this.usage_open = false;
-                                this.enter_settings_route(Some("agents"), window, cx);
+                                this.open_this_computer_settings(Some("agents"), window, cx);
                                 this.open_claude_accounts(cx);
                             } else {
                                 let client = this.core(cx).clone();
@@ -662,7 +662,7 @@ impl NativeRoot {
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
                         this.usage_open = false;
-                        this.enter_settings_route(Some("agents"), window, cx);
+                        this.open_this_computer_settings(Some("agents"), window, cx);
                     });
                 })
                 .child(

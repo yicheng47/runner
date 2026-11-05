@@ -64,6 +64,20 @@ impl NativeRoot {
         self.sync_window_activation(window, cx);
     }
 
+    pub(crate) fn open_this_computer_settings(
+        &mut self,
+        pane: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.remote_client.ui.picker_open = false;
+        if self.remote_client.is_active() {
+            self.return_to_this_computer(window, cx);
+        }
+        self.enter_settings_route(pane, window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn sync_remote_state(&mut self, cx: &mut Context<Self>) {
         if self.remote_client.sync_remote_state(cx) {
             self.clear_remote_transients();

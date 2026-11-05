@@ -320,9 +320,7 @@ impl NativeRoot {
         let brand = self.render_sidebar_brand(update_version, cx);
         let enabled = self.settings(cx).model_runtimes();
         let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
-        let show_usage = self.remote_client.is_local()
-            && !visible_usage_runtimes.is_empty()
-            && !self.front_page_sidebar_collapsed();
+        let show_usage = !visible_usage_runtimes.is_empty() && !self.front_page_sidebar_collapsed();
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
             let snapshot = self.app_store.read(cx).usage.clone();
@@ -343,7 +341,7 @@ impl NativeRoot {
             div()
                 .relative()
                 .w(px((visible_usage_runtimes.len() as f32 * 52. + 20.)
-                    .min(self.front_page_sidebar_width(cx) - 56.)
+                    .min(self.front_page_sidebar_width(cx) - 92.)
                     * zoom))
                 .flex_none()
                 .child(trigger)
@@ -385,16 +383,31 @@ impl NativeRoot {
                     .pt_2()
                     .flex()
                     .items_center()
+                    .relative()
                     .children(usage)
-                    .children(
-                        self.remote_client
-                            .is_active()
-                            .then(|| self.remote_client.render_remote_connection(cx)),
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(4. * zoom))
+                            .child(self.remote_client.render_host_button(cx))
+                            .child(self.render_settings_button(cx)),
                     )
-                    .when(self.remote_client.is_local(), |footer| {
-                        footer.child(div().flex_1())
-                    })
-                    .child(self.render_settings_button(cx)),
+                    .child({
+                        let owner = cx.entity();
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, _, cx| {
+                                owner.update(cx, |this, _| {
+                                    this.remote_client.ui.footer_left = Some(bounds.left())
+                                });
+                            },
+                        )
+                        .absolute()
+                        .inset_0()
+                    }),
             );
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
@@ -408,9 +421,6 @@ impl NativeRoot {
             .pb_3()
             .children(titlebar)
             .child(brand)
-            .when(self.app_store.read(cx).remote_signed_in(), |sidebar| {
-                sidebar.child(self.remote_client.render_computer_trigger(cx))
-            })
             .child(self.front_page_sidebar())
             .child(footer)
             .children(
