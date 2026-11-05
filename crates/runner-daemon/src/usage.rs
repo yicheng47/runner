@@ -577,17 +577,16 @@ pub(crate) fn http_client(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::runtimes::{
-        antigravity::usage::parse_antigravity,
+        claude_code::usage::read_claude_credentials_with, codex::usage::fetch_codex_with_timeout,
+    };
+    use crate::runtimes::{
         claude_code::usage::{
             claude_response, keychain_account, keychain_error_reason, parse_claude,
             parse_credentials, read_claude_credentials_file,
         },
         codex::usage::parse_codex,
-    };
-    #[cfg(unix)]
-    use crate::runtimes::{
-        claude_code::usage::read_claude_credentials_with, codex::usage::fetch_codex_with_timeout,
     };
     use chrono::TimeDelta;
 
@@ -632,28 +631,6 @@ mod tests {
         assert_eq!(windows.len(), 3);
         assert_eq!(windows[2].name, "Fable · week");
         assert_eq!(windows[2].used_percent, 80.);
-    }
-
-    #[test]
-    fn antigravity_remaining_fraction_becomes_used_percent() {
-        let output = serde_json::json!({"status":"SUCCESS","command":{"name":"usage","data":{"groups":[
-            {"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.75,"reset_time":"2026-10-05T11:56:44Z"},{"window":"5h","remaining_fraction":0.25,"reset_time":"2026-09-28T16:56:44Z"}]},
-            {"name":"Claude and GPT models","buckets":[{"window":"5h","remaining_fraction":1.0}]}
-        ]}}});
-        let windows = parse_antigravity(&output).unwrap();
-        assert_eq!(windows[0].name, "Gemini Models · Week used");
-        assert_eq!(windows[0].used_percent, 25.);
-        assert_eq!(windows[1].used_percent, 75.);
-        assert_eq!(windows[2].used_percent, 0.);
-        assert!(windows[0].resets_at.is_some());
-        let mut invalid = output.clone();
-        invalid["command"]["data"]["groups"][0]["buckets"][0]["remaining_fraction"] = 2.0.into();
-        invalid["command"]["data"]["groups"][0]["buckets"][1]["remaining_fraction"] = (-1.0).into();
-        invalid["command"]["data"]["groups"][1]["buckets"] = serde_json::json!([]);
-        assert_eq!(
-            parse_antigravity(&invalid),
-            Err(UnavailableReason::InvalidResponse)
-        );
     }
 
     #[test]

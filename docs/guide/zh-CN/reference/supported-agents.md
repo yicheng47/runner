@@ -2,7 +2,7 @@
 
 Runner 启动独立安装的智能体 CLI，并保留其原生终端界面。在 **设置 → 智能体（Settings → Agents）** 中启用智能体、检查检测到的可执行文件，或指定可执行文件覆盖。
 
-Claude Code、Codex 与 Antigravity CLI 是主要集成。Claude Code 和 Codex 的启动与提醒时序经过专门调整。
+Claude Code 与 Codex 是主要集成，启动与提醒时序经过专门调整。Antigravity CLI 及其他运行时属于次要集成：可运行聊天和任务，但不提供 Runner 的全部功能。Antigravity CLI 没有用量指示器。
 
 ## 智能体设置
 
@@ -43,7 +43,7 @@ Claude Code、Codex 与 Antigravity CLI 是主要集成。Claude Code 和 Codex 
 | 需要输入报告 | 通用原生 Needs you（0.163.0） | 审批与问题 | 否 | 仅扩展报告 | 审批与问题 | 否 | macOS/Linux 上的审批 |
 | 从 CLI 发现模型 | 是 | 是 | 是 | 是 | 否 | 是 | 是 |
 | 通过设置 → 智能体更新 | 是 | 是 | 否 | 是 | 是 | 否 | 否 |
-| 用量指示器 | 是 | 是 | 是 | 否 | 否 | 否 | 否 |
+| 用量指示器 | 是 | 是 | 否 | 否 | 否 | 否 | 否 |
 | 技能 | 目录与开关 | 目录与开关 | 目录 | 目录 | 目录与开关 | 目录 | 目录 |
 | 安装 Runner 技能 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
 | 任务权限 | Bypass | Bypass | Bypass | 受信任工作区 | Bypass | Bypass | Bypass |

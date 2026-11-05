@@ -126,9 +126,6 @@ pub(super) fn unavailable_line(
             crate::i18n::text("ui.couldn_t_reach_anthropic")
         }
         Some(UnavailableReason::CodexNoAnswer) => crate::i18n::text("ui.codex_didn_t_answer"),
-        Some(UnavailableReason::AntigravityNoAnswer) => {
-            crate::i18n::text("ui.antigravity_cli_didn_t_answer")
-        }
         Some(UnavailableReason::InvalidResponse) => {
             crate::runtime_ui::runtime_ui(runtime).usage_invalid
         }
@@ -232,14 +229,6 @@ pub(super) fn usage_window_label(label: &str) -> String {
     }
 }
 
-pub(super) fn usage_group_label(group: &str) -> &str {
-    match group {
-        "Gemini Models" => crate::i18n::text("usage.gemini_models"),
-        "Claude and GPT models" => crate::i18n::text("usage.claude_gpt_models"),
-        _ => group,
-    }
-}
-
 pub(super) fn usage_window_name(name: &str) -> String {
     let (group, label) = name
         .split_once(" · ")
@@ -249,10 +238,7 @@ pub(super) fn usage_window_name(name: &str) -> String {
     } else {
         usage_window_label(label)
     };
-    group.map_or_else(
-        || label.clone(),
-        |group| format!("{} · {label}", usage_group_label(group)),
-    )
+    group.map_or_else(|| label.clone(), |group| format!("{group} · {label}"))
 }
 
 pub(super) fn usage_window_row(
@@ -341,39 +327,12 @@ pub(super) fn usage_section_with_account(
     );
     let icon = ChatIcon::for_runtime(runtime.key());
     let mut rows = Vec::new();
-    let mut previous_group = None;
     if let Some(usage) = usage {
         for window in &usage.windows {
-            let (group, label) = if ui.usage_groups {
-                window
-                    .name
-                    .split_once(" · ")
-                    .map_or((None, window.name.as_str()), |(group, label)| {
-                        (Some(group), label.strip_suffix(" used").unwrap_or(label))
-                    })
-            } else {
-                (None, window.name.as_str())
-            };
+            let name = usage_window_name(&window.name);
             #[cfg(test)]
-            crate::catalog_golden::record(
-                serde_json::json!({"window":window.name,"group":group,"label":label}),
-            );
-            if let Some(group) = group.filter(|group| Some(*group) != previous_group) {
-                rows.push(
-                    div()
-                        .text_size(theme::text_meta())
-                        .text_color(theme::muted())
-                        .child(usage_group_label(group).to_owned())
-                        .into_any_element(),
-                );
-            }
-            previous_group = group;
-            rows.push(usage_window_row(
-                runtime,
-                window,
-                &usage_window_name(label),
-                now,
-            ));
+            crate::catalog_golden::record(serde_json::json!({"window":window.name,"label":name}));
+            rows.push(usage_window_row(runtime, window, &name, now));
         }
     }
     div()
