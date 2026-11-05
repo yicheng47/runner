@@ -38,6 +38,9 @@ pub(crate) fn copy_selection(terminal: &TerminalMirror, cx: &mut App) -> bool {
         return false;
     };
     cx.write_to_clipboard(ClipboardItem::new_string(text));
+    // Ctrl+C copies only while text is selected; clearing it lets the next press interrupt.
+    #[cfg(any(windows, target_os = "linux"))]
+    terminal.clear_selection();
     cx.stop_propagation();
     true
 }
@@ -219,6 +222,37 @@ mod tests {
             host.fail.store(true, Ordering::Relaxed);
             assert!(paste_text_from_clipboard(&terminal, cx).is_err());
             assert!(paste(&terminal, &TerminalPaste::Image, None).is_err());
+        });
+    }
+
+    #[gpui::test]
+    fn copy_clears_the_selection_on_windows_and_linux_so_the_next_ctrl_c_interrupts(
+        cx: &mut TestAppContext,
+    ) {
+        let (host, terminal) = fixture();
+        cx.update(|cx| {
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+            let selected = terminal.selection_text().unwrap();
+            assert!(copy_selection(&terminal, cx));
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text(),
+                Some(selected.clone())
+            );
+            if cfg!(any(windows, target_os = "linux")) {
+                assert_eq!(terminal.selection_text(), None);
+                assert!(!copy_selection(&terminal, cx));
+                let ctrl_c = Keystroke::parse("ctrl-c").unwrap();
+                assert!(handle_key(&terminal, false, &ctrl_c, false, cx).unwrap());
+                assert_eq!(host.inputs.lock().unwrap().last().unwrap(), b"\x03");
+            } else {
+                assert_eq!(terminal.selection_text(), Some(selected));
+                assert!(host.inputs.lock().unwrap().is_empty());
+            }
         });
     }
 }

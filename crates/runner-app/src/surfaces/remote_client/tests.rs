@@ -6142,10 +6142,14 @@ fn remote_terminal_keyboard_copy_interrupt_and_paste_follow_platform_bindings() 
     visual.simulate_keystrokes(&crate::keymap::platform_default("cmd-c"));
     assert_eq!(
         visual.update(|_, cx| cx.read_from_clipboard().unwrap().text()),
-        Some(selection)
+        Some(selection.clone())
     );
     assert!(fake.input.lock().unwrap().is_empty());
-    terminal.clear_selection();
+    if cfg!(any(windows, target_os = "linux")) {
+        assert_eq!(terminal.selection_text(), None);
+    } else {
+        assert_eq!(terminal.selection_text(), Some(selection));
+    }
     visual.simulate_keystrokes("ctrl-c");
     visual.run_until_parked();
     assert_eq!(fake.input.lock().unwrap().last().unwrap().1, b"\x03");

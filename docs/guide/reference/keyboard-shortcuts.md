@@ -42,7 +42,7 @@ In Projects, number shortcuts follow the visible tabs and missions, with a linke
 | Copy terminal selection | ⌘C | Ctrl+C |
 | Paste | ⌘V | Ctrl+V |
 
-On Windows and Linux, **Ctrl+C** copies when terminal text is selected; otherwise it reaches the terminal as an interrupt. **Ctrl+W** remains available to terminal programs; Runner uses **Ctrl+Shift+W** to close a pane or tab.
+On Windows and Linux, **Ctrl+C** copies when terminal text is selected and clears the selection, so the next **Ctrl+C** reaches the terminal as an interrupt; without a selection it is an interrupt. **Ctrl+W** remains available to terminal programs; Runner uses **Ctrl+Shift+W** to close a pane or tab.
 
 ## Find in terminal
 
