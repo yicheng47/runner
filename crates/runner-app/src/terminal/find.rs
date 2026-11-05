@@ -836,7 +836,14 @@ pub(crate) mod tests {
             })
             .collect::<String>();
         terminal.test_feed(1, bytes.as_bytes());
-        cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
+        cx.update(|cx| {
+            crate::keymap::install_bindings(
+                cx,
+                &Default::default(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| Host {
             chat: attached(chat_terminal, cx, 80, 24),
@@ -1232,7 +1239,14 @@ pub(crate) mod tests {
         let (_host, terminal, _tx, _ack) = mirror_named("find", TerminalController::Desktop);
         terminal.test_feed(1, &lines("hit", 0..1100));
         let mut cx = TestAppContext::single();
-        cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
+        cx.update(|cx| {
+            crate::keymap::install_bindings(
+                cx,
+                &Default::default(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| SizedHost {
             chat: attached(chat_terminal, cx, 80, 24),
@@ -1385,7 +1399,14 @@ pub(crate) mod tests {
         let (terminal, armed) = injecting_mirror();
         terminal.test_feed(1, &needle_output());
         let mut cx = TestAppContext::single();
-        cx.update(|cx| crate::keymap::install_bindings(cx, &Default::default(), false));
+        cx.update(|cx| {
+            crate::keymap::install_bindings(
+                cx,
+                &Default::default(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
         let chat_terminal = terminal.clone();
         let window = cx.add_window(move |_, cx| DroppableHost {
             chat: Some(attached(chat_terminal, cx, 80, 24)),

@@ -400,7 +400,14 @@ pub(super) mod tests {
             runtime_discovery,
         );
         let mut cx = TestAppContext::single();
-        cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
+        cx.update(|cx| {
+            keymap::install_bindings(
+                cx,
+                &keymap::KeymapOverrides::new(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
         #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(false, cx));
         #[cfg(any(windows, target_os = "linux"))]

@@ -132,7 +132,6 @@ actions!(
         FocusPreviousPane,
         Hide,
         HideOthers,
-        Maximize,
         Minimize,
         MissionTabNext,
         MissionTabPrevious,

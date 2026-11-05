@@ -4,15 +4,15 @@ use gpui::{App, KeyBinding, Keystroke};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[cfg(target_os = "macos")]
-use crate::{Hide, HideOthers, Quit, QuitAndStopSessions};
+use crate::{Hide, HideOthers, Minimize, Quit, QuitAndStopSessions};
 
 use crate::{
     CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FindInTerminal, FocusNextPane,
-    FocusPreviousPane, Minimize, MissionTabNext, MissionTabPrevious, NavigateNextPage,
-    NavigatePreviousPage, NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste,
-    ResumeFocusedSession, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
-    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
-    ToggleFullscreen, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
+    FocusPreviousPane, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage,
+    NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
+    SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6, SelectTab7, SelectTab8,
+    SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession, ToggleFullscreen, ToggleSidebar,
+    ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,6 +34,29 @@ impl KeymapScope {
             Self::ChatSplit => Some("ChatSplit"),
             Self::Mission => Some("Mission"),
             Self::Terminal => Some("Terminal"),
+        }
+    }
+}
+
+/// Whether Runner's shortcuts or a focused terminal get bare Ctrl chords.
+/// Only Windows and Linux offer the choice; macOS shortcuts use ⌘.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TerminalCtrlKeys {
+    TerminalFirst,
+    #[default]
+    #[serde(other)]
+    RunnerFirst,
+}
+
+#[cfg(any(windows, target_os = "linux"))]
+impl TerminalCtrlKeys {
+    pub(crate) const ALL: [Self; 2] = [Self::RunnerFirst, Self::TerminalFirst];
+
+    pub(crate) fn label_key(self) -> &'static str {
+        match self {
+            Self::RunnerFirst => "keymap.terminal-ctrl-keys.runner-first",
+            Self::TerminalFirst => "keymap.terminal-ctrl-keys.terminal-first",
         }
     }
 }
@@ -114,6 +137,11 @@ fn windows_default(macos: &str) -> String {
         "cmd-f" => "ctrl-shift-f".into(),
         "cmd-w" => "ctrl-shift-w".into(),
         "cmd-t" => "ctrl-shift-t".into(),
+        // Ctrl+D, Ctrl+K and Ctrl+S are terminal editing keys.
+        "cmd-d" => "ctrl-shift-d".into(),
+        "shift-cmd-d" => "alt-shift-d".into(),
+        "cmd-k" => "ctrl-shift-p".into(),
+        "cmd-s" => "ctrl-b".into(),
         "shift-cmd-w" => "alt-f4".into(),
         _ => macos.replace("cmd-", "ctrl-"),
     }
@@ -463,6 +491,8 @@ fn reserved_entries() -> &'static [KeymapEntry] {
                 default: default_combo("alt-cmd-h", None, false),
                 fixed: true,
             },
+            // Ctrl+M is Return in a terminal, so only macOS binds Minimize.
+            #[cfg(target_os = "macos")]
             KeymapEntry {
                 id: "system-minimize",
                 title_key: "keymap.system-minimize.title",
@@ -482,7 +512,11 @@ fn reserved_entries() -> &'static [KeymapEntry] {
             KeymapEntry {
                 id: "copy",
                 title_key: "keymap.copy.title",
-                description_key: "keymap.copy.description",
+                description_key: if cfg!(any(windows, target_os = "linux")) {
+                    "keymap.copy.description-ctrl"
+                } else {
+                    "keymap.copy.description"
+                },
                 scope: KeymapScope::Terminal,
                 default: default_combo("cmd-c", None, false),
                 fixed: true,
@@ -497,6 +531,13 @@ fn reserved_entries() -> &'static [KeymapEntry] {
             },
         ]
     })
+}
+
+/// System-owned keys the shortcuts page lists without letting them change.
+pub(crate) fn display_only_entries() -> impl Iterator<Item = &'static KeymapEntry> {
+    ["copy", "system-paste", "system-toggle-fullscreen"]
+        .into_iter()
+        .filter_map(|id| reserved_entries().iter().find(|entry| entry.id == id))
 }
 
 pub(crate) type KeymapOverrides = BTreeMap<String, Option<KeyCombo>>;
@@ -814,12 +855,12 @@ pub(crate) fn format_combo(combo: &KeyCombo) -> String {
     format!(
         "{}{}{}{}{}",
         if combo.ctrl { "Ctrl+" } else { "" },
+        if combo.alt { "Alt+" } else { "" },
         if combo.shift && !combo.shift_optional {
             "Shift+"
         } else {
             ""
         },
-        if combo.alt { "Alt+" } else { "" },
         if combo.meta {
             if cfg!(target_os = "linux") {
                 "Super+"
@@ -963,9 +1004,35 @@ fn binding_strings(combo: &KeyCombo) -> Vec<String> {
     }
 }
 
+/// Terminal first leaves a chord of Ctrl plus one key to a focused terminal;
+/// zoom keeps working there in both modes.
+pub(crate) fn frees_for_terminal(entry: &KeymapEntry, combo: &KeyCombo) -> bool {
+    combo.ctrl
+        && !combo.shift
+        && !combo.alt
+        && !combo.meta
+        && !matches!(entry.id, "zoom-in" | "zoom-out" | "zoom-reset")
+}
+
+fn installed_context(
+    entry: &KeymapEntry,
+    combo: &KeyCombo,
+    terminal_ctrl_keys: TerminalCtrlKeys,
+) -> Option<String> {
+    let context = binding_context(entry, combo);
+    if terminal_ctrl_keys == TerminalCtrlKeys::RunnerFirst || !frees_for_terminal(entry, combo) {
+        return context.map(str::to_owned);
+    }
+    Some(match context {
+        Some(context) => format!("({context}) && !Terminal"),
+        None => "!Terminal".to_owned(),
+    })
+}
+
 fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str> {
-    let modified =
-        combo.meta || (cfg!(any(windows, target_os = "linux")) && combo == &entry.default);
+    // On Windows and Linux, Ctrl keys inside terminals follow the Ctrl keys
+    // in terminals setting rather than staying out of terminals here.
+    let modified = combo.meta || (cfg!(any(windows, target_os = "linux")) && combo.ctrl);
     match entry.id {
         // The launcher's search is focused on every Start page.
         "new-chat" | "command-palette" if modified => {
@@ -985,6 +1052,7 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
 pub(crate) fn install_bindings(
     cx: &mut App,
     overrides: &KeymapOverrides,
+    terminal_ctrl_keys: TerminalCtrlKeys,
     shortcuts_suspended: bool,
 ) {
     cx.clear_key_bindings();
@@ -1009,7 +1077,8 @@ pub(crate) fn install_bindings(
         KeyBinding::new(&platform_default("cmd-h"), Hide, None),
         #[cfg(target_os = "macos")]
         KeyBinding::new(&platform_default("cmd-alt-h"), HideOthers, None),
-        KeyBinding::new(&platform_default("cmd-m"), Minimize, None),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
     ]);
     if let Some(combo) = effective_binding("close-pane", overrides) {
@@ -1036,8 +1105,9 @@ pub(crate) fn install_bindings(
         let Some(combo) = effective_binding(entry.id, overrides) else {
             continue;
         };
+        let context = installed_context(entry, &combo, terminal_ctrl_keys);
+        let context = context.as_deref();
         for binding in binding_strings(&combo) {
-            let context = binding_context(entry, &combo);
             let key_binding = match entry.id {
                 "new-chat" => KeyBinding::new(&binding, NewTab, context),
                 "new-terminal" => KeyBinding::new(&binding, NewTerminal, context),
@@ -1310,10 +1380,10 @@ mod tests {
         let overrides = KeymapOverrides::new();
         let reserved = reserved_entries()
             .iter()
-            .find(|entry| entry.id == "system-minimize")
+            .find(|entry| entry.id == "system-toggle-fullscreen")
             .unwrap();
         let conflict = find_conflict(&reserved.default, "new-chat", &overrides).unwrap();
-        assert_eq!(conflict.id, "system-minimize");
+        assert_eq!(conflict.id, "system-toggle-fullscreen");
         let copy = reserved_entries()
             .iter()
             .find(|entry| entry.id == "copy")
@@ -1350,7 +1420,7 @@ mod tests {
                     id.into(),
                     Some(default_combo("cmd-enter", None, false)),
                 )]);
-                install_bindings(cx, &overrides, false);
+                install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
                 for (context, action) in [("StartChat", &ConfirmStartChat as &dyn gpui::Action)] {
                     for nested in [false, true] {
                         let mut contexts = vec![
@@ -1399,7 +1469,7 @@ mod tests {
                     None,
                 ] {
                     let overrides = KeymapOverrides::from([(id.into(), combo.clone())]);
-                    install_bindings(cx, &overrides, false);
+                    install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
                     let keymap = cx.key_bindings();
                     let keymap = keymap.borrow();
                     let bindings = keymap.bindings_for_action(action).collect::<Vec<_>>();
@@ -1416,7 +1486,12 @@ mod tests {
                     }
                 }
             }
-            install_bindings(cx, &KeymapOverrides::new(), true);
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                true,
+            );
             let bindings = cx.key_bindings();
             let bindings = bindings.borrow();
             assert_eq!(bindings.bindings_for_action(&ConfirmStartChat).count(), 1);
@@ -1435,7 +1510,12 @@ mod tests {
     fn installed_close_keys_match_fixed_defaults_without_a_focus_context() {
         let cx = gpui::TestAppContext::single();
         cx.update(|cx| {
-            install_bindings(cx, &KeymapOverrides::new(), false);
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            );
             let keymap = cx.key_bindings();
             let keymap = keymap.borrow();
             for (id, action) in [
@@ -1865,9 +1945,10 @@ mod tests {
             ("cmd-enter", "ctrl-enter"),
             ("shift-cmd-w", "alt-f4"),
             ("shift-cmd-n", "shift-ctrl-n"),
-            ("cmd-d", "ctrl-d"),
-            ("shift-cmd-d", "shift-ctrl-d"),
-            ("cmd-k", "ctrl-k"),
+            ("cmd-d", "ctrl-shift-d"),
+            ("shift-cmd-d", "alt-shift-d"),
+            ("cmd-k", "ctrl-shift-p"),
+            ("cmd-s", "ctrl-b"),
             ("shift-cmd-k", "shift-ctrl-k"),
             ("shift-cmd-r", "shift-ctrl-r"),
             ("shift-cmd-x", "shift-ctrl-x"),
@@ -1905,7 +1986,19 @@ mod tests {
                 assert!(!windows.modifiers.platform, "{}", entry.id);
                 assert!(code_from_gpui_key(&windows.key).is_some(), "{}", entry.id);
                 if windows.key.len() == 1 && windows.key.as_bytes()[0].is_ascii_alphabetic() {
-                    assert!(windows.modifiers.control, "{}", entry.id);
+                    assert!(
+                        windows.modifiers.control || windows.modifiers.alt,
+                        "{}",
+                        entry.id
+                    );
+                }
+                // Ctrl+Alt is AltGr text input on Windows and many Linux layouts.
+                if entries().contains(entry) {
+                    assert!(
+                        !(windows.modifiers.control && windows.modifiers.alt),
+                        "{}",
+                        entry.id
+                    );
                 }
             }
         }
@@ -1919,7 +2012,11 @@ mod tests {
             .filter(|entry| {
                 !matches!(
                     entry.id,
-                    "system-quit" | "system-quit-stop" | "system-hide" | "system-hide-others"
+                    "system-quit"
+                        | "system-quit-stop"
+                        | "system-hide"
+                        | "system-hide-others"
+                        | "system-minimize"
                 )
             })
             .map(|entry| {
@@ -1965,6 +2062,15 @@ mod tests {
             assert_eq!(binding_strings(&user_combo), ["ctrl-p"]);
             assert_eq!(
                 binding_context(entry, &user_combo),
+                if cfg!(any(windows, target_os = "linux")) {
+                    binding_context(entry, &entry.default)
+                } else {
+                    Some("!TextInput && !Settings && !Terminal")
+                }
+            );
+            let alt_combo = key_combo("KeyP", false, false, true, false, None, false);
+            assert_eq!(
+                binding_context(entry, &alt_combo),
                 Some("!TextInput && !Settings && !Terminal")
             );
         }
@@ -1994,7 +2100,11 @@ mod tests {
             assert!(!entry.default.meta, "{}", entry.id);
             assert!(!matches!(
                 entry.id,
-                "system-quit" | "system-quit-stop" | "system-hide" | "system-hide-others"
+                "system-quit"
+                    | "system-quit-stop"
+                    | "system-hide"
+                    | "system-hide-others"
+                    | "system-minimize"
             ));
             for binding in binding_strings(&entry.default) {
                 assert!(!binding.contains("cmd-"), "{}: {binding}", entry.id);
@@ -2013,10 +2123,10 @@ mod tests {
             ("new-terminal", "Ctrl+Shift+T"),
             ("new-mission", "Ctrl+Shift+M"),
             ("new-window", "Ctrl+Shift+N"),
-            ("command-palette", "Ctrl+K"),
-            ("toggle-sidebar", "Ctrl+S"),
-            ("split-pane-right", "Ctrl+D"),
-            ("split-pane-down", "Ctrl+Shift+D"),
+            ("command-palette", "Ctrl+Shift+P"),
+            ("toggle-sidebar", "Ctrl+B"),
+            ("split-pane-right", "Ctrl+Shift+D"),
+            ("split-pane-down", "Alt+Shift+D"),
             ("close-pane", "Ctrl+Shift+W"),
             ("system-close-window", "Alt+F4"),
             ("stop-session", "Ctrl+Shift+X"),
@@ -2044,5 +2154,294 @@ mod tests {
             &KeymapOverrides::new()
         )
         .is_none());
+    }
+
+    fn fired(cx: &App, key: &str, stack: &[&str]) -> Option<Box<dyn gpui::Action>> {
+        let contexts = stack
+            .iter()
+            .map(|context| gpui::KeyContext::parse(context).unwrap())
+            .collect::<Vec<_>>();
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        keymap
+            .bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts)
+            .0
+            .first()
+            .map(|binding| binding.action().boxed_clone())
+    }
+
+    fn assert_fires(cx: &App, key: &str, stack: &[&str], action: Option<&dyn gpui::Action>) {
+        let actual = fired(cx, key, stack);
+        match (action, &actual) {
+            (Some(expected), Some(actual)) => {
+                assert!(
+                    actual.partial_eq(expected),
+                    "{key} in {stack:?}: {actual:?}"
+                )
+            }
+            (None, None) => {}
+            _ => panic!("{key} in {stack:?}: expected {action:?}, got {actual:?}"),
+        }
+    }
+
+    const TERMINAL: &[&str] = &["Root", "ChatSplit", "Terminal"];
+    const MISSION_TERMINAL: &[&str] = &["Root", "Mission", "Terminal"];
+    const SIDEBAR: &[&str] = &["Root"];
+
+    #[test]
+    fn minimize_keeps_command_m_on_macos_and_no_ctrl_m_elsewhere() {
+        let minimize = reserved_entries()
+            .iter()
+            .find(|entry| entry.id == "system-minimize");
+        assert_eq!(minimize.is_some(), cfg!(target_os = "macos"));
+        assert!(entries().iter().all(|entry| entry.id != "system-minimize"));
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            for mode in [
+                TerminalCtrlKeys::RunnerFirst,
+                TerminalCtrlKeys::TerminalFirst,
+            ] {
+                install_bindings(cx, &KeymapOverrides::new(), mode, false);
+                let keymap = cx.key_bindings();
+                let keymap = keymap.borrow();
+                let bindings = keymap
+                    .bindings_for_action(&crate::Minimize)
+                    .collect::<Vec<_>>();
+                #[cfg(target_os = "macos")]
+                {
+                    assert_eq!(bindings.len(), 1);
+                    assert!(bindings[0].predicate().is_none());
+                    assert_eq!(
+                        bindings[0].match_keystrokes(&[Keystroke::parse("cmd-m").unwrap()]),
+                        Some(false)
+                    );
+                }
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    assert!(bindings.is_empty());
+                    assert!(keymap
+                        .all_bindings_for_input(&[Keystroke::parse("ctrl-m").unwrap()])
+                        .is_empty());
+                }
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn windows_defaults_leave_terminal_editing_keys_to_terminals() {
+        for (id, binding) in [
+            ("split-pane-right", "ctrl-shift-d"),
+            ("split-pane-down", "alt-shift-d"),
+            ("command-palette", "ctrl-shift-p"),
+            ("toggle-sidebar", "ctrl-b"),
+        ] {
+            assert_eq!(binding_strings(&entry(id).unwrap().default), [binding]);
+        }
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            for mode in [
+                TerminalCtrlKeys::RunnerFirst,
+                TerminalCtrlKeys::TerminalFirst,
+            ] {
+                install_bindings(cx, &KeymapOverrides::new(), mode, false);
+                for key in ["ctrl-d", "ctrl-k", "ctrl-s", "ctrl-m"] {
+                    assert_fires(cx, key, TERMINAL, None);
+                }
+                for stack in [TERMINAL, SIDEBAR] {
+                    assert_fires(cx, "ctrl-shift-d", stack, Some(&SplitPaneRight));
+                    assert_fires(cx, "alt-shift-d", stack, Some(&SplitPaneDown));
+                    assert_fires(cx, "ctrl-shift-p", stack, Some(&CommandPalette));
+                }
+                assert_fires(cx, "ctrl-b", SIDEBAR, Some(&ToggleSidebar));
+            }
+        });
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn terminal_first_frees_bare_ctrl_defaults_only_inside_terminals() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            type FreedKey<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a dyn gpui::Action);
+            let bare: [FreedKey<'_>; 5] = [
+                ("ctrl-n", TERMINAL, SIDEBAR, &NewTab),
+                ("ctrl-b", TERMINAL, SIDEBAR, &ToggleSidebar),
+                (
+                    "ctrl-[",
+                    TERMINAL,
+                    &["Root", "ChatSplit"],
+                    &FocusPreviousPane,
+                ),
+                (
+                    "ctrl-]",
+                    MISSION_TERMINAL,
+                    &["Root", "Mission"],
+                    &MissionTabNext,
+                ),
+                ("ctrl-1", TERMINAL, SIDEBAR, &SelectTab1),
+            ];
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            );
+            for (key, inside, _, action) in bare {
+                assert_fires(cx, key, inside, Some(action));
+            }
+            assert_fires(cx, "ctrl-,", TERMINAL, Some(&OpenSettings));
+
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::TerminalFirst,
+                false,
+            );
+            for (key, inside, outside, action) in bare {
+                assert_fires(cx, key, inside, None);
+                assert_fires(cx, key, outside, Some(action));
+            }
+            assert_fires(cx, "ctrl-,", TERMINAL, None);
+            for (key, action) in [
+                ("ctrl-shift-p", &CommandPalette as &dyn gpui::Action),
+                ("ctrl-shift-d", &SplitPaneRight),
+                ("ctrl-v", &Paste),
+                ("ctrl-=", &ZoomIn),
+                ("ctrl-+", &ZoomIn),
+                ("ctrl--", &ZoomOut),
+                ("ctrl-0", &ZoomReset),
+                ("ctrl-shift-t", &NewTerminal),
+            ] {
+                assert_fires(cx, key, TERMINAL, Some(action));
+            }
+            assert_fires(
+                cx,
+                "ctrl-shift-f",
+                &["Root", "TerminalFind", "TextInput"],
+                Some(&FindInTerminal),
+            );
+        });
+    }
+
+    #[test]
+    fn terminal_first_follows_the_effective_binding() {
+        let bare = key_combo("KeyJ", false, true, false, false, None, false);
+        let shifted = key_combo("KeyJ", false, true, false, true, None, false);
+        let bare_zoom = key_combo("KeyU", false, true, false, false, None, false);
+        let overrides = KeymapOverrides::from([
+            ("new-terminal".to_owned(), Some(bare.clone())),
+            ("new-mission".to_owned(), Some(shifted.clone())),
+            ("zoom-reset".to_owned(), Some(bare_zoom.clone())),
+            (
+                "split-pane-right".to_owned(),
+                Some(key_combo("KeyY", false, true, false, false, None, false)),
+            ),
+        ]);
+        assert!(frees_for_terminal(entry("new-terminal").unwrap(), &bare));
+        assert!(!frees_for_terminal(entry("new-mission").unwrap(), &shifted));
+        assert!(!frees_for_terminal(
+            entry("zoom-reset").unwrap(),
+            &bare_zoom
+        ));
+        assert!(!frees_for_terminal(
+            entry("new-terminal").unwrap(),
+            &key_combo("KeyJ", true, false, false, false, None, false)
+        ));
+        assert!(!frees_for_terminal(
+            entry("new-terminal").unwrap(),
+            &key_combo("KeyJ", false, true, true, false, None, false)
+        ));
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
+            assert_fires(cx, "ctrl-j", TERMINAL, Some(&NewTerminal));
+            assert_fires(cx, "ctrl-y", TERMINAL, Some(&SplitPaneRight));
+
+            install_bindings(cx, &overrides, TerminalCtrlKeys::TerminalFirst, false);
+            assert_fires(cx, "ctrl-j", TERMINAL, None);
+            assert_fires(cx, "ctrl-j", MISSION_TERMINAL, None);
+            assert_fires(cx, "ctrl-j", SIDEBAR, Some(&NewTerminal));
+            assert_fires(cx, "ctrl-y", TERMINAL, None);
+            assert_fires(cx, "ctrl-y", SIDEBAR, Some(&SplitPaneRight));
+            assert_fires(cx, "ctrl-shift-j", TERMINAL, Some(&NewMission));
+            assert_fires(cx, "ctrl-u", TERMINAL, Some(&ZoomReset));
+            // macOS defaults use ⌘ and are never freed.
+            #[cfg(target_os = "macos")]
+            for (key, action) in [
+                ("cmd-n", &NewTab as &dyn gpui::Action),
+                ("cmd-s", &ToggleSidebar),
+                ("cmd-1", &SelectTab1),
+            ] {
+                assert_fires(cx, key, TERMINAL, Some(action));
+            }
+        });
+    }
+
+    #[test]
+    fn terminal_first_contexts_parse_and_keep_their_outside_rules() {
+        let combo = key_combo("KeyJ", false, true, false, false, None, false);
+        let in_terminal = TERMINAL
+            .iter()
+            .map(|context| gpui::KeyContext::parse(context).unwrap())
+            .collect::<Vec<_>>();
+        for entry in entries() {
+            let context = installed_context(entry, &combo, TerminalCtrlKeys::TerminalFirst);
+            let reaches_terminal = context.as_deref().is_none_or(|context| {
+                gpui::KeyBindingContextPredicate::parse(context)
+                    .unwrap()
+                    .depth_of(&in_terminal)
+                    .is_some()
+            });
+            if frees_for_terminal(entry, &combo) {
+                assert!(!reaches_terminal, "{}", entry.id);
+            } else {
+                assert!(entry.id.starts_with("zoom-"), "{}", entry.id);
+                assert!(reaches_terminal, "{}", entry.id);
+            }
+            assert_eq!(
+                installed_context(entry, &combo, TerminalCtrlKeys::RunnerFirst).as_deref(),
+                binding_context(entry, &combo),
+                "{}",
+                entry.id
+            );
+        }
+        let settings = entry("open-settings").unwrap();
+        let predicate = gpui::KeyBindingContextPredicate::parse(
+            &installed_context(settings, &combo, TerminalCtrlKeys::TerminalFirst).unwrap(),
+        )
+        .unwrap();
+        let in_settings_field = ["Root", "Settings", "TextInput"]
+            .map(|context| gpui::KeyContext::parse(context).unwrap());
+        assert!(predicate.depth_of(&in_settings_field).is_some());
+        let toggle = entry("toggle-sidebar").unwrap();
+        let predicate = gpui::KeyBindingContextPredicate::parse(
+            &installed_context(toggle, &combo, TerminalCtrlKeys::TerminalFirst).unwrap(),
+        )
+        .unwrap();
+        assert!(!predicate.eval(&in_settings_field));
+    }
+
+    #[test]
+    #[cfg(any(windows, target_os = "linux"))]
+    fn saved_ctrl_k_palette_override_follows_the_terminal_policy() {
+        let ctrl_k = key_combo("KeyK", false, true, false, false, None, false);
+        let overrides = KeymapOverrides::from([("command-palette".to_owned(), Some(ctrl_k))]);
+        let launcher: &[&str] = &["Root", "LauncherSearch", "TextInput"];
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
+            for stack in [TERMINAL, launcher, SIDEBAR] {
+                assert_fires(cx, "ctrl-k", stack, Some(&CommandPalette));
+            }
+            assert_fires(cx, "ctrl-shift-p", TERMINAL, None);
+            assert_fires(cx, "ctrl-k", &["Root", "Settings", "TextInput"], None);
+
+            install_bindings(cx, &overrides, TerminalCtrlKeys::TerminalFirst, false);
+            assert_fires(cx, "ctrl-k", TERMINAL, None);
+            for stack in [launcher, SIDEBAR] {
+                assert_fires(cx, "ctrl-k", stack, Some(&CommandPalette));
+            }
+        });
     }
 }

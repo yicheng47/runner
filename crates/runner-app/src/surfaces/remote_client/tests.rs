@@ -5436,6 +5436,7 @@ fn remote_split_shortcuts_use_target_focus_with_no_or_disjoint_local_tabs() {
                     crate::keymap::install_bindings(
                         cx,
                         &crate::keymap::KeymapOverrides::new(),
+                        crate::keymap::TerminalCtrlKeys::RunnerFirst,
                         false,
                     )
                 });
@@ -6539,7 +6540,12 @@ fn remote_terminal_keyboard_copy_interrupt_and_paste_follow_platform_bindings() 
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
     cx.update(|cx| {
-        crate::keymap::install_bindings(cx, &crate::keymap::KeymapOverrides::new(), false)
+        crate::keymap::install_bindings(
+            cx,
+            &crate::keymap::KeymapOverrides::new(),
+            crate::keymap::TerminalCtrlKeys::RunnerFirst,
+            false,
+        )
     });
     let (store, fake, _) = fixture(&mut cx, temp.path());
     let window = add_window(&mut cx, &store, temp.path(), "remote-clipboard");

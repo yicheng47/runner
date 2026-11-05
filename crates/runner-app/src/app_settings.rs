@@ -367,6 +367,8 @@ pub struct AppSettings {
     pub runner_skill_enabled: bool,
     #[serde(default, deserialize_with = "keymap::deserialize_overrides")]
     pub keymap_overrides: KeymapOverrides,
+    #[cfg(any(windows, target_os = "linux"))]
+    pub terminal_ctrl_keys: keymap::TerminalCtrlKeys,
 }
 
 impl Default for AppSettings {
@@ -418,11 +420,24 @@ impl Default for AppSettings {
             initialized_command_install: false,
             runner_skill_enabled: true,
             keymap_overrides: KeymapOverrides::new(),
+            #[cfg(any(windows, target_os = "linux"))]
+            terminal_ctrl_keys: Default::default(),
         }
     }
 }
 
 impl AppSettings {
+    pub(crate) fn terminal_ctrl_keys(&self) -> keymap::TerminalCtrlKeys {
+        #[cfg(any(windows, target_os = "linux"))]
+        {
+            self.terminal_ctrl_keys
+        }
+        #[cfg(target_os = "macos")]
+        {
+            keymap::TerminalCtrlKeys::RunnerFirst
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
@@ -643,6 +658,48 @@ mod tests {
             assert_eq!(json["optionAsMeta"], mode.key());
             assert_eq!(AppSettings::load(&path).unwrap(), settings);
         }
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn terminal_ctrl_keys_default_to_runner_first_and_persist_each_mode() {
+        use crate::keymap::TerminalCtrlKeys;
+
+        for json in [r#"{"appZoom":1.2}"#, r#"{"terminalCtrlKeys":"future"}"#] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert_eq!(settings.terminal_ctrl_keys(), TerminalCtrlKeys::RunnerFirst);
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        for (mode, saved) in [
+            (TerminalCtrlKeys::RunnerFirst, "runner-first"),
+            (TerminalCtrlKeys::TerminalFirst, "terminal-first"),
+        ] {
+            let settings = AppSettings {
+                terminal_ctrl_keys: mode,
+                ..AppSettings::default()
+            };
+            settings.save(&path).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(json["terminalCtrlKeys"], saved);
+            let loaded = AppSettings::load(&path).unwrap();
+            assert_eq!(loaded, settings);
+            assert_eq!(loaded.terminal_ctrl_keys(), mode);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn terminal_ctrl_keys_do_not_exist_on_macos() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminalCtrlKeys":"terminal-first"}"#).unwrap();
+        assert_eq!(
+            settings.terminal_ctrl_keys(),
+            crate::keymap::TerminalCtrlKeys::RunnerFirst
+        );
+        let json = serde_json::to_value(&settings).unwrap();
+        assert!(json.get("terminalCtrlKeys").is_none());
     }
 
     #[test]

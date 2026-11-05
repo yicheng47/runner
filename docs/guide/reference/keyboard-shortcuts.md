@@ -16,8 +16,8 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | New tab: show the launcher page; the tab is created when something starts | ⌘N | Ctrl+N |
 | New terminal; fill the focused empty pane or create a tab | ⌘T | Ctrl+Shift+T |
 | New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
-| Command palette | ⌘K | Ctrl+K |
-| Toggle sidebar | ⌘S | Ctrl+S |
+| Command palette | ⌘K | Ctrl+Shift+P |
+| Toggle sidebar | ⌘S | Ctrl+B |
 | Toggle mission terminal drawer | ⌥F12 | Alt+F12 |
 | Open Settings | ⌘, | Ctrl+, |
 | Previous recently viewed page | ⇧⌘[ | Ctrl+Shift+[ |
@@ -32,8 +32,8 @@ In Projects, number shortcuts follow the visible tabs and missions, with a linke
 | --- | --- | --- |
 | Previous chat pane | ⌘[ | Ctrl+[ |
 | Next chat pane | ⌘] | Ctrl+] |
-| Split right | ⌘D | Ctrl+D |
-| Split down | ⇧⌘D | Ctrl+Shift+D |
+| Split right | ⌘D | Ctrl+Shift+D |
+| Split down | ⇧⌘D | Alt+Shift+D |
 | Hide focused mission drawer, close focused pane, close chat tab, or close the launcher page | ⌘W | Ctrl+Shift+W |
 | Stop focused chat or mission slot | ⇧⌘X | Ctrl+Shift+X |
 | Resume focused stopped chat or mission slot | ⇧⌘R | Ctrl+Shift+R |
@@ -42,7 +42,16 @@ In Projects, number shortcuts follow the visible tabs and missions, with a linke
 | Copy terminal selection | ⌘C | Ctrl+C |
 | Paste | ⌘V | Ctrl+V |
 
-On Windows and Linux, **Ctrl+C** copies when terminal text is selected and clears the selection, so the next **Ctrl+C** reaches the terminal as an interrupt; without a selection it is an interrupt. **Ctrl+W** remains available to terminal programs; Runner uses **Ctrl+Shift+W** to close a pane or tab.
+On Windows and Linux, **Ctrl+C** copies when terminal text is selected and clears the selection, so the next **Ctrl+C** reaches the terminal as an interrupt; without a selection it is an interrupt. **Ctrl+W**, **Ctrl+D**, **Ctrl+K**, **Ctrl+S** and **Ctrl+M** remain available to terminal programs: Runner uses **Ctrl+Shift+W** to close a pane or tab, **Ctrl+Shift+D** and **Alt+Shift+D** to split, **Ctrl+Shift+P** for the command palette and **Ctrl+B** for the sidebar.
+
+## Ctrl keys in terminals
+
+On Windows and Linux, **Settings → Keyboard shortcuts → Ctrl keys in terminals** decides which side gets a bare Ctrl key while a terminal has focus: a chat pane, terminal tab, mission slot, mission drawer or remote terminal.
+
+- **Runner first** (the default) keeps every Runner shortcut working, including in a focused terminal.
+- **Terminal first** sends a shortcut made of Ctrl and one key, without Shift or Alt, to the focused terminal instead. With the default keys this frees **Ctrl+N**, **Ctrl+B**, **Ctrl+[** / **Ctrl+]**, **Ctrl+1–9** and **Ctrl+,**; a shortcut you changed to a bare Ctrl key is freed too. Those rows show an **Outside terminals** tag, and the shortcuts still work everywhere else, such as from the sidebar.
+
+Copy with a selection, paste and zoom work in a terminal in both modes. The setting takes effect immediately. macOS has no such setting, because ⌘ shortcuts never reach a terminal.
 
 ## Find in terminal
 
@@ -71,7 +80,7 @@ The dialog confirmation binding is fixed. In the launcher, ↑/↓ select rows, 
 | Zoom out | ⌘− | Ctrl+− |
 | Reset app zoom | ⌘0 | Ctrl+0 |
 | Close window and save layout | ⇧⌘W | Alt+F4 |
-| Minimize | ⌘M | Ctrl+M |
+| Minimize | ⌘M | No default shortcut |
 | Toggle fullscreen | ⌃⌘F | F11 |
 | Quit Runner | ⌘Q | Close the last window |
 | Quit and Stop Sessions | ⌥⌘Q | No default shortcut |
@@ -82,7 +91,7 @@ App zoom changes the application controls. Set terminal text size separately in 
 
 ## Customize
 
-Select an editable shortcut in **Settings → Keyboard shortcuts** and press the new combination. Runner checks conflicts within overlapping contexts. Fixed window and system bindings cannot be reassigned; the tab-selection group can be unbound as a group. Use **Reset all to defaults** to restore the standard map.
+**Settings → Keyboard shortcuts** groups shortcuts into **Navigation and creation**, **Panes and sessions**, **Missions**, **Terminal** and **Zoom and window**; search filters the rows within each section and hides a section with no match. Select an editable shortcut and press the new combination. Runner checks conflicts within overlapping contexts. Fixed window and system bindings cannot be reassigned; the tab-selection group can be unbound as a group. Use **Reset all to defaults** to restore the standard map.
 
 These tables follow Runner's shared keymap and its Windows/Linux Ctrl defaults. Agent commands such as slash commands and terminal editing keys belong to the agent itself.
 

@@ -1327,7 +1327,12 @@ mod remote_isolation_tests {
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
         cx.update(|cx| {
-            crate::keymap::install_bindings(cx, &crate::keymap::KeymapOverrides::new(), false)
+            crate::keymap::install_bindings(
+                cx,
+                &crate::keymap::KeymapOverrides::new(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
         });
         let (store, fake, _) = fixture(&mut cx, temp.path());
         crate::surfaces::remote_client::tests::enable_missions(&fake);
