@@ -94,10 +94,7 @@ impl NativeRoot {
         if self.launcher_tab_pending(&original.id, cx) {
             return;
         }
-        let bounds = self
-            .front_page_pane_bounds()
-            .get(&PaneKey::new(&original.id, pane_id))
-            .copied();
+        let bounds = self.split_pane_bounds(&original.id, pane_id, cx);
         if !matches!(
             split_decision(bounds, orientation, self.settings(cx).app_zoom),
             SplitDecision::Allowed
@@ -107,6 +104,9 @@ impl NativeRoot {
                 cx.notify();
             }
             return;
+        }
+        if self.maximized_panes.remove(&original.id).is_some() {
+            cx.notify();
         }
         let terminal_location = self.active_tab_is_terminal(cx).then(|| {
             let session = original
@@ -195,6 +195,51 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.split_focused_pane(SplitOrientation::Column, window, cx);
+    }
+
+    pub(crate) fn toggle_maximize_pane_action(
+        &mut self,
+        _: &ToggleMaximizePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.front_page_is_chat() {
+            return;
+        }
+        let Some(pane_id) = self
+            .front_page_layout()
+            .map(|layout| layout.focused_pane_id.clone())
+        else {
+            return;
+        };
+        self.toggle_maximize_pane(&pane_id, window, cx);
+    }
+
+    pub(crate) fn toggle_maximize_pane(
+        &mut self,
+        pane_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_id) = self.front_page_layout().and_then(|layout| {
+            layout
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.id == pane_id)
+                .map(|leaf| leaf.session_id.clone())
+        }) else {
+            return;
+        };
+        match session_id {
+            Some(session_id) => self.focus_terminal(pane_id, &session_id, window, cx),
+            None => self.focus_pane(pane_id, cx),
+        }
+        let Some(layout) = self.front_page_layout().cloned() else {
+            return;
+        };
+        toggle_maximized(&mut self.maximized_panes, &layout, pane_id);
+        cx.notify();
     }
 
     pub(super) fn split_focused_pane(

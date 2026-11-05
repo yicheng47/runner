@@ -133,6 +133,17 @@ impl RemoteWindow {
 }
 
 impl RemoteClient {
+    /// Changes whenever the host connection is reset or lost: a re-pair, a
+    /// host daemon restart, a dropped or restored connection.
+    pub(crate) fn connection_marker(&self) -> Option<(u64, bool)> {
+        self.workspace.as_ref().map(|remote| {
+            (
+                remote.attachment_generation,
+                remote.connection == Connection::Connected,
+            )
+        })
+    }
+
     pub(crate) fn report_remote_input_error(
         &mut self,
         address: &str,

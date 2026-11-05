@@ -154,61 +154,6 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn open_chat_rename(
-        &mut self,
-        target: ChatRenameTarget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let original = match &target {
-            ChatRenameTarget::Session { original, .. } => original.clone(),
-        };
-        let placeholder = match &target {
-            ChatRenameTarget::Session { session_id, .. }
-                if self.session_entry(session_id, cx).is_some_and(|entry| {
-                    Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell)
-                }) =>
-            {
-                crate::i18n::message("ui.terminal_name")
-            }
-            ChatRenameTarget::Session { .. } => crate::i18n::message("ui.chat_name"),
-        };
-        let input = cx.new(|input_cx| {
-            runner_app::ui::TextField::new(input_cx.focus_handle(), original, placeholder, false)
-                .text_size(theme::text_body())
-        });
-        input.update(cx, |input, input_cx| input.select_all(input_cx));
-        let input_focus = input.read(cx).focus_handle();
-        self.chat_rename_modal = Some(ChatRenameModal {
-            target,
-            input,
-            close_focus: cx.focus_handle(),
-            cancel_focus: cx.focus_handle(),
-            submit_focus: cx.focus_handle(),
-            submitting: false,
-            error: None,
-        });
-        input_focus.focus(window, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn close_chat_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .chat_rename_modal
-            .as_ref()
-            .is_some_and(|modal| modal.submitting)
-        {
-            return;
-        }
-        self.chat_rename_modal = None;
-        self.focus_active_terminal(window, cx);
-        cx.notify();
-    }
-
-    pub(crate) fn submit_chat_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.submit_workspace_rename(false, window, cx);
-    }
-
     pub(crate) fn begin_pane_rename(
         &mut self,
         session_id: String,
@@ -235,10 +180,9 @@ impl NativeRoot {
             field.select_all(input_cx);
         });
         let focus = input.read(cx).focus_handle();
-        let root = cx.entity();
         self._pane_rename_focus_subscription =
-            Some(cx.on_focus_out(&focus, window, move |_, _, window, cx| {
-                root.update(cx, |this, cx| this.submit_pane_rename(window, cx));
+            Some(cx.on_focus_out(&focus, window, |this, _, window, cx| {
+                this.submit_pane_rename(window, cx)
             }));
         self.pane_rename = Some(PaneRename {
             session_id,
@@ -250,7 +194,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn submit_pane_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.submit_workspace_rename(true, window, cx);
+        self.submit_workspace_rename(window, cx);
     }
 
     pub(crate) fn cancel_pane_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -258,22 +202,5 @@ impl NativeRoot {
         self._pane_rename_focus_subscription = None;
         self.focus_active_terminal(window, cx);
         cx.notify();
-    }
-
-    pub(crate) fn on_chat_rename_key_down(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.keystroke.key == "enter"
-            && self
-                .chat_rename_modal
-                .as_ref()
-                .is_some_and(|modal| !modal.input.read(cx).is_composing())
-        {
-            cx.stop_propagation();
-            self.submit_chat_rename(window, cx);
-        }
     }
 }

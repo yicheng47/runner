@@ -11,8 +11,8 @@ use crate::{
     FocusPreviousPane, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage,
     NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
     SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6, SelectTab7, SelectTab8,
-    SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession, ToggleFullscreen, ToggleSidebar,
-    ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
+    SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession, ToggleFullscreen,
+    ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -383,6 +383,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.split-pane-down.description",
                 scope: KeymapScope::Global,
                 default: default_combo("shift-cmd-d", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "toggle-maximize-pane",
+                title_key: "keymap.toggle-maximize-pane.title",
+                description_key: "keymap.toggle-maximize-pane.description",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-enter", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -1137,6 +1145,7 @@ pub(crate) fn install_bindings(
                 "pane-next" => KeyBinding::new(&binding, FocusNextPane, context),
                 "split-pane-right" => KeyBinding::new(&binding, SplitPaneRight, context),
                 "split-pane-down" => KeyBinding::new(&binding, SplitPaneDown, context),
+                "toggle-maximize-pane" => KeyBinding::new(&binding, ToggleMaximizePane, context),
                 "stop-session" => KeyBinding::new(&binding, StopFocusedSession, context),
                 "resume-session" => KeyBinding::new(&binding, ResumeFocusedSession, context),
                 "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
@@ -1211,7 +1220,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 33);
+        assert_eq!(entries().len(), 34);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1241,6 +1250,11 @@ mod tests {
             format_combo(&entry("split-pane-down").unwrap().default),
             "⇧⌘D"
         );
+        assert_eq!(
+            format_combo(&entry("toggle-maximize-pane").unwrap().default),
+            "⇧⌘↩"
+        );
+        assert!(!entry("toggle-maximize-pane").unwrap().fixed);
         assert_eq!(format_combo(&entry("new-terminal").unwrap().default), "⌘T");
         assert_eq!(
             entry("pane-previous").unwrap().default,
@@ -1623,7 +1637,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 30] = [
+        let expected: [ExpectedEntry<'_>; 31] = [
             (
                 "new-window",
                 &[("shift-cmd-n", "n", true, false, false, true)],
@@ -1680,6 +1694,10 @@ mod tests {
             (
                 "split-pane-down",
                 &[("shift-cmd-d", "d", true, false, false, true)],
+            ),
+            (
+                "toggle-maximize-pane",
+                &[("shift-cmd-enter", "enter", true, false, false, true)],
             ),
             ("close-pane", &[("cmd-w", "w", true, false, false, false)]),
             (
@@ -1866,6 +1884,10 @@ mod tests {
             (
                 "split-pane-down",
                 key_combo("KeyD", true, false, false, true, None, false),
+            ),
+            (
+                "toggle-maximize-pane",
+                key_combo("Enter", true, false, false, true, None, false),
             ),
             (
                 "close-pane",
@@ -2127,6 +2149,7 @@ mod tests {
             ("toggle-sidebar", "Ctrl+B"),
             ("split-pane-right", "Ctrl+Shift+D"),
             ("split-pane-down", "Alt+Shift+D"),
+            ("toggle-maximize-pane", "Ctrl+Shift+Enter"),
             ("close-pane", "Ctrl+Shift+W"),
             ("system-close-window", "Alt+F4"),
             ("stop-session", "Ctrl+Shift+X"),

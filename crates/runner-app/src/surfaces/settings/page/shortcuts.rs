@@ -161,8 +161,14 @@ impl ShortcutSection {
 
     pub(super) fn of(row: ShortcutRow) -> Self {
         match row.id() {
-            "pane-previous" | "pane-next" | "split-pane-right" | "split-pane-down"
-            | "close-pane" | "stop-session" | "resume-session" => Self::Panes,
+            "pane-previous"
+            | "pane-next"
+            | "split-pane-right"
+            | "split-pane-down"
+            | "toggle-maximize-pane"
+            | "close-pane"
+            | "stop-session"
+            | "resume-session" => Self::Panes,
             "toggle-terminal-drawer" | "mission-tab-previous" | "mission-tab-next" => {
                 Self::Missions
             }

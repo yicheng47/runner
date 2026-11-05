@@ -76,6 +76,7 @@ impl NativeRoot {
                 self.error = None;
             }
             if store.daemon_disconnected {
+                self.maximized_panes.clear();
                 self.toasts.dismiss();
             } else if store.daemon_notice.is_some() || store.error.is_none() {
                 self.chat_error = None;

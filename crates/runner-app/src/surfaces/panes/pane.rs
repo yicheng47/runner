@@ -1,5 +1,8 @@
 use super::*;
 
+/// The title trigger's padding, gap and chevron beside its text.
+const TITLE_TRIGGER_CHROME: f32 = 28.;
+
 impl NativeRoot {
     pub(crate) fn render_pane(
         &mut self,
@@ -12,6 +15,8 @@ impl NativeRoot {
         crate::render_counts::count_render(&format!("pane:{}", leaf.id), cx);
         let focused = layout.focused_pane_id == leaf.id;
         let grouped = layout.root.leaves().len() > 1;
+        let maximized =
+            maximized_leaf(&self.maximized_panes, layout).is_some_and(|shown| shown.id == leaf.id);
         let pane_id = leaf.id.clone();
         let pane_id_for_focus = pane_id.clone();
         let entry = leaf
@@ -46,22 +51,6 @@ impl NativeRoot {
                     .filter(|rename| rename.session_id == entry.session_id)
                     .map(|rename| rename.input.clone())
             });
-            let menu = entry
-                .as_ref()
-                .filter(|_| rename_input.is_none())
-                .and_then(|entry| {
-                    (!pane_action_indexes(
-                        entry,
-                        &self.front_page_client(cx),
-                        secondary.as_ref().is_some_and(|state| state.secondary),
-                    )
-                    .is_empty())
-                    .then(|| {
-                        let disabled = self.session_lifecycle_disabled(&entry.session_id, cx)
-                            || secondary.as_ref().is_some_and(|state| state.secondary);
-                        self.pane_action_menu(entry, disabled, cx)
-                    })
-                });
             let mark_icon =
                 pane_identity_icon(entry.as_ref().map(|entry| entry.agent_runtime.as_str()));
             let mark_live = entry
@@ -149,10 +138,10 @@ impl NativeRoot {
                     .then(|| self.attached_title(&session_id, cx))
                     .flatten();
                 let label = entry.label(live.as_deref());
-                let manual_title = entry.title.clone().unwrap_or_default();
-                let placeholder = entry.default_label();
+                let shell = entry.agent_runtime == "shell";
                 let status = self
                     .front_page_status(&entry.session_id, cx)
+                    .filter(|_| !shell)
                     .map(|mut status| {
                         if let Some(transition) = self
                             .chat_transitions
@@ -189,54 +178,47 @@ impl NativeRoot {
                         }))
                         .into_any_element()
                 } else {
-                    let rename_root = cx.entity();
-                    let title_pane = pane_id.clone();
-                    let title_session = entry.session_id.clone();
-                    div()
-                        .id(SharedString::from(format!("pane-name-{session_id}")))
-                        .debug_selector({
-                            let label = label.clone();
-                            move || format!("PANE_TITLE:{label}")
-                        })
-                        .w_full()
-                        .min_w(px(0.))
-                        .truncate()
-                        .text_size(theme::text_ui())
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(if entry.status != SessionStatus::Running {
-                            theme::faint()
-                        } else if focused {
-                            theme::text()
-                        } else {
-                            theme::muted()
-                        })
-                        .child(label.clone())
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.focus_terminal(&title_pane, &title_session, window, cx);
-                            }),
-                        )
-                        .on_click(move |event, window, cx| {
-                            if event.click_count() != 2 {
-                                return;
-                            }
-                            cx.stop_propagation();
-                            let session_id = session_id.clone();
-                            let manual_title = manual_title.clone();
-                            let placeholder = placeholder.clone();
-                            rename_root.update(cx, |this, cx| {
-                                this.begin_pane_rename(
-                                    session_id,
-                                    manual_title,
-                                    placeholder,
-                                    window,
-                                    cx,
-                                )
-                            });
-                        })
-                        .into_any_element()
+                    let title_color = if entry.status != SessionStatus::Running {
+                        theme::faint()
+                    } else if focused {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    };
+                    let title_selector = {
+                        let label = label.clone();
+                        move || format!("PANE_TITLE:{label}")
+                    };
+                    let disabled = self.session_lifecycle_disabled(&entry.session_id, cx)
+                        || secondary.as_ref().is_some_and(|state| state.secondary);
+                    match self.pane_title_menu(
+                        entry,
+                        &layout.id,
+                        label.clone().into(),
+                        title_color,
+                        disabled,
+                        cx,
+                    ) {
+                        Some(menu) => div()
+                            .id(SharedString::from(format!("pane-name-{session_id}")))
+                            .debug_selector(title_selector)
+                            .w_full()
+                            .min_w(px(0.))
+                            .flex()
+                            .child(menu)
+                            .into_any_element(),
+                        None => div()
+                            .id(SharedString::from(format!("pane-name-{session_id}")))
+                            .debug_selector(title_selector)
+                            .w_full()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(theme::text_ui())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(title_color)
+                            .child(label.clone())
+                            .into_any_element(),
+                    }
                 };
                 let account = entry
                     .local
@@ -277,20 +259,23 @@ impl NativeRoot {
                     let target = pane_id.clone();
                     let target_session = entry.session_id.clone();
                     let root = cx.entity();
+                    runner_app::ui::agent_status::pane_lifecycle_control(
+                        SharedString::from(format!("lifecycle-{pane_id}")),
+                        action,
+                        shortcut,
+                        move |window, cx| {
+                            root.update(cx, |this, cx| {
+                                this.focus_pane(&target, cx);
+                                this.activate_primary_pane_action(&target_session, window, cx);
+                            });
+                        },
+                        window,
+                        cx,
+                    )
+                });
+                let lifecycle_control = status.is_some().then(|| {
                     div().flex_none().ml_2().mr_1().child(
-                        runner_app::ui::agent_status::pane_lifecycle_control(
-                            SharedString::from(format!("lifecycle-{pane_id}")),
-                            action,
-                            shortcut,
-                            move |window, cx| {
-                                root.update(cx, |this, cx| {
-                                    this.focus_pane(&target, cx);
-                                    this.activate_primary_pane_action(&target_session, window, cx);
-                                });
-                            },
-                            window,
-                            cx,
-                        ),
+                        runner_app::ui::agent_status::pane_lifecycle_slot(lifecycle_control),
                     )
                 });
                 let target = pane_id.clone();
@@ -312,10 +297,12 @@ impl NativeRoot {
                                 .ceil(),
                         )
                     };
+                    let name_preferred =
+                        text_width(&label, 12., FontWeight::MEDIUM) + TITLE_TRIGGER_CHROME * zoom;
                     let name_preferred = if renaming {
-                        144. * zoom
+                        name_preferred.max(144. * zoom)
                     } else {
-                        text_width(&label, 12., FontWeight::MEDIUM)
+                        name_preferred
                     };
                     let account_preferred = account.as_ref().map_or(0., |account| {
                         (text_width(account, 11., FontWeight::NORMAL) + 16. * zoom).min(160. * zoom)
@@ -330,9 +317,8 @@ impl NativeRoot {
                     let label_width = status
                         .as_ref()
                         .map_or(0., |status| status.island_label_width(window));
-                    let min_name = name_preferred.min(28. * zoom);
-                    let label_visible =
-                        status.is_some() && budget >= min_name + account_preferred + label_width;
+                    let min_name = name_preferred.min((28. + TITLE_TRIGGER_CHROME) * zoom);
+                    let label_visible = status.is_some() && budget >= min_name + label_width;
                     let detail_visible = label_visible
                         && status
                             .as_ref()
@@ -347,8 +333,9 @@ impl NativeRoot {
                     } else {
                         0.
                     };
-                    let account_visible =
-                        account.is_some() && budget - status_width - min_name >= 24. * zoom;
+                    let account_visible = account.is_some()
+                        && !renaming
+                        && budget - status_width - min_name >= 24. * zoom;
                     let account_width = if account_visible {
                         account_preferred.min((budget - status_width - min_name).max(16. * zoom))
                     } else {
@@ -378,6 +365,7 @@ impl NativeRoot {
                                 .min_w(px(0.))
                                 .w(px(account_width))
                         }))
+                        .child(div().flex_1().min_w(px(0.)))
                         .children(status.map(|status| {
                             runner_app::ui::agent_status::pane_status(
                                 status,
@@ -430,7 +418,7 @@ impl NativeRoot {
                     })
                 })
                 .when(
-                    layout.root.leaves()[0].id == pane_id
+                    (maximized || layout.root.leaves()[0].id == pane_id)
                         && self.front_page_sidebar_collapsed()
                         && cfg!(target_os = "macos"),
                     |header| {
@@ -451,8 +439,53 @@ impl NativeRoot {
                         .when(cfg!(test), |actions| {
                             actions.debug_selector(|| "PANE_HEADER_ACTIONS".into())
                         })
-                        .children(menu)
                         .children(split_menu)
+                        .children(grouped.then(|| {
+                            let root = cx.entity();
+                            let target = pane_id.clone();
+                            let label = crate::i18n::text(if maximized {
+                                "ui.restore_split"
+                            } else {
+                                "ui.maximize_pane"
+                            });
+                            let tooltip = keymap::effective_binding(
+                                "toggle-maximize-pane",
+                                &self.settings(cx).keymap_overrides,
+                            )
+                            .map_or_else(
+                                || label.to_owned(),
+                                |combo| format!("{label} · {}", keymap::format_combo(&combo)),
+                            );
+                            div()
+                                .flex_none()
+                                .debug_selector({
+                                    let pane_id = pane_id.clone();
+                                    move || format!("PANE_MAXIMIZE:{pane_id}")
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    IconButton::new(
+                                        SharedString::from(format!("maximize-pane-{pane_id}")),
+                                        if maximized {
+                                            "minimize-2.svg"
+                                        } else {
+                                            "maximize-2.svg"
+                                        },
+                                    )
+                                    .size(IconButtonSize::Sm)
+                                    .when(maximized, |button| {
+                                        button.variant(ButtonVariant::Secondary)
+                                    })
+                                    .tooltip(tooltip)
+                                    .on_press(
+                                        move |window, cx| {
+                                            root.update(cx, |this, cx| {
+                                                this.toggle_maximize_pane(&target, window, cx)
+                                            });
+                                        },
+                                    ),
+                                )
+                        }))
                         .children(
                             self.front_page_client(cx)
                                 .supports(match close_behavior {

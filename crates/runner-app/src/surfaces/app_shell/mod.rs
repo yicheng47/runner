@@ -134,10 +134,6 @@ impl NativeRoot {
             .start_chat_modal
             .is_some()
             .then(|| self.render_start_chat_modal(window, cx));
-        let chat_rename_modal = (self.remote_client.is_active() || self.route == AppRoute::Chat)
-            .then_some(self.chat_rename_modal.as_ref())
-            .flatten()
-            .map(|_| self.render_chat_rename_modal(cx));
         let terminal_close_confirm = (self.remote_client.is_active()
             || matches!(self.route, AppRoute::Chat | AppRoute::Mission(_)))
         .then_some(self.terminal_close_confirm.as_ref())
@@ -155,7 +151,6 @@ impl NativeRoot {
         };
         let entity_overlays = if let Some(workspace) = self.remote_client.mission_workspace() {
             let fallback = (!self.create_modal_open()
-                && self.chat_rename_modal.is_none()
                 && self.fork_confirm.is_none()
                 && self.terminal_close_confirm.is_none()
                 && self.remote_client.ui.pair.is_none()
@@ -210,7 +205,6 @@ impl NativeRoot {
             )
             .children(sidebar_resize)
             .children(preview_trigger)
-            .children(chat_rename_modal)
             .children(terminal_close_confirm)
             .children(fork_confirm)
             .children(sidebar_overlays)
@@ -355,6 +349,7 @@ impl NativeRoot {
                     .on_action(cx.listener(Self::new_mission_action))
                     .on_action(cx.listener(Self::split_pane_right))
                     .on_action(cx.listener(Self::split_pane_down))
+                    .on_action(cx.listener(Self::toggle_maximize_pane_action))
                     .on_action(cx.listener(Self::focus_previous_chat_pane))
                     .on_action(cx.listener(Self::focus_next_chat_pane))
                     .on_action(cx.listener(Self::stop_focused_session))

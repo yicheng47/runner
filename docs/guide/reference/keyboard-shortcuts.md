@@ -34,6 +34,7 @@ In Projects, number shortcuts follow the visible tabs and missions, with a linke
 | Next chat pane | ⌘] | Ctrl+] |
 | Split right | ⌘D | Ctrl+Shift+D |
 | Split down | ⇧⌘D | Alt+Shift+D |
+| Maximize the focused pane of a split tab, or restore the split | ⇧⌘↩ | Ctrl+Shift+Enter |
 | Hide focused mission drawer, close focused pane, close chat tab, or close the launcher page | ⌘W | Ctrl+Shift+W |
 | Stop focused chat or mission slot | ⇧⌘X | Ctrl+Shift+X |
 | Resume focused stopped chat or mission slot | ⇧⌘R | Ctrl+Shift+R |

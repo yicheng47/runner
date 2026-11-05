@@ -871,68 +871,16 @@ fn project_menu_has_rename_and_delete() {
 
 #[test]
 fn tab_and_mission_menus_have_the_trimmed_item_lists() {
-    let tab_entries = tab_menu_entries(
-        "tab-1",
-        false,
-        "My tab".into(),
-        None,
-        false,
-        None,
-        false,
-        vec!["session-1".into(), "session-2".into()],
-        vec!["session-1".into(), "session-2".into()],
-        None,
-        &keymap::KeymapOverrides::new(),
-    );
-    assert_eq!(menu_labels(&tab_entries), ["Pin", "Rename tab", "Archive"]);
-    assert!(tab_entries[2].0.destructive);
-
-    let single_pane_entries = tab_menu_entries(
-        "tab-1",
-        false,
-        "build".into(),
-        Some("shell".into()),
-        false,
-        None,
-        false,
-        Vec::new(),
-        vec!["shell".into()],
-        Some("shell".into()),
-        &keymap::KeymapOverrides::new(),
-    );
-    assert_eq!(
-        single_pane_entries[1].1,
-        SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
-            node_id: "tab-1".into(),
-            original: "build".into(),
-            session_id: Some("shell".into()),
-        })
-    );
-    assert_eq!(
-        tab_entries
+    let separated = |entries: &[(UiMenuItem, SidebarMenuAction)]| {
+        entries
             .iter()
-            .map(|(_, action)| action.clone())
-            .collect::<Vec<_>>(),
-        [
-            SidebarMenuAction::TogglePin {
-                node_id: "tab-1".into(),
-                pinned: false,
-            },
-            SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
-                node_id: "tab-1".into(),
-                original: "My tab".into(),
-                session_id: None,
-            }),
-            SidebarMenuAction::ArchiveTab {
-                tab_id: "tab-1".into(),
-                session_ids: vec!["session-1".into(), "session-2".into()],
-            },
-        ]
-    );
-
-    let multi_pane_entries = tab_menu_entries(
+            .map(|(item, _)| item.separator_before)
+            .collect::<Vec<_>>()
+    };
+    let split_entries = tab_menu_entries(
         "tab-1",
         false,
+        true,
         "My tab".into(),
         None,
         true,
@@ -944,15 +892,64 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
         &keymap::KeymapOverrides::new(),
     );
     assert_eq!(
-        menu_labels(&multi_pane_entries),
-        ["Pin", "Rename tab", "Archive"]
+        menu_labels(&split_entries),
+        ["Rename tab…", "Pin", "Archive all"]
     );
-    assert!(multi_pane_entries[2].0.destructive);
-    assert!(multi_pane_entries[2].0.shortcut.is_none());
+    assert_eq!(separated(&split_entries), [false, false, true]);
+    assert!(split_entries[2].0.destructive);
+    assert!(split_entries[2].0.shortcut.is_none());
+    assert_eq!(
+        split_entries
+            .iter()
+            .map(|(_, action)| action.clone())
+            .collect::<Vec<_>>(),
+        [
+            SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+                node_id: "tab-1".into(),
+                original: "My tab".into(),
+                session_id: None,
+            }),
+            SidebarMenuAction::TogglePin {
+                node_id: "tab-1".into(),
+                pinned: false,
+            },
+            SidebarMenuAction::ArchiveTab {
+                tab_id: "tab-1".into(),
+                session_ids: vec!["session-1".into(), "session-2".into()],
+            },
+        ]
+    );
+
+    let pinned_chat_entries = tab_menu_entries(
+        "tab-1",
+        true,
+        false,
+        "Chat".into(),
+        Some("chat".into()),
+        false,
+        None,
+        false,
+        vec!["chat".into()],
+        vec!["chat".into()],
+        None,
+        &keymap::KeymapOverrides::new(),
+    );
+    assert_eq!(
+        menu_labels(&pinned_chat_entries),
+        ["Rename…", "Unpin", "Archive"]
+    );
+    assert_eq!(
+        pinned_chat_entries[1].1,
+        SidebarMenuAction::TogglePin {
+            node_id: "tab-1".into(),
+            pinned: true,
+        }
+    );
 
     let mixed_entries = tab_menu_entries(
         "tab-1",
         false,
+        true,
         "Mixed tab".into(),
         None,
         true,
@@ -974,8 +971,9 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
     let terminal_only_entries = tab_menu_entries(
         "tab-1",
         false,
+        false,
         "Terminal".into(),
-        None,
+        Some("shell-1".into()),
         false,
         None,
         false,
@@ -986,7 +984,16 @@ fn tab_and_mission_menus_have_the_trimmed_item_lists() {
     );
     assert_eq!(
         menu_labels(&terminal_only_entries),
-        ["Pin", "Rename tab", "Close terminal"]
+        ["Rename…", "Pin", "Close terminal"]
+    );
+    assert_eq!(separated(&terminal_only_entries), [false, false, true]);
+    assert_eq!(
+        terminal_only_entries[0].1,
+        SidebarMenuAction::Rename(SidebarRenameTarget::Tab {
+            node_id: "tab-1".into(),
+            original: "Terminal".into(),
+            session_id: Some("shell-1".into()),
+        })
     );
     assert!(terminal_only_entries[2].0.destructive);
     assert_eq!(
@@ -1260,6 +1267,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     let entries = tab_menu_entries(
         "tab-1",
         false,
+        false,
         "Codex".into(),
         None,
         false,
@@ -1272,10 +1280,17 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     );
     assert_eq!(
         menu_labels(&entries),
-        ["Pin", "Rename tab", "Fork chat", "Archive"]
+        ["Rename…", "Fork chat", "Pin", "Archive"]
     );
-    assert!(!entries[2].0.disabled);
-    assert_eq!(entries[2].1, SidebarMenuAction::ForkChat("chat".into()));
+    assert_eq!(
+        entries
+            .iter()
+            .map(|(item, _)| item.separator_before)
+            .collect::<Vec<_>>(),
+        [false, false, false, true]
+    );
+    assert!(!entries[1].0.disabled);
+    assert_eq!(entries[1].1, SidebarMenuAction::ForkChat("chat".into()));
     assert!(entries[..3].iter().all(|(item, _)| item.shortcut.is_none()));
     assert_eq!(
         entries[3].0.shortcut.as_deref(),
@@ -1284,6 +1299,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
 
     let busy_entries = tab_menu_entries(
         "tab-1",
+        false,
         false,
         "Codex".into(),
         None,
@@ -1295,7 +1311,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         None,
         &keymap::KeymapOverrides::from([("close-pane".into(), None)]),
     );
-    assert!(busy_entries[2].0.disabled);
+    assert!(busy_entries[1].0.disabled);
     assert!(busy_entries[3].0.shortcut.is_none());
 
     let mut waiting = direct_session("chat", "codex", SessionStatus::Running);
@@ -1307,6 +1323,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     let waiting_entries = tab_menu_entries(
         "tab-1",
         false,
+        false,
         "Waiting".into(),
         None,
         false,
@@ -1317,10 +1334,10 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         None,
         &keymap::KeymapOverrides::new(),
     );
-    assert!(waiting_entries[2].0.disabled);
-    assert_eq!(waiting_entries[2].0.description, None);
+    assert!(waiting_entries[1].0.disabled);
+    assert_eq!(waiting_entries[1].0.description, None);
     assert_eq!(
-        waiting_entries[2].0.tooltip.clone(),
+        waiting_entries[1].0.tooltip.clone(),
         Some("No session key captured yet".into())
     );
 
@@ -1330,6 +1347,7 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
     assert_eq!(trae_target.reason, None);
     let trae_entries = tab_menu_entries(
         "tab-1",
+        false,
         false,
         "Trae".into(),
         None,
@@ -1341,8 +1359,8 @@ fn sidebar_fork_menu_target_exposes_enabled_and_disabled_single_chats() {
         None,
         &keymap::KeymapOverrides::new(),
     );
-    assert!(trae_entries[2].0.disabled);
-    assert_eq!(trae_entries[2].0.tooltip, None);
+    assert!(trae_entries[1].0.disabled);
+    assert_eq!(trae_entries[1].0.tooltip, None);
 
     for runtime in ["copilot", "antigravity"] {
         let members = vec![direct_session("chat", runtime, SessionStatus::Running)];
@@ -2386,7 +2404,7 @@ fn active_split_rename_stays_on_its_tab_row_across_status_changes() {
             "split context menu did not open"
         )
     });
-    visual.simulate_keystrokes("home down enter");
+    visual.simulate_keystrokes("home enter");
     visual.run_until_parked();
     let split_rename: &str = Box::leak(format!("ACTIVE_RENAME {}", tab.id).into_boxed_str());
     let other_rename: &str = Box::leak(format!("ACTIVE_RENAME {}", other_tab.id).into_boxed_str());

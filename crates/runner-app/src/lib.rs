@@ -161,6 +161,7 @@ actions!(
         ResumeFocusedSession,
         StopFocusedSession,
         ToggleFullscreen,
+        ToggleMaximizePane,
         ToggleTerminalDrawer,
         ToggleSidebar,
         ZoomIn,

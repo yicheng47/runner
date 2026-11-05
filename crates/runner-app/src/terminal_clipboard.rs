@@ -5,6 +5,7 @@ use gpui::{App, AppContext, ClipboardItem};
 use runner_core::protocol::ClientEvent;
 use runner_terminal::terminal::ClipboardTarget;
 
+use crate::surfaces::pane_shows_session;
 use crate::{global_app_store, AppRoute, NativeRoot};
 
 /// One listener for the whole app, so a session shown in several windows
@@ -68,14 +69,21 @@ fn write(target: ClipboardTarget, text: String, cx: &mut App) {
 
 impl NativeRoot {
     /// Whether a pane of this window's active tab shows the terminal, its open
-    /// drawer's selected shell included.
+    /// drawer's selected shell included. A pane hidden behind a maximized
+    /// neighbour is not shown.
     pub(crate) fn shows_terminal(&self, id: &str, cx: &App) -> bool {
         if self.remote_client.is_active() {
-            return self.remote_client.shows_remote_terminal(id, cx);
+            let hidden = runner_core::remote::terminal_target(id).is_some_and(|(_, session)| {
+                self.front_page_layout().is_some_and(|layout| {
+                    layout.contains_session(session)
+                        && !pane_shows_session(&self.maximized_panes, layout, session)
+                })
+            });
+            return !hidden && self.remote_client.shows_remote_terminal(id, cx);
         }
         match &self.route {
             AppRoute::Chat => self.tabs.active().is_some_and(|tab| {
-                tab.contains_session(id)
+                pane_shows_session(&self.maximized_panes, tab, id)
                     || tab.drawer_open() && tab.active_drawer_shell() == Some(id)
             }),
             AppRoute::Mission(mission) => self
@@ -97,7 +105,10 @@ mod tests {
     use runner_core::protocol::node::{NodeRow, NodeType};
 
     fn tab(id: &str, session: &str) -> NodeRow {
-        let layout = PaneLayout::single(Some(session), &[]);
+        tab_with(id, &PaneLayout::single(Some(session), &[]))
+    }
+
+    fn tab_with(id: &str, layout: &PaneLayout) -> NodeRow {
         NodeRow {
             id: id.into(),
             parent_id: None,
@@ -196,6 +207,111 @@ mod tests {
             cx.read(|cx| cx.read_from_clipboard().and_then(|item| item.text())),
             Some("copied".into())
         );
+    }
+
+    #[test]
+    fn a_pane_hidden_by_a_maximized_neighbour_does_not_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let (store, _, _) = fixture(&mut cx, temp.path());
+        let mut layout = PaneLayout::single(Some("front"), &[]);
+        let back = layout
+            .split("p1", runner_app::pane_layout::SplitOrientation::Row)
+            .unwrap();
+        layout.assign_session(&back, "back").unwrap();
+        assert!(layout.focus_pane("p1"));
+        let row = tab_with("01ARZ3NDEKTSV4RRFFQ69G5FAX", &layout);
+        let windows = ["maximized", "split"].map(|name| {
+            let window = add_window(&mut cx, &store, temp.path(), name);
+            window
+                .update(&mut cx, |root, _, _| {
+                    root.tabs = TabSet::from_rows(std::slice::from_ref(&row));
+                    root.tabs.activate("01ARZ3NDEKTSV4RRFFQ69G5FAX");
+                    root.route = AppRoute::Chat;
+                })
+                .unwrap();
+            window
+        });
+        let decide = |cx: &mut gpui::TestAppContext, session: &str| {
+            cx.read(|cx| shown_write(&event(session, "clipboard", "text"), cx))
+                .is_some()
+        };
+        windows[1]
+            .update(&mut cx, |root, _, _| root.route = AppRoute::Settings)
+            .unwrap();
+        windows[0]
+            .update(&mut cx, |root, _, _| {
+                root.maximized_panes
+                    .insert("01ARZ3NDEKTSV4RRFFQ69G5FAX".into(), "p1".into());
+            })
+            .unwrap();
+        assert!(decide(&mut cx, "front"), "the maximized pane is shown");
+        assert!(!decide(&mut cx, "back"), "its hidden neighbour is not");
+
+        windows[1]
+            .update(&mut cx, |root, _, _| root.route = AppRoute::Chat)
+            .unwrap();
+        assert!(decide(&mut cx, "back"), "another window still shows it");
+        windows[1]
+            .update(&mut cx, |root, _, _| root.route = AppRoute::Settings)
+            .unwrap();
+        windows[0]
+            .update(&mut cx, |root, _, _| root.maximized_panes.clear())
+            .unwrap();
+        assert!(
+            decide(&mut cx, "back"),
+            "restoring the split shows it again"
+        );
+    }
+
+    #[test]
+    fn a_remote_pane_hidden_by_a_maximized_neighbour_does_not_write() {
+        use crate::surfaces::remote_client::tests::overview;
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        let window = add_window(&mut cx, &store, temp.path(), "remote-maximized");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let mut pushed = overview();
+        let neighbour = pushed.sessions["s"].clone();
+        pushed.sessions.insert("t".into(), neighbour);
+        pushed.tabs[0].panes = serde_json::from_value(serde_json::json!({"split":"row","sizes":[0.5,0.5],"a":{"session":"s"},"b":{"session":"t"}})).unwrap();
+        fake.set_overview(pushed);
+        cx.run_until_parked();
+        let shown = |cx: &mut gpui::TestAppContext, session: &str| {
+            let address = runner_core::remote::terminal_address("host", session);
+            cx.read(|cx| shown_write(&event(&address, "clipboard", "remote"), cx))
+                .is_some()
+        };
+        assert!(shown(&mut cx, "s") && shown(&mut cx, "t"));
+        let pane = window
+            .update(&mut cx, |root, window, cx| {
+                let pane = root
+                    .front_page_layout()
+                    .unwrap()
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|leaf| leaf.session_id.as_deref() == Some("s"))
+                    .unwrap()
+                    .id
+                    .clone();
+                root.toggle_maximize_pane(&pane, window, cx);
+                pane
+            })
+            .unwrap();
+        assert!(shown(&mut cx, "s"));
+        assert!(
+            !shown(&mut cx, "t"),
+            "the hidden remote neighbour does not write"
+        );
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.toggle_maximize_pane(&pane, window, cx)
+            })
+            .unwrap();
+        assert!(shown(&mut cx, "t"), "restoring the split shows it again");
     }
 
     #[test]
