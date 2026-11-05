@@ -15,7 +15,6 @@ mod workspace;
 use crate::*;
 use gpui::{svg, FontWeight};
 use model::{computer_rows, state, Access, Command, Connection};
-use runner_app::ui::menu::popup_layer;
 use runner_app::ui::ButtonVariant;
 use runner_core::remote::{Computer, DeviceKind, PairedDevice, RemoteStatus, RemoteTrust};
 
@@ -96,8 +95,11 @@ pub(crate) struct RemoteSelection {
 
 pub(crate) struct ClientUi {
     pub(crate) picker_open: bool,
+    pub(crate) picker_signed_in: bool,
     pub(crate) picker_focus: FocusHandle,
+    pub(crate) host_focus: FocusHandle,
     pub(crate) anchor: Option<Bounds<Pixels>>,
+    pub(crate) footer_left: Option<Pixels>,
     pub(crate) pair: Option<PairDialog>,
     menus: std::cell::RefCell<HashMap<String, Entity<PopoverMenu>>>,
     pub(crate) pair_generation: u64,
@@ -108,8 +110,11 @@ impl ClientUi {
     pub(crate) fn new(cx: &mut Context<NativeRoot>) -> Self {
         Self {
             picker_focus: cx.focus_handle(),
+            host_focus: cx.focus_handle(),
             picker_open: false,
+            picker_signed_in: false,
             anchor: None,
+            footer_left: None,
             pair: None,
             menus: Default::default(),
             pair_generation: 0,

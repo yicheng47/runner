@@ -2,9 +2,6 @@ use super::*;
 
 impl NativeRoot {
     pub(super) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.remote_client.is_active() {
-            return div().into_any_element();
-        }
         let zoom = self.settings(cx).app_zoom;
         div()
             .id("sidebar-settings")
@@ -22,11 +19,13 @@ impl NativeRoot {
             .focus_visible(|button| button.bg(theme::chrome_hover()))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(
-                cx.listener(|root, _, window, cx| root.enter_settings_route(None, window, cx)),
+                cx.listener(|root, _, window, cx| {
+                    root.open_this_computer_settings(None, window, cx)
+                }),
             )
             .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    root.enter_settings_route(None, window, cx);
+                    root.open_this_computer_settings(None, window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -48,7 +47,7 @@ mod remote_isolation_tests {
     use gpui::{TestAppContext, VisualTestContext};
 
     #[test]
-    fn remote_sidebar_hides_settings_and_refuses_stale_sign_out() {
+    fn remote_sidebar_keeps_settings_for_this_computer_and_refuses_stale_sign_out() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
@@ -64,7 +63,7 @@ mod remote_isolation_tests {
             })
             .unwrap();
         visual.run_until_parked();
-        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_none());
+        let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
         let before = fake.local_call_count();
         window
             .update(&mut visual, |root, _, cx| {
@@ -74,5 +73,13 @@ mod remote_isolation_tests {
             .unwrap();
         visual.run_until_parked();
         assert_eq!(fake.local_call_count(), before);
+        visual.simulate_click(gear.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_local());
+                assert_eq!(root.route, crate::AppRoute::Settings);
+            })
+            .unwrap();
     }
 }

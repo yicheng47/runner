@@ -1917,7 +1917,8 @@ fn signing_out_returns_every_window_to_this_computer() {
             })
             .unwrap();
         let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_some());
+        assert!(visual.debug_bounds("HOST_BUTTON_ATTENTION").is_none());
         assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
     }
     assert!(fake
@@ -1972,7 +1973,14 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                 let mut visual = VisualTestContext::from_window(window.into(), &cx);
                 assert!(visual.debug_bounds("REMOTE_SIDEBAR_ROW").is_some());
                 assert!(visual.debug_bounds("REMOTE_DISABLED_CREATE").is_none());
-                assert!(visual.debug_bounds("REMOTE_CONNECTION_ROW").is_some());
+                assert!(visual.debug_bounds("REMOTE_CONNECTION_ROW").is_none());
+                assert!(visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_some());
+                assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
+                crate::theme_snapshot::assert_border(
+                    &mut visual,
+                    "SIDEBAR_HOST_BUTTON",
+                    theme::with_alpha(theme::accent(), 0.4),
+                );
                 assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_some());
             }
             for (state, error, expected) in [
@@ -1995,6 +2003,30 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                 window
                     .read_with(&cx, |root, _| assert!(root.current_subjects().is_empty()))
                     .unwrap();
+                window
+                    .update(&mut cx, |root, _, cx| {
+                        root.remote_client.ui.picker_open = true;
+                        cx.notify();
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+                let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                crate::theme_snapshot::assert_border(
+                    &mut visual,
+                    "SIDEBAR_HOST_BUTTON",
+                    theme::with_alpha(picker::host_tone(expected), 0.4),
+                );
+                assert!(visual.debug_bounds("REMOTE_CONNECTION_ROW").is_none());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_CONNECTION").is_some());
+                assert!(visual.debug_bounds("COMPUTER_PICKER_CHECK").is_some());
+                assert!(visual.debug_bounds("COMPUTER_ROW_ATTENTION").is_none());
+                window
+                    .update(&mut cx, |root, _, cx| {
+                        root.remote_client.ui.picker_open = false;
+                        cx.notify();
+                    })
+                    .unwrap();
+                cx.run_until_parked();
             }
             window
                 .update(&mut cx, |root, _, cx| {
@@ -2030,6 +2062,313 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                 fake.follows.lock().unwrap().last(),
                 Some(&("host".into(), false))
             );
+        });
+    }
+}
+
+#[test]
+fn host_button_sits_in_the_footer_and_the_popup_puts_this_computer_first() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    let [this, host] = <[Computer; 2]>::try_from(computers()).ok().unwrap();
+    let mut this = this;
+    this.info.hostname = "Jasons-MacBook-Air".into();
+    let mut host = host;
+    host.info.hostname = "build-server".into();
+    *fake.computers.lock().unwrap() = vec![host.clone(), this.clone()];
+    clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+    cx.run_until_parked();
+    let window = add_window(&mut cx, &store, temp.path(), "host-button");
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.usage_installed = vec![runner_core::protocol::model::Runtime::Codex];
+            cx.notify();
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(900.)));
+    visual.run_until_parked();
+    for remote in [false, true] {
+        let footer = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
+        let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+        let button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+        assert!(usage.right() <= button.left());
+        assert!(button.right() <= gear.left());
+        assert_eq!(button.size, gear.size);
+        assert_eq!(button.top(), gear.top());
+        assert!(button.top() >= footer.top() && button.bottom() <= footer.bottom());
+        assert!(visual.debug_bounds("REMOTE_CONNECTION_ROW").is_none());
+        crate::theme_snapshot::assert_fill_color(
+            &mut visual,
+            "SIDEBAR_HOST_BUTTON",
+            remote.then(|| theme::with_alpha(theme::accent(), 0.08)),
+        );
+        visual.simulate_click(button.center(), Default::default());
+        visual.run_until_parked();
+        if !remote {
+            crate::theme_snapshot::assert_fill_color(
+                &mut visual,
+                "SIDEBAR_HOST_BUTTON",
+                Some(theme::chrome_selected()),
+            );
+        }
+        let panel = visual.debug_bounds("COMPUTER_PICKER_PANEL").unwrap();
+        assert!(panel.bottom() < button.top());
+        let this_row = visual.debug_bounds("COMPUTER_PICKER_ROW").unwrap();
+        let divider = visual.debug_bounds("COMPUTER_PICKER_DIVIDER").unwrap();
+        let remote_row = visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").unwrap();
+        let settings = visual.debug_bounds("COMPUTER_PICKER_SETTINGS").unwrap();
+        assert!(panel.contains(&this_row.origin));
+        assert!(this_row.top() < remote_row.top());
+        assert!(this_row.bottom() <= divider.top());
+        assert!(divider.bottom() <= remote_row.top());
+        assert!(remote_row.bottom() <= settings.top());
+        crate::theme_snapshot::assert_fill_color(
+            &mut visual,
+            "COMPUTER_PICKER_SELF_TILE",
+            Some(theme::with_alpha(theme::accent(), 0.14)),
+        );
+        let check = visual.debug_bounds("COMPUTER_PICKER_CHECK").unwrap();
+        let checked = if remote { remote_row } else { this_row };
+        assert!(checked.contains(&check.center()));
+        assert_eq!(
+            visual.debug_bounds("COMPUTER_PICKER_CONNECTION").is_some(),
+            remote
+        );
+        if remote {
+            visual.simulate_click(this_row.center(), Default::default());
+            visual.run_until_parked();
+            window
+                .read_with(&visual, |root, _| assert!(root.remote_client.is_local()))
+                .unwrap();
+            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+        } else {
+            visual.simulate_click(remote_row.center(), Default::default());
+            visual.run_until_parked();
+            window
+                .read_with(&visual, |root, _| assert!(root.remote_client.is_active()))
+                .unwrap();
+        }
+    }
+    assert_eq!(picker::computer_glyph(&this), "laptop.svg");
+    assert_eq!(picker::computer_glyph(&host), "server.svg");
+    assert_eq!(picker::computer_glyph(&computers()[1]), "monitor.svg");
+}
+
+#[test]
+fn remote_access_settings_row_opens_this_computers_remote_pane() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for remote in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, _, _) = fixture(&mut cx, temp.path());
+        let window = add_window(&mut cx, &store, temp.path(), "picker-settings");
+        if remote {
+            window.update(&mut cx, choose_host).unwrap();
+        }
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        let button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        visual.simulate_click(button.center(), Default::default());
+        visual.run_until_parked();
+        let row = visual.debug_bounds("COMPUTER_PICKER_SETTINGS").unwrap();
+        visual.simulate_click(row.center(), Default::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_local());
+                assert_eq!(root.route, AppRoute::Settings);
+                assert_eq!(
+                    root.settings_page.pane,
+                    crate::surfaces::settings::page::SettingsPane::Remote
+                );
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn popup_keeps_the_shown_computer_when_the_directory_drops_it() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "dropped-host");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    *fake.computers.lock().unwrap() = vec![computers()[0].clone()];
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+    visual.simulate_click(button.center(), Default::default());
+    visual.run_until_parked();
+    assert!(clients.read_with(&visual, |clients, _| clients
+        .computers
+        .iter()
+        .all(|computer| computer.id != "host")));
+    window
+        .read_with(&visual, |root, _| assert!(root.remote_client.is_active()))
+        .unwrap();
+    let this_row = visual.debug_bounds("COMPUTER_PICKER_ROW").unwrap();
+    let remote_row = visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").unwrap();
+    assert!(this_row.top() < remote_row.top());
+    let check = visual.debug_bounds("COMPUTER_PICKER_CHECK").unwrap();
+    assert!(remote_row.contains(&check.center()));
+    assert!(visual.debug_bounds("COMPUTER_PICKER_CONNECTION").is_some());
+    visual.simulate_click(this_row.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| assert!(root.remote_client.is_local()))
+        .unwrap();
+}
+
+#[test]
+fn usage_settings_actions_in_a_remote_window_open_this_computers_agents_pane() {
+    use runner_core::protocol::claude_accounts::{ClaudeAccount, ClaudeAccounts};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, _, _) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "remote-usage-settings");
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.usage_installed = vec![runner_core::protocol::model::Runtime::ClaudeCode];
+            cx.notify();
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(900.)));
+    visual.run_until_parked();
+    for control in ["USAGE_AGENT_SETTINGS", "STYLED_SELECT_OPTION_0"] {
+        window
+            .update(&mut visual, |root, window, cx| {
+                choose_host(root, window, cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| assert!(root.remote_client.is_active()))
+            .unwrap();
+        store.update(&mut visual, |store, _| {
+            store.claude_accounts = ClaudeAccounts {
+                accounts: ["native", "work"]
+                    .map(|id| ClaudeAccount {
+                        id: id.into(),
+                        name: id.into(),
+                        folder: format!("/tmp/{id}"),
+                        native: id == "native",
+                    })
+                    .into(),
+                main_id: "native".into(),
+                active_id: "native".into(),
+                ..Default::default()
+            };
+        });
+        let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+        visual.simulate_click(usage.center(), Default::default());
+        visual.run_until_parked();
+        if control == "STYLED_SELECT_OPTION_0" {
+            let trigger = visual.debug_bounds("STYLED_SELECT_TRIGGER").unwrap();
+            visual.simulate_click(trigger.center(), Default::default());
+            visual.run_until_parked();
+        }
+        let target = visual.debug_bounds(control).unwrap();
+        visual.simulate_click(target.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_local(), "{control}");
+                assert!(!root.usage_open, "{control}");
+                assert_eq!(root.route, AppRoute::Settings, "{control}");
+                assert_eq!(
+                    root.settings_page.pane,
+                    crate::surfaces::settings::page::SettingsPane::Agents,
+                    "{control}"
+                );
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn signing_out_closes_a_popup_opened_while_signed_in() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let window = add_window(&mut cx, &store, temp.path(), "sign-out-closes-popup");
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+    visual.simulate_click(button.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_some());
+    *fake.status.lock().unwrap() = RemoteStatus::default();
+    store.update(&mut visual, |store, cx| {
+        store.remote_status = Some(RemoteStatus::default());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+    visual.simulate_click(button.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").is_some());
+    assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_none());
+}
+
+#[test]
+fn every_connection_state_has_a_host_tone_and_a_row_label() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for (connection, tone, color) in [
+        (Connection::Connected, theme::accent(), theme::faint()),
+        (Connection::Opening, theme::accent(), theme::muted()),
+        (Connection::Reconnecting, theme::warning(), theme::warning()),
+        (Connection::Unreachable, theme::warning(), theme::warning()),
+        (Connection::Revoked, theme::danger(), theme::danger()),
+        (Connection::Forgotten, theme::muted(), theme::muted()),
+    ] {
+        assert_eq!(picker::host_tone(connection), tone);
+        assert_eq!(picker::connection_subtitle(connection, "Studio").1, color);
+    }
+    for (locale, expected) in [
+        (
+            Locale::English,
+            [
+                "Connected · relay · encrypted",
+                "Connecting through the relay…",
+                "Reconnecting to Studio…",
+                "Can’t reach Studio",
+                "Access not recognized · pair again",
+                "Forgotten here · pair to open",
+            ],
+        ),
+        (
+            Locale::SimplifiedChinese,
+            [
+                "已连接 · 中继 · 已加密",
+                "正在通过中继连接…",
+                "正在重新连接 Studio…",
+                "无法连接 Studio",
+                "访问未被识别 · 请重新配对",
+                "本机已忘记 · 配对后打开",
+            ],
+        ),
+    ] {
+        with_locale(locale, || {
+            let labels = [
+                Connection::Connected,
+                Connection::Opening,
+                Connection::Reconnecting,
+                Connection::Unreachable,
+                Connection::Revoked,
+                Connection::Forgotten,
+            ]
+            .map(|connection| picker::connection_subtitle(connection, "Studio").0);
+            assert_eq!(labels, expected);
         });
     }
 }
@@ -2133,7 +2472,8 @@ fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
                             window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
                             cx.run_until_parked();
                             let mut visual = VisualTestContext::from_window(window.into(), &cx);
-                            let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+                            let trigger = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+                            let footer = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
                             visual.simulate_click(trigger.center(), Default::default());
                             visual.run_until_parked();
                             assert_eq!(theme::active_variant(), variant);
@@ -2145,7 +2485,8 @@ fn picker_encloses_rows_errors_and_hint_in_an_opaque_panel() {
                             );
                             let panel = visual.debug_bounds("COMPUTER_PICKER_PANEL").unwrap();
                             assert_eq!(panel.size.width, px(320. * zoom));
-                            assert!(panel.top() > trigger.bottom());
+                            assert!(panel.bottom() < trigger.top());
+                            assert_eq!(panel.left(), footer.left());
                             assert!(visual.debug_bounds("COMPUTER_PICKER_HINT").is_none());
                             let content = visual.debug_bounds("COMPUTER_PICKER_ROW").unwrap();
                             assert!(panel.contains(&content.origin));
@@ -2224,31 +2565,39 @@ fn signed_in_picker_shows_attention_dots_and_never_counts() {
         visual.run_until_parked();
         assert_eq!(fake.overview_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            visual.debug_bounds("COMPUTER_TRIGGER_ATTENTION").is_some(),
+            visual.debug_bounds("HOST_BUTTON_ATTENTION").is_some(),
             !remote
         );
-        let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
-        assert!(visual
-            .debug_bounds("COMPUTER_PICKER_TRIGGER_BADGE")
-            .is_none());
+        let trigger = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        assert!(visual.debug_bounds("HOST_BUTTON_BADGE").is_none());
         visual.simulate_click(trigger.center(), Default::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("COMPUTER_PICKER_REMOTE_ROW").is_some());
         assert_eq!(fake.overview_calls.load(Ordering::SeqCst), 1);
         assert!(visual.debug_bounds("COMPUTER_PICKER_ROW_BADGE").is_none());
-        let dot = visual.debug_bounds("COMPUTER_ROW_ATTENTION").unwrap();
-        assert_eq!(dot.size, size(px(7.), px(7.)));
+        if remote {
+            assert!(visual.debug_bounds("COMPUTER_ROW_ATTENTION").is_none());
+            assert!(visual.debug_bounds("COMPUTER_PICKER_CHECK").is_some());
+        } else {
+            let dot = visual.debug_bounds("COMPUTER_ROW_ATTENTION").unwrap();
+            assert_eq!(dot.size, size(px(7.), px(7.)));
+            let host_dot = visual.debug_bounds("HOST_BUTTON_ATTENTION").unwrap();
+            assert_eq!(host_dot.size, size(px(7.), px(7.)));
+            assert!(trigger.contains(&host_dot.origin));
+            assert!(host_dot.center().x > trigger.center().x);
+            assert!(host_dot.center().y < trigger.center().y);
+        }
         fake.emit("remote/session-status", serde_json::json!({"computer":"host","status":{"session":"s","status":"idle","unread":true}}));
         visual.run_until_parked();
         assert!(visual.debug_bounds("COMPUTER_ROW_ATTENTION").is_none());
-        assert!(visual.debug_bounds("COMPUTER_TRIGGER_ATTENTION").is_none());
+        assert!(visual.debug_bounds("HOST_BUTTON_ATTENTION").is_none());
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
     }
 }
 
 #[test]
-fn signed_out_has_no_picker_even_with_cached_directory_and_opens_account_from_settings() {
+fn signed_out_host_popup_lists_only_this_computer_and_opens_account() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
@@ -2276,27 +2625,91 @@ fn signed_out_has_no_picker_even_with_cached_directory_and_opens_account_from_se
                     store.remote_status = remote_state.as_ref().map(|_| status.clone())
                 });
                 let calls = fake.directory_calls.load(Ordering::SeqCst);
-                let window = add_window(&mut cx, &store, temp.path(), "signed-out-no-picker");
+                let window = add_window(&mut cx, &store, temp.path(), "signed-out-host-popup");
                 let mut visual = VisualTestContext::from_window(window.into(), &cx);
                 visual.run_until_parked();
                 clients.update(&mut visual, |clients, cx| {
+                    clients.computers = computers();
+                    clients.overviews.insert("host".into(), overview());
                     clients.directory_error = true;
                     clients.action_failed = true;
                     cx.notify();
                 });
                 visual.run_until_parked();
-                assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
+                let footer = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
+                let button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+                let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+                assert!(button.top() >= footer.top() && button.right() <= gear.left());
+                assert_eq!(button.size, gear.size);
+                assert!(visual.debug_bounds("HOST_BUTTON_ATTENTION").is_none());
                 assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
-                assert!(visual.debug_bounds("COMPUTER_PICKER_ROW").is_none());
-                assert!(visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").is_none());
+                visual.simulate_click(button.center(), Default::default());
+                visual.run_until_parked();
+                let panel = visual.debug_bounds("COMPUTER_PICKER_PANEL").unwrap();
+                assert!(panel.bottom() < button.top());
+                let this_row = visual.debug_bounds("COMPUTER_PICKER_ROW").unwrap();
+                let divider = visual.debug_bounds("COMPUTER_PICKER_DIVIDER").unwrap();
+                let sign_in = visual.debug_bounds("COMPUTER_PICKER_SIGN_IN").unwrap();
+                assert!(this_row.bottom() <= divider.top());
+                assert!(divider.bottom() <= sign_in.top());
+                assert!(this_row.contains(
+                    &visual
+                        .debug_bounds("COMPUTER_PICKER_CHECK")
+                        .unwrap()
+                        .center()
+                ));
+                crate::theme_snapshot::assert_fill_color(
+                    &mut visual,
+                    "COMPUTER_PICKER_SELF_TILE",
+                    Some(theme::with_alpha(theme::accent(), 0.14)),
+                );
+                for absent in [
+                    "COMPUTER_PICKER_REMOTE_ROW",
+                    "COMPUTER_ROW_ATTENTION",
+                    "COMPUTER_PICKER_ERROR",
+                    "COMPUTER_PICKER_ACTION_ERROR",
+                    "COMPUTER_PICKER_SETTINGS",
+                    "COMPUTER_PICKER_SETTINGS_DIVIDER",
+                ] {
+                    assert!(visual.debug_bounds(absent).is_none(), "{absent}");
+                }
+                let detail = visual.debug_bounds("COMPUTER_PICKER_DETAIL").unwrap();
+                let name = visual.debug_bounds("COMPUTER_PICKER_NAME").unwrap();
+                assert!(this_row.contains(&detail.center()) && name.bottom() <= detail.top());
                 assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                store.update(&mut visual, |store, cx| {
+                    store.revisions.shell_settings += 1;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_some());
+                visual.simulate_keystrokes("tab");
+                visual.run_until_parked();
                 window
                     .update(&mut visual, |root, window, cx| {
-                        root.enter_settings_route(Some("account"), window, cx)
+                        assert!(root.remote_client.ui.picker_open);
+                        assert!(root
+                            .remote_client
+                            .ui
+                            .picker_focus
+                            .contains_focused(window, cx));
                     })
                     .unwrap();
+                assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
+                visual.simulate_click(sign_in.center(), Default::default());
                 visual.run_until_parked();
+                assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
                 assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_some());
+                window
+                    .read_with(&visual, |root, _| {
+                        assert_eq!(root.route, AppRoute::Settings);
+                        assert_eq!(
+                            root.settings_page.pane,
+                            crate::surfaces::settings::page::SettingsPane::Account
+                        );
+                    })
+                    .unwrap();
+                assert_eq!(fake.directory_calls.load(Ordering::SeqCst), calls);
                 assert_eq!(fake.enrolls.load(Ordering::SeqCst), 0);
             }
         });
@@ -2435,7 +2848,7 @@ fn account_sign_in_resumes_directory_refresh_and_signed_in_failures_remain_error
 }
 
 #[test]
-fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal() {
+fn picker_dismisses_at_tab_boundaries_and_escape_and_returns_focus_to_the_host_button() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for signed in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -2457,17 +2870,32 @@ fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal(
             })
             .unwrap();
         visual.run_until_parked();
-        if !signed {
-            assert!(visual.debug_bounds("COMPUTER_PICKER_TRIGGER").is_none());
-            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
-            continue;
-        }
-        let trigger = visual.debug_bounds("COMPUTER_PICKER_TRIGGER").unwrap();
+        let host_focused = |visual: &mut VisualTestContext| {
+            window
+                .update(visual, |root, window, _| {
+                    root.remote_client.ui.host_focus.is_focused(window)
+                })
+                .unwrap()
+        };
+        let trigger = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
         visual.simulate_click(trigger.center(), Default::default());
         visual.run_until_parked();
         visual.simulate_keystrokes("tab escape");
         visual.run_until_parked();
         assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+        assert!(host_focused(&mut visual));
+        for key in ["enter", "space", "down"] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            assert!(
+                visual.debug_bounds("COMPUTER_PICKER_PANEL").is_some(),
+                "{key} did not open the popup"
+            );
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+            assert!(host_focused(&mut visual));
+        }
         for direction in ["tab", "shift-tab"] {
             visual.simulate_click(trigger.center(), Default::default());
             visual.run_until_parked();
@@ -2487,10 +2915,7 @@ fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal(
                             );
                             false
                         } else {
-                            assert!(
-                                root.root_focus.is_focused(window)
-                                    || root.launcher_search_focused(window, cx)
-                            );
+                            assert!(root.remote_client.ui.host_focus.is_focused(window));
                             true
                         }
                     })
@@ -2500,9 +2925,10 @@ fn picker_dismisses_at_tab_boundaries_and_escape_works_after_internal_traversal(
                 }
             }
             assert!(dismissed, "Tab traversal did not reach the picker boundary");
-            visual.simulate_keystrokes("escape enter space");
+            visual.simulate_keystrokes("escape");
             visual.run_until_parked();
             assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
+            assert!(host_focused(&mut visual));
             assert!(visual.debug_bounds("ACCOUNT_STATUS_CARD").is_none());
             window
                 .read_with(&visual, |root, _| assert_eq!(root.route, AppRoute::Chat))

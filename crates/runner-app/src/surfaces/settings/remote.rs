@@ -159,7 +159,10 @@ impl NativeRoot {
         if self.app_store.read(cx).remote_signed_in() {
             return;
         }
-        self.remote_client.ui.picker_open = false;
+        if self.remote_client.ui.picker_signed_in {
+            self.remote_client.ui.picker_open = false;
+            self.remote_client.ui.picker_signed_in = false;
+        }
         if self.remote_client.ui.pair.take().is_some() {
             self.remote_client.ui.pair_generation += 1;
         }
@@ -2094,9 +2097,7 @@ mod tests {
             let mut peer_visual = VisualTestContext::from_window(peer.into(), &cx);
             visual.update(|window, _| window.activate_window());
             assert!(peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
-            assert!(peer_visual
-                .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                .is_some());
+            assert!(peer_visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_some());
             window
                 .update(&mut visual, |root, window, cx| {
                     root.confirm_sign_out(cx);
@@ -2117,9 +2118,7 @@ mod tests {
                 *requests.calls.lock().unwrap(),
                 [if reset { "reset" } else { "sign out" }]
             );
-            assert!(peer_visual
-                .debug_bounds("COMPUTER_PICKER_TRIGGER")
-                .is_none());
+            assert!(peer_visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_some());
             assert!(peer_visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
             window
                 .read_with(&visual, |root, _| assert_eq!(root.settings_page.pane, pane))
