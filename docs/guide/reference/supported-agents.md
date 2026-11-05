@@ -2,7 +2,7 @@
 
 Runner launches separately installed agent CLIs and keeps their native terminal interfaces. Enable agents, inspect detected executables, and choose executable overrides in **Settings → Agents**.
 
-Claude Code, Codex and Antigravity CLI are the primary integrations. Claude Code and Codex have tuned launch and nudge timing.
+Claude Code and Codex are the primary integrations, with tuned launch and nudge timing. Antigravity CLI and the other runtimes are secondary: they run chats and missions, but do not get every Runner feature. Antigravity CLI has no usage indicator.
 
 ## Agent settings
 
@@ -43,7 +43,7 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 | Needs-input reporting | Generic native Needs you (0.163.0) | Approvals and questions | No | Extension reports only | Approvals and questions | No | Approvals on macOS/Linux |
 | Models discovered from the CLI | Yes | Yes | Yes | Yes | No | Yes | Yes |
 | Update through Settings → Agents | Yes | Yes | No | Yes | Yes | No | No |
-| Usage indicator | Yes | Yes | Yes | No | No | No | No |
+| Usage indicator | Yes | Yes | No | No | No | No | No |
 | Skills | Catalog and switch | Catalog and switch | Catalog | Catalog | Catalog and switch | Catalog | Catalog |
 | Runner skill installed | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Mission access | Bypass | Bypass | Bypass | Trusted workspace | Bypass | Bypass | Bypass |

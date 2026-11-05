@@ -1,8 +1,7 @@
 {
   "visible": [
     "codex",
-    "claude-code",
-    "antigravity"
+    "claude-code"
   ],
   "runtimes": [
     {
@@ -14,7 +13,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Codex didn't answer."
       ],
       "sections": [
@@ -25,18 +23,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "codex",
@@ -58,7 +53,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -69,18 +63,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "claude-code",
@@ -102,34 +93,30 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
-        "Antigravity CLI returned invalid usage data."
+        "Couldn't reach Anthropic."
       ],
       "sections": [
         {
           "runtime": "antigravity",
-          "title": "Antigravity CLI",
-          "refresh_spinner": "usage-antigravity-refreshing"
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": "Gemini Models",
-          "label": "Week"
-        },
-        {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": "Claude and GPT models",
+          "window": "5 hours",
           "label": "5 hours"
         },
         {
+          "window": "Opus · week",
+          "label": "Opus · week"
+        },
+        {
           "runtime": "antigravity",
-          "title": "Antigravity CLI",
-          "refresh_spinner": "usage-antigravity-refreshing"
+          "title": "Codex",
+          "refresh_spinner": "usage-codex-refreshing"
         },
         {
           "checking_spinner": "usage-codex-checking"
@@ -146,7 +133,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -157,18 +143,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "pi",
@@ -190,7 +173,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -201,18 +183,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "copilot",
@@ -234,7 +213,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -245,18 +223,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "trae",
@@ -278,7 +253,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -289,18 +263,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "cursor",
@@ -322,7 +293,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -333,18 +303,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "grok",
@@ -366,7 +333,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -377,18 +343,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "opencode",
@@ -410,7 +373,6 @@
         "Couldn't read Claude Code's sign-in from the Keychain.",
         "Couldn't reach Anthropic.",
         "Codex didn't answer.",
-        "Antigravity CLI didn't answer.",
         "Couldn't reach Anthropic."
       ],
       "sections": [
@@ -421,18 +383,15 @@
         },
         {
           "window": "Week",
-          "group": null,
           "label": "Week"
         },
         {
-          "window": "Gemini Models · Week used",
-          "group": null,
-          "label": "Gemini Models · Week used"
+          "window": "5 hours",
+          "label": "5 hours"
         },
         {
-          "window": "Claude and GPT models · 5 hours used",
-          "group": null,
-          "label": "Claude and GPT models · 5 hours used"
+          "window": "Opus · week",
+          "label": "Opus · week"
         },
         {
           "runtime": "shell",

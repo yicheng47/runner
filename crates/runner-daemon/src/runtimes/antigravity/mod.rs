@@ -4,7 +4,6 @@ pub(crate) mod agy_capture;
 pub(crate) mod agy_status;
 pub(crate) mod agy_trust;
 pub(crate) mod models;
-pub(crate) mod usage;
 use super::helpers::*;
 use super::*;
 pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_MODELS;
@@ -79,10 +78,6 @@ impl RuntimeAdapter for Antigravity {
     fn mcp(&self) -> Option<&'static McpConfig> {
         Some(&MCP)
     }
-    fn usage(&self) -> Option<&'static UsageSource> {
-        Some(&USAGE)
-    }
-
     fn skills(&self) -> SkillSupport {
         SkillSupport {
             roots: SKILL_DIRS,
@@ -234,10 +229,6 @@ static DISCOVERY: ModelDiscoverySource = ModelDiscoverySource {
     method: "models",
     query: models::query,
     config_home: || config_home(None, ".gemini/antigravity-cli"),
-};
-
-static USAGE: UsageSource = UsageSource {
-    fetch: |command, env, _denied| usage::fetch_antigravity(command, env),
 };
 
 static MCP: McpConfig = McpConfig {

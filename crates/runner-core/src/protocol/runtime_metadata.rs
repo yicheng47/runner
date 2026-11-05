@@ -384,7 +384,6 @@ pub mod antigravity {
     }
     pub fn capabilities() -> RuntimeCapabilities {
         RuntimeCapabilities {
-            usage: true,
             effort_needs_launch_model: true,
             ..Default::default()
         }

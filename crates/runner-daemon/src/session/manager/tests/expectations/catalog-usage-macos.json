@@ -62,26 +62,8 @@
   },
   {
     "runtime": "antigravity",
-    "supported": true,
-    "commands": [
-      {
-        "command": "/golden/agent",
-        "args": [
-          "-p",
-          "/usage",
-          "--output-format",
-          "json"
-        ],
-        "env": {
-          "GOLDEN_ENV": "value",
-          "HTTPS_PROXY": "http://127.0.0.1:9999",
-          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
-        },
-        "cwd": "<HOME>",
-        "stdin": null,
-        "timeout_ms": 15000
-      }
-    ]
+    "supported": false,
+    "commands": []
   },
   {
     "runtime": "pi",
