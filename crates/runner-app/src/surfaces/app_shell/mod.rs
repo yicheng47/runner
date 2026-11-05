@@ -300,7 +300,8 @@ impl NativeRoot {
             })
             .on_drag_move::<SidebarResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<SidebarResizeDrag>, _, cx| {
-                    let width = f32::from(event.event.position.x - event.bounds.left())
+                    let width = (f32::from(event.event.position.x - event.bounds.left())
+                        - this.sidebar_border_offset(cx))
                         / this.settings(cx).app_zoom;
                     let width = clamp_sidebar_width(width);
                     // A drag suppresses hover, so the bar needs the drag's own state to stay lit.
@@ -1811,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_resize_strip_spans_the_island_gap_at_each_zoom() {
+    fn sidebar_resize_strip_centres_on_the_island_border_at_each_zoom() {
         use crate::theme_snapshot::ThemeGuard;
         use gpui::{px, size, TestAppContext, VisualTestContext};
         use runner_daemon::{db, session, shell_path};
@@ -1881,18 +1882,35 @@ mod tests {
             let island_area = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
             let gutter = visual.debug_bounds("SIDEBAR_RESIZE_GUTTER").unwrap();
             assert_eq!(island_area.left() - sidebar.right(), px(6. * zoom));
-            assert_eq!(gutter.left(), sidebar.right());
-            assert_eq!(gutter.right(), island_area.left());
-            for fraction in [0.01, 0.5, 0.99] {
-                let position = gpui::point(
-                    sidebar.right() + (island_area.left() - sidebar.right()) * fraction,
-                    sidebar.center().y,
-                );
+            assert_eq!(gutter.size.width, px(6. * zoom));
+            assert_eq!(gutter.left() + gutter.size.width / 2., island_area.left());
+            for offset in [-2.9, 0., 2.9] {
+                let position =
+                    gpui::point(island_area.left() + px(offset * zoom), sidebar.center().y);
                 assert!(
                     gutter.contains(&position),
-                    "gap point {position:?} outside {gutter:?}"
+                    "border point {position:?} outside {gutter:?}"
                 );
             }
+            let grab = gpui::point(gutter.right() - px(1.), sidebar.center().y);
+            let target = gpui::point(island_area.left() + px(40. * zoom), grab.y);
+            visual.simulate_mouse_down(grab, gpui::MouseButton::Left, Default::default());
+            visual.simulate_mouse_move(
+                grab + gpui::point(px(12.), px(0.)),
+                Some(gpui::MouseButton::Left),
+                Default::default(),
+            );
+            visual.simulate_mouse_move(target, Some(gpui::MouseButton::Left), Default::default());
+            visual.run_until_parked();
+            let dragged = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
+            assert!(
+                (f32::from(dragged.left()) - f32::from(target.x)).abs() < 0.5,
+                "border {:?} not under pointer {:?}",
+                dragged.left(),
+                target.x
+            );
+            visual.simulate_mouse_up(target, gpui::MouseButton::Left, Default::default());
+            visual.run_until_parked();
         }
         host.update(&mut visual, |root, _, cx| {
             root.set_sidebar_collapsed(true, false, cx);

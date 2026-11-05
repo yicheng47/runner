@@ -3,6 +3,9 @@ use gpui::{div, px, rems, Div};
 
 use crate::theme;
 
+/// The gap between an expanded sidebar and the island area, before zoom.
+pub const SIDEBAR_GAP: f32 = 6.;
+
 pub fn work_card(collapsed_sidebar: bool) -> Div {
     div()
         .debug_selector(|| "WORK_CARD".into())
@@ -36,6 +39,6 @@ pub fn island_area(collapsed_sidebar: bool) -> Div {
         .ml(rems(if collapsed_sidebar {
             8. / 16.
         } else {
-            6. / 16.
+            SIDEBAR_GAP / 16.
         }))
 }
