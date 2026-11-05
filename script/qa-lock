@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""Shared lock so concurrent missions' qa take turns on the development app.
+
+  qa-lock acquire --mission <id> --handle <handle> [--owner-pid <pid>] [--timeout <s>]
+  qa-lock release [--mission <id>] [--handle <handle>]
+  qa-lock status
+
+`acquire` starts a detached holder process that takes an OS advisory lock on
+qa.lock in the development data directory and keeps it across the agent's
+separate shell commands. The holder exits on `release` or when the owner
+process exits, and the OS frees the lock whenever the holder dies, so a lock
+file left behind without a live holder reads as free. The owner defaults to the
+nearest ancestor that is not a shell or interpreter: the agent CLI that ran the
+command. --mission and --handle default to RUNNER_MISSION_ID and RUNNER_HANDLE.
+
+qa.lock.guard beside it serializes taking the lock and writing its record against
+reading them. RUNNER_QA_LOCK overrides the lock path and
+RUNNER_QA_LOCK_TEST_PUBLISH_DELAY widens the publication window; the tests use
+both. Python 3.8+, no dependencies. Tests: python3 script/test-qa-lock.py -v
+"""
+
+import argparse
+import contextlib
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import subprocess
+import sys
+import time
+
+WINDOWS = os.name == 'nt'
+if WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+else:
+    import fcntl
+
+APP_IDENTIFIER = 'com.wycstudios.runner-dev'
+# Windows byte-range locks are mandatory, so lock a byte past the record to keep it readable.
+WINDOWS_LOCK_OFFSET = 1 << 30
+POLL = 0.2
+NOT_OWNERS = {
+    'sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh', 'fish', 'tcsh', 'csh', 'nu',
+    'env', 'nohup', 'timeout', 'time', 'sandbox-exec', 'pwsh', 'powershell', 'cmd', 'py', 'uv',
+}
+
+
+def lock_path():
+    override = os.environ.get('RUNNER_QA_LOCK')
+    if override:
+        return Path(override)
+    home = Path.home()
+    if sys.platform == 'darwin':
+        base = home / 'Library' / 'Application Support'
+    elif WINDOWS:
+        base = Path(os.environ.get('APPDATA') or home / 'AppData' / 'Roaming')
+    else:
+        base = Path(os.environ.get('XDG_DATA_HOME') or home / '.local' / 'share')
+    return base / APP_IDENTIFIER / 'qa.lock'
+
+
+def open_file(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return os.open(str(path), os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0), 0o644)
+
+
+def try_lock(fd):
+    try:
+        if WINDOWS:
+            os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def unlock(fd):
+    if WINDOWS:
+        os.lseek(fd, WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def read_record(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    data = b''
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        data += chunk
+    try:
+        return json.loads(data.decode('utf-8'))
+    except ValueError:
+        return None
+
+
+@contextlib.contextmanager
+def guard():
+    """Serializes taking the lock and writing its record against reading them, so a
+    reader never sees a new holder's lock with the previous holder's record."""
+    path = lock_path()
+    fd = open_file(path.with_name(path.name + '.guard'))
+    try:
+        deadline = time.monotonic() + 10
+        while not try_lock(fd):
+            if time.monotonic() >= deadline:
+                sys.exit('qa-lock: the lock record stayed busy for 10s')
+            time.sleep(0.02)
+        try:
+            yield
+        finally:
+            unlock(fd)
+    finally:
+        os.close(fd)
+
+
+def current_holder():
+    """The live holder's record, or None when the lock is free."""
+    with guard():
+        fd = open_file(lock_path())
+        try:
+            if try_lock(fd):
+                unlock(fd)
+                return None
+            return read_record(fd) or {}
+        finally:
+            os.close(fd)
+
+
+def describe(record):
+    if not record:
+        return 'qa lock is held (holder record unreadable)'
+    return ('qa lock is held by mission {mission}, handle {handle}, holder PID {pid}, '
+            'owner PID {owner_pid} ({owner_name}), since {started}').format(**record)
+
+
+def process_name(name):
+    name = os.path.basename(name.strip()).lower().lstrip('-')
+    return name[:-4] if name.endswith('.exe') else name
+
+
+def windows_processes():
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [('dwSize', wintypes.DWORD), ('cntUsage', wintypes.DWORD),
+                    ('th32ProcessID', wintypes.DWORD), ('th32DefaultHeapID', ctypes.c_size_t),
+                    ('th32ModuleID', wintypes.DWORD), ('cntThreads', wintypes.DWORD),
+                    ('th32ParentProcessID', wintypes.DWORD), ('pcPriClassBase', ctypes.c_long),
+                    ('dwFlags', wintypes.DWORD), ('szExeFile', ctypes.c_wchar * 260)]
+
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)
+    entry = PROCESSENTRY32W()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+    processes = {}
+    try:
+        ok = kernel32.Process32FirstW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+        while ok:
+            processes[entry.th32ProcessID] = (entry.th32ParentProcessID, entry.szExeFile)
+            ok = kernel32.Process32NextW(wintypes.HANDLE(snapshot), ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(snapshot))
+    return processes
+
+
+def parent_and_name(pid, processes):
+    if WINDOWS:
+        return processes.get(pid, (0, ''))
+    if sys.platform.startswith('linux'):
+        try:
+            stat = Path('/proc/{}/stat'.format(pid)).read_text()
+        except OSError:
+            return 0, ''
+        name, _, rest = stat.partition(' (')[2].rpartition(') ')
+        return int(rest.split()[1]), name
+    out = subprocess.run(['ps', '-o', 'ppid=,comm=', '-p', str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    if not out:
+        return 0, ''
+    ppid, _, name = out.partition(' ')
+    return int(ppid), name
+
+
+def default_owner():
+    processes = windows_processes() if WINDOWS else None
+    pid, _ = parent_and_name(os.getpid(), processes)
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        ppid, name = parent_and_name(pid, processes)
+        short = process_name(name)
+        if short not in NOT_OWNERS and not re.fullmatch(r'python[\d.]*w?', short):
+            return pid, short
+        pid = ppid
+    sys.exit('qa-lock: no owner process found among the ancestors; pass --owner-pid')
+
+
+def owner_name(pid):
+    processes = windows_processes() if WINDOWS else None
+    return process_name(parent_and_name(pid, processes)[1]) or '?'
+
+
+def linux_process(pid):
+    """(state, start time) from /proc, or None once the process has exited."""
+    try:
+        fields = Path('/proc/{}/stat'.format(pid)).read_text().rpartition(') ')[2].split()
+    except OSError:
+        return None
+    return None if fields[0] in ('Z', 'X') else (fields[0], fields[19])
+
+
+def watch_owner(pid):
+    """A function that blocks until the owner exits, or None when it is not running.
+
+    Each watch is tied to the process, not its PID, and sees an exited but unreaped
+    owner as gone."""
+    if WINDOWS:
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = wintypes.HANDLE(kernel32.OpenProcess(0x00100000, False, pid))  # SYNCHRONIZE
+        if not handle or kernel32.WaitForSingleObject(handle, 0) == 0:
+            return None
+        return lambda: kernel32.WaitForSingleObject(handle, 0xFFFFFFFF)
+    if sys.platform == 'darwin':
+        queue = select.kqueue()
+        try:
+            queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD,
+                                         select.KQ_NOTE_EXIT)], 0)
+        except OSError:
+            return None
+        if queue.control(None, 1, 0):
+            return None
+        return lambda: queue.control(None, 1, None)
+    try:
+        pidfd = os.pidfd_open(pid)
+    except AttributeError:
+        pidfd = None
+    except OSError as error:
+        if error.errno == 3:  # ESRCH
+            return None
+        pidfd = None
+    if pidfd is not None:
+        if select.select([pidfd], [], [], 0)[0]:
+            return None
+        return lambda: select.select([pidfd], [], [])
+    return poll_owner(pid)
+
+
+def poll_owner(pid):
+    """The fallback without pidfd: polls /proc, using the start time to tell a reused PID."""
+    owner = linux_process(pid)
+    if owner is None:
+        return None
+
+    def wait():
+        while True:
+            current = linux_process(pid)
+            if current is None or current[1] != owner[1]:
+                return
+            time.sleep(1)
+    return wait
+
+
+def hold(args):
+    """Runs detached: reports to the acquiring command on stdout, then keeps the lock."""
+    def report(message):
+        sys.stdout.write(json.dumps(message) + '\n')
+        sys.stdout.flush()
+
+    wait_for_owner = watch_owner(args.owner_pid)
+    if wait_for_owner is None:
+        report({'error': 'owner PID {} is not running'.format(args.owner_pid)})
+        return
+    fd = open_file(lock_path())
+    deadline = time.monotonic() + args.timeout
+    while True:
+        with guard():
+            if try_lock(fd):
+                record = {
+                    'mission': args.mission,
+                    'handle': args.handle,
+                    'pid': os.getpid(),
+                    'owner_pid': args.owner_pid,
+                    'owner_name': args.owner_name,
+                    'started': datetime.datetime.now().astimezone().isoformat(timespec='seconds'),
+                }
+                time.sleep(float(os.environ.get('RUNNER_QA_LOCK_TEST_PUBLISH_DELAY', 0)))
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                os.write(fd, json.dumps(record).encode('utf-8'))
+                break
+        if time.monotonic() >= deadline:
+            os.close(fd)
+            report({'busy': current_holder()})
+            return
+        time.sleep(POLL)
+    report({'acquired': record})
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for stream in (0, 1, 2):
+        os.dup2(devnull, stream)
+    wait_for_owner()
+
+
+def spawn_holder(args, owner_pid, name):
+    command = [sys.executable, os.path.abspath(__file__), '_hold',
+               '--mission', args.mission, '--handle', args.handle,
+               '--owner-pid', str(owner_pid), '--owner-name', name,
+               '--timeout', str(args.timeout)]
+    options = dict(stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if not WINDOWS:
+        return subprocess.Popen(command, start_new_session=True, **options)
+    detached = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    try:
+        return subprocess.Popen(command, creationflags=detached | subprocess.CREATE_BREAKAWAY_FROM_JOB, **options)
+    except OSError:
+        return subprocess.Popen(command, creationflags=detached, **options)
+
+
+def acquire(args):
+    require_identity(args)
+    holder = current_holder()
+    if holder and holder.get('mission') == args.mission and holder.get('handle') == args.handle:
+        print('qa lock already held by this owner: ' + describe(holder))
+        return 0
+    if args.owner_pid is None:
+        owner_pid, name = default_owner()
+    else:
+        owner_pid, name = args.owner_pid, owner_name(args.owner_pid)
+    holder_process = spawn_holder(args, owner_pid, name)
+    line = holder_process.stdout.readline()
+    holder_process.stdout.close()
+    try:
+        message = json.loads(line.decode('utf-8'))
+    except ValueError:
+        print('qa-lock: the holder process exited without reporting', file=sys.stderr)
+        return 2
+    if 'error' in message:
+        print('qa-lock: ' + message['error'], file=sys.stderr)
+        return 2
+    if 'busy' in message:
+        if message['busy'] is None:
+            print('qa-lock: timed out after {}s; the lock was released meanwhile, retry'.format(args.timeout))
+        else:
+            print('qa-lock: timed out after {}s; '.format(args.timeout) + describe(message['busy']))
+        return 1
+    record = message['acquired']
+    print('qa lock acquired for mission {mission}, handle {handle}, holder PID {pid}, '
+          'owner PID {owner_pid} ({owner_name})'.format(**record))
+    return 0
+
+
+def release(args):
+    require_identity(args)
+    holder = current_holder()
+    if holder is None:
+        print('qa lock is free')
+        return 0
+    if holder.get('mission') != args.mission or holder.get('handle') != args.handle:
+        print('qa-lock: refusing to release another owner\'s lock; ' + describe(holder))
+        return 1
+    try:
+        os.kill(holder['pid'], signal.SIGTERM)
+    except OSError:
+        pass
+    deadline = time.monotonic() + 10
+    while (current_holder() or {}).get('pid') == holder['pid']:
+        if time.monotonic() >= deadline:
+            print('qa-lock: the holder PID {} did not exit'.format(holder['pid']), file=sys.stderr)
+            return 2
+        time.sleep(POLL)
+    print('qa lock released')
+    return 0
+
+
+def status(_args):
+    holder = current_holder()
+    print('qa lock is free' if holder is None else describe(holder))
+    return 0
+
+
+def require_identity(args):
+    args.mission = args.mission or os.environ.get('RUNNER_MISSION_ID')
+    args.handle = args.handle or os.environ.get('RUNNER_HANDLE')
+    if not args.mission or not args.handle:
+        sys.exit('qa-lock: --mission and --handle are required outside a Runner mission')
+
+
+def main():
+    parser = argparse.ArgumentParser(prog='qa-lock', description=__doc__.split('\n\n')[0],
+                                     epilog='Tests: python3 script/test-qa-lock.py -v')
+    commands = parser.add_subparsers(dest='command', required=True, metavar='{acquire,release,status}')
+    take = commands.add_parser('acquire', help='take the lock, waiting up to --timeout seconds')
+    take.add_argument('--mission')
+    take.add_argument('--handle')
+    take.add_argument('--owner-pid', type=int, help='the lock is freed when this process exits')
+    take.add_argument('--timeout', type=float, default=0, help='seconds to wait (default 0)')
+    take.set_defaults(run=acquire)
+    give = commands.add_parser('release', help='free the lock this mission and handle hold')
+    give.add_argument('--mission')
+    give.add_argument('--handle')
+    give.set_defaults(run=release)
+    commands.add_parser('status', help='print free or the holder').set_defaults(run=status)
+    holder = commands.add_parser('_hold')
+    for name in ('--mission', '--handle', '--owner-name'):
+        holder.add_argument(name, required=True)
+    holder.add_argument('--owner-pid', type=int, required=True)
+    holder.add_argument('--timeout', type=float, required=True)
+    holder.set_defaults(run=hold)
+    args = parser.parse_args()
+    sys.exit(args.run(args))
+
+
+if __name__ == '__main__':
+    main()
