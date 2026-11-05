@@ -2063,6 +2063,21 @@ fn roster_changes_are_dividers_with_person_attribution() {
     }
 }
 
+#[test]
+fn an_interruption_is_a_feed_warning_that_names_the_member() {
+    let mut event = signal(
+        "session_interrupted",
+        serde_json::json!({"at": "2026-11-05T07:50:17Z"}),
+    );
+    event.from = "coder".into();
+    let blocks = crate::surfaces::mission_feed::group_feed_blocks(std::slice::from_ref(&event));
+    assert!(matches!(blocks.as_slice(), [FeedBlock::Signal(_)]));
+    assert_eq!(
+        mission_signal_body(&event),
+        "Runner restarted while @coder was mid-turn. That turn was lost; message @coder to continue."
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn notification_clicks_select_slot_and_feed_and_visible_slots_stay_silent() {

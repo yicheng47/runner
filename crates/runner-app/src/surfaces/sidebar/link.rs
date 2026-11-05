@@ -88,13 +88,14 @@ pub(super) fn is_agent_chat(member: &SessionDisplay) -> bool {
 }
 
 /// A mission row's trailing status from the daemon's state: Working, Needs
-/// you, Failed, or the unread dot once Settled or Ended. An Ended mission
-/// otherwise looks like any stopped mission row (Jason, 2026-11-03).
+/// you, Failed, Interrupted, or the unread dot once Settled or Ended. An Ended
+/// mission otherwise looks like any stopped mission row (Jason, 2026-11-03).
 pub(super) fn phase_attention(phase: MissionPhase, unread: bool) -> AttentionState {
     match phase {
         MissionPhase::NeedsYou => AttentionState::NeedsYou,
         MissionPhase::Failed => AttentionState::Error,
-        MissionPhase::Working => AttentionState::Working,
+        MissionPhase::Interrupted => AttentionState::Interrupted,
+        MissionPhase::Working | MissionPhase::Unknown => AttentionState::Working,
         MissionPhase::Settled | MissionPhase::Ended if unread => AttentionState::Unread,
         MissionPhase::Settled | MissionPhase::Ended => AttentionState::None,
     }
@@ -127,9 +128,10 @@ pub(super) fn mission_attention_indicator(attention: AttentionState) -> AnyEleme
 }
 
 /// The order a collapsed group names its most urgent state in.
-const URGENCY: [MissionPhase; 5] = [
+const URGENCY: [MissionPhase; 6] = [
     MissionPhase::NeedsYou,
     MissionPhase::Failed,
+    MissionPhase::Interrupted,
     MissionPhase::Working,
     MissionPhase::Settled,
     MissionPhase::Ended,
@@ -156,7 +158,8 @@ pub(super) fn collapsed_summary(phases: &[Option<MissionPhase>]) -> String {
                 match phase {
                     MissionPhase::NeedsYou => "format.link_group_needs_you",
                     MissionPhase::Failed => "format.link_group_failed",
-                    MissionPhase::Working => "format.link_group_working",
+                    MissionPhase::Interrupted => "format.link_group_interrupted",
+                    MissionPhase::Working | MissionPhase::Unknown => "format.link_group_working",
                     MissionPhase::Settled => "format.link_group_settled",
                     MissionPhase::Ended => "format.link_group_ended",
                 },
@@ -840,7 +843,7 @@ impl GroupState {
             .truncate()
             .text_size(size)
             .text_color(match self.urgent {
-                Some(MissionPhase::NeedsYou) => theme::warning(),
+                Some(MissionPhase::NeedsYou | MissionPhase::Interrupted) => theme::warning(),
                 Some(MissionPhase::Failed) => theme::danger(),
                 _ => theme::faint(),
             })

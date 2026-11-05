@@ -232,6 +232,42 @@ impl SessionManager {
         );
     }
 
+    /// A session launch resume is still bringing back, for tests outside the manager.
+    #[cfg(test)]
+    pub(crate) fn test_resuming(&self, session_id: &str) {
+        self.session_state_or_insert(session_id)
+            .lock()
+            .unwrap()
+            .model
+            .apply(
+                SessionEvent::TestLifecycle(crate::session::status::Lifecycle::Resuming),
+                super::super::clock::state_now(),
+            );
+    }
+
+    /// A live mission session whose runtime refuses to stop it, for tests outside the manager.
+    #[cfg(test)]
+    pub(crate) fn test_attach_live(&self, session_id: &str, mission_id: &str) {
+        self.session_state_or_insert(session_id)
+            .lock()
+            .unwrap()
+            .handle = Some(super::SessionHandle {
+            startup: None,
+            #[cfg(windows)]
+            pending_first_turn: None,
+            id: session_id.to_owned(),
+            mission_id: Some(mission_id.to_owned()),
+            role_id: None,
+            runtime_session: crate::session::runtime::RuntimeSession {
+                runtime: "test".into(),
+                session_id: session_id.to_owned(),
+            },
+            rollout_capture: None,
+            forwarder: None,
+            stop: Default::default(),
+        });
+    }
+
     pub(crate) fn publish_direct_activity(
         &self,
         session_id: &str,

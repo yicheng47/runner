@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, App, ElementId, FontWeight, SharedString, Task, Window,
@@ -20,6 +20,8 @@ pub enum StatusKind {
     Resuming,
     Working,
     Idle,
+    /// Mid-turn when runnerd stopped; shown in place of Idle until its next turn (#1187).
+    Interrupted,
     Approval,
     Answer,
     NeedsYou,
@@ -39,6 +41,8 @@ pub struct StatusPresentation {
     pub detail: Option<WorkDetail>,
     pub message: Option<SharedString>,
     pub program_status: bool,
+    /// When runnerd stopped, for an interrupted mission member.
+    pub interrupted_since: Option<i64>,
 }
 
 struct ShortStatusLabel {
@@ -76,6 +80,7 @@ impl StatusPresentation {
                 } else {
                     match observation.activity {
                         Activity::Working => StatusKind::Working,
+                        _ if status.interrupted_since.is_some() => StatusKind::Interrupted,
                         Activity::Ready | Activity::Idle => StatusKind::Idle,
                         Activity::Unavailable => StatusKind::Unavailable,
                     }
@@ -97,6 +102,9 @@ impl StatusPresentation {
                 .and_then(|evidence| evidence.message.clone())
                 .map(Into::into),
             program_status: observation.program_status.is_some(),
+            interrupted_since: status
+                .interrupted_since
+                .filter(|_| kind == StatusKind::Interrupted),
         }
     }
 
@@ -106,6 +114,7 @@ impl StatusPresentation {
             StatusKind::Resuming => crate::i18n::text("ui.resuming_status"),
             StatusKind::Working => crate::i18n::text("ui.working"),
             StatusKind::Idle => crate::i18n::text("ui.idle"),
+            StatusKind::Interrupted => crate::i18n::text("ui.interrupted"),
             StatusKind::Approval => crate::i18n::text("ui.approval_needed"),
             StatusKind::Answer => crate::i18n::text("ui.answer_needed"),
             StatusKind::NeedsYou => crate::i18n::text("ui.needs_you"),
@@ -125,6 +134,11 @@ impl StatusPresentation {
 
     pub fn is_error(&self) -> bool {
         matches!(self.kind, StatusKind::Error | StatusKind::ResponseFailed)
+    }
+
+    /// Shown in the warning colour: it waits on you, or its turn was lost to a restart.
+    fn warns(&self) -> bool {
+        self.needs_you() || self.kind == StatusKind::Interrupted
     }
 
     pub fn tooltip(&self) -> String {
@@ -167,6 +181,15 @@ impl StatusPresentation {
                 StatusKind::Idle if self.outcome == Some(TurnOutcome::Interrupted) => {
                     crate::i18n::text("ui.idle_last_response_interrupted").into()
                 }
+                StatusKind::Interrupted => crate::i18n::tf(
+                    "format.interrupted_by_a_runner_restart",
+                    &[(
+                        "time",
+                        self.interrupted_since
+                            .and_then(|at| chrono::Local.timestamp_millis_opt(at).single())
+                            .map_or_else(|| "?".into(), |at| at.format("%-I:%M %p").to_string()),
+                    )],
+                ),
                 StatusKind::Working => self.detail.map_or_else(
                     || crate::i18n::text("ui.working").into(),
                     |detail| {
@@ -297,7 +320,7 @@ pub fn format_elapsed(ms: i64) -> String {
 }
 
 pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> AnyElement {
-    let color = if status.needs_you() {
+    let color = if status.warns() {
         theme::warning()
     } else if status.is_error() {
         theme::danger()
@@ -320,6 +343,7 @@ pub fn status_glyph(status: StatusPresentation, id: impl Into<ElementId>) -> Any
                 StatusKind::Answer => "message-circle.svg",
                 StatusKind::NeedsYou => "triangle-alert.svg",
                 StatusKind::Stopped => "square.svg",
+                StatusKind::Interrupted => "circle-pause.svg",
                 StatusKind::Error | StatusKind::ResponseFailed => "circle-alert.svg",
                 _ => "circle-question-mark.svg",
             })
@@ -502,7 +526,7 @@ fn render_status_indicator(
 ) -> AnyElement {
     let header = style != StatusIndicatorStyle::List;
     let island = style == StatusIndicatorStyle::IslandHeader;
-    let color = if status.needs_you() {
+    let color = if status.warns() {
         theme::warning()
     } else if status.is_error() {
         theme::danger()
@@ -645,6 +669,7 @@ mod tests {
             detail: None,
             message: None,
             program_status: false,
+            interrupted_since: None,
         }
     }
 
@@ -717,6 +742,37 @@ mod tests {
             .tooltip_at(0),
             "Idle · estimated from terminal activity"
         );
+    }
+
+    #[test]
+    fn an_interrupted_member_reads_interrupted_in_place_of_idle_until_it_works() {
+        let mut status = AgentStatus {
+            lifecycle: Lifecycle::Running,
+            observation: AgentObservation {
+                activity: Activity::Idle,
+                source: ObservationSource::Hook,
+                ..Default::default()
+            },
+            interrupted_since: Some(1_767_225_600_000),
+            ..Default::default()
+        };
+        let interrupted = StatusPresentation::new(&status);
+        assert_eq!(interrupted.kind, StatusKind::Interrupted);
+        assert_eq!(interrupted.label(), "Interrupted");
+        assert!(interrupted.warns());
+        let time = chrono::Local
+            .timestamp_millis_opt(1_767_225_600_000)
+            .unwrap()
+            .format("%-I:%M %p");
+        assert_eq!(
+            interrupted.tooltip_at(0),
+            format!("Interrupted by a Runner restart at {time}; message it to continue.")
+        );
+        status.observation.activity = Activity::Working;
+        assert_eq!(StatusPresentation::new(&status).kind, StatusKind::Working);
+        status.observation.activity = Activity::Idle;
+        status.lifecycle = Lifecycle::Stopped;
+        assert_eq!(StatusPresentation::new(&status).kind, StatusKind::Stopped);
     }
 
     #[test]
@@ -878,6 +934,7 @@ mod tests {
             detail: None,
             message: None,
             program_status: false,
+            interrupted_since: None,
         };
         assert!(approval.shows_label(360.));
         assert!(!approval.shows_label(296.));
@@ -896,7 +953,8 @@ impl StatusRollup {
         } else if status.lifecycle == Lifecycle::Running && status.observation.needs_you() {
             4
         } else if status.lifecycle == Lifecycle::Running
-            && status.observation.activity == Activity::Working
+            && (status.observation.activity == Activity::Working
+                || status.interrupted_since.is_some())
         {
             3
         } else if status.unread_since.is_some() {
@@ -1091,6 +1149,29 @@ fn status_tooltip_text_at(status: StatusPresentation, unread: bool, now: i64) ->
 mod rollup_tests {
     use super::*;
     use runner_core::protocol::status::{AgentObservation, HumanInteraction};
+
+    #[test]
+    fn an_interrupted_member_shows_its_pause_in_a_rollup() {
+        let interrupted = AgentStatus {
+            lifecycle: Lifecycle::Running,
+            observation: AgentObservation {
+                activity: Activity::Idle,
+                source: ObservationSource::Hook,
+                ..Default::default()
+            },
+            interrupted_since: Some(1),
+            ..Default::default()
+        };
+        let rollup = StatusRollup {
+            entries: vec![("member".into(), interrupted)],
+        };
+        assert_eq!(rollup.priority_value(), 3);
+        assert_eq!(rollup.target(), Some("member"));
+        assert_eq!(
+            rollup_presentation(&rollup.entries[0].1, true).kind,
+            StatusKind::Interrupted
+        );
+    }
 
     fn working() -> AgentStatus {
         AgentStatus {

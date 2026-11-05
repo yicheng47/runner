@@ -222,6 +222,14 @@ fn an_ended_mission_shows_only_its_unread_dot() {
         super::link::phase_attention(MissionPhase::Ended, false),
         AttentionState::None
     );
+    assert_eq!(
+        super::link::phase_attention(MissionPhase::Interrupted, true),
+        AttentionState::Interrupted
+    );
+    assert_eq!(
+        super::link::phase_attention(MissionPhase::Unknown, false),
+        AttentionState::Working
+    );
 }
 
 #[test]
@@ -242,6 +250,22 @@ fn the_collapsed_summary_names_the_most_urgent_state() {
     assert_eq!(
         most_urgent(&[Some(Ended), Some(Settled)]),
         Some((Settled, 1))
+    );
+    assert_eq!(
+        most_urgent(&[Some(Working), Some(Interrupted), Some(Settled)]),
+        Some((Interrupted, 1))
+    );
+    assert_eq!(
+        most_urgent(&[Some(Interrupted), Some(Failed)]),
+        Some((Failed, 1))
+    );
+    assert_eq!(
+        most_urgent(&[Some(Interrupted), Some(NeedsYou)]),
+        Some((NeedsYou, 1))
+    );
+    assert_eq!(
+        collapsed_summary(&[Some(Working), Some(Interrupted)]),
+        "2 missions · 1 interrupted"
     );
     assert_eq!(most_urgent(&[None]), None);
     assert_eq!(

@@ -614,6 +614,7 @@ mod tests {
         for status in [
             Working,
             Idle,
+            Interrupted,
             Approval,
             Answer,
             NeedsYou,

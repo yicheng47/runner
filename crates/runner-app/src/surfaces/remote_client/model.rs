@@ -47,6 +47,7 @@ pub(crate) fn agent_status(status: &SessionStatus) -> runner_core::protocol::Age
         },
         error_since: (kind == Status::Error && !status.error_acknowledged).then_some(marker),
         unread_since: status.unread.then_some(marker),
+        interrupted_since: status.interrupted_since,
         ..Default::default()
     }
 }

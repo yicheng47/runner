@@ -201,6 +201,7 @@ impl Sidebar {
                                     reason: Some(runner_core::companion::NeedsYouReason::Answer),
                                     unread: false,
                                     error_acknowledged: false,
+                                    interrupted_since: None,
                                 },
                             ),
                         ));

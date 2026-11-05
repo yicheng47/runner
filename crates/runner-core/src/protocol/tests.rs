@@ -128,7 +128,8 @@ record!(AgentStatus {
     exit_code,
     error_since,
     failed_since,
-    unread_since
+    unread_since,
+    interrupted_since
 });
 record!(AgentUsage {
     windows,
@@ -340,6 +341,7 @@ record!(MissionReadCursor {
 record!(MissionStatusSnapshot {
     mission,
     phase,
+    interrupted_at,
     started_by,
     crew,
     sessions,
@@ -396,7 +398,7 @@ record!(MissionSummary {
     activity,
     phase
 });
-variant!(MissionPhase => Self::NeedsYou);
+variant!(MissionPhase => Self::Interrupted);
 record!(NodeRow {
     id,
     parent_id,
@@ -815,4 +817,51 @@ fn remote_pin_request_redacts_debug_and_trust_contains_no_pin() {
     assert!(!serde_json::to_string(&response).unwrap().contains(pin));
     assert!(Request::remote_trust {}.is_fast());
     assert!(!request.is_fast());
+}
+
+#[test]
+fn an_interrupted_summary_decodes_on_builds_that_predate_the_phase() {
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    #[serde(rename_all = "snake_case")]
+    enum OldPhase {
+        NeedsYou,
+        Failed,
+        Working,
+        Settled,
+        Ended,
+    }
+    #[derive(serde::Deserialize)]
+    struct OldSummary {
+        #[serde(default)]
+        phase: Option<OldPhase>,
+    }
+    let mut summary = MissionSummary::sample();
+    summary.phase = Some(MissionPhase::Interrupted);
+    let wire = serde_json::to_value(&summary).unwrap();
+    assert_eq!(wire["phase"], "working");
+    assert_eq!(wire["interrupted"], true);
+    let old: OldSummary = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(old.phase, Some(OldPhase::Working));
+    let new: MissionSummary = serde_json::from_value(wire).unwrap();
+    assert_eq!(new.phase, Some(MissionPhase::Interrupted));
+
+    summary.phase = Some(MissionPhase::Settled);
+    let wire = serde_json::to_value(&summary).unwrap();
+    assert!(wire.get("interrupted").is_none());
+    let new: MissionSummary = serde_json::from_value(wire).unwrap();
+    assert_eq!(new.phase, Some(MissionPhase::Settled));
+
+    let mut wire = serde_json::to_value(&summary).unwrap();
+    wire.as_object_mut().unwrap().remove("phase");
+    let older_daemon: MissionSummary = serde_json::from_value(wire).unwrap();
+    assert_eq!(older_daemon.phase, None);
+
+    let future: MissionPhase = serde_json::from_value(serde_json::json!("paused")).unwrap();
+    assert_eq!(future, MissionPhase::Unknown);
+    let mut status = AgentStatus::sample();
+    status.interrupted_since = None;
+    assert!(serde_json::to_value(&status)
+        .unwrap()
+        .get("interrupted_since")
+        .is_none());
 }

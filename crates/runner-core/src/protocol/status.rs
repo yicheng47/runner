@@ -93,6 +93,10 @@ pub struct AgentStatus {
     #[serde(default)]
     pub failed_since: Option<i64>,
     pub unread_since: Option<i64>,
+    /// A mission member mid-turn when runnerd stopped, until its next turn:
+    /// when runnerd stopped (#1187).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_since: Option<i64>,
 }
 
 #[cfg(test)]

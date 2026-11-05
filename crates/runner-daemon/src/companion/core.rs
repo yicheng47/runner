@@ -561,6 +561,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                 reason: None,
                 unread: false,
                 error_acknowledged: false,
+                interrupted_since: None,
             });
         overview.sessions.insert(
             id,

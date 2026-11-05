@@ -757,6 +757,28 @@ fn status_idle_including_shell_and_unavailable_observations() {
 }
 
 #[test]
+fn status_carries_an_interrupted_members_mark_for_idle_members_only() {
+    let mut interrupted = agent(Lifecycle::Running, Activity::Idle, None);
+    interrupted.interrupted_since = Some(5);
+    let status = SessionStatus::from(&interrupted);
+    assert_eq!(status.status, Status::Idle);
+    assert_eq!(status.interrupted_since, Some(5));
+    let wire = serde_json::to_value(&status).unwrap();
+    assert_eq!(wire["interruptedSince"], 5);
+    assert_eq!(
+        serde_json::from_value::<SessionStatus>(wire).unwrap(),
+        status
+    );
+    interrupted.observation.activity = Activity::Working;
+    assert_eq!(SessionStatus::from(&interrupted).interrupted_since, None);
+    let older_host: SessionStatus = serde_json::from_value(
+        serde_json::json!({"status": "idle", "reason": null, "unread": false}),
+    )
+    .unwrap();
+    assert_eq!(older_host.interrupted_since, None);
+}
+
+#[test]
 fn status_starting_and_resuming_precede_interactions() {
     for lifecycle in [Lifecycle::Starting, Lifecycle::Resuming] {
         let status = SessionStatus::from(&agent(

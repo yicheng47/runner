@@ -1398,6 +1398,7 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
                 reason: reason.clone(),
                 unread,
                 error_acknowledged: false,
+                interrupted_since: None,
             };
             let mapped = model::agent_status(&wire);
             let presentation = StatusPresentation::new(&mapped);
@@ -1417,6 +1418,18 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
             );
         }
     }
+    let interrupted = model::agent_status(&SessionStatus {
+        status: Status::Idle,
+        reason: None,
+        unread: false,
+        error_acknowledged: false,
+        interrupted_since: Some(5),
+    });
+    assert_eq!(
+        StatusPresentation::new(&interrupted).kind,
+        StatusKind::Interrupted
+    );
+    assert_eq!(SessionStatus::from(&interrupted).interrupted_since, Some(5));
     let mut rollup = StatusRollup {
         entries: [
             ("unread", Status::Idle, None, true),
@@ -1444,6 +1457,7 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
                     reason,
                     unread,
                     error_acknowledged: false,
+                    interrupted_since: None,
                 }),
             )
         })

@@ -265,6 +265,14 @@ fn stop_all_title(running_count: usize) -> String {
 const STOP_ALL_BODY: &str =
     "ui.every_slot_s_pty_is_killed_and_whatever_turn_it_is_on_is_cut_off_the_mission_stays_open_ea";
 
+/// The text of a signal the feed shows in its own words.
+fn mission_signal_body(event: &Event) -> String {
+    crate::i18n::tf(
+        "format.runner_restarted_mid_turn",
+        &[("handle", event.from.clone())],
+    )
+}
+
 fn mission_signal_author(event: &Event) -> (&str, String) {
     match event.from.as_str() {
         "router" | "runner" => ("system", "system".into()),

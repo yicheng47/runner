@@ -652,6 +652,13 @@ fn mark_running_for_resume(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<V
     Ok(ids)
 }
 
+/// The sessions with launch-resume work queued or in flight.
+pub fn resume_on_launch_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM sessions WHERE resume_on_launch != 0")?;
+    let ids = stmt.query_map([], |row| row.get(0))?.collect();
+    ids
+}
+
 /// Atomically claim the next quit-time stamp outside `excluded`. Excluded
 /// claims stay pending so a surface can resume them when it becomes visible.
 /// Shells need no prior conversation key because relaunching one always starts

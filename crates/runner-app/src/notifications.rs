@@ -52,6 +52,7 @@ impl Reason {
         StatusPresentation {
             message: None,
             program_status: false,
+            interrupted_since: None,
             kind,
             estimated: false,
             exit_code: None,

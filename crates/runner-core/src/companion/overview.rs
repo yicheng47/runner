@@ -6,8 +6,8 @@ use super::{wire_enum, SessionStatus};
 
 wire_enum!(MissionState, Stopped, { Running => "running", Stopped => "stopped" });
 wire_enum!(MissionPhase, Working, {
-    NeedsYou => "needsYou", Failed => "failed", Working => "working",
-    Settled => "settled", Ended => "ended",
+    NeedsYou => "needsYou", Failed => "failed", Interrupted => "interrupted",
+    Working => "working", Settled => "settled", Ended => "ended",
 });
 wire_enum!(SessionKind, Chat, { Chat => "chat", Agent => "agent", Shell => "shell" });
 wire_enum!(SplitDirection, Row, { Row => "row", Column => "column" });
@@ -145,6 +145,7 @@ impl MissionPhase {
         match self {
             Self::NeedsYou => Some(P::NeedsYou),
             Self::Failed => Some(P::Failed),
+            Self::Interrupted => Some(P::Interrupted),
             Self::Working => Some(P::Working),
             Self::Settled => Some(P::Settled),
             Self::Ended => Some(P::Ended),
@@ -159,7 +160,8 @@ impl From<crate::protocol::MissionPhase> for MissionPhase {
         match phase {
             P::NeedsYou => Self::NeedsYou,
             P::Failed => Self::Failed,
-            P::Working => Self::Working,
+            P::Interrupted => Self::Interrupted,
+            P::Working | P::Unknown => Self::Working,
             P::Settled => Self::Settled,
             P::Ended => Self::Ended,
         }
