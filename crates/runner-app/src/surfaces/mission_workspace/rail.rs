@@ -69,9 +69,9 @@ impl MissionWorkspace {
         Some(self.rail_files.link_view(&context, cx))
     }
 
-    /// A link opened in the preview: the rail opens on Files.
+    /// A link opened in the preview: the rail opens Files, or switches to it.
     fn show_link_preview(&mut self, cx: &mut Context<Self>) {
-        self.rail_view = PanelViewId::Files;
+        self.rail_surfaces.open.open(PanelViewId::Files);
         if !self.settings(cx).mission_rail_open {
             self.update_app_settings(cx, true, |settings| {
                 settings.mission_rail_open = true;
@@ -102,14 +102,23 @@ impl MissionWorkspace {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let select_root = cx.entity();
+        let surface_root = cx.entity();
         let collapse_root = cx.entity();
         let settings = self.settings(cx).clone();
-        let shown = side_panel::shown_view(PanelSurface::Mission, &settings, self.rail_view);
+        let shown = side_panel::shown(PanelSurface::Mission, &settings, &self.rail_surfaces.open);
+        let handler: side_panel::SurfaceHandler = Rc::new(move |action, window, cx| {
+            surface_root.update(cx, |this, cx| {
+                let settings = this.settings(cx).clone();
+                this.rail_surfaces
+                    .apply(PanelSurface::Mission, &settings, action, window, cx);
+                cx.notify();
+            })
+        });
         let header = div()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
-            .px_4()
+            .pl_2()
+            .pr_2()
             .flex()
             .items_center()
             .border_b_1()
@@ -121,13 +130,12 @@ impl MissionWorkspace {
                 let element = crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
                 element
             })
-            .child(side_panel::header_views(
+            .child(side_panel::header_tabs(
                 PanelSurface::Mission,
                 &settings,
-                shown,
-                Rc::new(move |view, cx| {
-                    select_root.update(cx, |this, cx| this.set_mission_rail_view(view, cx));
-                }),
+                &self.rail_surfaces.open,
+                Some((&self.rail_surfaces, window)),
+                handler,
                 IconButton::new("collapse-mission-rail", "panel-right-open.svg")
                     .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))
                     .on_press(move |_, cx| {
@@ -202,11 +210,6 @@ impl MissionWorkspace {
             .bg(theme::bg())
             .child(rail)
             .into_any_element()
-    }
-
-    fn set_mission_rail_view(&mut self, view: PanelViewId, cx: &mut Context<Self>) {
-        self.rail_view = view;
-        cx.notify();
     }
 
     fn render_roles_rail(
