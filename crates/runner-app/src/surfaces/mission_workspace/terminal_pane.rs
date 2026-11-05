@@ -138,6 +138,7 @@ impl MissionWorkspace {
                         )
                         .scrollable(interactive)
                         .find(terminal_find.clone())
+                        .file_links(Some(self.file_link_route(cx)))
                         .cached(),
                     )
                     .child(terminal_scrollbar),

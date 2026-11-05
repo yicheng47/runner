@@ -3,7 +3,8 @@
 
 use std::rc::Rc;
 
-use gpui::{div, prelude::*, rems, svg, App, Div, ElementId, MouseButton};
+use gpui::{div, prelude::*, rems, svg, App, Div, ElementId, FontWeight, MouseButton};
+use runner_app::ui::Tooltip;
 
 use crate::app_settings::AppSettings;
 use crate::theme;
@@ -14,14 +15,6 @@ pub(crate) enum PanelViewId {
     Sessions,
     Info,
     Files,
-}
-
-/// The session's own views sit on the header's left as icons; the project's
-/// sit on its right as labelled buttons.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PanelGroup {
-    Session,
-    Project,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,7 +29,6 @@ pub(crate) struct PanelView {
     pub(crate) id: PanelViewId,
     label: &'static str,
     pub(crate) icon: &'static str,
-    pub(crate) group: PanelGroup,
     surfaces: &'static [PanelSurface],
 }
 
@@ -61,21 +53,18 @@ pub(crate) const VIEWS: [PanelView; 3] = [
         id: PanelViewId::Sessions,
         label: "ui.sessions",
         icon: "users.svg",
-        group: PanelGroup::Session,
         surfaces: &[PanelSurface::Mission],
     },
     PanelView {
         id: PanelViewId::Info,
         label: "ui.info",
         icon: "info.svg",
-        group: PanelGroup::Session,
         surfaces: &[PanelSurface::Chat, PanelSurface::Mission],
     },
     PanelView {
         id: PanelViewId::Files,
         label: "ui.files",
         icon: "folder.svg",
-        group: PanelGroup::Project,
         surfaces: &[
             PanelSurface::Chat,
             PanelSurface::Terminal,
@@ -129,7 +118,7 @@ pub(crate) const MAIN_MIN_WIDTH: f32 = 420.;
 pub(crate) const ROSTER_TWO_UP_WIDTH: f32 = 560.;
 
 /// A panel widened by an open file: the file's width, whether the tree
-/// beside it fits, the tree's width, and the panel's standard width.
+/// beside it is on, the tree's width, and the panel's standard width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Widened {
     pub(crate) file: f32,
@@ -159,8 +148,8 @@ impl Widened {
 
 /// How a panel showing a file of width `file` beside a tree `tree_width`
 /// wide fits in `available`, the width it shares with the chat or mission:
-/// the tree, when turned on, hides first, then the file narrows, never below
-/// the panel's `standard` width.
+/// the file narrows first, never below the panel's `standard` width, and a
+/// tree that is turned on always shows (Jason, 2026-11-05).
 pub(crate) fn widened(
     available: f32,
     standard: f32,
@@ -168,26 +157,19 @@ pub(crate) fn widened(
     tree_width: f32,
     tree: bool,
 ) -> Widened {
-    let room = available - MAIN_MIN_WIDTH;
+    let room = available - MAIN_MIN_WIDTH - if tree { tree_width } else { 0. };
     let file = file.max(standard);
-    if tree && file + tree_width <= room {
-        return Widened {
-            file,
-            tree: true,
-            tree_width,
-            standard,
-        };
-    }
     Widened {
         file: room.clamp(standard, file),
-        tree: false,
+        tree,
         tree_width,
         standard,
     }
 }
 
-/// The header's row: the session's views on the left, the project's beside
-/// `collapse` on the right.
+/// The header's row (option H, Jason, 2026-11-05): the open view's name on
+/// the left; on the right the surface's views as bare icon buttons, the open
+/// one raised, then `collapse`. A surface with one view shows no buttons.
 pub(crate) fn header_views(
     surface: PanelSurface,
     settings: &AppSettings,
@@ -195,48 +177,49 @@ pub(crate) fn header_views(
     select: SelectView,
     collapse: impl IntoElement,
 ) -> Div {
-    let session = views(surface, settings)
-        .filter(|view| view.group == PanelGroup::Session)
-        .map(|view| {
-            let select = select.clone();
-            let id = view.id;
-            session_view_button(view, shown == Some(id))
-                .on_click(move |_, _, cx| select(id, cx))
+    let available = views(surface, settings).collect::<Vec<_>>();
+    let title = available.iter().find(|view| shown == Some(view.id));
+    let buttons = (available.len() > 1).then(|| {
+        available
+            .iter()
+            .map(|view| {
+                let select = select.clone();
+                let id = view.id;
+                Tooltip::new(
+                    ElementId::Name(format!("side-panel-view-tooltip-{id:?}").into()),
+                    view.label(),
+                    view_button(view, shown == Some(id)).on_click(move |_, _, cx| select(id, cx)),
+                )
                 .into_any_element()
-        })
-        .collect::<Vec<_>>();
-    let project = views(surface, settings)
-        .filter(|view| view.group == PanelGroup::Project)
-        .map(|view| {
-            let select = select.clone();
-            let id = view.id;
-            project_view_button(view, shown == Some(id))
-                .on_click(move |_, _, cx| select(id, cx))
-                .into_any_element()
-        })
-        .collect::<Vec<_>>();
-    let divider = (!project.is_empty()).then(|| {
-        div()
-            .flex_none()
-            .w(rems(1. / 16.))
-            .h(rems(1.))
-            .bg(theme::border())
+            })
+            .collect::<Vec<_>>()
     });
     div()
         .flex_1()
         .min_w(gpui::px(0.))
         .flex()
         .items_center()
-        .child(div().flex().items_center().gap_1().children(session))
-        .child(div().flex_1())
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w(gpui::px(0.))
+                .truncate()
+                .text_size(rems(13. / 16.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .map(|element| match title {
+                    Some(view) => record_title(view, element).child(view.label()),
+                    None => element,
+                }),
+        )
         .child(
             div()
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap_2()
-                .children(project)
-                .children(divider)
+                .gap(rems(4. / 16.))
+                .children(buttons.into_iter().flatten())
                 .child(collapse),
         )
 }
@@ -258,127 +241,98 @@ fn record(view: &PanelView, button: gpui::Stateful<Div>) -> gpui::Stateful<Div> 
             PanelViewId::Info => "PANEL_VIEW Info",
             PanelViewId::Files => "PANEL_VIEW Files",
         };
-        crate::theme_snapshot::record_fill(id, crate::theme_snapshot::record_border(id, button))
+        crate::theme_snapshot::record_fill(id, button)
     };
     button
 }
 
-fn session_view_button(view: &PanelView, active: bool) -> gpui::Stateful<Div> {
-    let group = format!("side-panel-view-{:?}", view.id);
-    stop_titlebar_drag(div().id(view_element_id(view)))
-        .group(group.clone())
-        .size(rems(28. / 16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded_sm()
-        .cursor_pointer()
-        .text_color(if active {
-            theme::text()
-        } else {
-            theme::muted()
-        })
-        .when(active, |button| {
-            button.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-        })
-        .hover(|button| {
-            button
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                .text_color(theme::text())
-        })
-        .map(|button| record(view, button))
-        .child(
-            svg()
-                .flex_none()
-                .path(view.icon)
-                .size(rems(14. / 16.))
-                .text_color(if active {
-                    theme::text()
-                } else {
-                    theme::muted()
-                })
-                .group_hover(group, |icon| icon.text_color(theme::text())),
-        )
+#[cfg_attr(not(test), allow(unused_variables))]
+fn record_ink(view: &PanelView, ink: Div) -> Div {
+    #[cfg(test)]
+    let ink = {
+        let id = match view.id {
+            PanelViewId::Sessions => "PANEL_VIEW_INK Sessions",
+            PanelViewId::Info => "PANEL_VIEW_INK Info",
+            PanelViewId::Files => "PANEL_VIEW_INK Files",
+        };
+        crate::theme_snapshot::record_text(id, ink)
+    };
+    ink
 }
 
-fn project_view_button(view: &PanelView, active: bool) -> gpui::Stateful<Div> {
+#[cfg_attr(not(test), allow(unused_variables))]
+fn record_title(view: &PanelView, title: Div) -> Div {
+    #[cfg(test)]
+    let title = {
+        let id = match view.id {
+            PanelViewId::Sessions => "SIDE_PANEL_TITLE Sessions",
+            PanelViewId::Info => "SIDE_PANEL_TITLE Info",
+            PanelViewId::Files => "SIDE_PANEL_TITLE Files",
+        };
+        crate::theme_snapshot::record_text(id, title)
+    };
+    title
+}
+
+/// A view's 24 px icon button: raised with a bright icon while open.
+fn view_button(view: &PanelView, active: bool) -> gpui::Stateful<Div> {
     let group = format!("side-panel-view-{:?}", view.id);
-    let label = view.label();
     let ink = if active {
         theme::text()
     } else {
-        theme::muted()
+        theme::faint()
     };
     stop_titlebar_drag(div().id(view_element_id(view)))
         .group(group.clone())
         .flex_none()
-        .h(rems(28. / 16.))
-        .px(rems(10. / 16.))
+        .size(rems(24. / 16.))
         .flex()
         .items_center()
-        .gap(rems(6. / 16.))
+        .justify_center()
         .rounded_md()
-        .border_1()
-        .border_color(theme::border())
         .cursor_pointer()
-        .text_size(theme::text_ui())
-        .text_color(ink)
-        .when(active, |button| {
-            button.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-        })
-        .hover(|button| {
-            button
-                .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                .text_color(theme::text())
-        })
+        .when(active, |button| button.bg(theme::raised()))
+        .hover(|button| button.bg(theme::raised()))
         .map(|button| record(view, button))
         .child(
-            svg()
-                .flex_none()
-                .path(view.icon)
-                .size(rems(14. / 16.))
+            div()
                 .text_color(ink)
-                .group_hover(group, |icon| icon.text_color(theme::text())),
+                .map(|element| record_ink(view, element))
+                .child(
+                    svg()
+                        .flex_none()
+                        .path(view.icon)
+                        .size(rems(13. / 16.))
+                        .text_color(ink)
+                        .group_hover(group, |icon| icon.text_color(theme::text())),
+                ),
         )
-        .child(label)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn ids(surface: PanelSurface, group: PanelGroup) -> Vec<PanelViewId> {
-        ids_with(&AppSettings::default(), surface, group)
+    fn ids(surface: PanelSurface) -> Vec<PanelViewId> {
+        ids_with(&AppSettings::default(), surface)
     }
 
-    fn ids_with(
-        settings: &AppSettings,
-        surface: PanelSurface,
-        group: PanelGroup,
-    ) -> Vec<PanelViewId> {
-        views(surface, settings)
-            .filter(|view| view.group == group)
-            .map(|view| view.id)
-            .collect()
+    fn ids_with(settings: &AppSettings, surface: PanelSurface) -> Vec<PanelViewId> {
+        views(surface, settings).map(|view| view.id).collect()
     }
 
     #[test]
-    fn views_group_by_session_and_project_and_filter_by_surface() {
-        use PanelGroup::*;
+    fn views_keep_one_order_and_filter_by_surface() {
         use PanelSurface::*;
         use PanelViewId::*;
-        assert_eq!(ids(Mission, Session), [Sessions, Info]);
-        assert_eq!(ids(Mission, Project), [Files]);
-        assert_eq!(ids(Chat, Session), [Info]);
-        assert_eq!(ids(Chat, Project), [Files]);
-        assert_eq!(ids(Terminal, Session), []);
-        assert_eq!(ids(Terminal, Project), [Files]);
+        assert_eq!(ids(Mission), [Sessions, Info, Files]);
+        assert_eq!(ids(Chat), [Info, Files]);
+        assert_eq!(ids(Terminal), [Files]);
         assert!(VIEWS.iter().all(|view| view.on(&AppSettings::default())));
     }
 
     #[test]
     fn settings_turn_info_and_files_off_but_never_sessions() {
-        use PanelGroup::*;
         use PanelSurface::*;
         use PanelViewId::*;
         let off = AppSettings {
@@ -386,8 +340,7 @@ mod tests {
             files_view: false,
             ..AppSettings::default()
         };
-        assert_eq!(ids_with(&off, Mission, Session), [Sessions]);
-        assert_eq!(ids_with(&off, Mission, Project), []);
+        assert_eq!(ids_with(&off, Mission), [Sessions]);
         assert_eq!(views(Chat, &off).count(), 0);
         assert_eq!(views(Terminal, &off).count(), 0);
         assert_eq!(shown_view(Chat, &off, Info), None);
@@ -397,49 +350,47 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(shown_view(Chat, &files_only, Info), Some(Files));
-        assert_eq!(ids_with(&files_only, Mission, Session), [Sessions]);
+        assert_eq!(ids_with(&files_only, Mission), [Sessions, Files]);
     }
 
     #[test]
-    fn a_widened_panel_hides_the_tree_first_then_narrows_the_file() {
+    fn a_widened_panel_narrows_the_file_first_and_keeps_the_tree() {
         let fit = |available| widened(available, 320., 440., 240., true);
-        let laid = |file, tree| Widened {
+        let laid = |file| Widened {
             file,
-            tree,
+            tree: true,
             tree_width: 240.,
             standard: 320.,
         };
         // 420 + 440 + 240: everything fits.
-        assert_eq!(fit(1100.), laid(440., true));
+        assert_eq!(fit(1100.), laid(440.));
         assert_eq!(fit(1100.).width(), 680.);
-        // One pixel short: the tree hides and the file keeps its width.
-        assert_eq!(fit(1099.), laid(440., false));
-        // Then the file narrows, the mission keeping its 420.
-        assert_eq!(fit(800.).file, 380.);
-        assert_eq!(fit(800.).width() + MAIN_MIN_WIDTH, 800.);
-        // Never below the standard panel width.
-        assert_eq!(fit(600.).file, 320.);
-        assert_eq!(fit(200.).file, 320.);
-        // A tree turned off stays off; a standard width wider than the file wins.
-        assert!(!widened(5000., 320., 440., 240., false).tree);
+        // Short of room, the file narrows and the tree stays.
+        assert_eq!(fit(1099.), laid(439.));
+        assert_eq!(fit(1000.).width() + MAIN_MIN_WIDTH, 1000.);
+        // The file stops at the standard width; the tree still shows.
+        assert_eq!(fit(980.), laid(320.));
+        assert_eq!(fit(600.), laid(320.));
+        // A tree turned off gives its room to the file.
+        let off = widened(800., 320., 440., 240., false);
+        assert!(!off.tree);
+        assert_eq!(off.file, 380.);
         assert_eq!(widened(5000., 480., 440., 240., true).file, 480.);
     }
 
     #[test]
-    fn a_wider_tree_widens_the_panel_and_hides_first_in_the_same_order() {
+    fn a_wider_tree_narrows_the_file_sooner_and_still_shows() {
         let fit = |available| widened(available, 288., 440., 360., true);
         // 420 + 440 + 360: the saved tree width fits beside the file.
-        assert!(fit(1220.).tree);
         assert_eq!(fit(1220.).width(), 800.);
-        // One pixel short: the tree hides first, the file keeps its width.
-        assert!(!fit(1219.).tree);
-        assert_eq!(fit(1219.).width(), 440.);
-        // Then the file narrows to the mission's 420, never below standard.
-        assert_eq!(fit(800.).width(), 380.);
-        assert_eq!(fit(600.).width(), 288.);
-        // A narrower tree fits where the wider one did not.
-        assert!(widened(1100., 288., 440., 160., true).tree);
-        assert!(!widened(1100., 288., 440., 360., true).tree);
+        // Short of room, the file narrows to the standard width, the tree stays.
+        assert!(fit(1219.).tree);
+        assert_eq!(fit(1219.).file, 439.);
+        assert_eq!(fit(1000.).file, 288.);
+        assert_eq!(fit(800.).width(), 648.);
+        // A narrower tree leaves the file more room.
+        assert_eq!(widened(1100., 288., 440., 160., true).file, 440.);
+        assert_eq!(widened(1100., 288., 440., 360., true).file, 320.);
     }
 
     #[test]

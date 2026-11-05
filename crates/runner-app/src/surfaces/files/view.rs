@@ -21,6 +21,7 @@ use runner_core::protocol::files::{
 };
 use runner_core::protocol::{ClientError, DaemonClient};
 
+use super::links::{LinkRoot, Links};
 use super::picker::{self, PickerItem, PickerKind, PickerSources};
 use super::tree::{FileTree, Letter, Moved, Row};
 use super::viewer::Viewer;
@@ -33,13 +34,11 @@ const ROW_HEIGHT: f32 = 26.;
 const INDENT: f32 = 14.;
 const PICKER_WIDTH: f32 = 300.;
 
-/// Space or Enter on a file in the tree: the hook the file viewer (m4)
-/// subscribes to, opening a preview tab for Space and a kept tab for Enter.
+/// Space or Enter on a file in the tree, which opens it in a tab.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileOpen {
     pub(crate) root: PathBuf,
     pub(crate) path: String,
-    pub(crate) keep: bool,
 }
 
 type Listings = Vec<(String, Result<Vec<DirEntry>, ClientError>)>;
@@ -120,6 +119,7 @@ pub(crate) struct FilesView {
     pub(super) scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
     pub(super) viewer: Viewer,
+    pub(super) links: Links,
     /// Redrawn when the panel's width should change.
     owner: Option<gpui::EntityId>,
     reported: Option<bool>,
@@ -140,12 +140,13 @@ fn subject(context: &PanelContext) -> FilesSubject {
     }
 }
 
-/// `relative` (`/`-separated) inside `root`, as a path on this computer.
+/// `relative` (`/`-separated) inside `root`, as a path on this computer,
+/// with its own separators even where git gave the root as `C:/…`.
 pub(crate) fn absolute(root: &Path, relative: &str) -> PathBuf {
     relative
         .split('/')
         .filter(|part| !part.is_empty())
-        .fold(root.to_path_buf(), |path, part| path.join(part))
+        .fold(root.components().collect(), |path, part| path.join(part))
 }
 
 pub(super) fn letter_color(letter: Letter) -> gpui::Hsla {
@@ -268,6 +269,7 @@ impl FilesView {
             scroll,
             scrollbar,
             viewer: Viewer::default(),
+            links: Links::default(),
             owner: None,
             reported: None,
             tree_resizing: false,
@@ -395,6 +397,18 @@ impl FilesView {
         }
     }
 
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(super) fn link_root(&self) -> LinkRoot {
+        match &self.body {
+            Body::Loading => LinkRoot::Pending,
+            Body::Root(state) => LinkRoot::Root(state.root.path.clone()),
+            Body::Remote | Body::Choose | Body::Missing { .. } | Body::Failed(_) => LinkRoot::None,
+        }
+    }
+
     /// Runs `call` against the daemon off the UI thread and hands its result
     /// to `then`, unless the root changed meanwhile.
     pub(super) fn request<T: Send + 'static>(
@@ -422,6 +436,7 @@ impl FilesView {
         if self.context.remote {
             self.body = Body::Remote;
             self.sync_watch(cx);
+            self.settle_links(cx);
             cx.notify();
             return;
         }
@@ -522,6 +537,7 @@ impl FilesView {
             }
         }
         self.watched_root_changed(cx);
+        self.settle_links(cx);
         cx.notify();
     }
 
@@ -981,8 +997,8 @@ impl FilesView {
         cx.notify();
     }
 
-    /// A click selects the row and opens a folder or the file's preview tab;
-    /// a double-click on a file keeps its tab.
+    /// A click selects the row and opens a folder, or the file in a tab; a
+    /// double-click is two clicks, so a folder's second click does nothing.
     fn click_row(&mut self, row: &Row, clicks: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
         let Some(tree) = self.tree_mut() else { return };
@@ -997,7 +1013,7 @@ impl FilesView {
         };
         self.after_move(moved, cx);
         if !row.folder {
-            self.open_file(row.path.clone(), clicks >= 2, cx);
+            self.open_file(row.path.clone(), cx);
         }
     }
 
@@ -1015,8 +1031,7 @@ impl FilesView {
             "up" => tree.move_up(),
             "right" => tree.move_right(),
             "left" => tree.move_left(),
-            key @ ("space" | "enter") => {
-                let keep = key == "enter";
+            "space" | "enter" => {
                 let selected = tree
                     .selected_index()
                     .map(|index| tree.rows()[index].clone());
@@ -1026,10 +1041,9 @@ impl FilesView {
                         cx.emit(FileOpen {
                             root: state.root.path.clone(),
                             path: row.path.clone(),
-                            keep,
                         });
                         cx.stop_propagation();
-                        self.open_file(row.path, keep, cx);
+                        self.open_file(row.path, cx);
                         return;
                     }
                     None => Moved::default(),
@@ -2131,6 +2145,15 @@ impl Render for FilesView {
             .on_action(
                 cx.listener(|this, _: &crate::FindInFile, window, cx| this.open_find(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &crate::ZoomFileIn, window, cx| {
+                this.zoom(Some(1), Box::new(crate::ZoomIn), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomFileOut, window, cx| {
+                this.zoom(Some(-1), Box::new(crate::ZoomOut), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomFileReset, window, cx| {
+                this.zoom(None, Box::new(crate::ZoomReset), window, cx)
+            }))
             .flex_1()
             .min_h(px(0.))
             .flex()
@@ -2141,15 +2164,21 @@ impl Render for FilesView {
             .when(tree_shown, |view| {
                 view.child(
                     tree_column
-                        .when(cfg!(test), |element| {
-                            element.debug_selector(|| "FILES_TREE_COLUMN".into())
-                        })
                         .when(viewing, |column| {
+                            // One step lighter than the file, which sits on
+                            // the terminal's background (Jason, 2026-11-05).
                             column
                                 .flex_none()
                                 .w(rems(tree_width / 16.))
+                                .bg(theme::panel())
                                 .border_l_1()
                                 .border_color(theme::border())
+                        })
+                        .map(|element| {
+                            #[cfg(test)]
+                            let element =
+                                crate::theme_snapshot::record_fill("FILES_TREE_COLUMN", element);
+                            element
                         }),
                 )
             })

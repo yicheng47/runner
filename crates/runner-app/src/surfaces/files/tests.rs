@@ -22,7 +22,9 @@ struct Host {
     /// Focus outside the Files view, and how often the pane's ⌘W reached it.
     elsewhere: Option<gpui::FocusHandle>,
     closed_panes: usize,
-    /// Whether the owner has room for the tree beside an open file.
+    /// The app zoom actions that reached the window, as the app's own do.
+    app_zooms: Vec<&'static str>,
+    /// Whether the owner's layout shows the tree beside an open file.
     tree_fits: bool,
 }
 
@@ -52,10 +54,13 @@ impl Render for Host {
             .flex()
             .flex_col()
             .on_action(cx.listener(|host, _: &crate::CloseTab, _, _| host.closed_panes += 1))
+            .on_action(cx.listener(|host, _: &crate::ZoomIn, _, _| host.app_zooms.push("in")))
+            .on_action(cx.listener(|host, _: &crate::ZoomOut, _, _| host.app_zooms.push("out")))
+            .on_action(cx.listener(|host, _: &crate::ZoomReset, _, _| host.app_zooms.push("reset")))
             .children(
                 self.elsewhere
                     .clone()
-                    .map(|focus| div().h(px(4.)).track_focus(&focus)),
+                    .map(|focus| div().h(px(4.)).key_context("Terminal").track_focus(&focus)),
             )
             .children(body)
     }
@@ -181,6 +186,7 @@ fn harness(context: Option<PanelContext>) -> Harness {
         unshown: None,
         elsewhere: Some(cx.focus_handle()),
         closed_panes: 0,
+        app_zooms: Vec::new(),
         tree_fits: true,
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
@@ -644,15 +650,17 @@ fn the_keyboard_moves_opens_and_types_ahead() {
     let seen = opened.clone();
     let _subscription = h.visual.update(|_, cx| {
         cx.subscribe(&view, move |_, event: &FileOpen, _| {
-            seen.borrow_mut().push((event.path.clone(), event.keep))
+            seen.borrow_mut().push(event.path.clone())
         })
     });
     h.visual.simulate_keystrokes("space");
     h.visual.simulate_keystrokes("enter");
     h.settle();
+    assert_eq!(*opened.borrow(), ["old.txt", "old.txt"]);
     assert_eq!(
-        *opened.borrow(),
-        [("old.txt".to_owned(), false), ("old.txt".to_owned(), true)]
+        h.tabs(),
+        [".gitignore", "old.txt"],
+        "the click and Space or Enter each open a tab"
     );
 
     assert!(
@@ -959,15 +967,13 @@ impl Harness {
         self.settle();
     }
 
-    fn tabs(&mut self) -> Vec<(String, bool)> {
+    fn tabs(&mut self) -> Vec<String> {
         self.read(|view| view.open_tabs())
     }
 
-    fn open(&mut self, path: &str, keep: bool) {
+    fn open(&mut self, path: &str) {
         let view = self.view();
-        view.update(&mut self.visual, |view, cx| {
-            view.open_file(path.into(), keep, cx)
-        });
+        view.update(&mut self.visual, |view, cx| view.open_file(path.into(), cx));
         self.settle();
     }
 
@@ -1015,53 +1021,33 @@ fn primary(key: &str) -> String {
 }
 
 #[test]
-fn a_click_previews_a_file_and_a_double_click_on_it_or_its_tab_keeps_it() {
+fn every_click_opens_a_tab_that_stays_and_an_open_file_switches_to_it() {
     let mut h = viewer(chat("in-project"));
     h.click("FILES_ROW a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    assert_eq!(h.tabs(), [("a.txt".to_owned(), true)]);
-    assert!(h.has("FILE_TAB_PREVIEW"), "the preview tab is italic");
+    assert_eq!(h.tabs(), ["a.txt"]);
     assert_eq!(h.line(0), "a");
 
     h.click("FILES_ROW old.txt");
     h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
-    assert_eq!(
-        h.tabs(),
-        [("old.txt".to_owned(), true)],
-        "the preview is replaced"
-    );
+    assert_eq!(h.tabs(), ["a.txt", "old.txt"], "each click keeps its tab");
 
-    // The selected row answers to its selected-row snapshot id.
-    h.double_click("FILES_ROW_SELECTED");
-    assert_eq!(h.tabs(), [("old.txt".to_owned(), false)]);
-    assert!(!h.has("FILE_TAB_PREVIEW"));
-
-    h.click("FILES_ROW .gitignore");
-    h.wait("a preview beside it", |h| h.has("FILE_TAB .gitignore"));
-    assert_eq!(
-        h.tabs(),
-        [
-            ("old.txt".to_owned(), false),
-            (".gitignore".to_owned(), true)
-        ]
-    );
-    h.double_click("FILE_TAB .gitignore");
-    assert_eq!(
-        h.tabs(),
-        [
-            ("old.txt".to_owned(), false),
-            (".gitignore".to_owned(), false)
-        ]
-    );
+    // A double-click is two clicks: nothing more.
+    h.double_click("FILES_ROW .gitignore");
+    h.wait("a third tab", |h| h.has("FILE_TAB .gitignore"));
+    assert_eq!(h.tabs(), ["a.txt", "old.txt", ".gitignore"]);
+    h.double_click("FILE_TAB old.txt");
+    assert_eq!(h.read(|view| view.active_tab()), Some("old.txt".into()));
+    assert_eq!(h.tabs().len(), 3);
 
     // Opening a file already open switches to its tab.
-    h.click("FILES_ROW old.txt");
-    assert_eq!(h.read(|view| view.active_tab()), Some("old.txt".into()));
-    assert_eq!(h.tabs().len(), 2);
+    h.click("FILES_ROW a.txt");
+    assert_eq!(h.read(|view| view.active_tab()), Some("a.txt".into()));
+    assert_eq!(h.tabs().len(), 3);
 
-    h.click("FILE_TAB_CLOSE old.txt");
-    assert_eq!(h.read(|view| view.active_tab()), Some(".gitignore".into()));
-    h.click("FILE_TAB_CLOSE .gitignore");
+    for name in ["a.txt", "old.txt", ".gitignore"] {
+        h.click(format!("FILE_TAB_CLOSE {name}"));
+    }
     assert!(
         !h.has("FILE_VIEWER"),
         "closing the last tab returns to the tree"
@@ -1076,8 +1062,8 @@ fn switching_tabs_reveals_the_file_in_the_tree_and_marks_changed_files() {
     h.wait("the status", |h| h.has("FILES_LETTER a.txt"));
     h.click("FILES_ROW src");
     assert!(!h.has("FILES_ROW src/deep"));
-    h.open("src/deep/x.rs", true);
-    h.open("a.txt", true);
+    h.open("src/deep/x.rs");
+    h.open("a.txt");
     h.wait("the letter", |h| h.has("FILE_TAB_LETTER a.txt M"));
     h.click("FILE_TAB src/deep/x.rs");
     h.wait("the revealed row", |h| {
@@ -1093,7 +1079,7 @@ fn the_tab_strip_overflows_into_a_list_of_every_open_file() {
         std::fs::write(h.repo.join(format!("src/file_{index}.rs")), "x\n").unwrap();
     }
     for index in 0..9 {
-        h.open(&format!("src/file_{index}.rs"), true);
+        h.open(&format!("src/file_{index}.rs"));
     }
     h.redraw();
     h.redraw();
@@ -1117,8 +1103,8 @@ fn the_tab_strip_overflows_into_a_list_of_every_open_file() {
 #[test]
 fn cmd_w_closes_the_file_tab_only_while_the_files_view_has_focus() {
     let mut h = viewer(chat("in-project"));
-    h.open("a.txt", true);
-    h.open("old.txt", true);
+    h.open("a.txt");
+    h.open("old.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
 
     h.focus_code();
@@ -1132,7 +1118,7 @@ fn cmd_w_closes_the_file_tab_only_while_the_files_view_has_focus() {
     let close = crate::keymap::platform_default("cmd-w");
     h.visual.simulate_keystrokes(&close);
     h.settle();
-    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    assert_eq!(h.tabs(), ["a.txt"]);
     let closed = |h: &mut Harness| {
         h.host
             .read_with(&h.visual, |host, _| host.closed_panes)
@@ -1153,14 +1139,14 @@ fn cmd_w_closes_the_file_tab_only_while_the_files_view_has_focus() {
     assert_eq!(h.tabs().len(), 1);
 
     // In find's field ⌘W still closes the file tab.
-    h.open("old.txt", true);
+    h.open("old.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.focus_code();
     h.visual.simulate_keystrokes(&primary("f"));
     h.settle();
     h.visual.simulate_keystrokes(&close);
     h.settle();
-    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    assert_eq!(h.tabs(), ["a.txt"]);
     assert_eq!(closed(&mut h), 1);
 
     // In the tree with the last tab closed, ⌘W falls through to the pane.
@@ -1186,7 +1172,7 @@ fn find_over_a_file_counts_steps_and_closes_back_to_the_code() {
         });
     }
     std::fs::write(h.repo.join("src/find.rs"), text).unwrap();
-    h.open("src/find.rs", true);
+    h.open("src/find.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.focus_code();
     h.visual.simulate_keystrokes(&primary("f"));
@@ -1230,7 +1216,7 @@ fn an_open_file_reloads_on_change_keeping_its_scroll_and_dims_when_deleted() {
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
     std::fs::write(&path, &body).unwrap();
-    h.open("src/live.rs", true);
+    h.open("src/live.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let code = h.code();
     code.update(&mut h.visual, |code, cx| {
@@ -1305,11 +1291,11 @@ fn binary_and_large_files_show_their_placeholders() {
     large
         .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
         .unwrap();
-    h.open("runnerd.sqlite", true);
+    h.open("runnerd.sqlite");
     h.wait("the binary placeholder", |h| h.has("FILE_BINARY"));
     assert!(h.has("FILE_OPEN_DEFAULT"));
     assert_text(&mut h.visual, "FILE_STATE_TITLE", theme::text());
-    h.open("events.ndjson", true);
+    h.open("events.ndjson");
     h.wait("the large placeholder", |h| h.has("FILE_TOO_LARGE"));
     assert!(h.has("FILE_OPEN_LARGE"));
     assert_text(&mut h.visual, "FILE_STATE_TITLE", theme::text());
@@ -1325,7 +1311,7 @@ fn a_large_file_draws_only_the_visible_lines() {
     std::fs::write(h.repo.join("src/big.rs"), body).unwrap();
     let counts = crate::render_counts::RenderCounts::default();
     h.visual.update(|_, cx| cx.set_global(counts.clone()));
-    h.open("src/big.rs", true);
+    h.open("src/big.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     counts.0.borrow_mut().clear();
     h.redraw();
@@ -1350,7 +1336,7 @@ fn a_drag_selects_across_lines_that_scroll_out_of_view_and_copies_them() {
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
     std::fs::write(h.repo.join("src/select.rs"), body).unwrap();
-    h.open("src/select.rs", true);
+    h.open("src/select.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let bounds = h.visual.debug_bounds("FILE_CODE").unwrap();
     let start = gpui::point(bounds.left() + px(60.), bounds.top() + px(12.));
@@ -1386,7 +1372,7 @@ fn a_drag_selects_across_lines_that_scroll_out_of_view_and_copies_them() {
 #[test]
 fn open_in_lists_the_default_app_and_the_reveal_row() {
     let mut h = viewer(chat("in-project"));
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     assert!(h.has("FILE_OPEN_IN"));
     h.click("FILE_OPEN_IN_MENU");
@@ -1398,24 +1384,17 @@ fn open_in_lists_the_default_app_and_the_reveal_row() {
 #[test]
 fn the_tree_toggle_hides_the_tree_beside_an_open_file() {
     let mut h = viewer(chat("in-project"));
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     assert!(h.has("FILES_TREE_COLUMN"));
     assert_eq!(h.read(|view| view.widening()), Some(true));
     h.click("FILE_TREE_TOGGLE");
     assert!(!h.has("FILES_TREE_COLUMN"));
     assert_eq!(h.read(|view| view.widening()), Some(false));
-    // A panel with no room for the tree hides it with the toggle still on.
+    // Turned back on, the tree shows again.
     h.click("FILE_TREE_TOGGLE");
-    h.host
-        .update(&mut h.visual, |host, _, cx| {
-            host.tree_fits = false;
-            cx.notify();
-        })
-        .unwrap();
-    h.settle();
-    assert!(!h.has("FILES_TREE_COLUMN"));
-    assert!(h.has("FILE_TREE_TOGGLE"));
+    assert!(h.has("FILES_TREE_COLUMN"));
+    assert_eq!(h.read(|view| view.widening()), Some(true));
 }
 
 #[test]
@@ -1435,25 +1414,27 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
         (288., None),
         "no file, the standard width"
     );
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     // 6 + 420 + 440 + 240: the tree fits beside the file.
     let (width, widened) = layout(&mut h, 1106.);
     assert_eq!(width, 680.);
     assert!(widened.unwrap().tree);
-    // Narrower: the tree hides first, then the file gives way to the mission.
-    assert_eq!(layout(&mut h, 1105.).0, 440.);
-    assert!(!layout(&mut h, 1105.).1.unwrap().tree);
-    assert_eq!(layout(&mut h, 800.).0, 374.);
+    // Narrower: the file gives way to the mission first, and the tree stays.
+    let (width, widened) = layout(&mut h, 1105.);
+    assert_eq!(width, 679.);
+    assert!(widened.unwrap().tree);
+    assert_eq!(layout(&mut h, 1000.).0, 574.);
     assert_eq!(
         layout(&mut h, 600.).0,
-        288.,
-        "never below the standard width"
+        528.,
+        "the file never below the standard width, the tree still shown"
     );
+    assert!(layout(&mut h, 600.).1.unwrap().tree);
 }
 
 #[test]
-fn a_saved_tree_width_widens_the_panel_and_still_hides_before_the_file_narrows() {
+fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
     let mut h = viewer(mission("on-worktree"));
     let subject = PanelSubject::Mission("on-worktree".into());
     let layout = |h: &mut Harness, surface: f32| {
@@ -1464,25 +1445,25 @@ fn a_saved_tree_width_widens_the_panel_and_still_hides_before_the_file_narrows()
             })
             .unwrap()
     };
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     // 6 + 420 + 440 + 320: the wider tree fits beside the file.
     let (width, widened) = layout(&mut h, 1186.);
     assert_eq!(width, 760.);
     assert!(widened.unwrap().tree);
-    // Narrower: the tree hides first, then the file gives way to the mission.
+    // Narrower: the file gives way to the mission, and the tree stays.
     let (width, widened) = layout(&mut h, 1185.);
-    assert_eq!(width, 440.);
-    assert!(!widened.unwrap().tree);
-    assert_eq!(layout(&mut h, 800.).0, 374.);
-    assert_eq!(layout(&mut h, 600.).0, 288.);
+    assert_eq!(width, 759.);
+    assert!(widened.unwrap().tree);
+    assert_eq!(layout(&mut h, 1000.).0, 608.);
+    assert_eq!(layout(&mut h, 600.).0, 608.);
 }
 
 #[test]
 fn dragging_the_tree_divider_sizes_the_tree_against_the_file_and_saves_both() {
     let mut h = viewer(chat("in-project"));
     h.visual.simulate_resize(size(px(800.), px(900.)));
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let settings = |h: &mut Harness| {
         h.store.read_with(&h.visual, |store, _| {
@@ -1550,7 +1531,7 @@ fn dragging_the_tree_divider_beside_the_widest_file_keeps_the_panel_width() {
             cx,
         );
     });
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let start = h.visual.debug_bounds("FILE_TREE_GUTTER").unwrap().center();
     let end = start + gpui::point(px(250.), px(0.));
@@ -1578,7 +1559,7 @@ fn a_reload_drops_find_results_for_the_old_text_before_they_draw_or_step() {
     let mut h = viewer(chat("in-project"));
     let ascii = format!("{}needle and more\n", "x".repeat(601));
     std::fs::write(h.repo.join("src/long.rs"), &ascii).unwrap();
-    h.open("src/long.rs", true);
+    h.open("src/long.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.focus_code();
     h.visual.simulate_keystrokes(&primary("f"));
@@ -1638,7 +1619,7 @@ fn opening_from_a_focused_tree_that_then_hides_keeps_the_viewer_keys() {
     h.settle();
     // A placeholder, with nothing to focus inside it, keeps the keys too.
     h.double_click("FILE_TAB a.txt");
-    h.open("data.bin", true);
+    h.open("data.bin");
     h.wait("the placeholder", |h| h.has("FILE_BINARY"));
     h.visual.simulate_keystrokes("ctrl-tab");
     h.settle();
@@ -1649,7 +1630,7 @@ fn opening_from_a_focused_tree_that_then_hides_keeps_the_viewer_keys() {
     let close = crate::keymap::platform_default("cmd-w");
     h.visual.simulate_keystrokes(&close);
     h.settle();
-    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
+    assert_eq!(h.tabs(), ["a.txt"]);
     h.visual.simulate_keystrokes(&close);
     h.settle();
     assert!(h.tabs().is_empty());
@@ -1668,7 +1649,7 @@ fn find_after_a_long_tab_prefix_scrolls_to_the_match() {
         format!("{}needle\n", "\t".repeat(200)),
     )
     .unwrap();
-    h.open("src/tabs.rs", true);
+    h.open("src/tabs.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.focus_code();
     h.visual.simulate_keystrokes(&primary("f"));
@@ -1694,7 +1675,7 @@ fn a_long_line_of_wide_and_combining_text_selects_what_is_drawn() {
     let wide = "汉".repeat(2000);
     let combining = "e\u{301}".repeat(2000);
     std::fs::write(h.repo.join("src/wide.rs"), format!("{wide}\n{combining}\n")).unwrap();
-    h.open("src/wide.rs", true);
+    h.open("src/wide.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let code = h.code();
     code.update(&mut h.visual, |code, cx| {
@@ -1763,7 +1744,7 @@ fn a_very_long_single_line_shapes_only_what_is_in_view() {
     let mut h = viewer(chat("in-project"));
     let line = "\tlet x = 1;".repeat(400_000);
     std::fs::write(h.repo.join("src/minified.js"), format!("{line}\n")).unwrap();
-    h.open("src/minified.js", true);
+    h.open("src/minified.js");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.redraw();
     let code = h.code();
@@ -1789,13 +1770,13 @@ fn a_reply_for_a_closed_tab_never_passes_for_the_file_reopened() {
     let mut h = viewer(chat("in-project"));
     let view = h.view();
     let first = view.update(&mut h.visual, |view, cx| {
-        view.open_file("a.txt".into(), true, cx);
+        view.open_file("a.txt".into(), cx);
         view.read_seq("a.txt").unwrap()
     });
     h.visual
         .update(|window, cx| view.update(cx, |view, cx| view.close_tab(0, window, cx)));
     let second = view.update(&mut h.visual, |view, cx| {
-        view.open_file("a.txt".into(), true, cx);
+        view.open_file("a.txt".into(), cx);
         view.read_seq("a.txt").unwrap()
     });
     assert_ne!(first, second);
@@ -1813,7 +1794,7 @@ fn a_reply_for_a_closed_tab_never_passes_for_the_file_reopened() {
 fn a_late_reply_from_a_closed_find_never_passes_for_the_reopened_one() {
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("src/many.rs"), "aaaa aaaa\n").unwrap();
-    h.open("src/many.rs", true);
+    h.open("src/many.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.focus_code();
     let view = h.view();
@@ -1850,8 +1831,8 @@ fn code_that_becomes_a_placeholder_hands_focus_back_to_the_viewer() {
         })
         .unwrap();
     h.settle();
-    h.open("a.txt", true);
-    h.open("old.txt", true);
+    h.open("a.txt");
+    h.open("old.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let close = crate::keymap::platform_default("cmd-w");
     let closed = |h: &mut Harness| {
@@ -1886,13 +1867,10 @@ fn code_that_becomes_a_placeholder_hands_focus_back_to_the_viewer() {
         h.settle();
         h.visual.simulate_keystrokes(&close);
         h.settle();
-        assert!(
-            !h.tabs().iter().any(|(path, _)| *path == active),
-            "⌘W closed the tab"
-        );
+        assert!(!h.tabs().contains(&active), "⌘W closed the tab");
         assert_eq!(closed(&mut h), 0, "the pane stays");
         if !with_find {
-            h.open("old.txt", true);
+            h.open("old.txt");
             h.wait("the file", |h| h.has("FILE_CODE"));
         }
     }
@@ -1953,7 +1931,7 @@ fn code_is_highlighted_in_the_terminal_palette_of_each_theme() {
         "pub struct Client {\n    reader: u32,\n}\n",
     )
     .unwrap();
-    h.open("src/client.rs", true);
+    h.open("src/client.rs");
     h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
     for (variant, dark, light, keyword, ty) in [
         // Appearance's defaults: Runner in dark, Rosé Pine Dawn in light.
@@ -2009,7 +1987,7 @@ fn a_file_in_no_bundled_language_stays_plain() {
     theme::set_active_variant(ThemeVariant::Carbon);
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("notes.txt"), "fn not code\n").unwrap();
-    h.open("notes.txt", true);
+    h.open("notes.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     assert!(!h.highlighted());
     assert_eq!(h.painted(0), [("fn not code".to_owned(), theme::text())]);
@@ -2025,7 +2003,7 @@ fn a_ten_megabyte_file_is_highlighted_off_the_ui_thread_and_styles_only_visible_
     let body = line.repeat(limit / line.len());
     assert!(body.len() > limit - line.len() && body.len() <= limit);
     std::fs::write(h.repo.join("src/big.rs"), &body).unwrap();
-    h.open("src/big.rs", true);
+    h.open("src/big.rs");
     h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
     let code = h.code();
     let spans =
@@ -2070,7 +2048,7 @@ fn a_reload_highlights_the_new_text() {
     theme::set_active_variant(ThemeVariant::Carbon);
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("src/edit.rs"), "fn one() {}\n").unwrap();
-    h.open("src/edit.rs", true);
+    h.open("src/edit.rs");
     h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
     // FSEvents can miss a write in the instant its stream starts, so write
     // again until the watcher reports it.
@@ -2097,7 +2075,7 @@ fn find_matches_over_highlighted_code() {
         "struct Client;\nimpl Client {}\nfn make() -> Client { Client }\n",
     )
     .unwrap();
-    h.open("src/find_hl.rs", true);
+    h.open("src/find_hl.rs");
     h.wait("the highlights", |h| h.has("FILE_CODE") && h.highlighted());
     h.focus_code();
     h.visual.simulate_keystrokes(&primary("f"));
@@ -2149,7 +2127,7 @@ fn markdown_opens_rendered_in_both_themes_with_its_blocks_and_local_images() {
     std::fs::create_dir_all(h.repo.join("assets")).unwrap();
     std::fs::write(h.repo.join("assets/shot.png"), PNG).unwrap();
     std::fs::write(h.repo.join("README.md"), README).unwrap();
-    h.open("README.md", true);
+    h.open("README.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     assert!(!h.has("FILE_CODE"), "Markdown opens rendered");
     for selector in [
@@ -2186,7 +2164,7 @@ fn markdown_opens_rendered_in_both_themes_with_its_blocks_and_local_images() {
 fn the_source_toggle_switches_both_ways_and_find_opens_the_source() {
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("README.md"), README).unwrap();
-    h.open("README.md", true);
+    h.open("README.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     h.click("FILE_MARKDOWN_SOURCE");
     assert!(h.has("FILE_CODE") && !h.has("FILE_MARKDOWN"));
@@ -2221,9 +2199,7 @@ fn links_open_the_browser_or_a_project_file_in_a_new_tab_and_never_leave_the_roo
     std::fs::create_dir_all(h.repo.join("docs")).unwrap();
     std::fs::write(h.repo.join("docs/guide.md"), "# Guide\n").unwrap();
     std::fs::write(h.repo.join("README.md"), README).unwrap();
-    // A single click opens the README in the preview tab: a link beside it
-    // keeps it.
-    h.open("README.md", false);
+    h.open("README.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let view = h.view();
     view.update(&mut h.visual, |view, cx| {
@@ -2235,11 +2211,7 @@ fn links_open_the_browser_or_a_project_file_in_a_new_tab_and_never_leave_the_roo
     });
     view.update(&mut h.visual, |view, cx| view.follow_link("#install", cx));
     h.settle();
-    assert_eq!(
-        h.tabs(),
-        [("README.md".to_owned(), true)],
-        "nothing outside the root"
-    );
+    assert_eq!(h.tabs(), ["README.md"], "nothing outside the root");
     view.update(&mut h.visual, |view, cx| {
         view.follow_link("docs/guide.md", cx)
     });
@@ -2248,11 +2220,8 @@ fn links_open_the_browser_or_a_project_file_in_a_new_tab_and_never_leave_the_roo
     });
     assert_eq!(
         h.tabs(),
-        [
-            ("README.md".to_owned(), true),
-            ("docs/guide.md".to_owned(), false)
-        ],
-        "a kept tab of its own beside the preview"
+        ["README.md", "docs/guide.md"],
+        "a tab of its own beside the page"
     );
     let page = h.read(|view| view.rendered_view()).unwrap();
     assert_eq!(
@@ -2269,7 +2238,7 @@ fn a_rendered_page_reloads_on_change_keeping_its_place() {
         .map(|block| format!("Paragraph {block}.\n\n"))
         .collect::<String>();
     std::fs::write(&path, &body).unwrap();
-    h.open("NOTES.md", true);
+    h.open("NOTES.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let page = h.read(|view| view.rendered_view()).unwrap();
     page.update(&mut h.visual, |page, _| page.scroll_to_row(120));
@@ -2305,7 +2274,7 @@ fn a_long_code_block_list_and_table_draw_only_their_rows_in_view() {
         text.push_str(&format!("| {row} | x |\n"));
     }
     std::fs::write(h.repo.join("BIG.md"), &text).unwrap();
-    h.open("BIG.md", true);
+    h.open("BIG.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let page = h.read(|view| view.rendered_view()).unwrap();
     let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
@@ -2348,12 +2317,12 @@ fn linked_and_table_images_load_and_a_linked_image_opens_its_link() {
         "[![Logo](assets/logo.svg)](docs/guide.md)\n",
     )
     .unwrap();
-    h.open("TABLE.md", true);
+    h.open("TABLE.md");
     h.wait("the table's image", |h| {
         h.has("FILE_MD_TABLE") && h.has("FILE_MD_IMAGE")
     });
     assert!(!h.has("FILE_MD_IMAGE_ALT"));
-    h.open("PICS.md", true);
+    h.open("PICS.md");
     h.wait("the linked image", |h| {
         h.read(|view| view.active_tab()) == Some("PICS.md".into()) && h.has("FILE_MD_IMAGE")
     });
@@ -2384,7 +2353,7 @@ fn a_deleted_rendered_page_keeps_closing_as_its_only_action() {
         "[![Logo](assets/logo.svg)](docs/guide.md)\n\nSee [Zed](https://zed.dev).\n",
     )
     .unwrap();
-    h.open("GONE.md", true);
+    h.open("GONE.md");
     h.wait("the page", |h| h.has("FILE_MD_IMAGE"));
     // FSEvents can miss a change in the instant its stream starts: write
     // until the watcher reports one, then delete.
@@ -2410,7 +2379,7 @@ fn a_deleted_rendered_page_keeps_closing_as_its_only_action() {
         view.follow_link("https://zed.dev", cx)
     });
     h.settle();
-    assert_eq!(h.tabs(), [("GONE.md".to_owned(), false)], "no link opens");
+    assert_eq!(h.tabs(), ["GONE.md"], "no link opens");
     assert!(h.read(|view| view.opened_urls()).is_empty());
     h.click("FILE_MARKDOWN_SOURCE");
     assert!(
@@ -2429,7 +2398,7 @@ fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
         "First paragraph here.\n\n```rust\nfn main() {}\nlet x = 1;\n```\n",
     )
     .unwrap();
-    h.open("SELECT.md", true);
+    h.open("SELECT.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let first = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
     let middle = h.visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
@@ -2475,7 +2444,7 @@ fn a_single_long_code_line_shapes_only_the_rows_in_view() {
     let mut h = viewer(chat("in-project"));
     let line = "let x = 1; ".repeat(500_000);
     std::fs::write(h.repo.join("LINE.md"), format!("```\n{line}\n```\n")).unwrap();
-    h.open("LINE.md", true);
+    h.open("LINE.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let page = h.read(|view| view.rendered_view()).unwrap();
     let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
@@ -2500,7 +2469,7 @@ fn list_markers_line_up_with_their_text_after_other_blocks() {
         "A paragraph first.\n\n- one\n- two\n\nAnother.\n\n- [x] done\n- [ ] todo\n\n1. first\n",
     )
     .unwrap();
-    h.open("LIST.md", true);
+    h.open("LIST.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     for row in [1, 2, 4, 5, 6] {
         let marker = h
@@ -2532,13 +2501,13 @@ fn each_linked_image_in_a_table_row_opens_its_own_link() {
         "| Links |\n| --- |\n| [![A](docs/a.svg)](docs/a.md) [![B](docs/b.svg)](docs/b.md) |\n",
     )
     .unwrap();
-    h.open("ROW.md", true);
+    h.open("ROW.md");
     h.wait("the images", |h| h.has("FILE_MD_IMAGE_LINK docs/b.md"));
     h.click("FILE_MD_IMAGE_LINK docs/a.md");
     h.wait("the first link", |h| {
         h.read(|view| view.active_tab()) == Some("docs/a.md".into())
     });
-    h.open("ROW.md", true);
+    h.open("ROW.md");
     h.wait("the page again", |h| h.has("FILE_MD_IMAGE_LINK docs/b.md"));
     h.click("FILE_MD_IMAGE_LINK docs/b.md");
     h.wait("the second link", |h| {
@@ -2550,7 +2519,7 @@ fn each_linked_image_in_a_table_row_opens_its_own_link() {
 fn a_drag_over_a_link_selects_it_and_a_click_opens_it() {
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("LINK.md"), "[the Zed site](https://zed.dev)\n").unwrap();
-    h.open("LINK.md", true);
+    h.open("LINK.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let text = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
     let start = gpui::point(text.left() + px(1.), text.center().y);
@@ -2602,7 +2571,7 @@ fn a_drag_over_a_table_link_or_linked_image_selects_and_a_click_opens() {
         "| Site | Logo |\n| --- | --- |\n| [the Zed site](https://zed.dev) | [![A](docs/a.svg)](docs/a.md) |\n",
     )
     .unwrap();
-    h.open("TLINK.md", true);
+    h.open("TLINK.md");
     h.wait("the table", |h| h.has("FILE_MD_IMAGE_LINK docs/a.md"));
     let drag = |h: &mut Harness, from: gpui::Point<gpui::Pixels>, to: gpui::Point<gpui::Pixels>| {
         h.visual
@@ -2640,7 +2609,7 @@ fn a_drag_over_a_table_link_or_linked_image_selects_and_a_click_opens() {
         image.center(),
         image.center() + gpui::point(px(10.), px(0.)),
     );
-    assert_eq!(h.tabs(), [("TLINK.md".to_owned(), false)], "no file opens");
+    assert_eq!(h.tabs(), ["TLINK.md"], "no file opens");
     assert_eq!(copied(&mut h), "the Zed site\tA");
 
     // Plain clicks open both.
@@ -2668,7 +2637,7 @@ fn a_selection_left_elsewhere_does_not_block_clicking_a_linked_image() {
         "Some text to select first.\n\n[![A](docs/a.svg)](docs/a.md)\n",
     )
     .unwrap();
-    h.open("SEL.md", true);
+    h.open("SEL.md");
     h.wait("the image", |h| h.has("FILE_MD_IMAGE_LINK docs/a.md"));
     let text = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
     let (from, to) = (
@@ -2712,33 +2681,11 @@ impl Harness {
 }
 
 #[test]
-fn with_single_click_off_every_click_opens_a_kept_tab() {
-    let mut h = viewer(chat("in-project"));
-    h.set(|settings| settings.files_single_click = false);
-    h.click("FILES_ROW a.txt");
-    h.wait("the file", |h| h.has("FILE_CODE"));
-    h.click("FILES_ROW old.txt");
-    h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
-    assert_eq!(
-        h.tabs(),
-        [("a.txt".to_owned(), false), ("old.txt".to_owned(), false)],
-        "no preview tab: the second click keeps the first file open"
-    );
-    assert!(!h.has("FILE_TAB_PREVIEW"));
-
-    // Turned back on, the next single click previews again.
-    h.set(|settings| settings.files_single_click = true);
-    h.click("FILES_ROW .gitignore");
-    h.wait("a preview", |h| h.has("FILE_TAB_PREVIEW"));
-    assert_eq!(h.tabs().last(), Some(&(".gitignore".to_owned(), true)));
-}
-
-#[test]
 fn markdown_set_to_open_as_source_opens_the_highlighted_source() {
     let mut h = viewer(chat("in-project"));
     std::fs::write(h.repo.join("README.md"), README).unwrap();
     h.set(|settings| settings.markdown_open_as = crate::app_settings::MarkdownOpenAs::Source);
-    h.open("README.md", true);
+    h.open("README.md");
     h.wait("the source", |h| h.has("FILE_CODE"));
     assert!(!h.has("FILE_MARKDOWN"), "Markdown opens as its source");
     assert_eq!(h.line(0), "# Runner");
@@ -2760,7 +2707,7 @@ fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file(
     )
     .unwrap();
     h.set(|settings| settings.files_syntax_highlighting = false);
-    h.open("src/client.rs", true);
+    h.open("src/client.rs");
     h.wait("the file", |h| h.has("FILE_CODE"));
     h.redraw();
     assert!(!h.highlighted(), "nothing is highlighted while it is off");
@@ -2813,7 +2760,7 @@ fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file(
 #[test]
 fn the_viewer_font_size_follows_the_terminal_until_set() {
     let mut h = viewer(chat("in-project"));
-    h.open("a.txt", true);
+    h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     let line_height = |h: &mut Harness| {
         h.redraw();
@@ -2869,44 +2816,561 @@ fn the_tree_draws_the_chosen_icon_set() {
 }
 
 #[test]
-fn turning_single_click_off_keeps_open_previews_in_shown_and_hidden_views() {
+fn a_chat_widens_by_the_same_rule_as_a_mission() {
+    let mut h = viewer(chat("in-project"));
+    let subject = PanelSubject::Session("in-project".into());
+    let layout = |h: &mut Harness, surface: f32| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.panel.surface.set(surface);
+                host.panel.layout(Some(&subject), 288., 440., 240., 6., cx)
+            })
+            .unwrap()
+    };
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(layout(&mut h, 1106.).0, 680.);
+    // 6 + 420 + 334 + 240: the file narrows, the tree stays.
+    let (width, widened) = layout(&mut h, 1000.);
+    assert_eq!(width, 574.);
+    assert!(
+        widened.unwrap().tree,
+        "the tree stays while the file narrows"
+    );
+    assert_eq!(layout(&mut h, 600.).0, 528.);
+    h.click("FILE_TREE_TOGGLE");
+    let (width, widened) = layout(&mut h, 1000.);
+    assert_eq!(width, 440., "the tree's room goes to the file");
+    assert!(!widened.unwrap().tree);
+}
+
+fn link(path: PathBuf, line: Option<u32>) -> crate::file_links::FileLinkTarget {
+    crate::file_links::FileLinkTarget {
+        path,
+        line,
+        column: None,
+    }
+}
+
+fn launched() -> Vec<crate::file_links::FileLinkTarget> {
+    crate::file_links::LAUNCHED.with(|launched| {
+        launched
+            .borrow()
+            .iter()
+            .map(|(_, target)| target.clone())
+            .collect()
+    })
+}
+
+impl Harness {
+    /// ⌘-clicks `target` in a terminal beside `view`; the count rises each
+    /// time the link asks the owner to show the panel.
+    fn click_link(
+        &mut self,
+        view: &Entity<FilesView>,
+        target: crate::file_links::FileLinkTarget,
+    ) -> std::rc::Rc<std::cell::Cell<usize>> {
+        let shown = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = shown.clone();
+        view.update(&mut self.visual, |view, cx| {
+            view.open_terminal_link(
+                target,
+                std::rc::Rc::new(move |_| count.set(count.get() + 1)),
+                cx,
+            )
+        });
+        shown
+    }
+}
+
+#[test]
+fn a_terminal_link_inside_the_root_opens_a_tab_at_its_line() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("lines.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+    let view = h.view();
+    // The temporary folder as the terminal names it: through macOS's
+    // `/var` symlink, with a `..` on the way.
+    let path = h.temp.path().join("runner/src/../lines.txt");
+    let shown = h.click_link(&view, link(path, Some(3)));
+    let selected = |h: &mut Harness, text: &str| {
+        h.read(|view| view.code_view()).is_some_and(|code| {
+            code.read_with(&h.visual, |code, _| code.selected_text()) == Some(text.into())
+        })
+    };
+    h.wait("the cited line", |h| selected(h, "three"));
+    assert_eq!(h.read(|view| view.open_tabs()), ["lines.txt"]);
+    assert_eq!(shown.get(), 1, "the owner shows the panel");
+    assert!(launched().is_empty());
+    assert!(h.has("FILES_TREE_COLUMN"));
+
+    // A second link opens a tab of its own, and the first one stays.
+    let shown = h.click_link(&view, link(h.repo.join("a.txt"), None));
+    h.wait("the next file", |h| {
+        h.read(|view| view.active_tab()) == Some("a.txt".into())
+    });
+    assert_eq!(h.read(|view| view.open_tabs()), ["lines.txt", "a.txt"]);
+    assert_eq!(shown.get(), 1);
+
+    // A link to a file already open switches to its tab, at the new line.
+    h.click_link(&view, link(h.repo.join("lines.txt"), Some(1)));
+    h.wait("the open file at line 1", |h| {
+        h.read(|view| view.active_tab()) == Some("lines.txt".into()) && selected(h, "one")
+    });
+    assert_eq!(h.read(|view| view.open_tabs()), ["lines.txt", "a.txt"]);
+}
+
+#[test]
+fn a_terminal_link_cited_at_a_line_in_markdown_shows_the_source_there() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("notes.md"), "# Notes\n\nfirst\nsecond\n").unwrap();
+    let view = h.view();
+    h.click_link(&view, link(h.repo.join("notes.md"), Some(4)));
+    h.wait("the source", |h| {
+        h.read(|view| view.code_view()).is_some_and(|code| {
+            code.read_with(&h.visual, |code, _| code.selected_text()) == Some("second".into())
+        })
+    });
+    assert!(h.read(|view| view.rendered_view()).is_none());
+    // Without a line, it opens as the Markdown setting says: rendered.
+    std::fs::write(h.repo.join("plain.md"), "# Plain\n").unwrap();
+    h.click_link(&view, link(h.repo.join("plain.md"), None));
+    h.wait("the page", |h| {
+        h.read(|view| view.rendered_view()).is_some()
+    });
+    assert_eq!(h.read(|view| view.active_tab()), Some("plain.md".into()));
+}
+
+#[test]
+fn a_terminal_link_outside_the_root_opens_the_editor() {
+    let mut h = viewer(chat("in-project"));
+    let outside = h.temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("note.txt"), "note\n").unwrap();
+    let view = h.view();
+    // A symlink inside the root that leads out of it.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, h.repo.join("escape")).unwrap();
+    let targets = [
+        Some(link(outside.join("note.txt"), Some(1))),
+        // `..` that leaves the root.
+        Some(link(h.repo.join("src/../../outside/note.txt"), None)),
+        cfg!(unix).then(|| link(h.repo.join("escape/note.txt"), Some(2))),
+    ];
+    for target in targets.into_iter().flatten() {
+        crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+        let shown = h.click_link(&view, target.clone());
+        h.wait("the editor", |_| !launched().is_empty());
+        assert_eq!(launched(), [target]);
+        assert_eq!(shown.get(), 0);
+        assert!(h.read(|view| view.open_tabs()).is_empty());
+    }
+}
+
+#[test]
+fn a_terminal_link_waits_for_a_root_still_resolving() {
+    let mut h = harness(None);
+    std::fs::write(h.repo.join("lines.txt"), "one\ntwo\n").unwrap();
+    let view = h
+        .host
+        .update(&mut h.visual, |host, _, cx| {
+            host.panel.link_view(&chat("in-project"), cx)
+        })
+        .unwrap();
+    assert_eq!(view.read_with(&h.visual, |view, _| view.state()), "loading");
+    let shown = h.click_link(&view, link(h.repo.join("lines.txt"), Some(2)));
+    h.wait("the preview", |h| {
+        view.read_with(&h.visual, |view, _| view.active_tab()) == Some("lines.txt".into())
+    });
+    assert_eq!(shown.get(), 1);
+    // Not shown, so not watching.
+    assert_eq!(
+        view.read_with(&h.visual, |view, _| view.watched().map(Path::to_path_buf)),
+        None
+    );
+}
+
+#[test]
+fn a_remote_or_rootless_view_sends_links_to_the_editor() {
+    let mut h = harness(None);
+    std::fs::write(h.repo.join("lines.txt"), "one\n").unwrap();
+    for context in [
+        PanelContext {
+            remote: true,
+            ..chat("in-project")
+        },
+        chat("outside"),
+    ] {
+        crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+        let view = h
+            .host
+            .update(&mut h.visual, |host, _, cx| {
+                host.panel.link_view(&context, cx)
+            })
+            .unwrap();
+        let target = link(h.repo.join("lines.txt"), Some(1));
+        let shown = h.click_link(&view, target.clone());
+        h.wait("the editor", |_| !launched().is_empty());
+        assert_eq!(launched(), [target], "{context:?}");
+        assert_eq!(shown.get(), 0);
+    }
+}
+
+#[test]
+fn whether_a_link_previews_is_worked_out_off_the_ui_thread() {
+    let mut h = viewer(chat("in-project"));
+    let outside = h.temp.path().join("outside.txt");
+    std::fs::write(&outside, "x\n").unwrap();
+    let view = h.view();
+    for (path, previews) in [(h.repo.join("a.txt"), true), (outside, false)] {
+        let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = redraws.clone();
+        let redraw: crate::surfaces::files::ShowPreview =
+            std::rc::Rc::new(move |_| count.set(count.get() + 1));
+        let since = std::time::Instant::now();
+        let first = view.update(&mut h.visual, |view, cx| {
+            view.link_previews(&path, since, redraw.clone(), cx)
+        });
+        assert_eq!(first, None, "unknown until checked");
+        h.wait("the answer", |_| redraws.get() == 1);
+        let known = view.update(&mut h.visual, |view, cx| {
+            view.link_previews(&path, since, redraw.clone(), cx)
+        });
+        assert_eq!(known, Some(previews), "{path:?}");
+    }
+}
+
+#[test]
+fn picking_from_open_in_saves_the_editor_links_fall_back_to() {
+    use crate::app_settings::FileLinkEditor;
+    let mut h = viewer(chat("in-project"));
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_link_editor = FileLinkEditor::Zed;
+                true
+            },
+            false,
+            cx,
+        )
+    });
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.click("FILE_OPEN_IN_MENU");
+    h.click("FILE_OPEN_IN_ITEM file-open-in-default 0");
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.file_link_editor),
+        FileLinkEditor::DefaultApp
+    );
+    let launched = h.read(|view| view.launched());
+    let [(editor, path, line)] = launched.as_slice() else {
+        panic!("one launch: {launched:?}");
+    };
+    assert_eq!(
+        (*editor, *line),
+        (Some(FileLinkEditor::DefaultApp), Some(1))
+    );
+    // The root as git names it; on Windows another spelling of the folder.
+    assert_same(Some(path), &h.repo.join("a.txt"));
+    assert_eq!(
+        *path,
+        path.components().collect::<PathBuf>(),
+        "a native path"
+    );
+}
+
+#[test]
+fn a_file_path_in_the_root_uses_this_computers_separators() {
+    use super::view::absolute;
+    if cfg!(windows) {
+        assert_eq!(
+            absolute(Path::new("C:/Users/runneradmin/runner"), "src//lib.rs"),
+            PathBuf::from(r"C:\Users\runneradmin\runner\src\lib.rs")
+        );
+    } else {
+        assert_eq!(
+            absolute(Path::new("/home/runner"), "src//lib.rs"),
+            PathBuf::from("/home/runner/src/lib.rs")
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_retargeted_symlink_is_checked_again_on_the_next_click_and_hover() {
+    let mut h = harness(None);
+    let outside = h.temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("far.rs"), "far\n").unwrap();
+    std::fs::write(h.repo.join("b.txt"), "b\n").unwrap();
+    let current = h.repo.join("current.rs");
+    let point = |to: &Path| {
+        let _ = std::fs::remove_file(&current);
+        std::os::unix::fs::symlink(to, &current).unwrap();
+    };
+    // A hidden panel's view: not shown, so not watching.
+    let view = h
+        .host
+        .update(&mut h.visual, |host, _, cx| {
+            host.panel.link_view(&chat("in-project"), cx)
+        })
+        .unwrap();
+    h.wait("the root", |h| {
+        view.read_with(&h.visual, |view, _| view.state()) == "root"
+    });
+    let hover = |h: &mut Harness| {
+        let since = std::time::Instant::now();
+        loop {
+            let answer = view.update(&mut h.visual, |view, cx| {
+                view.link_previews(&current, since, std::rc::Rc::new(|_| {}), cx)
+            });
+            if let Some(answer) = answer {
+                return answer;
+            }
+            h.settle();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let click = |h: &mut Harness| {
+        crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+        h.click_link(&view, link(current.clone(), None));
+        h.wait("the click", |h| {
+            !launched().is_empty()
+                || view
+                    .read_with(&h.visual, |view, _| view.active_tab())
+                    .is_some()
+        });
+    };
+    let active = |h: &mut Harness| view.read_with(&h.visual, |view, _| view.active_tab());
+
+    point(&h.repo.join("a.txt"));
+    assert!(hover(&mut h));
+    click(&mut h);
+    assert_eq!(active(&mut h), Some("a.txt".into()));
+
+    // Inside to inside: the next click opens the new target.
+    point(&h.repo.join("b.txt"));
+    assert!(hover(&mut h));
+    click(&mut h);
+    h.wait("b.txt", |h| active(h) == Some("b.txt".into()));
+
+    // Inside to outside: the editor.
+    point(&outside.join("far.rs"));
+    assert!(!hover(&mut h));
+    click(&mut h);
+    assert_eq!(launched(), [link(current.clone(), None)]);
+    assert_eq!(active(&mut h), Some("b.txt".into()));
+
+    // Outside to inside: the preview again.
+    point(&h.repo.join("a.txt"));
+    assert!(hover(&mut h));
+    click(&mut h);
+    h.wait("a.txt", |h| active(h) == Some("a.txt".into()));
+}
+
+#[test]
+fn a_cited_line_stays_in_view_with_find_open() {
+    let mut h = viewer(chat("in-project"));
+    h.visual.simulate_resize(size(px(900.), px(400.)));
+    let lines = |marker: &str| {
+        (1..=400)
+            .map(|line| {
+                if line == 2 {
+                    "needle near the top".to_owned()
+                } else if line == 380 {
+                    marker.to_owned()
+                } else {
+                    format!("line {line}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    std::fs::write(h.repo.join("long.txt"), lines("cited one")).unwrap();
+    std::fs::write(h.repo.join("other.txt"), lines("cited two")).unwrap();
+    // Find open over an existing tab, with a match near the top.
+    h.open("long.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    h.visual.simulate_input("needle");
+    h.wait("the match", |h| {
+        h.read(|view| view.find_state())
+            .and_then(|(count, _)| count)
+            .is_some()
+    });
+    let view = h.view();
+    for (file, cited) in [("long.txt", "cited one"), ("other.txt", "cited two")] {
+        h.click_link(&view, link(h.repo.join(file), Some(380)));
+        h.wait("the cited line", |h| {
+            h.read(|view| view.active_tab()) == Some(file.into())
+                && h.read(|view| view.code_view()).is_some_and(|code| {
+                    code.read_with(&h.visual, |code, _| code.selected_text()) == Some(cited.into())
+                })
+        });
+        h.redraw();
+        h.wait("the search", |h| {
+            h.read(|view| view.find_state())
+                .and_then(|(count, _)| count)
+                .is_some()
+        });
+        h.redraw();
+        let code = h.code();
+        let (_, _, bounds) = code.read_with(&h.visual, |code, _| code.geometry());
+        let y = code.read_with(&h.visual, |code, _| code.row_y(379));
+        assert!(
+            y > bounds.top() && y < bounds.bottom(),
+            "{file}: line 380 in view, {y:?} in {bounds:?}"
+        );
+        assert_eq!(
+            code.read_with(&h.visual, |code, _| code.selected_text()),
+            Some(cited.into())
+        );
+    }
+}
+
+#[test]
+fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("README.md"), "# Notes\n\nText.\n").unwrap();
+    h.visual.update(|_, cx| {
+        let overrides = Default::default();
+        for (id, binding) in [
+            ("zoom-in", "in"),
+            ("zoom-out", "out"),
+            ("zoom-reset", "reset"),
+        ] {
+            let combo = crate::keymap::effective_binding(id, &overrides).unwrap();
+            for keys in crate::keymap::binding_strings(&combo) {
+                cx.bind_keys([match binding {
+                    "in" => gpui::KeyBinding::new(&keys, crate::ZoomIn, None),
+                    "out" => gpui::KeyBinding::new(&keys, crate::ZoomOut, None),
+                    _ => gpui::KeyBinding::new(&keys, crate::ZoomReset, None),
+                }]);
+            }
+        }
+        // As the app installs them: after app zoom's.
+        crate::keymap::install_file_zoom_bindings(cx, &overrides);
+    });
+    let terminal_size = h
+        .store
+        .read_with(&h.visual, |store, _| store.settings.terminal_font_size);
+    let size = |h: &mut Harness| {
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.files_font_size)
+    };
+    let app_zooms = |h: &mut Harness| {
+        h.host
+            .read_with(&h.visual, |host, _| host.app_zooms.clone())
+            .unwrap()
+    };
+    let (zoom_in, zoom_out, reset) = (primary("="), primary("-"), primary("0"));
+
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&zoom_in);
+    h.settle();
+    assert_eq!(
+        size(&mut h),
+        Some(terminal_size + 1),
+        "from the terminal's size"
+    );
+    h.visual
+        .simulate_keystrokes(&format!("{zoom_out} {zoom_out}"));
+    h.settle();
+    assert_eq!(size(&mut h), Some(terminal_size - 1));
+    h.visual.simulate_keystrokes(&reset);
+    h.settle();
+    assert_eq!(size(&mut h), None, "reset follows the terminal again");
+
+    // The range's ends hold.
+    h.set(|settings| settings.files_font_size = Some(32));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&zoom_in);
+    h.settle();
+    assert_eq!(size(&mut h), Some(32));
+    h.set(|settings| settings.files_font_size = Some(8));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&zoom_out);
+    h.settle();
+    assert_eq!(size(&mut h), Some(8));
+
+    // The find field and a rendered page are the viewer too.
+    h.set(|settings| settings.files_font_size = None);
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    assert!(h.has("FILE_FIND_BAR"));
+    h.visual.simulate_keystrokes(&zoom_in);
+    h.settle();
+    assert_eq!(size(&mut h), Some(terminal_size + 1), "from the find field");
+    h.visual.simulate_keystrokes("escape");
+    h.open("README.md");
+    h.wait("the page", |h| h.has("FILE_MARKDOWN"));
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let focus = page.read_with(&h.visual, |page, _| page.focus_handle().clone());
+    h.visual.update(|window, cx| focus.focus(window, cx));
+    h.visual.simulate_keystrokes(&zoom_in);
+    h.settle();
+    assert_eq!(
+        size(&mut h),
+        Some(terminal_size + 2),
+        "from a rendered page"
+    );
+    assert!(app_zooms(&mut h).is_empty(), "the app's zoom never moved");
+
+    // The tree and a terminal zoom the app.
+    h.click("FILES_ROW a.txt");
+    h.visual.simulate_keystrokes(&zoom_in);
+    h.settle();
+    let elsewhere = h
+        .host
+        .read_with(&h.visual, |host, _| host.elsewhere.clone())
+        .unwrap()
+        .unwrap();
+    h.visual.update(|window, cx| elsewhere.focus(window, cx));
+    h.visual.simulate_keystrokes(&format!("{zoom_out} {reset}"));
+    h.settle();
+    assert_eq!(app_zooms(&mut h), ["in", "out", "reset"]);
+    assert_eq!(size(&mut h), Some(terminal_size + 2));
+}
+
+#[test]
+fn the_tree_beside_an_open_file_sits_on_the_panel_colour_in_both_themes() {
+    let _theme = ThemeGuard::new();
     let mut h = viewer(chat("in-project"));
     h.click("FILES_ROW a.txt");
-    h.wait("the preview", |h| h.has("FILE_TAB_PREVIEW"));
-    let hidden = h.view();
-
-    // The mission's view, shown now, gets its own preview.
-    h.show(Some(mission("on-worktree")));
-    h.wait("the mission's root", |h| h.has("FILES_ROW a.txt"));
-    h.click("FILES_ROW a.txt");
-    h.wait("its preview", |h| h.has("FILE_TAB_PREVIEW"));
-
-    h.set(|settings| settings.files_single_click = false);
-    assert_eq!(h.tabs(), [("a.txt".to_owned(), false)]);
-    assert!(!h.has("FILE_TAB_PREVIEW"), "the shown strip redraws");
-    let kept = hidden.read_with(&h.visual, |view, _| view.open_tabs());
-    assert_eq!(kept, [("a.txt".to_owned(), false)], "the hidden view too");
-
-    // Back on the chat: the next click opens beside the kept tab rather
-    // than replacing it.
-    h.show(Some(chat("in-project")));
-    h.click("FILES_ROW old.txt");
-    h.wait("the next file", |h| h.has("FILE_TAB old.txt"));
-    assert_eq!(
-        h.tabs(),
-        [("a.txt".to_owned(), false), ("old.txt".to_owned(), false)]
-    );
-
-    // Previews back on: the kept tabs stay kept.
-    h.set(|settings| settings.files_single_click = true);
-    h.click("FILES_ROW .gitignore");
-    h.wait("a preview", |h| h.has("FILE_TAB .gitignore"));
-    assert_eq!(
-        h.tabs(),
-        [
-            ("a.txt".to_owned(), false),
-            ("old.txt".to_owned(), false),
-            (".gitignore".to_owned(), true)
-        ]
-    );
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
+        theme::set_active_variant(variant);
+        h.redraw();
+        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", Some(theme::panel()));
+        assert_ne!(
+            theme::panel(),
+            theme::bg(),
+            "{variant:?}: lighter than the file"
+        );
+        // The selected row keeps its tint on the new surface.
+        assert_fill_color(
+            &mut h.visual,
+            "FILES_ROW_SELECTED",
+            Some(theme::sidebar_selected()),
+        );
+        // The hover tint, the selected one at 60%, still differs from it.
+        assert_ne!(theme::sidebar_selected(), theme::panel());
+        assert_ne!(
+            theme::with_alpha(theme::sidebar_selected(), 0.6).to_rgb(),
+            theme::panel().to_rgb()
+        );
+    }
+    // Without a file open the tree keeps the panel's own background.
+    h.click("FILE_TAB_CLOSE a.txt");
+    for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
+        theme::set_active_variant(variant);
+        h.redraw();
+        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", None);
+    }
 }

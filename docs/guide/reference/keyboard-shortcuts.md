@@ -69,15 +69,16 @@ Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys
 
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
-| Open the selected file in the tree in the preview tab | Space | Space |
-| Open the selected file in the tree in a kept tab | Return | Enter |
+| Open the selected file in the tree | Space or Return | Space or Enter |
 | Next file tab | ⌃Tab | Ctrl+Tab |
 | Previous file tab | ⌃⇧Tab | Ctrl+Shift+Tab |
 | Close the active file tab | ⌘W | Ctrl+Shift+W |
 | Find in the file | ⌘F | Ctrl+F |
 | Copy the selected text | ⌘C | Ctrl+C |
+| Larger or smaller text in the viewer | ⌘+ / ⌘− | Ctrl+= / Ctrl+− |
+| The viewer's text back to the terminal's size | ⌘0 | Ctrl+0 |
 
-These keys act while the side panel's Files view has focus and are fixed. With focus elsewhere, or no file open, ⌘W (Ctrl+Shift+W) closes the pane as usual. In the file's find bar, Return and ⇧Return step through the matches and Esc closes the bar. See [Read a file in the side panel](../guides/chats-and-windows.md#read-a-file-in-the-side-panel).
+These keys act while the side panel's Files view has focus and, except for zoom, are fixed. With focus elsewhere, or no file open, ⌘W (Ctrl+Shift+W) closes the pane as usual. In the file's find bar, Return and ⇧Return step through the matches and Esc closes the bar. The zoom keys change the viewer's text only while the file, its find bar or a rendered page has focus, and follow any rebinding of **Zoom in**, **Zoom out** and **Reset zoom**; in the tree and elsewhere they zoom the app. ⌘-click (Ctrl+click) on a file path in a terminal opens the file in a tab at its line when it is inside the Files view's folder. See [Read a file in the side panel](../guides/chats-and-windows.md#read-a-file-in-the-side-panel).
 
 ## Dialogs
 

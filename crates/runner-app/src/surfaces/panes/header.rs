@@ -1,4 +1,6 @@
 use super::*;
+use crate::file_links::FileLinkRoute;
+use crate::surfaces::files::FilesView;
 
 impl NativeRoot {
     pub(super) fn render_island_panel_toggle(
@@ -96,6 +98,85 @@ impl NativeRoot {
             "accounts.paused",
             &[("previous", previous), ("active", active.name.clone())],
         ))
+    }
+
+    fn chat_panel_context(
+        &self,
+        detail: &DirectSessionEntry,
+        surface: PanelSurface,
+        cx: &App,
+    ) -> PanelContext {
+        let role_dir = || {
+            let role_id = detail.role_id.as_deref()?;
+            self.app_store
+                .read(cx)
+                .roles
+                .iter()
+                .find(|role| role.id == role_id)?
+                .working_dir
+                .clone()
+        };
+        PanelContext {
+            subject: PanelSubject::Session(detail.session_id.clone()),
+            surface,
+            cwd: detail.cwd.clone().or_else(role_dir),
+            project: detail.project_id.clone(),
+            remote: !self.remote_client.is_local(),
+        }
+    }
+
+    /// Where a ⌘-clicked file link in the terminal of `session`'s pane
+    /// opens: the panel's preview, beside the chat the panel follows once
+    /// that pane has focus, as the click gives it.
+    pub(crate) fn file_link_route(&self, session: &str, cx: &Context<Self>) -> FileLinkRoute {
+        let session = session.to_owned();
+        FileLinkRoute::new(
+            cx.weak_entity(),
+            move |this: &mut Self, cx| this.link_files_view(&session, cx),
+            Self::show_link_preview,
+        )
+    }
+
+    /// The panel's Files view while its preview can take a link: the panel
+    /// and Files on, and the chat local.
+    fn link_files_view(
+        &mut self,
+        session: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<FilesView>> {
+        let settings = self.settings(cx);
+        if !settings.show_side_panel || !settings.files_view || !self.remote_client.is_local() {
+            return None;
+        }
+        let (followed, _) = self.panel_session_for(Some(session), cx)?;
+        let detail = self
+            .active_chat_detail
+            .clone()
+            .filter(|detail| detail.session_id == followed)
+            .or_else(|| {
+                self.app_store
+                    .read(cx)
+                    .session_details
+                    .get(&followed)
+                    .cloned()
+            })?;
+        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
+        let context = self.chat_panel_context(&detail, surface, cx);
+        Some(self.chat_files.link_view(&context, cx))
+    }
+
+    /// A link opened in the preview: the panel opens on Files.
+    fn show_link_preview(&mut self, cx: &mut Context<Self>) {
+        if side_panel_surface(self.active_tab_is_terminal(cx)) == PanelSurface::Chat {
+            self.chat_panel_view = PanelViewId::Files;
+        }
+        if !self.settings(cx).chat_panel_open {
+            self.update_app_settings(cx, true, |settings| {
+                settings.chat_panel_open = true;
+                true
+            });
+        }
+        cx.notify();
     }
 
     /// The chat panel's width, widened while its Files view has a file open.
@@ -209,16 +290,7 @@ impl NativeRoot {
             .filter(|_| shown == Some(PanelViewId::Files))
             .map(|detail| {
                 self.chat_files.show_with(
-                    &PanelContext {
-                        subject: PanelSubject::Session(detail.session_id.clone()),
-                        surface,
-                        cwd: detail
-                            .cwd
-                            .clone()
-                            .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone())),
-                        project: detail.project_id.clone(),
-                        remote: !self.remote_client.is_local(),
-                    },
+                    &self.chat_panel_context(detail, surface, cx),
                     widened,
                     Some(cx.entity_id()),
                     cx,
