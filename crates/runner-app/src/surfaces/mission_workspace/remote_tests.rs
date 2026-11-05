@@ -161,10 +161,8 @@ fn mission_drawer_island_stacks_below_mission_with_full_height_rail() {
                     let sidebar = visual.debug_bounds("APP_SIDEBAR").unwrap();
                     let gutter = visual.debug_bounds("SIDEBAR_RESIZE_GUTTER").unwrap();
                     assert!((area.left() - sidebar.right() - px(6. * zoom)).abs() < px(0.5));
-                    assert_eq!(
-                        (gutter.left(), gutter.right()),
-                        (sidebar.right(), area.left())
-                    );
+                    assert!((gutter.center().x - area.left()).abs() < px(0.5));
+                    assert!((gutter.size.width - px(6. * zoom)).abs() < px(0.5));
                 }
                 if rail_open {
                     let rail = visual.debug_bounds("MISSION_RAIL").unwrap();

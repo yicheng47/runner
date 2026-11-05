@@ -455,13 +455,19 @@ impl NativeRoot {
         cx.notify();
     }
 
+    /// How far right of the sidebar's edge the border it resizes sits: the
+    /// island area's left edge, past the gap, when there are islands.
+    pub(crate) fn sidebar_border_offset(&self, cx: &App) -> f32 {
+        if self.front_page_has_islands() && !self.front_page_sidebar_collapsed() {
+            runner_app::ui::work_card::SIDEBAR_GAP * self.settings(cx).app_zoom
+        } else {
+            0.
+        }
+    }
+
     pub(crate) fn render_sidebar_resize_handle(&self, divider: f32, cx: &App) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
-        let left = if self.front_page_has_islands() && !self.front_page_sidebar_collapsed() {
-            divider
-        } else {
-            divider - resize_strip_inset(zoom)
-        };
+        let left = divider + self.sidebar_border_offset(cx) - resize_strip_inset(zoom);
         resize_strip(
             "sidebar-resize",
             ResizeAxis::Columns,
