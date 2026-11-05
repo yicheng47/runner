@@ -80,7 +80,7 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/mission-link-reports-0.19.3.png"><img src="assets/mission-link-reports-0.19.3.png" alt="A Claude Code chat receiving two [runner] reports and answering each, with both missions grouped under it in the sidebar" width="100%" /></a>
+      <a href="assets/mission-link-reports.png"><img src="assets/mission-link-reports.png" alt="A Claude Code chat receiving two [runner] reports and answering each, with both missions grouped under it in the sidebar" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
       <h3>Missions report back to their chat</h3>
@@ -89,7 +89,7 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner's computer picker listing this Mac and another computer on the same account" width="100%" /></a>
+      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="The sidebar footer's host button open, listing this Mac first and the other computers on the same account" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
       <h3>Remote control</h3>

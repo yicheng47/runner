@@ -80,7 +80,7 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/mission-link-reports-0.19.3.png"><img src="assets/mission-link-reports-0.19.3.png" alt="Claude Code chat 收到两条 [runner] 汇报并逐条回答，两个 mission 分组显示在侧边栏的 chat 下面" width="100%" /></a>
+      <a href="assets/mission-link-reports.png"><img src="assets/mission-link-reports.png" alt="Claude Code chat 收到两条 [runner] 汇报并逐条回答，两个 mission 分组显示在侧边栏的 chat 下面" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
       <h3>Mission 向 chat 汇报</h3>
@@ -89,7 +89,7 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="Runner 的电脑选择器列出这台 Mac 和同一账号下的另一台电脑" width="100%" /></a>
+      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="侧边栏底部的主机按钮已展开，这台 Mac 排在首位，下面是同一账号下的其他电脑" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
       <h3>远程控制</h3>
