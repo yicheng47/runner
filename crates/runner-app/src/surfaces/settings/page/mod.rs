@@ -37,9 +37,10 @@ use runner_core::protocol::command::{
 use crate::surfaces::*;
 
 use crate::app_settings::{
-    normalize_zoom, nudge_zoom, DarkTerminalTheme, FileLinkEditor, LightTerminalTheme,
-    TerminalCursorStyle, TerminalFontFamily, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
-    ZOOM_STEPS,
+    normalize_terminal_line_height, normalize_terminal_scrollback, normalize_zoom, nudge_zoom,
+    DarkTerminalTheme, FileLinkEditor, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
+    TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_LINE_HEIGHT_MAX,
+    TERMINAL_LINE_HEIGHT_MIN, TERMINAL_SCROLLBACK_PRESETS, ZOOM_STEPS,
 };
 
 use crate::platform_ui::{SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET};
@@ -54,8 +55,8 @@ use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 
-/// The four palette selects in Appearance share one trigger width, so the
-/// app and terminal rows of each mode line up.
+/// The palette selects share one trigger width, so the rows of each palette
+/// card line up.
 const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
 
 const TAB_SHORTCUT_ID: &str = "select-tab";
@@ -147,6 +148,35 @@ impl SettingsPane {
         }
     }
 
+    /// Row labels the Settings search matches besides the pane's own label.
+    fn search_terms(self) -> Vec<&'static str> {
+        let keys: &[&'static str] = match self {
+            Self::Appearance => &[
+                "ui.theme",
+                "ui.window_material",
+                "ui.app_palette",
+                "ui.light_mode",
+                "ui.dark_mode",
+            ],
+            Self::Terminal => &[
+                "ui.font_family",
+                "ui.font_size",
+                "terminal.line_height",
+                "terminal.section_colors",
+                "ui.light_mode_palette",
+                "ui.dark_mode_palette",
+                "ui.cursor_style",
+                "terminal.blink_cursor",
+                #[cfg(target_os = "macos")]
+                "terminal.option_as_meta",
+                "terminal.scrollback",
+                "terminal.copy_on_select",
+            ],
+            _ => &[],
+        };
+        keys.iter().map(|key| crate::i18n::text(key)).collect()
+    }
+
     fn icon(self) -> &'static str {
         match self {
             Self::Account => "user-round.svg",
@@ -207,7 +237,12 @@ fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
             let panes = panes
                 .iter()
                 .copied()
-                .filter(|pane| query.is_empty() || pane.label().to_lowercase().contains(&query))
+                .filter(|pane| {
+                    query.is_empty()
+                        || std::iter::once(pane.label())
+                            .chain(pane.search_terms())
+                            .any(|term| term.to_lowercase().contains(&query))
+                })
                 .collect::<Vec<_>>();
             (!panes.is_empty()).then_some((crate::i18n::text(label), panes))
         })
@@ -233,6 +268,7 @@ enum SettingsSelection {
     DarkTerminalTheme,
     TerminalFont,
     TerminalCursor,
+    TerminalScrollback,
     #[cfg(target_os = "macos")]
     OptionAsMeta,
     FileLinkEditor,
@@ -259,6 +295,7 @@ pub(crate) struct SettingsState {
     dark_terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
+    terminal_scrollback: Entity<StyledSelect>,
     #[cfg(target_os = "macos")]
     pub(crate) option_as_meta: Entity<StyledSelect>,
     file_link_editor: Entity<StyledSelect>,
@@ -391,6 +428,14 @@ impl SettingsState {
             SettingsSelection::TerminalCursor,
             cx,
         );
+        let terminal_scrollback = settings_select(
+            &root,
+            "settings-terminal-scrollback",
+            settings.terminal_scrollback_lines.to_string(),
+            terminal_scrollback_options(settings.terminal_scrollback_lines),
+            SettingsSelection::TerminalScrollback,
+            cx,
+        );
         #[cfg(target_os = "macos")]
         let option_as_meta = settings_select(
             &root,
@@ -501,6 +546,7 @@ impl SettingsState {
             dark_terminal_theme,
             terminal_font,
             terminal_cursor,
+            terminal_scrollback,
             #[cfg(target_os = "macos")]
             option_as_meta,
             file_link_editor,
@@ -646,6 +692,7 @@ fn settings_select(
         SettingsSelection::DefaultCrew
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
+        | SettingsSelection::TerminalScrollback
         | SettingsSelection::FileLinkEditor
         | SettingsSelection::QuitBehavior => None,
         #[cfg(target_os = "macos")]
@@ -938,6 +985,13 @@ impl NativeRoot {
             ),
             SettingsSelection::TerminalCursor => parse_terminal_cursor(value)
                 .is_some_and(|value| update_if_changed(&mut settings.terminal_cursor_style, value)),
+            SettingsSelection::TerminalScrollback => value
+                .parse::<usize>()
+                .ok()
+                .filter(|lines| normalize_terminal_scrollback(*lines) == *lines)
+                .is_some_and(|lines| {
+                    update_if_changed(&mut settings.terminal_scrollback_lines, lines)
+                }),
             #[cfg(target_os = "macos")]
             SettingsSelection::OptionAsMeta => OptionAsMeta::ALL
                 .into_iter()
@@ -968,6 +1022,18 @@ impl NativeRoot {
         });
     }
 
+    pub(crate) fn sync_terminal_scrollback_select(&self, cx: &mut Context<Self>) {
+        let lines = self.settings(cx).terminal_scrollback_lines;
+        self.settings_page
+            .terminal_scrollback
+            .update(cx, |select, cx| {
+                select.set_options(terminal_scrollback_options(lines), cx);
+                if select.value() != lines.to_string() {
+                    select.set_value(lines.to_string(), cx);
+                }
+            });
+    }
+
     fn set_theme_intent(&mut self, intent: ThemeIntent, cx: &mut Context<Self>) {
         if self.update_app_settings(cx, true, |settings| {
             update_if_changed(&mut settings.app_theme, intent)
@@ -980,6 +1046,33 @@ impl NativeRoot {
         let size = size.clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX);
         if self.update_app_settings(cx, true, |settings| {
             update_if_changed(&mut settings.terminal_font_size, size)
+        }) {
+            cx.notify();
+        }
+    }
+
+    fn set_terminal_line_height(&mut self, line_height: f32, cx: &mut Context<Self>) {
+        let line_height = normalize_terminal_line_height(
+            line_height.clamp(TERMINAL_LINE_HEIGHT_MIN, TERMINAL_LINE_HEIGHT_MAX),
+        );
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.terminal_line_height, line_height)
+        }) {
+            cx.notify();
+        }
+    }
+
+    fn set_terminal_cursor_blink(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.terminal_cursor_blink, enabled)
+        }) {
+            cx.notify();
+        }
+    }
+
+    fn set_terminal_copy_on_select(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.terminal_copy_on_select, enabled)
         }) {
             cx.notify();
         }
@@ -1948,9 +2041,8 @@ mod tests {
         };
         assert_eq!(pick(&mut window, dark_pane), ThemeIntent::Dark);
         assert_eq!(pick(&mut window, light_pane), ThemeIntent::Light);
-        for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
-            assert!(window.debug_bounds(selector).is_some(), "{selector}");
-        }
+        assert!(window.debug_bounds("SETTINGS_APP_PALETTE").is_some());
+        assert!(window.debug_bounds("SETTINGS_TERMINAL_COLORS").is_none());
         assert_eq!(
             window.debug_bounds("SETTINGS_WINDOW_MATERIAL").is_some(),
             cfg!(target_os = "macos")
@@ -1966,9 +2058,27 @@ mod tests {
         window.run_until_parked();
         assert!(window.debug_bounds("SETTINGS_TERMINAL_THEME").is_none());
         // GPUI clears `debug_bounds` each frame; Appearance selectors must be gone.
-        for selector in ["SETTINGS_APPEARANCE_LIGHT", "SETTINGS_APPEARANCE_DARK"] {
-            assert!(window.debug_bounds(selector).is_none(), "{selector}");
-        }
+        assert!(window.debug_bounds("SETTINGS_APP_PALETTE").is_none());
+        let sections = [
+            "SETTINGS_TERMINAL_TEXT",
+            "SETTINGS_TERMINAL_COLORS",
+            "SETTINGS_TERMINAL_CURSOR",
+            "SETTINGS_TERMINAL_KEYBOARD",
+            "SETTINGS_TERMINAL_SCROLLBACK",
+        ];
+        let tops = sections
+            .iter()
+            .filter_map(|selector| window.debug_bounds(selector).map(|bounds| bounds.top()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            window.debug_bounds("SETTINGS_TERMINAL_KEYBOARD").is_some(),
+            cfg!(target_os = "macos")
+        );
+        assert_eq!(tops.len(), if cfg!(target_os = "macos") { 5 } else { 4 });
+        assert!(tops.is_sorted(), "{tops:?}");
+        assert!(
+            window.debug_bounds("SETTINGS_OPTION_AS_META").is_some() == cfg!(target_os = "macos")
+        );
         let pane = window.debug_bounds("SETTINGS_TERMINAL_PANE").unwrap();
         let font = window.debug_bounds("SETTINGS_TERMINAL_FONT").unwrap();
         assert!(
@@ -2069,6 +2179,30 @@ mod tests {
 
             let terminal = filtered_nav_groups("  TERM  ");
             assert_eq!(terminal, vec![("App", vec![SettingsPane::Terminal])]);
+            for row in [
+                "line height",
+                "scrollback",
+                "copy on select",
+                "blink",
+                "dark mode palette",
+            ] {
+                assert_eq!(
+                    filtered_nav_groups(row),
+                    vec![("App", vec![SettingsPane::Terminal])],
+                    "{row}"
+                );
+            }
+            assert_eq!(
+                filtered_nav_groups("palette"),
+                vec![(
+                    "App",
+                    vec![SettingsPane::Appearance, SettingsPane::Terminal]
+                )]
+            );
+            assert_eq!(
+                filtered_nav_groups("option as meta").is_empty(),
+                !cfg!(target_os = "macos")
+            );
 
             let archived = filtered_nav_groups("archived");
             assert_eq!(archived, vec![("App", vec![SettingsPane::Archived])]);
@@ -2388,6 +2522,74 @@ mod localization_tests {
     use super::*;
     use gpui::{size, TestAppContext};
     use i18n::{testing::with_locale, Language, Locale};
+
+    #[test]
+    fn scrollback_select_follows_shared_settings_and_keeps_a_saved_value_choosable() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        with_locale(Locale::English, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            store.update(&mut cx, |store, _| {
+                store.settings.terminal_scrollback_lines = 7_000
+            });
+            let windows = ["scrollback-one", "scrollback-two"].map(|label| {
+                cx.add_window(|window, cx| {
+                    NativeRoot::new(
+                        label.into(),
+                        temp.path().join("logs"),
+                        None,
+                        None,
+                        store.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            });
+            cx.run_until_parked();
+            let choose = |cx: &mut TestAppContext, value: &str| {
+                windows[0]
+                    .update(cx, |root, window, cx| {
+                        root.apply_settings_selection(
+                            SettingsSelection::TerminalScrollback,
+                            value,
+                            window,
+                            cx,
+                        )
+                    })
+                    .unwrap();
+                cx.run_until_parked();
+            };
+            let shown = |cx: &mut TestAppContext| {
+                windows.map(|window| {
+                    window
+                        .read_with(cx, |root, cx| {
+                            let select = root.settings_page.terminal_scrollback.read(cx);
+                            (
+                                root.settings(cx).terminal_scrollback_lines,
+                                select.value().to_owned(),
+                                select.selected().unwrap().label.to_string(),
+                            )
+                        })
+                        .unwrap()
+                })
+            };
+            let both = |lines: usize, label: &str| {
+                let row = (lines, lines.to_string(), label.to_owned());
+                [row.clone(), row]
+            };
+
+            assert_eq!(shown(&mut cx), both(7_000, "7,000 lines"));
+            choose(&mut cx, "5000");
+            assert_eq!(shown(&mut cx), both(5_000, "5,000 lines"));
+            choose(&mut cx, "7000");
+            assert_eq!(shown(&mut cx), both(7_000, "7,000 lines"));
+            choose(&mut cx, "50000");
+            assert_eq!(shown(&mut cx), both(50_000, "50,000 lines"));
+            choose(&mut cx, "60000");
+            assert_eq!(shown(&mut cx), both(50_000, "50,000 lines"));
+        });
+    }
 
     #[test]
     fn language_switch_refreshes_two_windows_menus_and_cached_choices_without_resetting_drafts() {

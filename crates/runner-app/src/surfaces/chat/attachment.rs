@@ -167,7 +167,8 @@ impl NativeRoot {
             - (PANE_HEADER_HEIGHT + 8.) * self.settings(cx).app_zoom;
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        let line_height =
+            crate::terminal::element::row_height(font_size, self.settings(cx).terminal_line_height);
         (
             (pane_width / cell_width).floor().max(2.) as u16,
             (pane_height / line_height).floor().max(2.) as u16,
@@ -196,7 +197,8 @@ impl NativeRoot {
             (layout.drawer_height() - (32. + 5. + 24.)).max(80.) * self.settings(cx).app_zoom;
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        let line_height =
+            crate::terminal::element::row_height(font_size, self.settings(cx).terminal_line_height);
         (
             (width / cell_width).floor().max(2.) as u16,
             (height / line_height).floor().max(2.) as u16,

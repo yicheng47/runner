@@ -50,7 +50,9 @@ impl NativeRoot {
             .gap_5()
             .child(PaneHeader::new(
                 crate::i18n::text("ui.appearance"),
-                crate::i18n::text("ui.theme_and_the_app_and_terminal_palettes_for_each_mode"),
+                crate::i18n::text(
+                    "ui.theme_and_the_app_palette_for_each_mode_terminal_palettes_are_in_terminal",
+                ),
             ))
             .child(SettingsCard::new({
                 let rows = vec![SettingsRow::new(crate::i18n::text("ui.theme"), self.render_theme_segmented(cx))
@@ -67,21 +69,24 @@ impl NativeRoot {
                 rows
             }))
             .child(self.render_theme_preview(cx))
-            .child(palette_section(
-                crate::i18n::text("ui.light"),
-                "SETTINGS_APPEARANCE_LIGHT",
-                self.settings_page.light_theme.clone(),
-                crate::i18n::text("ui.chrome_colours_when_the_app_is_light"),
-                self.settings_page.light_terminal_theme.clone(),
-                crate::i18n::text("ui.terminal_colours_when_the_app_is_light"),
-            ))
-            .child(palette_section(
-                crate::i18n::text("ui.dark"),
-                "SETTINGS_APPEARANCE_DARK",
-                self.settings_page.dark_theme.clone(),
-                crate::i18n::text("ui.chrome_colours_when_the_app_is_dark"),
-                self.settings_page.dark_terminal_theme.clone(),
-                crate::i18n::text("ui.terminal_colours_when_the_app_is_dark"),
+            .child(settings_section(
+                crate::i18n::text("ui.app_palette"),
+                "SETTINGS_APP_PALETTE",
+                false,
+                vec![
+                    SettingsRow::new(
+                        crate::i18n::text("ui.light_mode"),
+                        self.settings_page.light_theme.clone(),
+                    )
+                    .subtitle(crate::i18n::text("ui.chrome_colours_when_the_app_is_light"))
+                    .into_any_element(),
+                    SettingsRow::new(
+                        crate::i18n::text("ui.dark_mode"),
+                        self.settings_page.dark_theme.clone(),
+                    )
+                    .subtitle(crate::i18n::text("ui.chrome_colours_when_the_app_is_dark"))
+                    .into_any_element(),
+                ],
             ))
             .when(cfg!(target_os = "macos"), |page| page.child(
                 div().text_size(theme::text_ui()).text_color(theme::muted())
@@ -303,101 +308,225 @@ impl NativeRoot {
     }
 
     pub(super) fn render_terminal_settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let size = self
-            .settings(cx)
+        let settings = self.settings(cx);
+        let size = settings
             .terminal_font_size
             .clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX);
-        let decrement_root = cx.entity();
-        let increment_root = decrement_root.clone();
-        let decrement: StepHandler = Rc::new(move |_, cx| {
-            decrement_root.update(cx, |this, root_cx| {
-                this.set_terminal_font_size(size.saturating_sub(1), root_cx)
-            });
-        });
-        let increment: StepHandler = Rc::new(move |_, cx| {
-            increment_root.update(cx, |this, root_cx| {
-                this.set_terminal_font_size(size.saturating_add(1), root_cx)
-            });
-        });
-        let size_stepper = Stepper::new(
-            "settings-terminal-font-size",
-            64.,
-            div()
-                .flex()
-                .items_center()
-                .gap(rems(3. / 16.))
-                .font_family(theme::UI_MONOSPACE_FONT)
-                .child(
-                    div()
-                        .text_size(theme::text_ui())
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(size.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(theme::text_caption())
-                        .text_color(theme::faint())
-                        .child("px"),
-                ),
-            decrement,
-            increment,
-        )
-        .decrement_disabled(size == TERMINAL_FONT_SIZE_MIN)
-        .increment_disabled(size == TERMINAL_FONT_SIZE_MAX);
-
-        let rows = vec![
-            SettingsRow::new(
-                crate::i18n::text("ui.font_family"),
-                div()
-                    .debug_selector(|| "SETTINGS_TERMINAL_FONT".into())
-                    .child(self.settings_page.terminal_font.clone()),
+        let line_height = normalize_terminal_line_height(settings.terminal_line_height);
+        let cursor_blink = settings.terminal_cursor_blink;
+        let copy_on_select = settings.terminal_copy_on_select;
+        let root = cx.entity();
+        let size_stepper = {
+            let (down, up) = (root.clone(), root.clone());
+            Stepper::new(
+                "settings-terminal-font-size",
+                64.,
+                stepper_value(size.to_string(), Some("px")),
+                Rc::new(move |_, cx| {
+                    down.update(cx, |this, cx| {
+                        this.set_terminal_font_size(size.saturating_sub(1), cx)
+                    });
+                }),
+                Rc::new(move |_, cx| {
+                    up.update(cx, |this, cx| {
+                        this.set_terminal_font_size(size.saturating_add(1), cx)
+                    });
+                }),
             )
-            .subtitle(crate::i18n::text(
-                "ui.typeface_used_by_the_embedded_terminal",
-            ))
-            .into_any_element(),
-            SettingsRow::new(crate::i18n::text("ui.terminal_font_size"), size_stepper)
+            .decrement_disabled(size == TERMINAL_FONT_SIZE_MIN)
+            .increment_disabled(size == TERMINAL_FONT_SIZE_MAX)
+        };
+        let line_height_stepper = {
+            let (down, up) = (root.clone(), root.clone());
+            Stepper::new(
+                "settings-terminal-line-height",
+                64.,
+                stepper_value(format!("{line_height:.1}"), None),
+                Rc::new(move |_, cx| {
+                    down.update(cx, |this, cx| {
+                        this.set_terminal_line_height(line_height - 0.1, cx)
+                    });
+                }),
+                Rc::new(move |_, cx| {
+                    up.update(cx, |this, cx| {
+                        this.set_terminal_line_height(line_height + 0.1, cx)
+                    });
+                }),
+            )
+            .decrement_disabled(line_height <= TERMINAL_LINE_HEIGHT_MIN)
+            .increment_disabled(line_height >= TERMINAL_LINE_HEIGHT_MAX)
+        };
+        let toggle = |id: &'static str, on: bool, set: fn(&mut Self, bool, &mut Context<Self>)| {
+            let root = root.clone();
+            Toggle::new(id, on)
+                .on_change(move |enabled, _, cx| {
+                    root.update(cx, |this, cx| set(this, enabled, cx));
+                })
+                .into_any_element()
+        };
+
+        let text = settings_section(
+            crate::i18n::text("terminal.section_text"),
+            "SETTINGS_TERMINAL_TEXT",
+            false,
+            vec![
+                SettingsRow::new(
+                    crate::i18n::text("ui.font_family"),
+                    div()
+                        .debug_selector(|| "SETTINGS_TERMINAL_FONT".into())
+                        .child(self.settings_page.terminal_font.clone()),
+                )
+                .subtitle(crate::i18n::text(
+                    "ui.typeface_used_by_the_embedded_terminal",
+                ))
+                .into_any_element(),
+                SettingsRow::new(
+                    crate::i18n::text("ui.font_size"),
+                    ranged_stepper(
+                        format!("{TERMINAL_FONT_SIZE_MIN}–{TERMINAL_FONT_SIZE_MAX}"),
+                        size_stepper,
+                    ),
+                )
                 .subtitle(crate::i18n::text("ui.glyph_size_for_the_embedded_terminal"))
                 .into_any_element(),
-            SettingsRow::new(
-                crate::i18n::text("ui.cursor_style"),
-                self.settings_page.terminal_cursor.clone(),
-            )
-            .subtitle(crate::i18n::text(
-                "ui.block_underline_or_bar_affects_the_prompt_caret_only",
-            ))
-            .into_any_element(),
-        ];
-        #[cfg(target_os = "macos")]
-        let rows = {
-            let mut rows = rows;
-            rows.push(
                 SettingsRow::new(
-                    crate::i18n::text("terminal.option_as_meta"),
-                    div()
-                        .debug_selector(|| "SETTINGS_OPTION_AS_META".into())
-                        .child(self.settings_page.option_as_meta.clone()),
+                    crate::i18n::text("terminal.line_height"),
+                    ranged_stepper(
+                        format!("{TERMINAL_LINE_HEIGHT_MIN:.1}–{TERMINAL_LINE_HEIGHT_MAX:.1}"),
+                        line_height_stepper,
+                    ),
                 )
-                .subtitle(crate::i18n::text("terminal.option_as_meta_description"))
+                .subtitle(crate::i18n::text("terminal.line_height_description"))
                 .into_any_element(),
-            );
-            rows
-        };
+            ],
+        );
+        let colors = settings_section(
+            crate::i18n::text("terminal.section_colors"),
+            "SETTINGS_TERMINAL_COLORS",
+            false,
+            vec![
+                SettingsRow::new(
+                    crate::i18n::text("ui.light_mode_palette"),
+                    self.settings_page.light_terminal_theme.clone(),
+                )
+                .subtitle(crate::i18n::text(
+                    "ui.terminal_colours_when_the_app_is_light",
+                ))
+                .into_any_element(),
+                SettingsRow::new(
+                    crate::i18n::text("ui.dark_mode_palette"),
+                    self.settings_page.dark_terminal_theme.clone(),
+                )
+                .subtitle(crate::i18n::text(
+                    "ui.terminal_colours_when_the_app_is_dark",
+                ))
+                .into_any_element(),
+            ],
+        );
+        let cursor = settings_section(
+            crate::i18n::text("terminal.section_cursor"),
+            "SETTINGS_TERMINAL_CURSOR",
+            false,
+            vec![
+                SettingsRow::new(
+                    crate::i18n::text("ui.cursor_style"),
+                    self.settings_page.terminal_cursor.clone(),
+                )
+                .subtitle(crate::i18n::text(
+                    "ui.block_underline_or_bar_affects_the_prompt_caret_only",
+                ))
+                .into_any_element(),
+                SettingsRow::new(
+                    crate::i18n::text("terminal.blink_cursor"),
+                    toggle(
+                        "settings-terminal-cursor-blink",
+                        cursor_blink,
+                        Self::set_terminal_cursor_blink,
+                    ),
+                )
+                .subtitle(crate::i18n::text("terminal.blink_cursor_description"))
+                .into_any_element(),
+            ],
+        );
+        #[cfg(target_os = "macos")]
+        let keyboard = Some(settings_section(
+            crate::i18n::text("terminal.section_keyboard"),
+            "SETTINGS_TERMINAL_KEYBOARD",
+            true,
+            vec![SettingsRow::new(
+                crate::i18n::text("terminal.option_as_meta"),
+                div()
+                    .debug_selector(|| "SETTINGS_OPTION_AS_META".into())
+                    .child(self.settings_page.option_as_meta.clone()),
+            )
+            .subtitle(crate::i18n::text("terminal.option_as_meta_description"))
+            .into_any_element()],
+        ));
+        #[cfg(not(target_os = "macos"))]
+        let keyboard: Option<AnyElement> = None;
+        let scrollback = settings_section(
+            crate::i18n::text("terminal.section_scrollback_and_selection"),
+            "SETTINGS_TERMINAL_SCROLLBACK",
+            false,
+            vec![
+                SettingsRow::new(
+                    crate::i18n::text("terminal.scrollback"),
+                    self.settings_page.terminal_scrollback.clone(),
+                )
+                .subtitle(crate::i18n::text("terminal.scrollback_description"))
+                .into_any_element(),
+                SettingsRow::new(
+                    crate::i18n::text("terminal.copy_on_select"),
+                    toggle(
+                        "settings-terminal-copy-on-select",
+                        copy_on_select,
+                        Self::set_terminal_copy_on_select,
+                    ),
+                )
+                .subtitle(crate::i18n::text("terminal.copy_on_select_description"))
+                .into_any_element(),
+            ],
+        );
 
         div()
             .flex()
             .flex_col()
-            .gap_5()
+            .gap_6()
             .debug_selector(|| "SETTINGS_TERMINAL_PANE".into())
             .child(PaneHeader::new(
                 crate::i18n::text("ui.terminal"),
                 crate::i18n::text(
-                    "ui.font_size_and_cursor_for_the_embedded_terminal_palettes_live_in_appearance",
+                    "ui.text_colours_cursor_keyboard_and_scrollback_for_the_embedded_terminal",
                 ),
             ))
-            .child(SettingsCard::new(rows))
+            .child(text)
+            .child(colors)
+            .child(cursor)
+            .children(keyboard)
+            .child(scrollback)
             .into_any_element()
     }
+}
+
+fn stepper_value(value: String, unit: Option<&'static str>) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(rems(3. / 16.))
+        .font_family(theme::UI_MONOSPACE_FONT)
+        .child(
+            div()
+                .text_size(theme::text_ui())
+                .font_weight(FontWeight::MEDIUM)
+                .child(value),
+        )
+        .children(unit.map(|unit| {
+            div()
+                .text_size(theme::text_caption())
+                .text_color(theme::faint())
+                .child(unit)
+        }))
+        .into_any_element()
 }
 
 pub(super) fn light_theme_options() -> Vec<SelectOption> {
@@ -423,14 +552,13 @@ pub(super) fn dark_terminal_theme_options() -> Vec<SelectOption> {
     ]
 }
 
-/// A mode's label and its App palette + Terminal palette card.
-pub(super) fn palette_section(
+/// A section label, with a platform tag when the section exists on one
+/// platform only, above its own card.
+pub(super) fn settings_section(
     label: &'static str,
     selector: &'static str,
-    app_palette: Entity<StyledSelect>,
-    app_subtitle: &'static str,
-    terminal_palette: Entity<StyledSelect>,
-    terminal_subtitle: &'static str,
+    macos_only: bool,
+    rows: Vec<AnyElement>,
 ) -> AnyElement {
     div()
         .flex()
@@ -439,20 +567,79 @@ pub(super) fn palette_section(
         .debug_selector(move || selector.into())
         .child(
             div()
+                .flex()
+                .items_center()
+                .gap(rems(8. / 16.))
                 .text_size(theme::text_body())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(theme::muted())
-                .child(label),
+                .child(label)
+                .when(macos_only, |heading| {
+                    heading.child(
+                        div()
+                            .px(rems(7. / 16.))
+                            .py(rems(2. / 16.))
+                            .rounded(rems(5. / 16.))
+                            .border_1()
+                            .border_color(theme::border())
+                            .text_size(theme::text_caption())
+                            .font_weight(FontWeight::NORMAL)
+                            .child("macOS"),
+                    )
+                }),
         )
-        .child(SettingsCard::new(vec![
-            SettingsRow::new(crate::i18n::text("ui.app_palette"), app_palette)
-                .subtitle(app_subtitle)
-                .into_any_element(),
-            SettingsRow::new(crate::i18n::text("ui.terminal_palette"), terminal_palette)
-                .subtitle(terminal_subtitle)
-                .into_any_element(),
-        ]))
+        .child(SettingsCard::new(rows))
         .into_any_element()
+}
+
+/// A stepper with its range shown to its left, as `8–32`.
+fn ranged_stepper(range: String, stepper: Stepper) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(rems(10. / 16.))
+        .child(
+            div()
+                .text_size(theme::text_meta())
+                .text_color(theme::faint())
+                .child(range),
+        )
+        .child(stepper)
+        .into_any_element()
+}
+
+/// The presets, plus a saved value that is not one of them so the select can
+/// still show it.
+pub(super) fn terminal_scrollback_options(saved: usize) -> Vec<SelectOption> {
+    let mut values = TERMINAL_SCROLLBACK_PRESETS.to_vec();
+    if !values.contains(&saved) {
+        values.push(saved);
+        values.sort_unstable();
+    }
+    values
+        .into_iter()
+        .map(|lines| {
+            SelectOption::new(
+                lines.to_string(),
+                crate::i18n::messagef(
+                    "terminal.scrollback_lines",
+                    &[("lines", grouped_thousands(lines))],
+                ),
+            )
+        })
+        .collect()
+}
+
+fn grouped_thousands(value: usize) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 pub(super) fn light_theme_label(value: LightTheme) -> &'static str {

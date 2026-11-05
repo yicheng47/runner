@@ -100,6 +100,8 @@ pub(crate) fn terminal_style_for(
         font: settings.terminal_font_family.font(cx),
         font_size: settings.terminal_font_size as f32 * settings.app_zoom,
         app_zoom: settings.app_zoom,
+        line_height_factor: settings.terminal_line_height,
+        copy_on_select: settings.terminal_copy_on_select,
     }
 }
 

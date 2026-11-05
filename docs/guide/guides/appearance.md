@@ -1,6 +1,6 @@
 # Appearance
 
-Choose how Runner follows light and dark mode, then set the app and terminal palettes independently. Text size and window material have their own controls.
+Choose how Runner follows light and dark mode, then set the app and terminal palettes independently: the app palette in Appearance, the terminal palette with the terminal's other settings. Text size and window material have their own controls.
 
 ## Display language
 
@@ -12,10 +12,10 @@ The setting covers Runner's interface and date displays. Agent output, user-auth
 
 ## Theme and palettes
 
-Open **Settings → Appearance**. **Theme** follows the operating system or pins Runner to light or dark mode. Each mode has two selections:
+Open **Settings → Appearance**. **Theme** follows the operating system or pins Runner to light or dark mode. Each mode has two palettes:
 
-- **App palette** colors the sidebar, panels and controls. Light mode offers Runner Light and Catppuccin Latte; dark mode offers Runner and Catppuccin Mocha. Runner Light uses cool gray surfaces with stronger borders.
-- **Terminal palette** colors the terminal grid. Runner, Catppuccin Mocha and Rosé Pine Dawn are available independently of the app palette. Rosé Pine Dawn uses a muted cream background in Runner.
+- **App palette**, in **Settings → Appearance**, colors the sidebar, panels and controls. Light mode offers Runner Light and Catppuccin Latte; dark mode offers Runner and Catppuccin Mocha. Runner Light uses cool gray surfaces with stronger borders.
+- **Terminal palette**, chosen as **Light mode palette** and **Dark mode palette** under **Settings → Terminal → Colors**, colors the terminal grid. Runner, Catppuccin Mocha and Rosé Pine Dawn are available independently of the app palette. Rosé Pine Dawn uses a muted cream background in Runner. The Appearance preview shows each mode with both of its palettes.
 
 Choose both modes once, then switch between them without rebuilding the pairing. Claude Code follows Runner's light/dark switch live; other agents may use their own theme controls for colors they draw themselves.
 
@@ -31,6 +31,8 @@ Windows uses Solid and does not show the macOS material selector.
 
 **Settings → General → App zoom** scales the application controls. Use **⌘+** / **Ctrl++** to zoom in, **⌘−** / **Ctrl+−** to zoom out, and **⌘0** / **Ctrl+0** to reset.
 
-The terminal canvas has a separate text size. Open **Settings → Terminal** to choose its font, font size and cursor style. The searchable **Font family** list groups JetBrains Mono under **Bundled** and the monospace fonts on your computer under **Installed**. A missing saved font is marked **Not installed** and uses JetBrains Mono until you reinstall it or choose another font. Font changes apply to open terminals and the Appearance preview. If the sidebar is comfortable but the agent text is too small, change the terminal font size instead of app zoom.
+The terminal canvas has a separate text size. Open **Settings → Terminal**, grouped into **Text**, **Colors**, **Cursor**, **Keyboard** (macOS only) and **Scrollback & selection**. **Font size** runs from 8 to 32 px, and **Line height** sets row spacing from 1.0 to 1.6 times the font size; open terminals lay out again and the shell's row count follows. The searchable **Font family** list groups JetBrains Mono under **Bundled** and the monospace fonts on your computer under **Installed**. A missing saved font is marked **Not installed** and uses JetBrains Mono until you reinstall it or choose another font. Font changes apply to open terminals and the Appearance preview. If the sidebar is comfortable but the agent text is too small, change the terminal font size instead of app zoom.
 
-On macOS, **Option as Meta key** also controls whether Option sends shell shortcuts or types your keyboard layout's characters. **Automatic**, the default, uses Meta on U.S., U.S. International and ABC layouts and types characters on other layouts. Choose **Both Option keys**, **Left Option only**, **Right Option only** or **Off** to override it. A layout switch takes effect on the next keypress.
+**Blink cursor**, off by default, blinks the cursor of the focused terminal; a program that sets its own cursor style still decides for itself. **Scrollback** keeps 1,000, 5,000, 10,000 (the default), 25,000 or 50,000 lines above the screen in every terminal. More lines use more memory in every open session, and lowering it drops the oldest lines of open terminals. **Copy on select**, off by default, copies text to the clipboard as soon as you finish selecting it with the mouse, the same text ⌘C or Ctrl+C would copy, and leaves the selection in place.
+
+On macOS, the **Keyboard** section's **Option as Meta key** controls whether Option sends shell shortcuts or types your keyboard layout's characters. **Automatic**, the default, uses Meta on U.S., U.S. International and ABC layouts and types characters on other layouts. Choose **Both Option keys**, **Left Option only**, **Right Option only** or **Off** to override it. A layout switch takes effect on the next keypress.

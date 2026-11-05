@@ -9,7 +9,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, AnyElement, App, Context, Entity, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, Render, Task, Window,
+    MouseButton, Render, Subscription, Task, Window,
 };
 use runner_app::terminal_ime::TerminalInput;
 use runner_app::ui::button::spinner;
@@ -200,7 +200,7 @@ fn waiting_for_input(quiet: Duration, cursor_column: usize) -> bool {
 /// grid it actually lays out on first paint.
 fn initial_grid(style: &TerminalStyle) -> (u16, u16) {
     let cell_width = style.font_size * 0.6;
-    let line_height = (style.font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+    let line_height = style.row_height();
     let width = (PANEL_WIDTH - 44. - 28.) * style.app_zoom;
     let height = (TERMINAL_HEIGHT - 24.) * style.app_zoom;
     (
@@ -229,6 +229,8 @@ pub(crate) struct AgentUpdateDialog {
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     close: CloseHandler,
+    terminal_settings_revision: u64,
+    _settings: Subscription,
     _tasks: Vec<Task<()>>,
 }
 
@@ -243,6 +245,22 @@ impl AgentUpdateDialog {
         let previous_focus = window.focused(cx);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let terminal_settings_revision = app_store.read(cx).revisions.terminal_settings;
+        let settings = cx.observe(&app_store, |this: &mut Self, store, cx| {
+            let revision = store.read(cx).revisions.terminal_settings;
+            if revision == this.terminal_settings_revision {
+                return;
+            }
+            this.terminal_settings_revision = revision;
+            if let Some(update) = &this.terminal {
+                let settings = &store.read(cx).settings;
+                update
+                    .terminal
+                    .set_palette(terminal_style_for(settings, cx).palette);
+                app_settings::configure_terminal(&update.terminal, settings);
+            }
+            cx.notify();
+        });
         Self {
             request,
             app_store,
@@ -254,6 +272,8 @@ impl AgentUpdateDialog {
             focus,
             previous_focus,
             close,
+            terminal_settings_revision,
+            _settings: settings,
             _tasks: Vec::new(),
         }
     }
@@ -936,6 +956,46 @@ mod tests {
             .any(|(text, tone)| text.contains("session not found") && *tone == FooterTone::Danger));
         assert!(footer.button.is_none());
         assert!(exit.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn an_open_update_terminal_follows_terminal_settings_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let core = cx.update(|cx| store.read(cx).test_core.clone());
+        let client = runner_daemon::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("update", (80, 24), &core.db, &events)
+            .unwrap();
+        let mirror = TerminalMirror::attach(client, "update".into(), Arc::new(|| {})).unwrap();
+        let _window = cx.add_window(|window, cx| {
+            let dialog = cx.new(|cx| {
+                AgentUpdateDialog::new(request(), store.clone(), Rc::new(|_, _| {}), window, cx)
+            });
+            dialog.update(cx, |dialog, cx| {
+                dialog.started(Ok(Arc::clone(&mirror)), window, cx)
+            });
+            Host(dialog)
+        });
+        cx.run_until_parked();
+        let blinks = |mirror: &TerminalMirror| mirror.term.lock().cursor_style().blinking;
+        assert!(!blinks(&mirror));
+
+        store.update(&mut cx, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    settings.terminal_cursor_blink = true;
+                    true
+                },
+                false,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert!(blinks(&mirror));
     }
 
     struct Host(Entity<AgentUpdateDialog>);

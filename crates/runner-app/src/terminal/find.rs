@@ -1048,7 +1048,7 @@ pub(crate) mod tests {
     #[test]
     fn stepping_before_a_refresh_from_a_match_that_left_the_scrollback() {
         let (terminal, mut visual, find, _) = setup();
-        terminal.configure(40, alacritty_terminal::vte::ansi::CursorShape::Block);
+        terminal.configure(40, alacritty_terminal::vte::ansi::CursorShape::Block, false);
         terminal.test_feed(2, &lines("hit", 0..100));
         open_with(&mut visual, "hit");
         visual.simulate_keystrokes("shift-enter");

@@ -879,7 +879,7 @@ fn keys_follow_the_apps_kitty_keyboard_mode() {
         ]
     );
 
-    session.configure(3, CursorShape::Beam);
+    session.configure(3, CursorShape::Beam, true);
     alt_d();
     assert_eq!(
         wait_for(10)[9],
@@ -1237,7 +1237,7 @@ fn terminal_configuration_applies_scrollback_and_cursor_shape() {
     let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 5, waker).unwrap();
 
-    terminal.configure(3, CursorShape::Beam);
+    terminal.configure(3, CursorShape::Beam, true);
     terminal
         .feed_output(&output(1, &"configured line\r\n".repeat(20)))
         .unwrap();
@@ -1278,7 +1278,7 @@ fn terminal_selection_matches_xterm_words_wraps_and_line_copy() {
         UserInputMode::Queued,
     )
     .unwrap();
-    terminal.configure(100, CursorShape::Block);
+    terminal.configure(100, CursorShape::Block, true);
     assert!(terminal.cell_is_whitespace(Point::new(Line(100), Column(100))));
     {
         let mut term = terminal.term.lock();
