@@ -83,7 +83,11 @@ pub fn session_list(state: &AppCore, mission_id: &str) -> Result<Vec<SessionRow>
 }
 
 pub fn session_kill(state: &AppCore, session_id: &str) -> Result<()> {
-    state.sessions.kill(session_id)
+    state.sessions.kill(session_id)?;
+    if let Err(error) = state.routers.clear_interruption(session_id) {
+        log::warn!("clear interruption for stopped session {session_id}: {error}");
+    }
+    Ok(())
 }
 
 pub fn session_status_snapshot(
@@ -91,8 +95,10 @@ pub fn session_status_snapshot(
 ) -> Result<BTreeMap<String, crate::session::status::AgentStatus>> {
     use crate::session::status::{AgentStatus, Lifecycle};
     let mut statuses = state.sessions.status_snapshot();
+    let interrupted = state.routers.interrupted_sessions();
     let conn = state.db.get()?;
     for row in repo::session::status_rows(&conn)? {
+        let interrupted_since = interrupted.get(&row.id).copied();
         let status = statuses.entry(row.id).or_insert(AgentStatus {
             lifecycle: Lifecycle::Running,
             ..Default::default()
@@ -120,7 +126,7 @@ pub fn session_status_snapshot(
                 status.error_since =
                     stopped.filter(|time| acknowledged.is_none_or(|viewed| viewed < *time));
             }
-            _ => {}
+            _ => status.interrupted_since = interrupted_since,
         }
     }
     Ok(statuses)

@@ -635,18 +635,22 @@ pub(super) fn attention_indicator(attention: AttentionState) -> AnyElement {
                     .bg(theme::accent()),
             )
             .into_any_element(),
-        AttentionState::Unavailable | AttentionState::NeedsYou | AttentionState::Error => slot
+        AttentionState::Unavailable
+        | AttentionState::Interrupted
+        | AttentionState::NeedsYou
+        | AttentionState::Error => slot
             .child(
                 svg()
                     .path(match attention {
                         AttentionState::Error => "circle-alert.svg",
                         AttentionState::NeedsYou => "triangle-alert.svg",
+                        AttentionState::Interrupted => "circle-pause.svg",
                         _ => "circle-question-mark.svg",
                     })
                     .size(px(12.))
                     .text_color(match attention {
                         AttentionState::Error => theme::danger(),
-                        AttentionState::NeedsYou => theme::warning(),
+                        AttentionState::NeedsYou | AttentionState::Interrupted => theme::warning(),
                         _ => theme::muted(),
                     }),
             )

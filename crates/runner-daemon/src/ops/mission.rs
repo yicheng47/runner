@@ -1,4 +1,5 @@
 pub mod feed;
+pub mod interrupt;
 pub mod link;
 pub mod report;
 pub mod roles;
@@ -1026,7 +1027,15 @@ pub async fn mount_all_running_mission_routers(state: &AppCore) {
 /// For end-of-mission, see `mission_archive`.
 pub async fn mission_stop_impl(state: &AppCore, id: String) -> Result<Mission> {
     log::info!("mission stop: id={id}");
-    state.sessions.kill_all_for_mission(&id)?;
+    let stopped = state.sessions.kill_all_for_mission(&id);
+    if let Some(router) = state.routers.get(&id) {
+        let live: std::collections::HashSet<_> =
+            state.sessions.live_session_ids().into_iter().collect();
+        if let Err(error) = router.clear_interruptions(|session| !live.contains(session)) {
+            log::warn!("clear interruptions for stopped mission {id}: {error}");
+        }
+    }
+    stopped?;
     let conn = state.db.get()?;
     get(&conn, &id)
 }

@@ -81,6 +81,8 @@ pub(crate) enum AttentionState {
     Unavailable,
     Unread,
     Working,
+    /// A mission whose member lost its turn to a Runner restart (#1187).
+    Interrupted,
     NeedsYou,
     Error,
 }

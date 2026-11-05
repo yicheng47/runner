@@ -217,7 +217,32 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
         .transpose()?
         .flatten();
     let sessions = session::list_for_mission(&conn, &state.app_data_dir, &mission.id)?;
-    let projection = EventProjection::from_entries(&entries);
+    let mut projection = EventProjection::from_entries(&entries);
+    let interruptions = crate::router::Interruptions::from_entries(&entries);
+    let mut interrupted_at = None;
+    for row in sessions
+        .iter()
+        .filter(|row| row.session.status == SessionStatus::Running)
+    {
+        if let Some(at) = interruptions.get(&row.handle) {
+            interrupted_at =
+                Some(interrupted_at.map_or(at, |earliest: Timestamp| earliest.min(at)));
+            let mark = entries.iter().rev().find(|entry| {
+                entry.event.from == row.handle
+                    && entry.event.signal_type.as_ref().map(|ty| ty.as_str())
+                        == Some(crate::router::SESSION_INTERRUPTED)
+            });
+            projection.latest_session_status_by_handle.insert(
+                row.handle.clone(),
+                SessionStatusSnapshot {
+                    state: "interrupted".into(),
+                    event_id: mark.map(|entry| entry.event.id.clone()).unwrap_or_default(),
+                    ts: at,
+                    source: None,
+                },
+            );
+        }
+    }
     let live_session_count = sessions
         .iter()
         .filter(|s| matches!(s.session.status, SessionStatus::Running))
@@ -260,6 +285,7 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
     let snapshot = MissionStatusSnapshot {
         mission,
         phase: Some(phase),
+        interrupted_at: interrupted_at.filter(|_| phase == MissionPhase::Interrupted),
         started_by,
         crew,
         sessions,

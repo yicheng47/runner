@@ -1,8 +1,8 @@
 // Mission state and reports to the linked chat (#748). The daemon derives
 // one state per mission from its members' statuses and pending questions,
 // so reports reach the chat while the app is closed and every client reads
-// the same state. Entering Needs you, Failed or Settled queues a report for
-// the linked chat; `router::report` delivers it.
+// the same state. Entering Needs you, Failed, Interrupted or Settled queues a
+// report for the linked chat; `router::report` delivers it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{mpsc, Arc, Mutex, Weak};
@@ -35,6 +35,8 @@ pub(crate) struct Member {
     pub idle: bool,
     pub needs_you: bool,
     pub failed: bool,
+    /// Mid-turn when runnerd stopped, and no turn since (#1187).
+    pub interrupted: bool,
 }
 
 impl From<&AgentStatus> for Member {
@@ -47,6 +49,7 @@ impl From<&AgentStatus> for Member {
             ),
             needs_you: status.observation.needs_you(),
             failed: status.failed_since.is_some(),
+            interrupted: status.interrupted_since.is_some(),
         }
     }
 }
@@ -87,6 +90,9 @@ pub(crate) fn derive(input: &PhaseInput, idle_for: Option<Duration>) -> MissionP
         .any(|member| member.lifecycle == Lifecycle::Error);
     if crashed || input.members.iter().filter(live).any(|m| m.failed) {
         return MissionPhase::Failed;
+    }
+    if input.members.iter().filter(live).any(|m| m.interrupted) {
+        return MissionPhase::Interrupted;
     }
     if input.spawning
         || input
@@ -163,6 +169,18 @@ pub(crate) fn pending_asks(core: &AppCore, mission: &Mission) -> usize {
     }
 }
 
+/// What a restart left a running mission, for its first report after boot (#1187).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Restart {
+    /// A member was marked interrupted at this boot: report it once, even at the baseline.
+    Interrupted,
+    /// A member is still interrupted from an earlier restart, which its chat has heard.
+    StillInterrupted,
+    /// The mission had settled before the restart, and its chat has heard so. A turn
+    /// any member starts after this log offset makes its next Settled news again.
+    Settled(u64),
+}
+
 #[derive(Clone)]
 struct Tracked {
     phase: MissionPhase,
@@ -178,6 +196,8 @@ struct Tracking {
     missions: HashMap<String, Tracked>,
     /// The first refresh records each mission's state without reporting it.
     baselined: bool,
+    /// Missions launch resume brings back, until their first reported state.
+    restarts: HashMap<String, Restart>,
     refresh_due: bool,
     last_refresh: Option<Instant>,
     /// After a failed read, no refresh before this.
@@ -287,6 +307,11 @@ impl Reports {
         self.send(Wake::Refresh);
     }
 
+    /// Boot recorded what the restart left each resumed mission. Set before the service starts.
+    pub(crate) fn restarted(&self, restarts: HashMap<String, Restart>) {
+        self.tracking.lock().unwrap().restarts = restarts;
+    }
+
     #[cfg(test)]
     pub(crate) fn pending(&self, chat: &str) -> Vec<(String, ReportKind)> {
         self.delivery.lock().unwrap().dispatcher.pending(chat)
@@ -364,12 +389,16 @@ impl Reports {
                 .then(|| {
                     tracking.refresh_due = false;
                     tracking.last_refresh = Some(now);
-                    (tracking.missions.clone(), tracking.baselined)
+                    (
+                        tracking.missions.clone(),
+                        tracking.baselined,
+                        tracking.restarts.clone(),
+                    )
                 })
         };
-        if let Some((previous, baselined)) = previous {
-            match read_states(core, &previous, now) {
-                Ok(states) => self.apply(core, previous, baselined, states),
+        if let Some((previous, baselined, restarts)) = previous {
+            match read_states(core, &previous, &restarts, now) {
+                Ok(states) => self.apply(core, previous, baselined, &restarts, states),
                 Err(error) => {
                     log::warn!("mission state refresh failed: {error}");
                     let mut tracking = self.tracking.lock().unwrap();
@@ -404,33 +433,59 @@ impl Reports {
     }
 
     /// Record the new states, queue a report for each transition into a
-    /// reported state, and announce the changes.
+    /// reported state, and announce the changes. After a restart, a mission's
+    /// first reported state is reported only when it is news (#1187).
     fn apply(
         &self,
         core: &AppCore,
         previous: HashMap<String, Tracked>,
         baselined: bool,
+        restarts: &HashMap<String, Restart>,
         states: Vec<(Mission, Tracked)>,
     ) {
         let mut changed = Vec::new();
         let mut reports = Vec::new();
+        let mut consumed_restarts = Vec::new();
         for (mission, tracked) in &states {
             let before = previous.get(&mission.id);
             let phase_changed = before.map(|before| before.phase) != Some(tracked.phase);
             if phase_changed {
                 changed.push(mission.id.clone());
             }
-            if !(baselined || before.is_some()) {
+            let restart = restarts.get(&mission.id).copied();
+            let first_reading = !(baselined || before.is_some());
+            if first_reading
+                && !(restart == Some(Restart::Interrupted)
+                    && tracked.phase == MissionPhase::Interrupted)
+            {
                 continue;
             }
             // A crash is reported even when it leaves no member running and the mission Ended.
-            let crashed = tracked
-                .crashed
-                .iter()
-                .any(|id| !before.is_some_and(|before| before.crashed.contains(id)));
+            let crashed = !first_reading
+                && tracked
+                    .crashed
+                    .iter()
+                    .any(|id| !before.is_some_and(|before| before.crashed.contains(id)));
             let kind = if crashed {
                 ReportKind::Crashed
             } else if phase_changed && tracked.phase.reported() {
+                if let Some(restart) = restart {
+                    let carried = match (restart, tracked.phase) {
+                        (Restart::StillInterrupted, MissionPhase::Interrupted) => true,
+                        (Restart::Settled(offset), MissionPhase::Settled) => {
+                            !super::interrupt::turn_since(core, mission, offset)
+                        }
+                        _ => false,
+                    };
+                    // A settled mission keeps its carry until a member works, so members
+                    // resuming one at a time cannot make its quiet look like news.
+                    if !(carried && matches!(restart, Restart::Settled(_))) {
+                        consumed_restarts.push(mission.id.clone());
+                    }
+                    if carried {
+                        continue;
+                    }
+                }
                 ReportKind::State
             } else {
                 continue;
@@ -462,6 +517,9 @@ impl Reports {
                 .collect();
             tracking.baselined = true;
             tracking.backoff_until = None;
+            for id in consumed_restarts.iter().chain(&gone) {
+                tracking.restarts.remove(id);
+            }
         }
         {
             let mut delivery = self.delivery.lock().unwrap();
@@ -485,6 +543,7 @@ impl Reports {
 fn read_states(
     core: &AppCore,
     previous: &HashMap<String, Tracked>,
+    restarts: &HashMap<String, Restart>,
     now: Instant,
 ) -> crate::error::Result<Vec<(Mission, Tracked)>> {
     let statuses = crate::ops::session::session_status_snapshot(core)?;
@@ -519,7 +578,15 @@ fn read_states(
             previous
                 .get(&mission.id)
                 .and_then(|tracked| tracked.quiet_since)
-                .unwrap_or(now)
+                .unwrap_or_else(|| match restarts.get(&mission.id) {
+                    // Settled before the restart and nobody has worked since: it stays Settled.
+                    Some(Restart::Settled(offset))
+                        if !super::interrupt::turn_since(core, &mission, *offset) =>
+                    {
+                        now.checked_sub(SETTLE_WINDOW).unwrap_or(now)
+                    }
+                    _ => now,
+                })
         });
         let phase = derive(
             &input,
@@ -590,6 +657,8 @@ impl ReportSource for LineSource<'_> {
     }
 }
 
+const INTERRUPTED: &str = "was interrupted by a Runner restart";
+
 /// The one-line pointer a report types into the chat. It carries no mission
 /// content beyond the title.
 pub(crate) fn line(mission: &Mission, phase: MissionPhase, kind: ReportKind) -> Option<String> {
@@ -597,14 +666,19 @@ pub(crate) fn line(mission: &Mission, phase: MissionPhase, kind: ReportKind) -> 
         (ReportKind::Crashed, _) => "failed".to_owned(),
         (ReportKind::State, MissionPhase::NeedsYou) => "needs you".to_owned(),
         (ReportKind::State, MissionPhase::Failed) => "failed".to_owned(),
+        (ReportKind::State, MissionPhase::Interrupted) => INTERRUPTED.to_owned(),
         (ReportKind::State, MissionPhase::Settled) => "settled".to_owned(),
-        (ReportKind::State, MissionPhase::Working | MissionPhase::Ended) => return None,
+        (
+            ReportKind::State,
+            MissionPhase::Working | MissionPhase::Ended | MissionPhase::Unknown,
+        ) => return None,
         (ReportKind::Linked, phase) => format!(
             "is now linked to this chat; it {}",
             match phase {
                 MissionPhase::NeedsYou => "needs you",
                 MissionPhase::Failed => "failed",
-                MissionPhase::Working => "is working",
+                MissionPhase::Interrupted => INTERRUPTED,
+                MissionPhase::Working | MissionPhase::Unknown => "is working",
                 MissionPhase::Settled => "settled",
                 MissionPhase::Ended => "ended",
             }
@@ -665,8 +739,35 @@ mod tests {
         };
         let crashed = member(Lifecycle::Error);
         let stopped = member(Lifecycle::Stopped);
+        let interrupted = Member {
+            interrupted: true,
+            ..idle
+        };
         let settled = Some(SETTLE_WINDOW);
         let cases = [
+            (running(vec![waiting, interrupted]), settled, NeedsYou),
+            (running(vec![failed, interrupted]), settled, Failed),
+            (running(vec![interrupted, working]), settled, Interrupted),
+            (running(vec![interrupted, idle]), settled, Interrupted),
+            (
+                running(vec![
+                    Member {
+                        lifecycle: Lifecycle::Stopped,
+                        ..interrupted
+                    },
+                    idle,
+                ]),
+                settled,
+                Settled,
+            ),
+            (
+                PhaseInput {
+                    running: false,
+                    ..running(vec![interrupted])
+                },
+                settled,
+                Ended,
+            ),
             (running(vec![waiting, crashed, working]), settled, NeedsYou),
             (
                 PhaseInput {
@@ -714,6 +815,10 @@ mod tests {
         assert!(quiet(&running(vec![idle])));
         assert!(!quiet(&running(vec![working])));
         assert!(!quiet(&running(vec![stopped])));
+        assert!(
+            !quiet(&running(vec![interrupted, idle])),
+            "an interrupted mission cannot settle"
+        );
     }
 
     #[test]
@@ -772,6 +877,15 @@ mod tests {
         assert!(line(&mission, MissionPhase::Ended, ReportKind::Crashed)
             .unwrap()
             .contains("\" failed. Read it"));
+        assert_eq!(
+            line(&mission, MissionPhase::Interrupted, ReportKind::State).unwrap(),
+            "[runner] Mission 01M6DD9 \"1025 — Remote chat switch\" was interrupted by a Runner restart. Read it with runner mission show 01M6DD9."
+        );
+        assert!(
+            line(&mission, MissionPhase::Interrupted, ReportKind::Linked)
+                .unwrap()
+                .contains("linked to this chat; it was interrupted by a Runner restart. Read it")
+        );
         assert_eq!(
             line(&mission, MissionPhase::Working, ReportKind::Linked).unwrap(),
             "[runner] Mission 01M6DD9 \"1025 — Remote chat switch\" is now linked to this chat; it is working. Read it with runner mission show 01M6DD9."
@@ -915,6 +1029,545 @@ mod tests {
         fn pending(&self, chat: &str) -> Vec<(String, ReportKind)> {
             self.core.reports.pending(chat)
         }
+
+        fn log(&self, mission: &Mission) -> runner_core::EventLog {
+            runner_core::EventLog::open(&runner_core::event_log::mission_dir(
+                &self.core.app_data_dir,
+                Some(&self.crew),
+                &mission.id,
+            ))
+            .unwrap()
+        }
+
+        /// The member reports a turn starting or ending, as its forwarder would.
+        fn status(&self, mission: &Mission, state: &str, source: &str) {
+            self.status_with(
+                mission,
+                serde_json::json!({"state": state, "source": source}),
+            );
+        }
+
+        /// The member waits for an approval, which its forwarder publishes as busy.
+        fn waits_for_approval(&self, mission: &Mission) {
+            self.status_with(
+                mission,
+                serde_json::json!({"state": "busy", "source": "hook", "status": {
+                    "lifecycle": "running",
+                    "observation": {"activity": "idle", "source": "hook", "outcome": null,
+                        "interactions": [{"id": "w", "reason": "approval", "owners": [], "since": 0}]},
+                    "exit_code": null, "error_since": null, "unread_since": null,
+                }}),
+            );
+        }
+
+        fn status_with(&self, mission: &Mission, payload: serde_json::Value) {
+            self.status_from(mission, "worker", payload);
+        }
+
+        fn status_from(&self, mission: &Mission, handle: &str, payload: serde_json::Value) {
+            self.log(mission)
+                .append(EventDraft::signal(
+                    Some(&self.crew),
+                    &mission.id,
+                    handle,
+                    SignalType::new("session_status"),
+                    payload,
+                ))
+                .unwrap();
+            if let Some(router) = self.core.routers.get(&mission.id) {
+                let (entries, _) = self.log(mission).read_from_lossy(0).unwrap();
+                let last = entries.last().unwrap();
+                router.handle_event(&last.event, last.next_offset);
+            }
+        }
+
+        fn marks(&self, mission: &Mission) -> usize {
+            let (entries, _) = self.log(mission).read_from_lossy(0).unwrap();
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry.event.signal_type.as_ref().map(SignalType::as_str)
+                        == Some(crate::router::SESSION_INTERRUPTED)
+                })
+                .count()
+        }
+
+        /// runnerd stops: every running member is stamped for launch resume and killed.
+        fn quit(&self) {
+            self.core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET status = 'stopped', resume_on_launch = 1,
+                            stopped_at = ?1
+                      WHERE mission_id IS NOT NULL AND status = 'running'",
+                    [chrono::Utc::now().to_rfc3339()],
+                )
+                .unwrap();
+        }
+
+        /// The next runnerd boots: it marks interrupted members, mounts the routers and
+        /// starts reporting, before launch resume brings the members back.
+        fn boot(&self, missions: &[&Mission]) {
+            *self.core.reports.tracking.lock().unwrap() = Tracking::default();
+            *self.core.reports.delivery.lock().unwrap() = Delivery::default();
+            let restarts = crate::ops::mission::interrupt::mark_on_boot(&self.core).unwrap();
+            self.core.reports.restarted(restarts);
+            for mission in missions {
+                self.core.routers.unregister(&mission.id);
+                self.core.buses.unmount(&mission.id);
+                crate::daemon::block_on(crate::ops::mission::ensure_mission_router_mounted(
+                    &self.core,
+                    &mission.id,
+                ))
+                .unwrap();
+            }
+        }
+
+        /// A fixture whose crew has a second slot, `helper`.
+        fn two_members() -> Self {
+            let f = Self::new();
+            crate::test_support::insert_test_slot(
+                &f.core.db.get().unwrap(),
+                "slot-2",
+                &f.crew,
+                "role",
+                "helper",
+                1,
+                false,
+            );
+            f
+        }
+
+        /// The mission's `helper` member, running and idle.
+        fn helper(&self, mission: &Mission) -> String {
+            let helper = format!("{}-helper", mission.id);
+            let mut row = test_session_row(&helper, SessionStatus::Running);
+            row.agent_runtime = Some("codex".into());
+            row.mission_id = Some(mission.id.clone());
+            row.role_id = Some("role".into());
+            row.slot_id = Some("slot-2".into());
+            insert_session_row(&self.core.db.get().unwrap(), &row).unwrap();
+            self.idle(&helper);
+            helper
+        }
+
+        fn idle(&self, session: &str) {
+            self.core
+                .sessions
+                .test_running_activity(session, SessionActivityState::Idle);
+        }
+
+        /// Launch resume brings one member back; it is Resuming until its agent is up.
+        fn resume_one(&self, session: &str) {
+            self.core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET status = 'running', resume_on_launch = 0,
+                            stopped_at = NULL
+                      WHERE id = ?1",
+                    [session],
+                )
+                .unwrap();
+            self.core.sessions.test_resuming(session);
+        }
+
+        fn resume(&self, missions: &[&Mission]) {
+            self.core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET status = 'running', resume_on_launch = 0,
+                            stopped_at = NULL
+                      WHERE mission_id IS NOT NULL",
+                    [],
+                )
+                .unwrap();
+            for mission in missions {
+                self.activity(mission, SessionActivityState::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn a_restart_mid_turn_reports_interrupted_once_and_never_settles() {
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        f.status(&mission, "busy", "hook");
+        f.quit();
+        f.boot(&[&mission]);
+        assert_eq!(f.marks(&mission), 1);
+        f.at(0);
+        assert_eq!(f.core.reports.phase(&mission.id), Some(MissionPhase::Ended));
+        assert!(f.pending("chat").is_empty());
+
+        f.resume(&[&mission]);
+        f.at(1);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted)
+        );
+        assert_eq!(f.pending("chat"), [(mission.id.clone(), ReportKind::State)]);
+        f.at(40);
+        f.at(120);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted)
+        );
+        assert_eq!(f.pending("chat").len(), 1, "no Settled report");
+        let summary = crate::daemon::block_on(crate::ops::mission::mission_list_summary_impl(
+            &f.core, None,
+        ))
+        .unwrap();
+        assert!(summary[0].session_statuses[0].1.interrupted_since.is_some());
+        let shown = crate::ops::mission::feed::mission_status(&f.core, &mission.id).unwrap();
+        assert_eq!(shown.phase, Some(MissionPhase::Interrupted));
+        assert!(shown.interrupted_at.is_some());
+        assert_eq!(
+            shown.latest_session_status_by_handle["worker"].state,
+            "interrupted"
+        );
+
+        f.quit();
+        f.boot(&[&mission]);
+        assert_eq!(f.marks(&mission), 1, "a second restart adds no second mark");
+        f.at(200);
+        f.resume(&[&mission]);
+        f.at(201);
+        f.at(300);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted)
+        );
+        assert!(f.pending("chat").is_empty(), "nor a second report");
+
+        f.status(&mission, "busy", "input-submit");
+        f.at(301);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Working)
+        );
+        f.status(&mission, "idle", "hook");
+        f.at(302);
+        f.at(340);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        assert_eq!(f.pending("chat"), [(mission.id.clone(), ReportKind::State)]);
+    }
+
+    #[test]
+    fn another_members_turn_during_a_staggered_resume_does_not_report_an_old_interruption_again() {
+        let f = Fixture::two_members();
+        let mission = f.mission(Some("chat"), false);
+        let helper = f.helper(&mission);
+        f.status(&mission, "busy", "hook");
+        f.status_from(
+            &mission,
+            "helper",
+            serde_json::json!({"state": "idle", "source": "hook"}),
+        );
+        f.quit();
+        f.boot(&[&mission]);
+        f.resume(&[&mission]);
+        f.at(0);
+        assert_eq!(f.pending("chat").len(), 1);
+
+        f.quit();
+        f.boot(&[&mission]);
+        assert_eq!(f.marks(&mission), 1);
+        f.at(100);
+        f.resume_one(&helper);
+        f.idle(&helper);
+        f.status_from(
+            &mission,
+            "helper",
+            serde_json::json!({"state": "busy", "source": "input-submit"}),
+        );
+        f.core
+            .sessions
+            .test_running_activity(&helper, SessionActivityState::Busy);
+        f.at(101);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Working)
+        );
+        let worker = format!("{}-member", mission.id);
+        f.resume_one(&worker);
+        f.idle(&worker);
+        f.at(102);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted)
+        );
+        assert!(
+            f.pending("chat").is_empty(),
+            "the worker never ran a turn, so its interruption is old news"
+        );
+    }
+
+    #[test]
+    fn a_settled_mission_stays_settled_while_its_members_resume_one_at_a_time() {
+        let f = Fixture::two_members();
+        let mission = f.mission(Some("chat"), false);
+        let helper = f.helper(&mission);
+        let worker = format!("{}-member", mission.id);
+        f.status(&mission, "idle", "hook");
+        f.status_from(
+            &mission,
+            "helper",
+            serde_json::json!({"state": "idle", "source": "hook"}),
+        );
+        f.core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status = 'stopped', resume_on_launch = 1, stopped_at = ?1
+                  WHERE mission_id = ?2",
+                [
+                    (chrono::Utc::now() + chrono::Duration::seconds(60)).to_rfc3339(),
+                    mission.id.clone(),
+                ],
+            )
+            .unwrap();
+        f.boot(&[&mission]);
+        f.at(0);
+        f.resume_one(&worker);
+        f.idle(&worker);
+        f.at(1);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        f.resume_one(&helper);
+        f.at(2);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Working),
+            "a member still resuming keeps it Working"
+        );
+        f.idle(&helper);
+        f.at(3);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        f.at(60);
+        f.at(120);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        assert!(f.pending("chat").is_empty(), "nobody ran a turn");
+    }
+
+    #[test]
+    fn a_baseline_that_already_sees_the_interruption_still_reports_it() {
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        f.status(&mission, "busy", "hook");
+        f.quit();
+        f.boot(&[&mission]);
+        f.resume(&[&mission]);
+        f.at(0);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted)
+        );
+        assert_eq!(f.pending("chat"), [(mission.id.clone(), ReportKind::State)]);
+    }
+
+    #[test]
+    fn a_restart_of_an_idle_or_settled_mission_marks_and_reports_nothing() {
+        let f = Fixture::new();
+        let settled = f.mission(Some("chat"), false);
+        let idle = f.mission(Some("other"), false);
+        f.status(&settled, "idle", "hook");
+        f.status(&idle, "busy", "hook");
+        f.status(&idle, "idle", "hook");
+        let stop = |mission: &Mission, after: i64| {
+            f.core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET status = 'stopped', resume_on_launch = 1, stopped_at = ?1
+                      WHERE mission_id = ?2",
+                    [
+                        (chrono::Utc::now() + chrono::Duration::seconds(after)).to_rfc3339(),
+                        mission.id.clone(),
+                    ],
+                )
+                .unwrap();
+        };
+        stop(&settled, 60);
+        stop(&idle, 0);
+        f.boot(&[&settled, &idle]);
+        assert_eq!(f.marks(&settled) + f.marks(&idle), 0);
+        f.at(0);
+        f.resume(&[&settled, &idle]);
+        f.at(1);
+        assert_eq!(
+            f.core.reports.phase(&settled.id),
+            Some(MissionPhase::Settled),
+            "a mission settled before the restart is Settled again once its members resume"
+        );
+        assert_eq!(f.core.reports.phase(&idle.id), Some(MissionPhase::Working));
+        f.at(40);
+        for mission in [&settled, &idle] {
+            assert_eq!(
+                f.core.reports.phase(&mission.id),
+                Some(MissionPhase::Settled)
+            );
+        }
+        assert!(
+            f.pending("chat").is_empty(),
+            "a mission settled before the restart stays quiet"
+        );
+        assert_eq!(
+            f.pending("other").len(),
+            1,
+            "one that had not settled yet settles as before"
+        );
+    }
+
+    #[test]
+    fn a_member_waiting_for_input_is_not_interrupted_and_its_wait_is_no_new_turn() {
+        let f = Fixture::new();
+        let waiting = f.mission(Some("chat"), false);
+        f.waits_for_approval(&waiting);
+        f.quit();
+        f.boot(&[&waiting]);
+        assert_eq!(f.marks(&waiting), 0, "waiting on input is not a lost turn");
+
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        f.status(&mission, "busy", "hook");
+        f.quit();
+        f.boot(&[&mission]);
+        f.resume(&[&mission]);
+        f.waits_for_approval(&mission);
+        let (entries, _) = f.log(&mission).read_from_lossy(0).unwrap();
+        assert!(
+            crate::router::Interruptions::from_entries(&entries)
+                .get("worker")
+                .is_some(),
+            "a wait after resume does not clear the mark"
+        );
+    }
+
+    #[test]
+    fn a_new_turn_after_the_restart_of_a_settled_mission_still_reports_settled() {
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        f.status(&mission, "idle", "hook");
+        f.core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status = 'stopped', resume_on_launch = 1, stopped_at = ?1
+                  WHERE mission_id = ?2",
+                [
+                    (chrono::Utc::now() + chrono::Duration::seconds(60)).to_rfc3339(),
+                    mission.id.clone(),
+                ],
+            )
+            .unwrap();
+        f.boot(&[&mission]);
+        f.at(0);
+        f.resume(&[&mission]);
+        f.at(1);
+        f.status(&mission, "busy", "input-submit");
+        f.activity(&mission, SessionActivityState::Busy);
+        f.at(5);
+        f.status(&mission, "idle", "hook");
+        f.activity(&mission, SessionActivityState::Idle);
+        f.at(6);
+        f.at(40);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        assert_eq!(
+            f.pending("chat"),
+            [(mission.id.clone(), ReportKind::State)],
+            "the new turn's completion is news"
+        );
+    }
+
+    #[test]
+    fn stopping_the_mission_clears_its_marks_but_a_failed_stop_keeps_them() {
+        let interrupted_fixture = || {
+            let f = Fixture::new();
+            let mission = f.mission(Some("chat"), false);
+            f.status(&mission, "busy", "hook");
+            f.quit();
+            f.boot(&[&mission]);
+            f.resume(&[&mission]);
+            (f, mission)
+        };
+        let interrupted = |f: &Fixture, mission: &Mission| {
+            let (entries, _) = f.log(mission).read_from_lossy(0).unwrap();
+            crate::router::Interruptions::from_entries(&entries)
+                .get("worker")
+                .is_some()
+        };
+
+        let (f, mission) = interrupted_fixture();
+        let member = format!("{}-member", mission.id);
+        f.core.sessions.test_attach_live(&member, &mission.id);
+        assert!(crate::ops::session::session_kill(&f.core, &member).is_err());
+        assert!(
+            crate::daemon::block_on(crate::ops::mission::mission_stop_impl(
+                &f.core,
+                mission.id.clone()
+            ))
+            .is_err()
+        );
+        assert!(
+            interrupted(&f, &mission),
+            "a member a stop failed to end keeps its mark"
+        );
+
+        let (f, mission) = interrupted_fixture();
+        crate::daemon::block_on(crate::ops::mission::mission_stop_impl(
+            &f.core,
+            mission.id.clone(),
+        ))
+        .unwrap();
+        assert!(
+            !interrupted(&f, &mission),
+            "Stop all clears it, so Resume all does not bring it back"
+        );
+    }
+
+    #[test]
+    fn stopping_an_interrupted_member_clears_its_mark() {
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        f.status(&mission, "busy", "hook");
+        f.quit();
+        f.boot(&[&mission]);
+        f.resume(&[&mission]);
+        f.status(&mission, "busy", "spawn");
+        f.at(0);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Interrupted),
+            "starting a process is not a turn"
+        );
+        crate::ops::session::session_kill(&f.core, &format!("{}-member", mission.id)).unwrap();
+        let (entries, _) = f.log(&mission).read_from_lossy(0).unwrap();
+        assert!(crate::router::Interruptions::from_entries(&entries)
+            .get("worker")
+            .is_none());
     }
 
     #[test]

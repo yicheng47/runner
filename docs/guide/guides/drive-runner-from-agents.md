@@ -42,7 +42,7 @@ The follower displays new events until the mission ends or all its sessions exit
 
 ## Start from a Runner chat
 
-Inside a Runner chat, `runner mission start` links the new mission to that chat. The mission's row sits under the chat in the sidebar, and Runner types one short `[runner]` line into the chat when the mission needs you, fails or settles, waiting until the chat is idle and its input is empty. Add `--no-report` to link without those lines. A mission started from the app, from a terminal or by an agent outside Runner starts unlinked.
+Inside a Runner chat, `runner mission start` links the new mission to that chat. The mission's row sits under the chat in the sidebar, and Runner types one short `[runner]` line into the chat when the mission needs you, fails, is interrupted by a Runner restart or settles, waiting until the chat is idle and its input is empty. After a restart, the chat hears that the mission was interrupted, not that it settled, while a member's lost turn has not been run again. Add `--no-report` to link without those lines. A mission started from the app, from a terminal or by an agent outside Runner starts unlinked.
 
 The agent that started the mission gives you its ID and says whether Runner will report back to this chat, which it does not for a mission started with `--no-report`, linked to another chat or started unlinked; then it ends its turn instead of watching the feed. When a `[runner]` line arrives, the agent reads the mission with `runner mission show` and `runner mission feed`, tells you what happened, and passes a pending question to you. It answers a question only with your decision.
 

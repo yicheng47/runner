@@ -399,7 +399,16 @@ fn render_mission_show(value: &Value) -> Vec<String> {
     let state = value
         .get("phase")
         .and_then(Value::as_str)
-        .map_or(Value::Null, |phase| Value::String(phase.replace('_', " ")));
+        .map_or(Value::Null, |phase| {
+            let restarted = value
+                .get("interrupted_at")
+                .and_then(Value::as_str)
+                .filter(|_| phase == "interrupted")
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .map(|at| format!(" (Runner restarted at {})", restart_time(at)))
+                .unwrap_or_default();
+            Value::String(format!("{}{restarted}", phase.replace('_', " ")))
+        });
     let mut lines = key_values(&[
         ("ID", mission.get("id")),
         ("TITLE", mission.get("title")),
@@ -486,6 +495,13 @@ fn render_mission_show(value: &Value) -> Vec<String> {
         }
     }
     lines
+}
+
+/// `7:57 PM`, in the viewer's time zone.
+fn restart_time(at: chrono::DateTime<chrono::FixedOffset>) -> String {
+    at.with_timezone(&chrono::Local)
+        .format("%-I:%M %p")
+        .to_string()
 }
 
 fn displayed_mission_status(
@@ -1113,6 +1129,28 @@ mod tests {
                 "RECENT WARNINGS",
                 "10:21:31  router  retry later",
             ]
+        );
+
+        let interrupted = json!({
+            "mission": {"id": "mission-id", "title": "CLI", "status": "running"},
+            "phase": "interrupted",
+            "interrupted_at": "2026-11-05T07:50:17.123456Z",
+            "live_session_count": 1,
+            "sessions": [{"id": "session-id", "handle": "coder", "role_handle": "implementer", "runtime": "codex", "status": "running"}],
+            "latest_session_status_by_handle": {"coder": {"state": "interrupted"}}
+        });
+        let lines = render_default(View::MissionShow, &interrupted);
+        assert_eq!(
+            lines[3],
+            format!(
+                "STATE       interrupted (Runner restarted at {})",
+                restart_time("2026-11-05T07:50:17.123456Z".parse().unwrap())
+            )
+        );
+        assert!(restart_time("2026-11-05T19:57:00+00:00".parse().unwrap()).ends_with('M'));
+        assert_eq!(
+            lines[12],
+            "coder   implementer  codex    running  interrupted  session-id"
         );
     }
 

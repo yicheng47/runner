@@ -958,9 +958,17 @@ impl MissionWorkspace {
             .as_ref()
             .map(|kind| kind.as_str())
             .unwrap_or("?");
-        let warning = signal == "mission_warning";
+        let interrupted = signal == "session_interrupted";
+        let warning = signal == "mission_warning" || interrupted;
+        let accent = if interrupted {
+            theme::warning()
+        } else {
+            theme::danger()
+        };
         let restart_summary = slot_restart_signal_summary(&event);
-        let payload = if signal == "ask_lead" {
+        let payload = if interrupted {
+            mission_signal_body(&event)
+        } else if signal == "ask_lead" {
             event
                 .payload
                 .get("question")
@@ -978,7 +986,11 @@ impl MissionWorkspace {
             serde_json::to_string_pretty(&event.payload)
                 .unwrap_or_else(|_| event.payload.to_string())
         };
-        let (author_seed, author_name) = mission_signal_author(&event);
+        let (author_seed, author_name) = if interrupted {
+            ("system", "system".to_owned())
+        } else {
+            mission_signal_author(&event)
+        };
         div()
             .id(SharedString::from(format!("mission-signal-{event_id}")))
             .px_4()
@@ -1012,7 +1024,7 @@ impl MissionWorkspace {
                                 div()
                                     .min_w(px(0.))
                                     .truncate()
-                                    .text_color(if warning {
+                                    .text_color(if warning && !interrupted {
                                         theme::danger()
                                     } else {
                                         theme::faint()
@@ -1051,13 +1063,17 @@ impl MissionWorkspace {
                             .mt_2()
                             .rounded_md()
                             .border_1()
-                            .border_color(if warning {
-                                theme::with_alpha(theme::danger(), 0.3)
+                            .border_color(if interrupted {
+                                theme::with_alpha(accent, 0.6)
+                            } else if warning {
+                                theme::with_alpha(accent, 0.3)
                             } else {
                                 theme::border()
                             })
-                            .bg(if warning {
-                                theme::with_alpha(theme::danger(), 0.05)
+                            .bg(if interrupted {
+                                theme::with_alpha(accent, 0.1)
+                            } else if warning {
+                                theme::with_alpha(accent, 0.05)
                             } else {
                                 theme::panel()
                             })
@@ -1067,12 +1083,17 @@ impl MissionWorkspace {
                             })
                             .text_size(theme::text_ui())
                             .line_height(rems(17. / 16.))
-                            .text_color(if warning {
-                                theme::danger()
-                            } else {
-                                theme::muted()
+                            .text_color(if warning { accent } else { theme::muted() })
+                            .when(interrupted, |body| {
+                                body.flex().items_center().gap_3().child(
+                                    svg()
+                                        .flex_none()
+                                        .path("circle-pause.svg")
+                                        .size(rems(14. / 16.))
+                                        .text_color(accent),
+                                )
                             })
-                            .child(payload),
+                            .child(div().min_w(px(0.)).flex_1().child(payload)),
                     ),
             )
             .into_any_element()

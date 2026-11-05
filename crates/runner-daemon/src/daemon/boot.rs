@@ -103,6 +103,11 @@ pub fn boot(
         }
         Err(error) => log::warn!("mission roster conversion database unavailable: {error}"),
     }
+    // Before the routers read the logs and the reports baseline (#1187).
+    match ops::mission::interrupt::mark_on_boot(&core) {
+        Ok(restarts) => core.reports.restarted(restarts),
+        Err(error) => log::warn!("marking interrupted mission members failed: {error}"),
+    }
     super::block_on(ops::mission::mount_all_running_mission_routers(&core));
     session::pty_runtime::cleanup_stale_running_rows_on_startup(&pool)
         .context("clean up stale PTY sessions")?;

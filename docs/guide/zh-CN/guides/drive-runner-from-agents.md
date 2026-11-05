@@ -42,7 +42,7 @@ runner mission feed $mission --follow --json
 
 ## 从 Runner 聊天启动
 
-在 Runner 聊天中，`runner mission start` 会把新任务关联到该聊天。任务行显示在侧边栏中该聊天的下方；任务需要你处理、失败或稳定下来时，Runner 会等聊天空闲且输入框为空，再向聊天输入一行简短的 `[runner]` 汇报。加上 `--no-report` 可只关联、不汇报。从应用、终端或 Runner 外部智能体启动的任务不会关联。
+在 Runner 聊天中，`runner mission start` 会把新任务关联到该聊天。任务行显示在侧边栏中该聊天的下方；任务需要你处理、失败、因 Runner 重启而中断或稳定下来时，Runner 会等聊天空闲且输入框为空，再向聊天输入一行简短的 `[runner]` 汇报。重启后，只要某个成员丢失的回合尚未重新运行，聊天收到的就是任务已中断，而不是已稳定。加上 `--no-report` 可只关联、不汇报。从应用、终端或 Runner 外部智能体启动的任务不会关联。
 
 启动任务的智能体会告诉你任务 ID，并说明 Runner 是否会向此聊天汇报：用 `--no-report` 启动、关联到其他聊天或未关联的任务不会汇报到这里；随后它结束当前轮次，而不是监控消息流。收到 `[runner]` 行时，智能体用 `runner mission show` 和 `runner mission feed` 查看任务，告诉你发生了什么，并把待回答的问题转给你。它只按你的决定回答问题。
 

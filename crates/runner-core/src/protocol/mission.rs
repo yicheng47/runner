@@ -112,17 +112,66 @@ pub enum MissionPhase {
     NeedsYou,
     /// A member crashed or its turn failed; others may still run.
     Failed,
+    /// A member was mid-turn when runnerd stopped and has not run a turn since (#1187).
+    Interrupted,
     Working,
     /// Every member has been idle for the settle window with nothing pending.
     Settled,
     /// Stopped, archived, or every member exited.
     Ended,
+    /// A state from a newer daemon; read as Working.
+    #[serde(other)]
+    Unknown,
 }
 
 impl MissionPhase {
     /// The phases a linked chat hears about.
     pub fn reported(self) -> bool {
-        matches!(self, Self::NeedsYou | Self::Failed | Self::Settled)
+        matches!(
+            self,
+            Self::NeedsYou | Self::Failed | Self::Interrupted | Self::Settled
+        )
+    }
+}
+
+/// `MissionSummary.phase` on the wire. Builds before #1187 fail to decode a
+/// phase they do not know, so `phase` carries Interrupted as `working` and
+/// `interrupted` says what it is.
+mod summary_phase {
+    use super::MissionPhase;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        phase: Option<MissionPhase>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        interrupted: bool,
+    }
+
+    pub fn serialize<S: Serializer>(
+        phase: &Option<MissionPhase>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        Wire {
+            phase: phase.map(|phase| match phase {
+                MissionPhase::Interrupted | MissionPhase::Unknown => MissionPhase::Working,
+                known => known,
+            }),
+            interrupted: *phase == Some(MissionPhase::Interrupted),
+        }
+        .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<MissionPhase>, D::Error> {
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(if wire.interrupted {
+            Some(MissionPhase::Interrupted)
+        } else {
+            wire.phase
+        })
     }
 }
 
@@ -158,7 +207,7 @@ pub struct MissionSummary {
     /// sessions and keeps the sidebar attention slot clear.
     pub activity: Option<MissionActivityState>,
     /// The daemon's state for the mission; absent from older daemons.
-    #[serde(default)]
+    #[serde(flatten, with = "summary_phase")]
     pub phase: Option<MissionPhase>,
 }
 
@@ -252,6 +301,10 @@ pub struct MissionStatusSnapshot {
     pub mission: Mission,
     #[serde(default)]
     pub phase: Option<MissionPhase>,
+    /// When runnerd stopped with an interrupted member mid-turn, the earliest
+    /// such member's (#1187).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_at: Option<Timestamp>,
     #[serde(default)]
     pub started_by: Option<MissionStarter>,
     pub crew: Option<Crew>,
