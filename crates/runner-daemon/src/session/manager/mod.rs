@@ -355,6 +355,8 @@ pub struct SessionManager {
     resize_generation: AtomicU64,
     terminal_palette: Mutex<runner_terminal::palette::TerminalPalette>,
     terminal_control: Mutex<terminal::ControlState>,
+    #[cfg(test)]
+    wake_baseline_read: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -478,6 +480,8 @@ impl SessionManager {
             resize_generation: AtomicU64::new(0),
             terminal_palette: Mutex::new(runner_terminal::palette::RUNNER),
             terminal_control: Mutex::default(),
+            #[cfg(test)]
+            wake_baseline_read: Mutex::default(),
         })
     }
 
