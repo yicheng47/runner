@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gpui::{div, prelude::*, rems, svg, App, Div, ElementId, MouseButton};
 
+use crate::app_settings::AppSettings;
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
@@ -44,8 +45,14 @@ impl PanelView {
         crate::i18n::text(self.label)
     }
 
-    pub(crate) fn on(&self) -> bool {
-        true
+    /// Whether Settings → Side panel turns the view on; a mission's
+    /// Sessions always is.
+    pub(crate) fn on(&self, settings: &AppSettings) -> bool {
+        match self.id {
+            PanelViewId::Sessions => true,
+            PanelViewId::Info => settings.info_view,
+            PanelViewId::Files => settings.files_view,
+        }
     }
 }
 
@@ -77,16 +84,23 @@ pub(crate) const VIEWS: [PanelView; 3] = [
     },
 ];
 
-pub(crate) fn views(surface: PanelSurface) -> impl Iterator<Item = &'static PanelView> {
+pub(crate) fn views(
+    surface: PanelSurface,
+    settings: &AppSettings,
+) -> impl Iterator<Item = &'static PanelView> + '_ {
     VIEWS
         .iter()
-        .filter(move |view| view.on() && view.surfaces.contains(&surface))
+        .filter(move |view| view.on(settings) && view.surfaces.contains(&surface))
 }
 
 /// The view a panel shows: the one chosen when the surface has it, else the
 /// surface's first.
-pub(crate) fn shown_view(surface: PanelSurface, chosen: PanelViewId) -> Option<PanelViewId> {
-    let mut available = views(surface).map(|view| view.id).peekable();
+pub(crate) fn shown_view(
+    surface: PanelSurface,
+    settings: &AppSettings,
+    chosen: PanelViewId,
+) -> Option<PanelViewId> {
+    let mut available = views(surface, settings).map(|view| view.id).peekable();
     let first = available.peek().copied();
     available.find(|id| *id == chosen).or(first)
 }
@@ -176,11 +190,12 @@ pub(crate) fn widened(
 /// `collapse` on the right.
 pub(crate) fn header_views(
     surface: PanelSurface,
+    settings: &AppSettings,
     shown: Option<PanelViewId>,
     select: SelectView,
     collapse: impl IntoElement,
 ) -> Div {
-    let session = views(surface)
+    let session = views(surface, settings)
         .filter(|view| view.group == PanelGroup::Session)
         .map(|view| {
             let select = select.clone();
@@ -190,7 +205,7 @@ pub(crate) fn header_views(
                 .into_any_element()
         })
         .collect::<Vec<_>>();
-    let project = views(surface)
+    let project = views(surface, settings)
         .filter(|view| view.group == PanelGroup::Project)
         .map(|view| {
             let select = select.clone();
@@ -333,7 +348,15 @@ mod tests {
     use super::*;
 
     fn ids(surface: PanelSurface, group: PanelGroup) -> Vec<PanelViewId> {
-        views(surface)
+        ids_with(&AppSettings::default(), surface, group)
+    }
+
+    fn ids_with(
+        settings: &AppSettings,
+        surface: PanelSurface,
+        group: PanelGroup,
+    ) -> Vec<PanelViewId> {
+        views(surface, settings)
             .filter(|view| view.group == group)
             .map(|view| view.id)
             .collect()
@@ -350,7 +373,31 @@ mod tests {
         assert_eq!(ids(Chat, Project), [Files]);
         assert_eq!(ids(Terminal, Session), []);
         assert_eq!(ids(Terminal, Project), [Files]);
-        assert!(VIEWS.iter().all(PanelView::on));
+        assert!(VIEWS.iter().all(|view| view.on(&AppSettings::default())));
+    }
+
+    #[test]
+    fn settings_turn_info_and_files_off_but_never_sessions() {
+        use PanelGroup::*;
+        use PanelSurface::*;
+        use PanelViewId::*;
+        let off = AppSettings {
+            info_view: false,
+            files_view: false,
+            ..AppSettings::default()
+        };
+        assert_eq!(ids_with(&off, Mission, Session), [Sessions]);
+        assert_eq!(ids_with(&off, Mission, Project), []);
+        assert_eq!(views(Chat, &off).count(), 0);
+        assert_eq!(views(Terminal, &off).count(), 0);
+        assert_eq!(shown_view(Chat, &off, Info), None);
+        assert_eq!(shown_view(Mission, &off, Files), Some(Sessions));
+        let files_only = AppSettings {
+            info_view: false,
+            ..AppSettings::default()
+        };
+        assert_eq!(shown_view(Chat, &files_only, Info), Some(Files));
+        assert_eq!(ids_with(&files_only, Mission, Session), [Sessions]);
     }
 
     #[test]
@@ -418,10 +465,11 @@ mod tests {
     fn a_panel_shows_the_chosen_view_or_its_surface_first() {
         use PanelSurface::*;
         use PanelViewId::*;
-        assert_eq!(shown_view(Mission, Sessions), Some(Sessions));
-        assert_eq!(shown_view(Mission, Files), Some(Files));
-        assert_eq!(shown_view(Chat, Sessions), Some(Info));
-        assert_eq!(shown_view(Chat, Files), Some(Files));
-        assert_eq!(shown_view(Terminal, Info), Some(Files));
+        let settings = AppSettings::default();
+        assert_eq!(shown_view(Mission, &settings, Sessions), Some(Sessions));
+        assert_eq!(shown_view(Mission, &settings, Files), Some(Files));
+        assert_eq!(shown_view(Chat, &settings, Sessions), Some(Info));
+        assert_eq!(shown_view(Chat, &settings, Files), Some(Files));
+        assert_eq!(shown_view(Terminal, &settings, Info), Some(Files));
     }
 }

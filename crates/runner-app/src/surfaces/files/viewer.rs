@@ -24,7 +24,7 @@ use super::markdown::{self, LinkTarget, MarkdownView, Page};
 use super::tabs::{FileTab, FileTabs};
 use super::tree::Letter;
 use super::view::{absolute, letter_color, reveal, reveal_label, FilesView};
-use crate::app_settings::FileLinkEditor;
+use crate::app_settings::{FileLinkEditor, MarkdownOpenAs};
 #[cfg(not(test))]
 use crate::file_links::{self, FileLinkTarget};
 use crate::surfaces::side_panel::Widened;
@@ -252,12 +252,38 @@ fn strip_button(id: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
 }
 
 impl FilesView {
+    /// Redraws the tree and every open file when Settings → Side panel →
+    /// Files changes what they draw with.
+    pub(super) fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let look = super::Look::current(cx);
+        if look == self.look {
+            return;
+        }
+        self.look = look;
+        if self.look.as_ref().is_some_and(|look| !look.single_click) {
+            // No previews while single clicks keep their tabs: the one
+            // open now stays, and turning previews back on leaves it kept.
+            self.viewer.tabs.keep_all();
+        }
+        for file in self.viewer.files.values() {
+            if let Content::Text(view) | Content::Deleted(Some(view)) = &file.content {
+                view.update(cx, |view, cx| view.settings_changed(cx));
+            }
+            if let Some(rendered) = &file.rendered {
+                rendered.update(cx, |_, cx| cx.notify());
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn has_tabs(&self) -> bool {
         !self.viewer.tabs.is_empty()
     }
 
-    /// Opens `path` in the preview tab, or a kept tab with `keep`.
+    /// Opens `path` in the preview tab, or a kept tab with `keep` or when
+    /// Settings → Side panel → Files turns single-click previews off.
     pub(crate) fn open_file(&mut self, path: String, keep: bool, cx: &mut Context<Self>) {
+        let keep = keep || super::settings(cx).is_some_and(|settings| !settings.files_single_click);
         let opened = self.viewer.tabs.open(&path, keep);
         self.after_open(path, opened, cx);
     }
@@ -274,13 +300,15 @@ impl FilesView {
             self.viewer.files.remove(&replaced);
         }
         if opened.new {
+            let source = super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
             self.viewer.files.insert(
                 path.clone(),
                 OpenFile {
                     content: Content::Loading,
                     read: 0,
                     rendered: None,
-                    source: false,
+                    source,
                 },
             );
             self.read_file(path.clone(), cx);

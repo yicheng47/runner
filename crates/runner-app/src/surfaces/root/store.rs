@@ -50,6 +50,7 @@ impl NativeRoot {
                 .quit_behavior
                 .update(cx, |select, cx| select.set_value(value, cx));
             self.sync_terminal_scrollback_select(cx);
+            self.sync_side_panel_selects(cx);
             #[cfg(target_os = "macos")]
             {
                 let value = self.settings(cx).option_as_meta.key();

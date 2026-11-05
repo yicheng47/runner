@@ -286,8 +286,14 @@ fn side_panel_surface(terminal_tab: bool) -> PanelSurface {
     }
 }
 
-fn side_panel_open(setting_open: bool, surface: PanelSurface) -> bool {
-    setting_open && side_panel::views(surface).next().is_some()
+/// Whether `surface`'s panel can show at all: Settings → Side panel shows
+/// the panel and turns on at least one of its views.
+fn side_panel_available(settings: &AppSettings, surface: PanelSurface) -> bool {
+    settings.show_side_panel && side_panel::views(surface, settings).next().is_some()
+}
+
+fn side_panel_open(settings: &AppSettings, surface: PanelSurface) -> bool {
+    settings.chat_panel_open && side_panel_available(settings, surface)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -580,11 +586,13 @@ mod tests {
         adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
         header_fork_state, maximized_leaf, pane_body_opacity, pane_close_behavior,
         pane_identity_icon, pane_menu_actions, pane_menu_items, pane_rename_key, prune_maximized,
-        side_panel_open, side_panel_surface, split_allowed, split_decision, split_menu_items,
-        split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip, toggle_maximized,
-        HeaderForkState, PaneCloseBehavior, PaneRenameKey, PanelSurface, SplitDecision,
-        MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+        side_panel_available, side_panel_open, side_panel_surface, split_allowed, split_decision,
+        split_menu_items, split_tab_archiving, starting_overlay_label, terminal_drawer_tooltip,
+        toggle_maximized, HeaderForkState, PaneCloseBehavior, PaneRenameKey, PanelSurface,
+        SplitDecision, MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT,
+        UNFOCUSED_PANE_OPACITY,
     };
+    use crate::app_settings::AppSettings;
     use crate::keymap;
     use gpui::{point, px, size, AppContext, Bounds};
     use runner_app::pane_layout::{DropSide, PaneLayout, SplitOrientation};
@@ -2051,6 +2059,52 @@ mod tests {
     }
 
     #[test]
+    fn settings_remove_the_chat_panel_and_its_toggle() {
+        let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
+        let set = |visual: &mut gpui::VisualTestContext, update: fn(&mut AppSettings)| {
+            host.update(visual, |root, _, cx| {
+                root.update_app_settings(cx, false, |settings| {
+                    update(settings);
+                    true
+                });
+            })
+            .unwrap();
+            visual.run_until_parked();
+            host.read_with(visual, |root, _| root.chat_panel_visibility.target)
+                .unwrap()
+        };
+        assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_some());
+
+        // Show the side panel off: the open panel closes and no toggle
+        // offers it back, collapsed or not.
+        assert_eq!(
+            set(&mut visual, |settings| settings.show_side_panel = false),
+            0.
+        );
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
+        set(&mut visual, |settings| settings.chat_panel_open = false);
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
+        set(&mut visual, |settings| settings.show_side_panel = true);
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+
+        // Every view off: the chat has no panel and no toggle.
+        set(&mut visual, |settings| {
+            settings.info_view = false;
+            settings.files_view = false;
+        });
+        assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
+        assert_eq!(
+            set(&mut visual, |settings| settings.chat_panel_open = true),
+            0.
+        );
+
+        // One view back: the panel opens on it.
+        assert_eq!(set(&mut visual, |settings| settings.files_view = true), 1.);
+        assert!(visual.debug_bounds("PANEL_VIEW Files").is_some());
+        assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
+    }
+
+    #[test]
     fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
         use crate::{AppRoute, NativeRoot};
         use gpui::{TestAppContext, VisualTestContext};
@@ -2659,9 +2713,41 @@ mod tests {
         );
         assert_eq!(side_panel_surface(true), PanelSurface::Terminal);
         assert_eq!(side_panel_surface(false), PanelSurface::Chat);
-        assert!(side_panel_open(true, PanelSurface::Terminal));
-        assert!(side_panel_open(true, PanelSurface::Chat));
-        assert!(!side_panel_open(false, PanelSurface::Terminal));
+        let open = AppSettings::default();
+        let collapsed = AppSettings {
+            chat_panel_open: false,
+            ..AppSettings::default()
+        };
+        assert!(side_panel_open(&open, PanelSurface::Terminal));
+        assert!(side_panel_open(&open, PanelSurface::Chat));
+        assert!(!side_panel_open(&collapsed, PanelSurface::Terminal));
+        assert!(side_panel_available(&collapsed, PanelSurface::Terminal));
+
+        // Settings → Side panel → Show the side panel off: no panel and no
+        // toggle anywhere, the open state and the switches kept.
+        let hidden = AppSettings {
+            show_side_panel: false,
+            ..AppSettings::default()
+        };
+        for surface in [PanelSurface::Chat, PanelSurface::Terminal] {
+            assert!(!side_panel_open(&hidden, surface));
+            assert!(!side_panel_available(&hidden, surface));
+        }
+        assert!(hidden.chat_panel_open && hidden.info_view && hidden.files_view);
+        assert!(!hidden.chat_panel_shown() && !hidden.mission_rail_shown());
+
+        // Every view a surface has turned off: that surface has no panel.
+        let files_off = AppSettings {
+            files_view: false,
+            ..AppSettings::default()
+        };
+        assert!(side_panel_open(&files_off, PanelSurface::Chat));
+        assert!(!side_panel_available(&files_off, PanelSurface::Terminal));
+        let all_off = AppSettings {
+            info_view: false,
+            ..files_off
+        };
+        assert!(!side_panel_available(&all_off, PanelSurface::Chat));
 
         assert_eq!(pane_identity_icon(None).asset_path(), "plus.svg");
         assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
