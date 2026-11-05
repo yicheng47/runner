@@ -168,6 +168,10 @@ impl SessionManager {
             })?;
             (sink, session.model.revision())
         };
+        #[cfg(test)]
+        if let Some(baseline_read) = self.wake_baseline_read.lock().unwrap().take() {
+            let _ = baseline_read.send(());
+        }
         match sink.try_append_with_retry(draft) {
             Ok(()) => {}
             Err(TryAppendError::Contended) => return Err(Error::msg("event log busy")),
@@ -198,6 +202,15 @@ impl SessionManager {
             SessionEvent::Delivered { revision },
             super::super::clock::state_now(),
         );
+    }
+
+    /// Signals once the next synthetic wake has read its baseline revision and
+    /// released the session lock, just before it appends.
+    #[cfg(test)]
+    pub(crate) fn notify_wake_baseline_read(&self) -> std::sync::mpsc::Receiver<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        *self.wake_baseline_read.lock().unwrap() = Some(tx);
+        rx
     }
 
     /// A running session with the given activity, for tests outside the manager.

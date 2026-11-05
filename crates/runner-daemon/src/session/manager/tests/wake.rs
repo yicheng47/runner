@@ -428,18 +428,13 @@ fn contended_wake_append_does_not_block_output_ingestion() {
     let mgr = manager_with_contended_wake_sink(Arc::clone(&event_log));
     let (release, blocker) = hold_event_log_lock(&event_log);
 
-    let session = mgr.session_state("session").unwrap();
-    let session_guard = session.lock().unwrap();
-    let (wake_started_tx, wake_started_rx) = std::sync::mpsc::channel();
+    let baseline_read = mgr.notify_wake_baseline_read();
     let wake_mgr = Arc::clone(&mgr);
-    let wake = std::thread::spawn(move || {
-        wake_started_tx.send(()).unwrap();
-        wake_mgr.synthesize_wake_busy("session", wake_busy_draft())
-    });
-    wake_started_rx.recv().unwrap();
-    std::thread::sleep(Duration::from_millis(1));
-    drop(session_guard);
-    std::thread::sleep(Duration::from_millis(2));
+    let wake =
+        std::thread::spawn(move || wake_mgr.synthesize_wake_busy("session", wake_busy_draft()));
+    baseline_read
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the wake must read its baseline before appending");
 
     let (output_started_tx, output_started_rx) = std::sync::mpsc::channel();
     let (output_done_tx, output_done_rx) = std::sync::mpsc::channel();
@@ -484,18 +479,13 @@ fn synthetic_wake_does_not_overwrite_a_newer_forwarder_transition() {
     );
     let (release, blocker) = hold_event_log_lock(&event_log);
 
-    let session = mgr.session_state("session").unwrap();
-    let session_guard = session.lock().unwrap();
-    let (wake_started_tx, wake_started_rx) = std::sync::mpsc::channel();
+    let baseline_read = mgr.notify_wake_baseline_read();
     let wake_mgr = Arc::clone(&mgr);
-    let wake = std::thread::spawn(move || {
-        wake_started_tx.send(()).unwrap();
-        wake_mgr.synthesize_wake_busy("session", wake_busy_draft())
-    });
-    wake_started_rx.recv().unwrap();
-    std::thread::sleep(Duration::from_millis(1));
-    drop(session_guard);
-    std::thread::sleep(Duration::from_millis(2));
+    let wake =
+        std::thread::spawn(move || wake_mgr.synthesize_wake_busy("session", wake_busy_draft()));
+    baseline_read
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the wake must read its baseline before appending");
 
     let (transition_started_tx, transition_started_rx) = std::sync::mpsc::channel();
     let (transition_done_tx, transition_done_rx) = std::sync::mpsc::channel();
