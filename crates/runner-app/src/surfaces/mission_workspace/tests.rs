@@ -1496,7 +1496,7 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
     ] {
         host.update(&mut visual, |host, _, cx| {
             host.workspace
-                .update(cx, |workspace, _| workspace.rail_view = view);
+                .update(cx, |workspace, _| workspace.rail_surfaces.open.open(view));
             cx.notify();
         })
         .unwrap();
@@ -1604,16 +1604,15 @@ fn a_rail_widened_by_an_open_file_lays_the_roster_two_per_row() {
     }
 }
 
-#[test]
-fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right() {
-    use crate::surfaces::side_panel::{PanelContext, PanelSubject};
-    use crate::theme_snapshot::{assert_fill_color, assert_text, ThemeGuard};
-    use gpui::{Modifiers, TestAppContext, VisualTestContext};
-    let _theme = ThemeGuard::new();
-    let temp = tempfile::tempdir().unwrap();
-    let mut cx = TestAppContext::single();
-    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
-    store.update(&mut cx, |store, _| {
+fn rail_header_window(
+    cx: &mut gpui::TestAppContext,
+    temp: &tempfile::TempDir,
+) -> (
+    Entity<crate::app_store::AppStore>,
+    gpui::WindowHandle<MissionRailLayoutTest>,
+) {
+    let store = crate::app_store::test_lifecycle_store(cx, temp.path());
+    store.update(cx, |store, _| {
         crate::app_store::seed_mixed_working_sessions(store);
         store
             .test_core
@@ -1626,7 +1625,7 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
             )
             .unwrap();
     });
-    let mission = store.read_with(&cx, |store, _| {
+    let mission = store.read_with(cx, |store, _| {
         runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
     });
     let host = cx.add_window(|window, cx| {
@@ -1646,26 +1645,43 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
             width: None,
         }
     });
+    (store, host)
+}
+
+#[test]
+fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus() {
+    use crate::surfaces::side_panel::{PanelContext, PanelSubject};
+    use crate::theme_snapshot::{assert_fill_color, assert_text, ThemeGuard};
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, host) = rail_header_window(&mut cx, &temp);
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(960.), px(600.)));
     visual.run_until_parked();
+    let click = |visual: &mut VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    // Sessions alone, permanent: no × and not in `+`.
     let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
-    let title = visual.debug_bounds("SIDE_PANEL_TITLE Sessions").unwrap();
-    let sessions = visual.debug_bounds("PANEL_VIEW Sessions").unwrap();
-    let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
-    let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
-    assert!(title.left() - rail.left() <= px(20.), "{title:?} {rail:?}");
-    assert!(title.right() < sessions.left());
-    assert_eq!(info.left() - sessions.right(), px(4.));
-    assert_eq!(files.left() - info.right(), px(4.));
-    assert_eq!(sessions.size, gpui::size(px(24.), px(24.)));
-    assert_eq!(sessions.center().y, files.center().y);
+    let sessions = visual.debug_bounds("PANEL_TAB Sessions").unwrap();
+    let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
     assert!(
-        rail.right() - files.right() >= px(28.) && rail.right() - files.right() <= px(56.),
-        "collapse follows the views: {files:?} {rail:?}"
+        sessions.left() - rail.left() <= px(12.),
+        "{sessions:?} {rail:?}"
     );
+    assert_eq!(sessions.size.height, px(28.));
+    assert!(sessions.right() < add.left());
+    assert_eq!(add.size, gpui::size(px(24.), px(24.)));
+    assert_eq!(sessions.center().y, add.center().y);
+    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Sessions").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
     assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
-
     for variant in [
         theme::ThemeVariant::Carbon,
         theme::ThemeVariant::RunnerLight,
@@ -1673,16 +1689,21 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
         theme::set_active_variant(variant);
         visual.refresh().unwrap();
         visual.run_until_parked();
-        assert_text(&mut visual, "SIDE_PANEL_TITLE Sessions", theme::text());
-        assert_fill_color(&mut visual, "PANEL_VIEW Sessions", Some(theme::raised()));
-        assert_fill_color(&mut visual, "PANEL_VIEW Info", None);
-        assert_fill_color(&mut visual, "PANEL_VIEW Files", None);
-        assert_text(&mut visual, "PANEL_VIEW_INK Sessions", theme::text());
-        assert_text(&mut visual, "PANEL_VIEW_INK Files", theme::faint());
+        assert_fill_color(&mut visual, "PANEL_TAB Sessions", Some(theme::raised()));
+        assert_text(&mut visual, "PANEL_TAB_INK Sessions", theme::text());
     }
 
-    visual.simulate_click(files.center(), Modifiers::default());
-    visual.run_until_parked();
+    // `+` offers Info and Files, never Sessions, with nothing checked.
+    click(&mut visual, "PANEL_ADD_SURFACE");
+    assert!(visual.debug_bounds("PANEL_MENU_ROW Info").is_some());
+    assert!(visual.debug_bounds("PANEL_MENU_ROW Files").is_some());
+    assert!(visual.debug_bounds("PANEL_MENU_ROW Sessions").is_none());
+    assert!(visual.debug_bounds("PANEL_MENU_CHECK Info").is_none());
+    click(&mut visual, "PANEL_MENU_ROW Files");
+    assert!(
+        visual.debug_bounds("PANEL_MENU_ROW Files").is_none(),
+        "closed"
+    );
     let context = PanelContext {
         subject: PanelSubject::Mission("test-mission".into()),
         surface: crate::surfaces::side_panel::PanelSurface::Mission,
@@ -1694,6 +1715,10 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
         .debug_bounds(format!("FILES_VIEW {context:?}").leak())
         .is_some());
     assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_none());
+    let sessions = visual.debug_bounds("PANEL_TAB Sessions").unwrap();
+    let files = visual.debug_bounds("PANEL_TAB Files").unwrap();
+    assert!(sessions.right() < files.left());
+    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Files").is_some());
     for variant in [
         theme::ThemeVariant::Carbon,
         theme::ThemeVariant::RunnerLight,
@@ -1701,22 +1726,39 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
         theme::set_active_variant(variant);
         visual.refresh().unwrap();
         visual.run_until_parked();
-        assert_text(&mut visual, "SIDE_PANEL_TITLE Files", theme::text());
-        assert_fill_color(&mut visual, "PANEL_VIEW Sessions", None);
-        assert_fill_color(&mut visual, "PANEL_VIEW Files", Some(theme::raised()));
+        assert_fill_color(&mut visual, "PANEL_TAB Sessions", None);
+        assert_fill_color(&mut visual, "PANEL_TAB Files", Some(theme::raised()));
+        assert_text(&mut visual, "PANEL_TAB_INK Sessions", theme::muted());
     }
 
-    let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
-    visual.simulate_click(info.center(), Modifiers::default());
-    visual.run_until_parked();
+    // Info opens after Files; Sessions switches back; closing returns to
+    // the tab before, and the first closable one to Sessions.
+    click(&mut visual, "PANEL_ADD_SURFACE");
+    assert!(visual.debug_bounds("PANEL_MENU_CHECK Files").is_some());
+    click(&mut visual, "PANEL_MENU_ROW Info");
     assert!(visual.debug_bounds("MISSION_META_SCROLL").is_some());
-    assert!(visual.debug_bounds("SIDE_PANEL_TITLE Info").is_some());
-    let sessions = visual.debug_bounds("PANEL_VIEW Sessions").unwrap();
-    visual.simulate_click(sessions.center(), Modifiers::default());
-    visual.run_until_parked();
+    let files = visual.debug_bounds("PANEL_TAB Files").unwrap();
+    let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
+    assert!(
+        files.right() < info.left(),
+        "tabs keep the order they opened"
+    );
+    click(&mut visual, "PANEL_TAB Sessions");
     assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+    click(&mut visual, "PANEL_TAB Info");
+    click(&mut visual, "PANEL_TAB_CLOSE Info");
+    assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
+    assert!(visual
+        .debug_bounds(format!("FILES_VIEW {context:?}").leak())
+        .is_some());
+    click(&mut visual, "PANEL_TAB_CLOSE Files");
+    assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+    assert!(visual.debug_bounds("PANEL_EMPTY").is_none(), "never empty");
 
-    // Settings → Side panel turning Info and Files off leaves Sessions.
+    // Settings → Side panel turning Info and Files off leaves Sessions,
+    // with no `+`, and closes an open Files tab.
+    click(&mut visual, "PANEL_ADD_SURFACE");
+    click(&mut visual, "PANEL_MENU_ROW Files");
     store.update(&mut visual, |store, cx| {
         store.update_settings(
             |settings| {
@@ -1730,11 +1772,88 @@ fn mission_panel_header_names_the_open_view_and_lists_sessions_info_files_right(
     });
     visual.refresh().unwrap();
     visual.run_until_parked();
-    // Sessions alone: the title and collapse, with no view buttons.
-    assert!(visual.debug_bounds("SIDE_PANEL_TITLE Sessions").is_some());
-    assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_none());
-    assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
-    assert!(visual.debug_bounds("PANEL_VIEW Files").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB Sessions").is_some());
+    assert!(visual.debug_bounds("PANEL_TAB Files").is_none());
+    assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
+    store.update(&mut visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.info_view = true;
+                settings.files_view = true;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    visual.refresh().unwrap();
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("PANEL_TAB Files").is_none(),
+        "turning Files back on does not reopen its tab"
+    );
+    assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+}
+
+#[test]
+fn mission_panel_header_keeps_plus_and_collapse_in_a_narrow_rail_in_both_locales() {
+    use crate::i18n::{testing::with_locale, Locale};
+    use crate::surfaces::side_panel::PanelViewId;
+    use gpui::{Modifiers, TestAppContext, VisualTestContext};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (_store, host) = rail_header_window(&mut cx, &temp);
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(960.), px(600.)));
+            host.update(&mut visual, |host, _, cx| {
+                host.workspace.update(cx, |workspace, _| {
+                    workspace.rail_surfaces.open.open(PanelViewId::Files);
+                    workspace.rail_surfaces.open.open(PanelViewId::Info);
+                });
+                cx.notify();
+            })
+            .unwrap();
+            for width in [crate::app_settings::MISSION_RAIL_DEFAULT, 200.] {
+                host.update(&mut visual, |host, _, cx| {
+                    host.width = Some(width);
+                    cx.notify();
+                })
+                .unwrap();
+                visual.run_until_parked();
+                let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
+                let close = visual.debug_bounds("PANEL_TAB_CLOSE Info").unwrap();
+                let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
+                let collapse = visual.debug_bounds("PANEL_COLLAPSE").unwrap();
+                assert!(
+                    close.right() <= add.left(),
+                    "{locale:?} {width}: the shown tab's × before `+`: {close:?} {add:?}"
+                );
+                assert!(add.right() <= collapse.left(), "{locale:?} {width}");
+                assert!(
+                    collapse.right() <= rail.right(),
+                    "{locale:?} {width}: {collapse:?} {rail:?}"
+                );
+                assert_eq!(add.size.width, px(24.), "{locale:?} {width}");
+                // `+` still opens its menu, and Sessions still switches.
+                visual.simulate_click(add.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("PANEL_MENU_ROW Files").is_some());
+                visual.simulate_keystrokes("escape");
+                let sessions = visual.debug_bounds("PANEL_TAB Sessions").unwrap();
+                assert!(sessions.left() >= rail.left(), "{locale:?} {width}");
+                visual.simulate_click(sessions.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
+                let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
+                visual.simulate_click(info.center(), Modifiers::default());
+                visual.run_until_parked();
+                assert!(visual.debug_bounds("MISSION_META_SCROLL").is_some());
+            }
+        });
+    }
 }
 
 impl gpui::Render for MissionRailLayoutTest {
@@ -2067,7 +2186,7 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 workspace.mission_id_copy.update(cx, |copy, cx| {
                     copy.set_value(Some(mission_id.into()), cx);
                 });
-                workspace.rail_view = PanelViewId::Info;
+                workspace.rail_surfaces.open.open(PanelViewId::Info);
             });
             cx.notify();
         })
@@ -2870,7 +2989,7 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
         this.rebuild_event_projection();
         assert!(this.feed_selection.is_none());
         assert!(!this.feed_markdown.borrow().is_empty());
-        this.prepare_mission("another-mission".into(), PanelViewId::Sessions);
+        this.prepare_mission("another-mission".into());
         assert!(this.feed_markdown.borrow().is_empty());
         assert!(this.event_ids.is_empty());
         assert!(this.feed_selection.is_none());
@@ -3508,7 +3627,7 @@ fn feed_scrollbar_hides_for_fitting_content_and_resets_with_the_mission() {
     assert_eq!(gutter.size.width, px(10.));
     assert_eq!(gutter.right(), px(600.));
     workspace.update(&mut visual, |this, cx| {
-        this.prepare_mission("short-mission".into(), PanelViewId::Sessions);
+        this.prepare_mission("short-mission".into());
         this.events = long_feed_events().into_iter().take(1).collect();
         this.rebuild_event_projection();
         cx.notify();
@@ -4543,8 +4662,13 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     assert_eq!(launched(), 0);
     assert!(store.read_with(&visual, |store, _| store.settings.mission_rail_open));
     assert_eq!(
-        workspace.read_with(&visual, |workspace, _| workspace.rail_view),
-        PanelViewId::Files
+        workspace.read_with(&visual, |workspace, _| workspace.rail_surfaces.open.clone()),
+        {
+            let mut files = crate::surfaces::side_panel::OpenSurfaces::default();
+            files.open(PanelViewId::Files);
+            files
+        },
+        "the closed Files tab opens"
     );
 
     // Files off, or the panel off: the editor.

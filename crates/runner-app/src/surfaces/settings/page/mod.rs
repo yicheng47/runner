@@ -284,6 +284,7 @@ enum SettingsSelection {
     FileIcons,
     FilesFont,
     MarkdownOpenAs,
+    NewChatPanel,
 }
 
 pub(crate) struct SettingsState {
@@ -312,6 +313,7 @@ pub(crate) struct SettingsState {
     file_icons: Entity<StyledSelect>,
     files_font: Entity<StyledSelect>,
     markdown_open_as: Entity<StyledSelect>,
+    new_chat_panel: Entity<StyledSelect>,
     pub(crate) language: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
@@ -487,6 +489,14 @@ impl SettingsState {
             SettingsSelection::MarkdownOpenAs,
             cx,
         );
+        let new_chat_panel = settings_select(
+            &root,
+            "settings-new-chat-panel",
+            settings.new_chat_panel.key(),
+            new_chat_panel_options(),
+            SettingsSelection::NewChatPanel,
+            cx,
+        );
         let language = settings_select(
             &root,
             "settings-language",
@@ -568,6 +578,7 @@ impl SettingsState {
             file_icons,
             files_font,
             markdown_open_as,
+            new_chat_panel,
             language,
             quit_behavior,
             agents: None,
@@ -714,7 +725,8 @@ fn settings_select(
         | SettingsSelection::TerminalScrollback
         | SettingsSelection::QuitBehavior
         | SettingsSelection::FilesFont
-        | SettingsSelection::MarkdownOpenAs => None,
+        | SettingsSelection::MarkdownOpenAs
+        | SettingsSelection::NewChatPanel => None,
         #[cfg(target_os = "macos")]
         SettingsSelection::OptionAsMeta => None,
     };
@@ -1030,6 +1042,8 @@ impl NativeRoot {
             ),
             SettingsSelection::MarkdownOpenAs => crate::app_settings::MarkdownOpenAs::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.markdown_open_as, value)),
+            SettingsSelection::NewChatPanel => crate::app_settings::NewChatPanel::parse(value)
+                .is_some_and(|value| update_if_changed(&mut settings.new_chat_panel, value)),
         });
         if !changed {
             if matches!(selection, SettingsSelection::Language) {
@@ -1059,8 +1073,8 @@ impl NativeRoot {
         });
     }
 
-    /// Settings → Side panel → Files' selects follow a change made in
-    /// another window, as the General selects do.
+    /// Settings → Side panel's selects follow a change made in another
+    /// window, as the General selects do.
     pub(crate) fn sync_side_panel_selects(&self, cx: &mut Context<Self>) {
         let settings = self.settings(cx);
         let (icons, markdown) = (settings.file_icons.key(), settings.markdown_open_as.key());
@@ -1071,6 +1085,10 @@ impl NativeRoot {
         self.settings_page
             .markdown_open_as
             .update(cx, |select, cx| select.set_value(markdown, cx));
+        let opens = self.settings(cx).new_chat_panel.key();
+        self.settings_page
+            .new_chat_panel
+            .update(cx, |select, cx| select.set_value(opens, cx));
         if self.settings_page.files_font.read(cx).value() != font {
             self.sync_files_font_options(cx);
         }

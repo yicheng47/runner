@@ -1,17 +1,18 @@
-//! Settings → Side panel: the Panel page, which shows the panel and turns
-//! its views on, and the Files page, which sets the tree and the viewer.
+//! Settings → Side panel: the Panel page, which shows the panel, offers its
+//! surfaces and picks what a new chat opens, and the Files page, which sets
+//! the tree and the viewer.
 
 use super::*;
 
 use gpui::Div;
 
-use crate::app_settings::{MarkdownOpenAs, TerminalFontFamily};
+use crate::app_settings::{MarkdownOpenAs, NewChatPanel, TerminalFontFamily};
 use crate::file_icons::{self, IconSet};
 use crate::surfaces::side_panel::{self as panel, PanelSurface};
 
 /// The header preview's width: a chat's panel at the width it opens with.
 const HEADER_PREVIEW_WIDTH: f32 = 360.;
-/// The views the Panel page dims while the panel is off.
+/// The surfaces the Panel page dims while the panel is off.
 const DIMMED: f32 = 0.45;
 
 pub(super) fn file_icon_options() -> Vec<SelectOption> {
@@ -96,6 +97,22 @@ pub(super) fn files_font_value(family: Option<&TerminalFontFamily>) -> String {
     family.map_or_else(String::new, |family| family.family().to_owned())
 }
 
+pub(super) fn new_chat_panel_options() -> Vec<SelectOption> {
+    NewChatPanel::ALL
+        .into_iter()
+        .map(|open| {
+            SelectOption::new(
+                open.key(),
+                crate::i18n::message(match open {
+                    NewChatPanel::Info => "ui.info",
+                    NewChatPanel::Files => "ui.files",
+                    NewChatPanel::Nothing => "side_panel.nothing",
+                }),
+            )
+        })
+        .collect()
+}
+
 pub(super) fn markdown_open_as_options() -> Vec<SelectOption> {
     MarkdownOpenAs::ALL
         .into_iter()
@@ -158,10 +175,9 @@ impl NativeRoot {
         )
         .subtitle(crate::i18n::text("side_panel.show_description"));
 
-        let view_row =
+        let surface_row =
             |id: &'static str,
-             icon: &'static str,
-             label: &'static str,
+             view: &'static panel::PanelView,
              description: &'static str,
              on: bool,
              field: fn(&mut AppSettings) -> &mut bool,
@@ -188,7 +204,7 @@ impl NativeRoot {
                                     .flex_none()
                                     .mt(rems(2. / 16.))
                                     .size(rems(1.))
-                                    .path(icon)
+                                    .path(view.icon)
                                     .text_color(theme::muted()),
                             )
                             .child(
@@ -202,7 +218,7 @@ impl NativeRoot {
                                             .text_size(theme::text_body())
                                             .font_weight(FontWeight::MEDIUM)
                                             .text_color(theme::text())
-                                            .child(crate::i18n::text(label)),
+                                            .child(view.label()),
                                     )
                                     .child(
                                         div()
@@ -212,6 +228,24 @@ impl NativeRoot {
                                     ),
                             ),
                     )
+                    .children(view.key.map(|key| {
+                        div()
+                            .flex_none()
+                            .debug_selector(move || {
+                                format!("{}_KEY", id.to_uppercase().replace('-', "_"))
+                            })
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .when(!shown, |key| key.opacity(DIMMED))
+                            .child(
+                                div()
+                                    .text_size(theme::text_ui())
+                                    .text_color(theme::faint())
+                                    .child(crate::i18n::text("side_panel.key")),
+                            )
+                            .child(panel::keycap(key))
+                    }))
                     .child(
                         div()
                             .flex_none()
@@ -228,19 +262,23 @@ impl NativeRoot {
                     )
                     .into_any_element()
             };
-        let info_row = view_row(
+        let view = |id| {
+            panel::VIEWS
+                .iter()
+                .find(|view| view.id == id)
+                .expect("every surface has a view")
+        };
+        let info_row = surface_row(
             "settings-info-view",
-            "info.svg",
-            "ui.info",
+            view(panel::PanelViewId::Info),
             "side_panel.info_description",
             settings.info_view,
             |settings| &mut settings.info_view,
             cx,
         );
-        let files_row = view_row(
+        let files_row = surface_row(
             "settings-files-view",
-            "folder.svg",
-            "ui.files",
+            view(panel::PanelViewId::Files),
             "side_panel.files_description",
             settings.files_view,
             |settings| &mut settings.files_view,
@@ -276,15 +314,70 @@ impl NativeRoot {
                     .border_color(theme::border())
                     .bg(theme::bg())
                     .map(|preview| snapshot("SIDE_PANEL_HEADER_PREVIEW", preview))
-                    .child(panel::header_views(
+                    .child(panel::header_tabs(
                         PanelSurface::Chat,
                         &settings,
-                        panel::shown_view(PanelSurface::Chat, &settings, panel::PanelViewId::Info),
-                        Rc::new(|_, _| {}),
+                        &panel::OpenSurfaces::new_chat(&settings),
+                        None,
+                        Rc::new(|_, _, _| {}),
                         IconButton::new("settings-preview-collapse", "panel-right-open.svg"),
                     )),
             );
-        let views_card = div()
+        let opens_row = div()
+            .debug_selector(|| "SETTINGS_NEW_CHAT_PANEL_ROW".into())
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .pt_2()
+            .pb_3()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .items_start()
+                    .gap_3()
+                    .when(!shown, |text| text.opacity(DIMMED))
+                    .child(
+                        svg()
+                            .flex_none()
+                            .mt(rems(2. / 16.))
+                            .size(rems(1.))
+                            .path("panel-right-open.svg")
+                            .text_color(theme::muted()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(rems(2. / 16.))
+                            .child(
+                                div()
+                                    .text_size(theme::text_body())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::text())
+                                    .child(crate::i18n::text("side_panel.new_chat_opens")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(theme::text_meta())
+                                    .text_color(theme::muted())
+                                    .child(crate::i18n::text(
+                                        "side_panel.new_chat_opens_description",
+                                    )),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .debug_selector(|| "SETTINGS_NEW_CHAT_PANEL".into())
+                    .when(!shown, |select| select.opacity(DIMMED))
+                    .child(self.settings_page.new_chat_panel.clone()),
+            );
+        let surfaces_card = div()
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -292,10 +385,11 @@ impl NativeRoot {
             .border_1()
             .border_color(theme::border())
             .bg(theme::panel())
-            .map(|card| snapshot("SETTINGS_SIDE_PANEL_VIEWS", card))
+            .map(|card| snapshot("SETTINGS_SIDE_PANEL_SURFACES", card))
             .child(preview)
             .child(info_row)
-            .child(files_row);
+            .child(files_row)
+            .child(opens_row);
 
         div()
             .flex()
@@ -313,10 +407,13 @@ impl NativeRoot {
                     .flex_col()
                     .gap(rems(14. / 16.))
                     .child(
-                        section_heading("side_panel.views", "SETTINGS_SIDE_PANEL_VIEWS_HEADING")
-                            .when(!shown, |heading| heading.opacity(DIMMED)),
+                        section_heading(
+                            "side_panel.surfaces",
+                            "SETTINGS_SIDE_PANEL_SURFACES_HEADING",
+                        )
+                        .when(!shown, |heading| heading.opacity(DIMMED)),
                     )
-                    .child(views_card)
+                    .child(surfaces_card)
                     .child(
                         page_note(crate::i18n::text("side_panel.sessions_note"))
                             .when(!shown, |note| note.opacity(DIMMED)),
@@ -592,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_page_previews_the_header_and_dims_the_views_while_the_panel_is_off() {
+    fn the_panel_page_offers_the_surfaces_and_what_a_new_chat_opens_and_dims_them_while_off() {
         let _theme = ThemeGuard::new();
         for locale in [Locale::English, Locale::SimplifiedChinese] {
             with_locale(locale, || {
@@ -606,10 +703,18 @@ mod tests {
                             "面板"
                         }
                     );
-                    assert!(page.has("SETTINGS_SIDE_PANEL_PANE"));
+                    for selector in [
+                        "SETTINGS_SIDE_PANEL_PANE",
+                        "SETTINGS_SIDE_PANEL_SURFACES_HEADING",
+                        "SETTINGS_INFO_VIEW_KEY",
+                        "SETTINGS_FILES_VIEW_KEY",
+                        "SETTINGS_NEW_CHAT_PANEL",
+                    ] {
+                        assert!(page.has(selector), "{selector}");
+                    }
                     assert_fill_color(
                         &mut page.visual,
-                        "SETTINGS_SIDE_PANEL_VIEWS",
+                        "SETTINGS_SIDE_PANEL_SURFACES",
                         Some(theme::panel()),
                     );
                     assert_fill_color(
@@ -617,34 +722,76 @@ mod tests {
                         "SIDE_PANEL_HEADER_PREVIEW",
                         Some(theme::bg()),
                     );
+                    // The header a new chat shows: Info open, `+`, collapse.
                     let preview = page
                         .visual
                         .debug_bounds("SIDE_PANEL_HEADER_PREVIEW")
                         .unwrap();
-                    let title = page.visual.debug_bounds("SIDE_PANEL_TITLE Info").unwrap();
-                    let info = page.visual.debug_bounds("PANEL_VIEW Info").unwrap();
-                    let files = page.visual.debug_bounds("PANEL_VIEW Files").unwrap();
-                    assert!(preview.contains(&info.center()) && preview.contains(&files.center()));
-                    assert!(title.right() < info.left() && info.right() < files.left());
-                    assert_fill_color(&mut page.visual, "PANEL_VIEW Info", Some(theme::raised()));
-                    assert_fill_color(&mut page.visual, "PANEL_VIEW Files", None);
+                    let info = page.visual.debug_bounds("PANEL_TAB Info").unwrap();
+                    let add = page.visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
+                    assert!(preview.contains(&info.center()) && preview.contains(&add.center()));
+                    assert!(info.right() < add.left());
+                    assert!(page.has("PANEL_TAB_CLOSE Info"));
+                    assert!(!page.has("PANEL_TAB Files"));
+                    assert_fill_color(&mut page.visual, "PANEL_TAB Info", Some(theme::raised()));
                     assert!(
                         (preview.size.width - px(HEADER_PREVIEW_WIDTH)).abs() <= px(1.),
                         "a real-size header: {preview:?}"
                     );
+                    // The key sits between the description and the switch.
+                    let key = page.visual.debug_bounds("SETTINGS_INFO_VIEW_KEY").unwrap();
+                    let toggle = page
+                        .visual
+                        .debug_bounds("SETTINGS_INFO_VIEW_TOGGLE")
+                        .unwrap();
+                    assert!(key.right() < toggle.left());
 
-                    // The preview redraws as the switches change.
-                    // Files alone: its title, and no view buttons.
+                    // The preview redraws as the switches change. Files
+                    // alone: its permanent tab, with no × and no `+`.
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     assert!(!page.settings().info_view);
-                    assert!(page.has("SIDE_PANEL_TITLE Files"));
-                    assert!(!page.has("PANEL_VIEW Info") && !page.has("PANEL_VIEW Files"));
+                    assert!(page.has("PANEL_TAB Files"));
+                    assert!(!page.has("PANEL_TAB_CLOSE Files") && !page.has("PANEL_ADD_SURFACE"));
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(!page.has("SIDE_PANEL_TITLE Files"));
+                    assert!(!page.has("PANEL_TAB Files"));
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(page.has("SIDE_PANEL_TITLE Info"));
-                    assert!(page.has("PANEL_VIEW Info") && page.has("PANEL_VIEW Files"));
+                    assert!(page.has("PANEL_TAB Info") && page.has("PANEL_ADD_SURFACE"));
+
+                    // A new chat's panel opens Files, Nothing, or Info.
+                    for (value, open, tab) in [
+                        ("files", NewChatPanel::Files, Some("PANEL_TAB Files")),
+                        ("nothing", NewChatPanel::Nothing, None),
+                        ("info", NewChatPanel::Info, Some("PANEL_TAB Info")),
+                    ] {
+                        page.host
+                            .update(&mut page.visual, |root, window, cx| {
+                                root.apply_settings_selection(
+                                    SettingsSelection::NewChatPanel,
+                                    value,
+                                    window,
+                                    cx,
+                                )
+                            })
+                            .unwrap();
+                        page.visual.run_until_parked();
+                        assert_eq!(page.settings().new_chat_panel, open);
+                        let value_now = page
+                            .host
+                            .read_with(&page.visual, |root, cx| {
+                                root.settings_page
+                                    .new_chat_panel
+                                    .read(cx)
+                                    .value()
+                                    .to_owned()
+                            })
+                            .unwrap();
+                        assert_eq!(value_now, value);
+                        assert!(page.has("PANEL_ADD_SURFACE"), "{value}");
+                        for shown in ["PANEL_TAB Info", "PANEL_TAB Files"] {
+                            assert_eq!(page.has(shown), Some(shown) == tab, "{value}: {shown}");
+                        }
+                    }
 
                     // Off: the switches keep their values and stop answering.
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");

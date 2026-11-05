@@ -351,7 +351,7 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_panel_visibility: SidebarVisibilityTransition,
     pub(crate) chat_panel_prompt_session: Option<String>,
     pub(crate) chat_panel_prompt_expanded: bool,
-    pub(crate) chat_panel_view: crate::surfaces::side_panel::PanelViewId,
+    pub(crate) chat_surfaces: crate::surfaces::side_panel::PanelSurfaces,
     pub(crate) chat_files: crate::surfaces::files::FilesPanel,
     pub(crate) panel_chat_by_tab: HashMap<String, String>,
     pub(crate) command_palette: Entity<CommandPaletteState>,

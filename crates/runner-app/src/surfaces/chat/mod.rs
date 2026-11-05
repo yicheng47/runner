@@ -647,6 +647,7 @@ impl NativeRoot {
                                 this.focus_drawer_terminal(&tracked_id, window, cx);
                             } else if this.active_focused_session_id().as_deref()
                                 == Some(tracked_id.as_str())
+                                && !this.chat_surfaces.list_focus().is_focused(window)
                             {
                                 this.focus_active_terminal(window, cx);
                             }

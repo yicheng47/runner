@@ -93,12 +93,13 @@ impl NativeRoot {
                     header.child(
                         IconButton::new("open-archived-chat-panel", "panel-right-hidden.svg")
                             .tooltip(crate::i18n::text("ui.open_side_panel"))
-                            .on_press(move |_, cx| {
+                            .on_press(move |window, cx| {
                                 panel_root.update(cx, |this, cx| {
                                     this.update_app_settings(cx, true, |settings| {
                                         settings.chat_panel_open = true;
                                         true
                                     });
+                                    this.focus_empty_chat_panel(window, cx);
                                     cx.notify();
                                 });
                             }),
@@ -170,6 +171,7 @@ impl NativeRoot {
             panel_visibility,
             panel_open || panel_animating,
             panel_open && !panel_animating,
+            window,
             cx,
         );
         div()
@@ -379,7 +381,7 @@ impl NativeRoot {
                 .w(rems(panel_layout.0 * panel_visibility / 16.))
                 .h_full()
                 .flex_none(),
-            move |root, _, cx| {
+            move |root, window, cx| {
                 root.render_chat_side_panel(
                     root.active_chat_detail.as_ref(),
                     surface,
@@ -388,6 +390,7 @@ impl NativeRoot {
                     panel_visibility,
                     panel_open || panel_animating,
                     panel_open && !panel_animating,
+                    window,
                     cx,
                 )
             },

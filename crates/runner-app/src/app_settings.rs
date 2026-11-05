@@ -260,6 +260,34 @@ impl MarkdownOpenAs {
     }
 }
 
+/// What a new chat's side panel opens: a surface, or Nothing for the
+/// surface list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NewChatPanel {
+    Files,
+    Nothing,
+    #[default]
+    #[serde(other)]
+    Info,
+}
+
+impl NewChatPanel {
+    pub const ALL: [Self; 3] = [Self::Info, Self::Files, Self::Nothing];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Files => "files",
+            Self::Nothing => "nothing",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|open| open.key() == value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FileLinkEditor {
@@ -371,8 +399,10 @@ pub struct AppSettings {
     /// Settings → Side panel → Panel: off hides every tab's panel and its
     /// toggle, keeping the open state and the view switches below.
     pub show_side_panel: bool,
+    /// Whether the `+` menu offers Info and Files.
     pub info_view: bool,
     pub files_view: bool,
+    pub new_chat_panel: NewChatPanel,
     pub file_icons: crate::file_icons::IconSet,
     /// `None` follows the terminal's Font family.
     pub files_font_family: Option<TerminalFontFamily>,
@@ -444,6 +474,7 @@ impl Default for AppSettings {
             show_side_panel: true,
             info_view: true,
             files_view: true,
+            new_chat_panel: NewChatPanel::Info,
             file_icons: Default::default(),
             files_font_family: None,
             files_font_size: None,
@@ -856,6 +887,7 @@ mod tests {
         assert_eq!(old.files_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
         assert!(old.files_syntax_highlighting);
         assert_eq!(old.markdown_open_as, MarkdownOpenAs::Rendered);
+        assert_eq!(old.new_chat_panel, NewChatPanel::Info);
         assert_eq!(old, AppSettings::default());
 
         let temp = tempfile::tempdir().unwrap();
@@ -869,6 +901,7 @@ mod tests {
             files_font_size: Some(17),
             files_syntax_highlighting: false,
             markdown_open_as: MarkdownOpenAs::Source,
+            new_chat_panel: NewChatPanel::Nothing,
             ..AppSettings::default()
         };
         settings.save(&path).unwrap();
@@ -878,6 +911,7 @@ mod tests {
         assert_eq!(json["filesFontFamily"], "Berkeley Mono");
         assert_eq!(json["filesFontSize"], 17);
         assert_eq!(json["markdownOpenAs"], "source");
+        assert_eq!(json["newChatPanel"], "nothing");
         assert_eq!(AppSettings::load(&path).unwrap(), settings);
         // The removed Open with a single click is ignored on load.
         let saved: AppSettings =
@@ -889,6 +923,9 @@ mod tests {
         for mode in MarkdownOpenAs::ALL {
             assert_eq!(MarkdownOpenAs::parse(mode.key()), Some(mode));
         }
+        for open in NewChatPanel::ALL {
+            assert_eq!(NewChatPanel::parse(open.key()), Some(open));
+        }
     }
 
     #[test]
@@ -897,7 +934,7 @@ mod tests {
         let path = temp.path().join("ui-settings.json");
         for (json, size) in [
             (
-                r#"{"fileIcons":"seti","markdownOpenAs":"preview","filesFontFamily":"  ","filesFontSize":0}"#,
+                r#"{"fileIcons":"seti","markdownOpenAs":"preview","newChatPanel":"changes","filesFontFamily":"  ","filesFontSize":0}"#,
                 None,
             ),
             (
@@ -913,6 +950,7 @@ mod tests {
             let settings = AppSettings::load(&path).unwrap();
             assert_eq!(settings.file_icons, crate::file_icons::IconSet::Catppuccin);
             assert_eq!(settings.markdown_open_as, MarkdownOpenAs::Rendered);
+            assert_eq!(settings.new_chat_panel, NewChatPanel::Info, "{json}");
             assert_eq!(settings.files_font_family, None, "{json}");
             assert_eq!(settings.files_font_size, size, "{json}");
         }

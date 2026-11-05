@@ -259,6 +259,7 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.files_font_size.hash(&mut hasher);
         settings.files_syntax_highlighting.hash(&mut hasher);
         settings.markdown_open_as.hash(&mut hasher);
+        settings.new_chat_panel.hash(&mut hasher);
         settings.chat_panel_width.to_bits().hash(&mut hasher);
         settings.default_crew_id.hash(&mut hasher);
         settings.default_working_dir.hash(&mut hasher);
