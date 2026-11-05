@@ -589,7 +589,12 @@ fn lifecycle_shortcuts_ignore_a_focused_mission_drawer_shell() {
     ] {
         let (_temp, mut cx, window, _, fake) = setup();
         cx.update(|cx| {
-            crate::keymap::install_bindings(cx, &crate::keymap::KeymapOverrides::new(), false)
+            crate::keymap::install_bindings(
+                cx,
+                &crate::keymap::KeymapOverrides::new(),
+                crate::keymap::TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
         });
         let workspace = workspace(window, &cx);
         let mut data = overview();

@@ -2109,7 +2109,14 @@ fn active_shortcut_and_row_click_focus_the_split_pane_needing_attention() {
         root.root_focus.focus(window, cx);
         root
     });
-    cx.update(|cx| keymap::install_bindings(cx, &keymap::KeymapOverrides::new(), false));
+    cx.update(|cx| {
+        keymap::install_bindings(
+            cx,
+            &keymap::KeymapOverrides::new(),
+            crate::keymap::TerminalCtrlKeys::RunnerFirst,
+            false,
+        )
+    });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(1200.), px(900.)));
     visual.run_until_parked();

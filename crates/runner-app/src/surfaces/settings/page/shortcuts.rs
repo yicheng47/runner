@@ -9,26 +9,28 @@ pub(super) const TAB_SHORTCUT_DESCRIPTION: &str =
 pub(super) enum ShortcutRow {
     Entry(&'static keymap::KeymapEntry),
     TabSelection,
+    /// A system-owned key shown for reference; it cannot change or turn off.
+    DisplayOnly(&'static keymap::KeymapEntry),
 }
 
 impl ShortcutRow {
     pub(super) fn id(self) -> &'static str {
         match self {
-            Self::Entry(entry) => entry.id,
+            Self::Entry(entry) | Self::DisplayOnly(entry) => entry.id,
             Self::TabSelection => TAB_SHORTCUT_ID,
         }
     }
 
     pub(super) fn title(self) -> &'static str {
         match self {
-            Self::Entry(entry) => entry.title(),
+            Self::Entry(entry) | Self::DisplayOnly(entry) => entry.title(),
             Self::TabSelection => crate::i18n::text(TAB_SHORTCUT_TITLE),
         }
     }
 
     pub(super) fn description(self) -> &'static str {
         match self {
-            Self::Entry(entry) => entry.description(),
+            Self::Entry(entry) | Self::DisplayOnly(entry) => entry.description(),
             Self::TabSelection => crate::i18n::text(TAB_SHORTCUT_DESCRIPTION),
         }
     }
@@ -36,7 +38,7 @@ impl ShortcutRow {
     pub(super) fn fixed(self) -> bool {
         match self {
             Self::Entry(entry) => entry.fixed,
-            Self::TabSelection => true,
+            Self::TabSelection | Self::DisplayOnly(_) => true,
         }
     }
 
@@ -46,6 +48,7 @@ impl ShortcutRow {
             Self::TabSelection => keymap::tab_selection_entries()
                 .map(|entry| entry.id)
                 .collect(),
+            Self::DisplayOnly(_) => Vec::new(),
         }
     }
 
@@ -56,6 +59,9 @@ impl ShortcutRow {
     }
 
     pub(super) fn binding_label(self, overrides: &keymap::KeymapOverrides) -> String {
+        if let Self::DisplayOnly(entry) = self {
+            return keymap::format_combo(&entry.default);
+        }
         let label = |id: &str| {
             keymap::effective_binding(id, overrides).map(|combo| keymap::format_combo(&combo))
         };
@@ -65,6 +71,17 @@ impl ShortcutRow {
             (Some(first), _) => first,
             _ => crate::i18n::text("ui.unassigned").into(),
         }
+    }
+
+    /// Whether Terminal first leaves this row's effective key to a focused
+    /// terminal.
+    pub(super) fn freed_for_terminal(self, overrides: &keymap::KeymapOverrides) -> bool {
+        self.entry_ids().into_iter().any(|id| {
+            keymap::entry(id).is_some_and(|entry| {
+                keymap::effective_binding(id, overrides)
+                    .is_some_and(|combo| keymap::frees_for_terminal(entry, &combo))
+            })
+        })
     }
 
     pub(super) fn matches(self, query: &str, overrides: &keymap::KeymapOverrides) -> bool {
@@ -96,15 +113,135 @@ pub(super) fn shortcut_rows(query: &str, overrides: &keymap::KeymapOverrides) ->
         }
         rows.push(row);
     }
+    rows.extend(
+        keymap::display_only_entries()
+            .map(ShortcutRow::DisplayOnly)
+            .filter(|row| query.is_empty() || row.matches(&query, overrides)),
+    );
     rows
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ShortcutSection {
+    Navigation,
+    Panes,
+    Missions,
+    Terminal,
+    ZoomAndWindow,
+}
+
+impl ShortcutSection {
+    pub(super) const ALL: [Self; 5] = [
+        Self::Navigation,
+        Self::Panes,
+        Self::Missions,
+        Self::Terminal,
+        Self::ZoomAndWindow,
+    ];
+
+    pub(super) fn title(self) -> &'static str {
+        crate::i18n::text(match self {
+            Self::Navigation => "keymap.section.navigation",
+            Self::Panes => "keymap.section.panes",
+            Self::Missions => "keymap.section.missions",
+            Self::Terminal => "keymap.section.terminal",
+            Self::ZoomAndWindow => "keymap.section.zoom-and-window",
+        })
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Navigation => "navigation",
+            Self::Panes => "panes",
+            Self::Missions => "missions",
+            Self::Terminal => "terminal",
+            Self::ZoomAndWindow => "zoom-and-window",
+        }
+    }
+
+    pub(super) fn of(row: ShortcutRow) -> Self {
+        match row.id() {
+            "pane-previous" | "pane-next" | "split-pane-right" | "split-pane-down"
+            | "close-pane" | "stop-session" | "resume-session" => Self::Panes,
+            "toggle-terminal-drawer" | "mission-tab-previous" | "mission-tab-next" => {
+                Self::Missions
+            }
+            "find-in-terminal" | "copy" | "system-paste" => Self::Terminal,
+            "zoom-in"
+            | "zoom-out"
+            | "zoom-reset"
+            | "system-toggle-fullscreen"
+            | "system-close-window" => Self::ZoomAndWindow,
+            _ => Self::Navigation,
+        }
+    }
+}
+
+pub(super) fn ctrl_keys_setting_matches(query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || [
+            "keymap.terminal-ctrl-keys.title",
+            "keymap.terminal-ctrl-keys.description",
+        ]
+        .into_iter()
+        .any(|key| crate::i18n::text(key).to_lowercase().contains(&query))
+}
+
+/// The page's sections in order, each with its matching rows. A section
+/// with no match is left out; `ctrl_keys_setting` keeps the Terminal
+/// section for the setting row that leads it.
+pub(super) fn shortcut_sections(
+    query: &str,
+    overrides: &keymap::KeymapOverrides,
+    ctrl_keys_setting: bool,
+) -> Vec<(ShortcutSection, Vec<ShortcutRow>)> {
+    let rows = shortcut_rows(query, overrides);
+    ShortcutSection::ALL
+        .into_iter()
+        .map(|section| {
+            let rows = rows
+                .iter()
+                .copied()
+                .filter(|row| ShortcutSection::of(*row) == section)
+                .collect::<Vec<_>>();
+            (section, rows)
+        })
+        .filter(|(section, rows)| {
+            !rows.is_empty() || (ctrl_keys_setting && *section == ShortcutSection::Terminal)
+        })
+        .collect()
 }
 
 impl NativeRoot {
     pub(super) fn render_shortcuts_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let overrides = self.settings(cx).keymap_overrides.clone();
-        let rows = shortcut_rows(&self.settings_page.shortcut_query, &overrides)
+        let terminal_first =
+            self.settings(cx).terminal_ctrl_keys() == keymap::TerminalCtrlKeys::TerminalFirst;
+        let query = &self.settings_page.shortcut_query;
+        let ctrl_keys_setting =
+            cfg!(any(windows, target_os = "linux")) && ctrl_keys_setting_matches(query);
+        let sections = shortcut_sections(query, &overrides, ctrl_keys_setting)
             .into_iter()
-            .map(|row| self.render_shortcut_row(row, &overrides, cx))
+            .map(|(section, rows)| {
+                let mut cards = Vec::new();
+                #[cfg(any(windows, target_os = "linux"))]
+                if ctrl_keys_setting && section == ShortcutSection::Terminal {
+                    cards.push(self.render_ctrl_keys_row(cx));
+                }
+                cards.extend(rows.into_iter().map(|row| {
+                    let outside_terminals = terminal_first && row.freed_for_terminal(&overrides);
+                    self.render_shortcut_row(row, &overrides, outside_terminals, cx)
+                }));
+                div()
+                    .debug_selector(move || format!("SHORTCUT_SECTION_{}", section.key()))
+                    .flex()
+                    .flex_col()
+                    .gap(rems(8. / 16.))
+                    .child(settings_section_heading(section.title()))
+                    .child(SettingsCard::new(cards))
+                    .into_any_element()
+            })
             .collect::<Vec<_>>();
         let has_overrides = keymap::entries()
             .iter()
@@ -122,7 +259,7 @@ impl NativeRoot {
                 this.reset_shortcut_overrides(window, root_cx)
             });
         });
-        let content = if rows.is_empty() {
+        let content = if sections.is_empty() {
             div()
                 .text_size(theme::text_ui())
                 .text_color(theme::faint())
@@ -135,7 +272,12 @@ impl NativeRoot {
                 ))
                 .into_any_element()
         } else {
-            SettingsCard::new(rows).into_any_element()
+            div()
+                .flex()
+                .flex_col()
+                .gap(rems(24. / 16.))
+                .children(sections)
+                .into_any_element()
         };
 
         div()
@@ -183,6 +325,7 @@ impl NativeRoot {
         &self,
         row: ShortcutRow,
         overrides: &keymap::KeymapOverrides,
+        outside_terminals: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = row.id();
@@ -251,7 +394,22 @@ impl NativeRoot {
                     });
                 })
         });
-        let edit = if row.fixed() {
+        let display_only = matches!(row, ShortcutRow::DisplayOnly(_));
+        let edit = if display_only {
+            div()
+                .debug_selector(move || format!("SHORTCUT_LOCKED_{id}"))
+                .w_6()
+                .flex_none()
+                .flex()
+                .justify_center()
+                .child(
+                    svg()
+                        .path("lock.svg")
+                        .size(rems(14. / 16.))
+                        .text_color(theme::faint()),
+                )
+                .into_any_element()
+        } else if row.fixed() {
             div().w_6().flex_none().into_any_element()
         } else {
             let edit_root = cx.entity();
@@ -285,7 +443,16 @@ impl NativeRoot {
             .items_center()
             .justify_between()
             .gap(rems(6. / 16.))
-            .child(chip)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .when(outside_terminals, |chips| {
+                        chips.child(outside_terminals_tag(id))
+                    })
+                    .child(chip),
+            )
             .child(
                 div()
                     .flex()
@@ -294,15 +461,20 @@ impl NativeRoot {
                     .children(restore)
                     .child(edit),
             );
-        let unbind_root = cx.entity();
-        let unbind = IconButton::new(format!("unbind-shortcut-{id}"), "trash.svg")
-            .size(IconButtonSize::Sm)
-            .tooltip(crate::i18n::text("ui.unbind_shortcut"))
-            .on_press(move |window, cx| {
-                unbind_root.update(cx, |this, root_cx| {
-                    this.set_shortcut_override(&row.entry_ids(), None, window, root_cx)
-                });
-            });
+        let unbind = if display_only {
+            div().w_6().flex_none().into_any_element()
+        } else {
+            let unbind_root = cx.entity();
+            IconButton::new(format!("unbind-shortcut-{id}"), "trash.svg")
+                .size(IconButtonSize::Sm)
+                .tooltip(crate::i18n::text("ui.unbind_shortcut"))
+                .on_press(move |window, cx| {
+                    unbind_root.update(cx, |this, root_cx| {
+                        this.set_shortcut_override(&row.entry_ids(), None, window, root_cx)
+                    });
+                })
+                .into_any_element()
+        };
 
         div()
             .min_h(rems(58. / 16.))
@@ -318,9 +490,84 @@ impl NativeRoot {
     }
 
     pub(super) fn rebuild_key_bindings(&self, suspended: bool, cx: &mut Context<Self>) {
-        let overrides = self.settings(cx).keymap_overrides.clone();
-        keymap::install_bindings(cx, &overrides, suspended);
+        let settings = self.settings(cx);
+        let overrides = settings.keymap_overrides.clone();
+        let terminal_ctrl_keys = settings.terminal_ctrl_keys();
+        keymap::install_bindings(cx, &overrides, terminal_ctrl_keys, suspended);
         cx.set_menus(crate::app_menus());
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    fn render_ctrl_keys_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings(cx).terminal_ctrl_keys;
+        let segmented = div()
+            .flex()
+            .items_center()
+            .gap(rems(2. / 16.))
+            .p(rems(2. / 16.))
+            .rounded(rems(6. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::bg())
+            .children(keymap::TerminalCtrlKeys::ALL.into_iter().map(|mode| {
+                let active = mode == selected;
+                let root = cx.entity();
+                let key_root = root.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "settings-terminal-ctrl-keys-{}",
+                        mode.label_key()
+                    )))
+                    .tab_index(0)
+                    .px(rems(12. / 16.))
+                    .py(rems(5. / 16.))
+                    .rounded(rems(4. / 16.))
+                    .text_size(theme::text_ui())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if active {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    })
+                    .when(active, |item| item.bg(theme::raised()))
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|item| item.text_color(theme::text()))
+                    .child(crate::i18n::text(mode.label_key()))
+                    .on_click(move |_, _, cx| {
+                        root.update(cx, |this, cx| this.set_terminal_ctrl_keys(mode, cx));
+                    })
+                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.stop_propagation();
+                            key_root.update(cx, |this, cx| this.set_terminal_ctrl_keys(mode, cx));
+                        }
+                    })
+            }));
+        div()
+            .debug_selector(|| "SETTINGS_TERMINAL_CTRL_KEYS".into())
+            .child(
+                SettingsRow::new(
+                    crate::i18n::text("keymap.terminal-ctrl-keys.title"),
+                    segmented,
+                )
+                .subtitle(crate::i18n::text("keymap.terminal-ctrl-keys.description")),
+            )
+            .into_any_element()
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(super) fn set_terminal_ctrl_keys(
+        &self,
+        mode: keymap::TerminalCtrlKeys,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.terminal_ctrl_keys, mode)
+        });
+        if changed {
+            self.rebuild_key_bindings(self.shortcut_recording_active(), cx);
+            cx.notify();
+        }
     }
 
     pub(super) fn start_shortcut_recording(
@@ -501,6 +748,21 @@ pub(super) fn shortcut_row_label(
                 .text_color(theme::danger())
                 .child(message)
         }))
+}
+
+fn outside_terminals_tag(id: &'static str) -> gpui::Div {
+    div()
+        .debug_selector(move || format!("SHORTCUT_OUTSIDE_TERMINALS_{id}"))
+        .flex_none()
+        .px(rems(7. / 16.))
+        .py(rems(2. / 16.))
+        .rounded(rems(5. / 16.))
+        .border_1()
+        .border_color(theme::border())
+        .text_size(theme::text_meta())
+        .line_height(rems(14. / 16.))
+        .text_color(theme::muted())
+        .child(crate::i18n::text("keymap.outside-terminals"))
 }
 
 pub(super) fn shortcut_chip(label: String, editable: bool) -> gpui::Div {

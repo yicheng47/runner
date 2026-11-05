@@ -16,8 +16,8 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 新建标签页：显示启动器页面，开始后才创建标签页 | ⌘N | Ctrl+N |
 | 新建终端；填入焦点空窗格或创建标签页 | ⌘T | Ctrl+Shift+T |
 | 新建任务：显示启动器页面的小队步骤，不创建标签页 | ⇧⌘M | Ctrl+Shift+M |
-| 命令面板 | ⌘K | Ctrl+K |
-| 切换侧边栏 | ⌘S | Ctrl+S |
+| 命令面板 | ⌘K | Ctrl+Shift+P |
+| 切换侧边栏 | ⌘S | Ctrl+B |
 | 切换任务终端抽屉 | ⌥F12 | Alt+F12 |
 | 打开设置 | ⌘, | Ctrl+, |
 | 上一个最近查看的页面 | ⇧⌘[ | Ctrl+Shift+[ |
@@ -32,8 +32,8 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | --- | --- | --- |
 | 上一个聊天窗格 | ⌘[ | Ctrl+[ |
 | 下一个聊天窗格 | ⌘] | Ctrl+] |
-| 向右拆分 | ⌘D | Ctrl+D |
-| 向下拆分 | ⇧⌘D | Ctrl+Shift+D |
+| 向右拆分 | ⌘D | Ctrl+Shift+D |
+| 向下拆分 | ⇧⌘D | Alt+Shift+D |
 | 隐藏焦点任务抽屉、关闭焦点窗格、聊天标签页或启动器页面 | ⌘W | Ctrl+Shift+W |
 | 停止焦点聊天或任务成员 | ⇧⌘X | Ctrl+Shift+X |
 | 恢复焦点已停止聊天或任务成员 | ⇧⌘R | Ctrl+Shift+R |
@@ -42,7 +42,16 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 复制终端选区 | ⌘C | Ctrl+C |
 | 粘贴 | ⌘V | Ctrl+V |
 
-Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，因此下一次 **Ctrl+C** 会作为中断送入终端；没有选区时直接作为中断。 **Ctrl+W** 留给终端程序；Runner 使用 **Ctrl+Shift+W** 关闭窗格或标签页。
+Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，因此下一次 **Ctrl+C** 会作为中断送入终端；没有选区时直接作为中断。 **Ctrl+W**、 **Ctrl+D**、 **Ctrl+K**、 **Ctrl+S** 和 **Ctrl+M** 留给终端程序：Runner 使用 **Ctrl+Shift+W** 关闭窗格或标签页，使用 **Ctrl+Shift+D** 和 **Alt+Shift+D** 拆分，使用 **Ctrl+Shift+P** 打开命令面板，使用 **Ctrl+B** 切换侧边栏。
+
+## 终端中的 Ctrl 键
+
+Windows 和 Linux 上， **设置 → 键盘快捷键 → 终端中的 Ctrl 键（Settings → Keyboard shortcuts → Ctrl keys in terminals）** 决定终端获得焦点时单独的 Ctrl 组合键交给谁。终端包括聊天窗格、终端标签页、任务成员、任务抽屉和远程终端。
+
+- **Runner 优先（Runner first）** （默认）让 Runner 的所有快捷键照常生效，包括在获得焦点的终端中。
+- **终端优先（Terminal first）** 把由 Ctrl 加一个键组成、不含 Shift 或 Alt 的快捷键改为发送给获得焦点的终端。按默认键位，这会让出 **Ctrl+N**、 **Ctrl+B**、 **Ctrl+[** / **Ctrl+]**、 **Ctrl+1–9** 和 **Ctrl+,**；你改成单独 Ctrl 组合的快捷键也会让出。这些行显示 **终端外生效（Outside terminals）** 标签，在侧边栏等其他位置仍然有效。
+
+两种模式下，有选区时复制、粘贴和缩放在终端中都有效。设置立即生效。macOS 没有此设置，因为 ⌘ 快捷键不会送入终端。
 
 ## 在终端中查找
 
@@ -71,7 +80,7 @@ Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，�
 | 缩小 | ⌘− | Ctrl+− |
 | 重置应用缩放 | ⌘0 | Ctrl+0 |
 | 关闭窗口并保存布局 | ⇧⌘W | Alt+F4 |
-| 最小化 | ⌘M | Ctrl+M |
+| 最小化 | ⌘M | 无默认快捷键 |
 | 切换全屏 | ⌃⌘F | F11 |
 | 退出 Runner | ⌘Q | 关闭最后一个窗口 |
 | 退出并停止会话 | ⌥⌘Q | 无默认快捷键 |
@@ -82,7 +91,7 @@ Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，�
 
 ## 自定义
 
-在 **设置 → 键盘快捷键** 选择可编辑快捷键，按下新组合。Runner 检查重叠上下文中的冲突。固定窗口与系统绑定不能重设；标签页选择组可整组解除绑定。使用 **全部恢复默认（Reset all to defaults）** 恢复标准映射。
+**设置 → 键盘快捷键** 将快捷键分为 **导航与新建**、 **窗格与会话**、 **任务**、 **终端** 和 **缩放与窗口** 几组；搜索在各组内筛选，没有匹配项的分组会隐藏。选择可编辑快捷键，按下新组合。Runner 检查重叠上下文中的冲突。固定窗口与系统绑定不能重设；标签页选择组可整组解除绑定。使用 **全部恢复默认（Reset all to defaults）** 恢复标准映射。
 
 这些表格依据 Runner 共享键位映射和 Windows/Linux 的 Ctrl 默认值。斜杠命令等智能体命令与终端编辑键属于智能体本身。
 

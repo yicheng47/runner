@@ -108,13 +108,14 @@ pub(crate) fn run() -> Result<()> {
             )
         });
         let keymap_overrides = app_store.read(cx).settings.keymap_overrides.clone();
+        let terminal_ctrl_keys = app_store.read(cx).settings.terminal_ctrl_keys();
         #[cfg(target_os = "macos")]
         let automatically_check_for_updates =
             app_store.read(cx).settings.automatically_check_for_updates;
         #[cfg(any(windows, target_os = "linux"))]
         let automatically_download_updates =
             app_store.read(cx).settings.automatically_download_updates;
-        keymap::install_bindings(cx, &keymap_overrides, false);
+        keymap::install_bindings(cx, &keymap_overrides, terminal_ctrl_keys, false);
         cx.set_global(GlobalAppStore(app_store));
         notifications::install(cx);
         cx.set_global(GlobalNativePaths(paths.clone()));
@@ -235,15 +236,6 @@ pub(crate) fn run() -> Result<()> {
                 cx.defer(move |cx| {
                     if let Err(error) = window.update(cx, |_, window, _| window.minimize_window()) {
                         eprintln!("Runner minimize failed: {error:#}");
-                    }
-                });
-            }
-        });
-        cx.on_action(|_: &Maximize, cx| {
-            if let Some(window) = cx.active_window() {
-                cx.defer(move |cx| {
-                    if let Err(error) = window.update(cx, |_, window, _| window.zoom_window()) {
-                        eprintln!("Runner maximize failed: {error:#}");
                     }
                 });
             }
@@ -420,7 +412,6 @@ pub(crate) fn app_menus() -> Vec<Menu> {
             disabled: false,
             items: vec![
                 MenuItem::action(crate::i18n::text("ui.minimize"), Minimize),
-                MenuItem::action(crate::i18n::text("ui.maximize"), Maximize),
                 MenuItem::separator(),
                 MenuItem::action(crate::i18n::text("ui.close_tab"), CloseTab),
                 MenuItem::action(crate::i18n::text("ui.close_window"), CloseWindow),

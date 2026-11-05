@@ -16,7 +16,7 @@ A stopped chat remains in Runner. Its centered **Chat stopped** card has a **Res
 
 ## Add another pane
 
-Press **⌘D** / **Ctrl+D** to split right, or **⇧⌘D** / **Ctrl+Shift+D** to split down. Use the launcher in the empty pane to search for and start another agent or role. Each pane holds a separate session; splitting does not copy the first agent's conversation or create a mission.
+Press **⌘D** / **Ctrl+Shift+D** to split right, or **⇧⌘D** / **Alt+Shift+D** to split down. Use the launcher in the empty pane to search for and start another agent or role. Each pane holds a separate session; splitting does not copy the first agent's conversation or create a mission.
 
 ## Open a shell
 

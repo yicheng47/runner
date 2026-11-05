@@ -1172,13 +1172,16 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn shortcut_rows_keep_registry_order_with_one_tab_row_and_no_copy() {
+    fn shortcut_rows_keep_registry_order_with_one_tab_row_and_display_only_system_keys() {
         let overrides = keymap::KeymapOverrides::new();
         let rows = shortcut_rows("", &overrides);
         let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
-        assert_eq!(titles.len(), 25);
+        assert_eq!(titles.len(), 28);
         assert_eq!(titles[0], "New window");
-        assert!(!titles.contains(&"Copy"));
+        assert_eq!(
+            titles[25..],
+            ["Copy selection", "Paste", "Toggle fullscreen"]
+        );
         let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];
         assert_eq!(after("Reset zoom"), "Go to tab 1–9");
         assert_eq!(after("Toggle mission terminal drawer"), "Find in terminal");
@@ -1188,9 +1191,295 @@ mod tests {
                 .filter(|row| row.fixed())
                 .map(|row| row.title())
                 .collect::<Vec<_>>(),
-            ["New window", "Go to tab 1–9", "Close tab", "Close window"]
+            [
+                "New window",
+                "Go to tab 1–9",
+                "Close tab",
+                "Close window",
+                "Copy selection",
+                "Paste",
+                "Toggle fullscreen"
+            ]
         );
         assert_eq!(ShortcutRow::TabSelection.binding_label(&overrides), "⌘1–⌘9");
+        assert_eq!(
+            rows[25..]
+                .iter()
+                .map(|row| row.binding_label(&overrides))
+                .collect::<Vec<_>>(),
+            ["⌘C", "⌘V", "⌃⌘F"]
+        );
+    }
+
+    #[test]
+    fn shortcut_sections_follow_the_guide_and_hide_sections_without_a_match() {
+        crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+            let overrides = keymap::KeymapOverrides::new();
+            let sections = shortcut_sections("", &overrides, false);
+            assert_eq!(
+                sections
+                    .iter()
+                    .map(|(section, _)| section.title())
+                    .collect::<Vec<_>>(),
+                [
+                    "Navigation and creation",
+                    "Panes and sessions",
+                    "Missions",
+                    "Terminal",
+                    "Zoom and window",
+                ]
+            );
+            let ids = sections
+                .iter()
+                .map(|(_, rows)| rows.iter().map(|row| row.id()).collect::<Vec<_>>())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ids,
+                [
+                    &[
+                        "new-window",
+                        "new-chat",
+                        "new-terminal",
+                        "new-mission",
+                        "command-palette",
+                        "toggle-sidebar",
+                        "open-settings",
+                        "page-previous",
+                        "page-next",
+                        TAB_SHORTCUT_ID,
+                    ][..],
+                    &[
+                        "pane-previous",
+                        "pane-next",
+                        "split-pane-right",
+                        "split-pane-down",
+                        "close-pane",
+                        "stop-session",
+                        "resume-session",
+                    ],
+                    &[
+                        "toggle-terminal-drawer",
+                        "mission-tab-previous",
+                        "mission-tab-next",
+                    ],
+                    &["find-in-terminal", "copy", "system-paste"],
+                    &[
+                        "zoom-in",
+                        "zoom-out",
+                        "zoom-reset",
+                        "system-close-window",
+                        "system-toggle-fullscreen",
+                    ],
+                ]
+            );
+            assert_eq!(
+                ids.iter().map(Vec::len).sum::<usize>(),
+                shortcut_rows("", &overrides).len()
+            );
+
+            let zoom = shortcut_sections("zoom", &overrides, false);
+            assert_eq!(zoom.len(), 1);
+            assert_eq!(zoom[0].0, ShortcutSection::ZoomAndWindow);
+            assert_eq!(zoom[0].1.len(), 3);
+            let paste = shortcut_sections("paste", &overrides, false);
+            assert_eq!(paste.len(), 1);
+            assert_eq!(paste[0].0, ShortcutSection::Terminal);
+            assert_eq!(paste[0].1.len(), 1);
+            assert_eq!(paste[0].1[0].id(), "system-paste");
+            for row in sections.iter().flat_map(|(_, rows)| rows) {
+                if let ShortcutRow::DisplayOnly(entry) = row {
+                    assert!(row.fixed());
+                    assert!(row.entry_ids().is_empty());
+                    assert!(!row.overridden(&overrides));
+                    assert!(!row.freed_for_terminal(&overrides));
+                    assert_eq!(
+                        row.binding_label(&overrides),
+                        keymap::format_combo(&entry.default)
+                    );
+                    assert!(keymap::entry(entry.id).is_none());
+                }
+            }
+
+            assert!(ctrl_keys_setting_matches(""));
+            assert!(ctrl_keys_setting_matches("ctrl keys"));
+            assert!(!ctrl_keys_setting_matches("zoom"));
+            let setting = shortcut_sections("ctrl keys", &overrides, true);
+            assert_eq!(setting.len(), 1);
+            assert_eq!(setting[0].0, ShortcutSection::Terminal);
+            assert!(setting[0].1.is_empty());
+            assert!(shortcut_sections("ctrl keys", &overrides, false).is_empty());
+        });
+    }
+
+    #[test]
+    fn outside_terminals_tags_follow_the_effective_binding() {
+        let bare = keymap::KeyCombo {
+            meta: false,
+            ctrl: true,
+            alt: false,
+            shift: false,
+            code: "KeyJ".into(),
+            label: None,
+            shift_optional: false,
+        };
+        let entry_row = |id| ShortcutRow::Entry(keymap::entry(id).unwrap());
+        let overrides = keymap::KeymapOverrides::from([
+            ("new-terminal".to_owned(), Some(bare.clone())),
+            ("zoom-reset".to_owned(), Some(bare.clone())),
+        ]);
+        assert!(entry_row("new-terminal").freed_for_terminal(&overrides));
+        assert!(!entry_row("zoom-reset").freed_for_terminal(&overrides));
+        assert!(!entry_row("new-mission").freed_for_terminal(&overrides));
+        let freed = cfg!(any(windows, target_os = "linux"));
+        for id in ["new-chat", "toggle-sidebar", "open-settings", "pane-next"] {
+            assert_eq!(entry_row(id).freed_for_terminal(&overrides), freed, "{id}");
+        }
+        assert_eq!(
+            ShortcutRow::TabSelection.freed_for_terminal(&overrides),
+            freed
+        );
+        let mut unbound = overrides.clone();
+        for id in ShortcutRow::TabSelection.entry_ids() {
+            unbound.insert(id.into(), None);
+        }
+        assert!(!ShortcutRow::TabSelection.freed_for_terminal(&unbound));
+        for id in [
+            "command-palette",
+            "split-pane-right",
+            "split-pane-down",
+            "zoom-out",
+        ] {
+            assert!(!entry_row(id).freed_for_terminal(&overrides), "{id}");
+        }
+    }
+
+    #[test]
+    fn shortcuts_page_renders_sections_setting_row_and_tags() {
+        use gpui::{size, TestAppContext, VisualTestContext};
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            let host = cx.add_window(|window, cx| {
+                let mut root = NativeRoot::new(
+                    "shortcut-sections".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                );
+                root.route = AppRoute::Settings;
+                root.settings_page.pane = SettingsPane::Shortcuts;
+                root
+            });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(1200.), px(4000.)));
+            visual.run_until_parked();
+            for selector in [
+                "SHORTCUT_SECTION_navigation",
+                "SHORTCUT_SECTION_panes",
+                "SHORTCUT_SECTION_missions",
+                "SHORTCUT_SECTION_terminal",
+                "SHORTCUT_SECTION_zoom-and-window",
+            ] {
+                assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+            }
+            let terminal = visual.debug_bounds("SHORTCUT_SECTION_terminal").unwrap();
+            assert!(
+                visual
+                    .debug_bounds("SHORTCUT_SECTION_missions")
+                    .unwrap()
+                    .bottom()
+                    < terminal.top()
+            );
+            assert!(
+                terminal.bottom()
+                    < visual
+                        .debug_bounds("SHORTCUT_SECTION_zoom-and-window")
+                        .unwrap()
+                        .top()
+            );
+            assert_eq!(
+                visual.debug_bounds("SETTINGS_TERMINAL_CTRL_KEYS").is_some(),
+                cfg!(any(windows, target_os = "linux"))
+            );
+            assert!(visual
+                .debug_bounds("SHORTCUT_OUTSIDE_TERMINALS_new-chat")
+                .is_none());
+            for selector in [
+                "SHORTCUT_LOCKED_copy",
+                "SHORTCUT_LOCKED_system-paste",
+                "SHORTCUT_LOCKED_system-toggle-fullscreen",
+            ] {
+                assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+            }
+            let fullscreen = visual
+                .debug_bounds("SHORTCUT_LOCKED_system-toggle-fullscreen")
+                .unwrap();
+            assert!(visual
+                .debug_bounds("SHORTCUT_SECTION_zoom-and-window")
+                .unwrap()
+                .contains(&fullscreen.center()));
+            assert!(terminal.contains(
+                &visual
+                    .debug_bounds("SHORTCUT_LOCKED_system-paste")
+                    .unwrap()
+                    .center()
+            ));
+            assert!(visual.debug_bounds("SHORTCUT_LOCKED_close-pane").is_none());
+
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let setting = visual.debug_bounds("SETTINGS_TERMINAL_CTRL_KEYS").unwrap();
+                assert!(terminal.contains(&setting.center()));
+                host.update(&mut visual, |root, _, cx| {
+                    root.set_terminal_ctrl_keys(keymap::TerminalCtrlKeys::TerminalFirst, cx)
+                })
+                .unwrap();
+                visual.run_until_parked();
+                for selector in [
+                    "SHORTCUT_OUTSIDE_TERMINALS_new-chat",
+                    "SHORTCUT_OUTSIDE_TERMINALS_toggle-sidebar",
+                    "SHORTCUT_OUTSIDE_TERMINALS_open-settings",
+                    "SHORTCUT_OUTSIDE_TERMINALS_select-tab",
+                    "SHORTCUT_OUTSIDE_TERMINALS_pane-previous",
+                    "SHORTCUT_OUTSIDE_TERMINALS_mission-tab-next",
+                ] {
+                    assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+                }
+                for selector in [
+                    "SHORTCUT_OUTSIDE_TERMINALS_command-palette",
+                    "SHORTCUT_OUTSIDE_TERMINALS_split-pane-right",
+                    "SHORTCUT_OUTSIDE_TERMINALS_zoom-reset",
+                    "SHORTCUT_OUTSIDE_TERMINALS_new-terminal",
+                ] {
+                    assert!(visual.debug_bounds(selector).is_none(), "{selector}");
+                }
+                assert_eq!(
+                    AppSettings::load(&temp.path().join("settings.json"))
+                        .unwrap()
+                        .terminal_ctrl_keys(),
+                    keymap::TerminalCtrlKeys::TerminalFirst
+                );
+                visual.update(|_, cx| {
+                    let keymap = cx.key_bindings();
+                    let keymap = keymap.borrow();
+                    let in_terminal = ["Root", "ChatSplit", "Terminal"]
+                        .map(|context| gpui::KeyContext::parse(context).unwrap());
+                    assert!(keymap
+                        .bindings_for_input(
+                            &[gpui::Keystroke::parse("ctrl-n").unwrap()],
+                            &in_terminal
+                        )
+                        .0
+                        .is_empty());
+                });
+            }
+        });
     }
 
     #[test]
