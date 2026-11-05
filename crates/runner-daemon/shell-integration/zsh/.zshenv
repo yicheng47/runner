@@ -28,7 +28,7 @@ fi
       while (( $#queue && budget > 0 && bytes > 0 )); do
         next=()
         for f in ${(u)${queue:*names}}; do
-          [[ $f == __runner_osc7* || -n ${__runner_osc7_seen[$f]-} ]] && continue
+          [[ $f == __runner_osc* || -n ${__runner_osc7_seen[$f]-} ]] && continue
           __runner_osc7_seen[$f]=1
           body=${functions[$f]-}
           if [[ $body == 'builtin autoload -X'* ]]; then
@@ -80,6 +80,13 @@ fi
       builtin printf '\e]7;file://%s\e\\' "$dir"
     }
     (( ${precmd_functions[(Ie)__runner_osc7]} )) || precmd_functions+=(__runner_osc7)
+    # FinalTerm marks for the terminal's status: C as a command starts, D
+    # then A once the shell is back at a prompt. They stay when the OSC 7
+    # hook removes itself.
+    __runner_osc133_preexec() { builtin printf '\e]133;C\e\\' }
+    __runner_osc133_precmd() { builtin printf '\e]133;D\e\\\e]133;A\e\\' }
+    (( ${preexec_functions[(Ie)__runner_osc133_preexec]} )) || preexec_functions+=(__runner_osc133_preexec)
+    (( ${precmd_functions[(Ie)__runner_osc133_precmd]} )) || precmd_functions+=(__runner_osc133_precmd)
   fi
   builtin unset _runner_file
 }

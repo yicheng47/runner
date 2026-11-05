@@ -3,7 +3,9 @@
 //! where the shell is. zsh gets it through a `ZDOTDIR` wrapper, bash through
 //! a `PROMPT_COMMAND` bootstrap. Both only add environment variables; argv
 //! and the user's own startup files are untouched, and the hook removes
-//! itself when the user's configuration already sends OSC 7.
+//! itself when the user's configuration already sends OSC 7. Beside it, zsh
+//! and bash 4.4+ send FinalTerm command marks (OSC 133 C, then D and A), which
+//! drive a terminal's Working/Idle status (#1172).
 
 use std::path::{Path, PathBuf};
 
@@ -16,7 +18,7 @@ const BASH_SCRIPT: &str = include_str!("../shell-integration/bash/runner.bash");
 /// prompt. The script finds and replaces this exact text.
 const BASH_BOOTSTRAP: &str = ". \"$RUNNER_BASH_INTEGRATION\"";
 
-/// Adds the OSC 7 hook to a zsh or bash terminal shell's spawn. Any other
+/// Adds the prompt hooks to a zsh or bash terminal shell's spawn. Any other
 /// command, and every platform but Unix, is left as it is. `inherited` reads
 /// a variable from the environment the child inherits beside `spec.env`.
 pub(crate) fn inject(
@@ -276,8 +278,11 @@ mod tests {
 #[cfg(all(test, unix))]
 mod real_shells {
     use super::*;
+    use crate::runtimes::TerminalEvent;
     use crate::session::pty_runtime::PtyRuntime;
-    use crate::session::runtime::{OutputStream, RuntimeOutput, RuntimeSession, SessionRuntime};
+    use crate::session::runtime::{
+        OutputStream, RuntimeOutput, RuntimeSession, SessionActivityState, SessionRuntime,
+    };
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
@@ -290,6 +295,7 @@ mod real_shells {
         session: RuntimeSession,
         stream: OutputStream,
         output: Vec<u8>,
+        activity: Vec<SessionActivityState>,
     }
 
     impl Shell {
@@ -314,6 +320,7 @@ mod real_shells {
             std::fs::create_dir_all(home.join("sub dir/中文")).unwrap();
             let data = home.join("app-data");
             let mut spec = SpawnSpec {
+                agent_runtime: Some(crate::model::Runtime::Shell),
                 session_id: ulid::Ulid::new().to_string(),
                 command: command.into(),
                 args: crate::shell_path::shell_login_args(command),
@@ -346,6 +353,7 @@ mod real_shells {
                 session,
                 stream,
                 output: Vec::new(),
+                activity: Vec::new(),
             };
             assert!(
                 shell.wait_for(if integration {
@@ -375,13 +383,29 @@ mod real_shells {
                 {
                     return true;
                 }
-                if let Ok(RuntimeOutput::Stream(bytes)) =
-                    self.stream.recv_timeout(Duration::from_millis(100))
-                {
-                    self.output.extend_from_slice(&bytes);
-                }
+                self.receive(Duration::from_millis(100));
             }
             false
+        }
+
+        fn receive(&mut self, timeout: Duration) {
+            match self.stream.recv_timeout(timeout) {
+                Ok(RuntimeOutput::Stream(bytes)) => self.output.extend_from_slice(&bytes),
+                Ok(RuntimeOutput::TerminalEvent(TerminalEvent::Activity(state))) => {
+                    self.activity.push(state)
+                }
+                _ => {}
+            }
+        }
+
+        /// Waits up to `within` for the activity to read `state`, and says
+        /// whether it does.
+        fn settles_to(&mut self, state: SessionActivityState, within: Duration) -> bool {
+            let deadline = Instant::now() + within;
+            while self.activity.last() != Some(&state) && Instant::now() < deadline {
+                self.receive(Duration::from_millis(10));
+            }
+            self.activity.last() == Some(&state)
         }
 
         fn expect(&mut self, needle: &str) {
@@ -429,6 +453,197 @@ mod real_shells {
 
     fn nothing_inherited(_: &str) -> Option<String> {
         None
+    }
+
+    /// Whether this bash has PS0 (4.4 and later), and so sends prompt marks.
+    fn bash_sends_marks(command: &str) -> bool {
+        std::process::Command::new(command)
+            .args(["-c", "echo ${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"])
+            .output()
+            .ok()
+            .and_then(|output| {
+                let version = String::from_utf8(output.stdout).ok()?;
+                let mut parts = version.split_whitespace().map(str::parse::<u32>);
+                Some((parts.next()?.ok()?, parts.next()?.ok()?))
+            })
+            .is_some_and(|version| version >= (4, 4))
+    }
+
+    /// The bash hooks that replace the bootstrap entry in `PROMPT_COMMAND`.
+    fn bash_hooks(command: &str) -> &'static str {
+        if bash_sends_marks(command) {
+            "__runner_osc133; __runner_osc7"
+        } else {
+            "__runner_osc7"
+        }
+    }
+
+    /// A shell with the integration reads Idle at its first prompt, Busy for a
+    /// silent command and Idle the moment a command ends, far inside the 2 s
+    /// silence threshold, and typing at the prompt leaves it Idle.
+    fn status_follows_prompt_marks(command: &str, startup_file: &str) {
+        use SessionActivityState::{Busy, Idle};
+        let home = tempfile::tempdir().unwrap();
+        write(&home.path().join(startup_file), "PS1='MARKS> '\n");
+        let Some(mut shell) = Shell::start(command, home.path(), nothing_inherited) else {
+            return;
+        };
+        shell.expect("MARKS> ");
+        let prompt = Duration::from_millis(1500);
+        assert!(shell.settles_to(Idle, prompt), "{:?}", shell.activity);
+        shell.send("echo typed");
+        shell.expect("echo typed");
+        shell.send("\x15");
+        assert!(!shell.settles_to(Busy, Duration::from_millis(500)));
+        shell.send("sleep 3\r");
+        assert!(shell.settles_to(Busy, prompt), "{:?}", shell.activity);
+        let started = Instant::now();
+        assert!(
+            !shell.settles_to(Idle, Duration::from_millis(2500)),
+            "{:?}",
+            shell.activity
+        );
+        assert!(shell.settles_to(Idle, prompt), "{:?}", shell.activity);
+        assert!(started.elapsed() < Duration::from_millis(3000) + prompt);
+        // C, its output and D can share one read, so Busy may never show.
+        let prompts = shell.text().matches("MARKS> ").count();
+        shell.send("printf 'FAST-%s\\n' done\r");
+        shell.expect("FAST-done\r\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shell.text().matches("MARKS> ").count() <= prompts && Instant::now() < deadline {
+            shell.receive(Duration::from_millis(10));
+        }
+        assert!(
+            shell.settles_to(Idle, Duration::from_millis(300)),
+            "{:?}",
+            shell.activity
+        );
+    }
+
+    #[test]
+    fn zsh_status_follows_prompt_marks() {
+        status_follows_prompt_marks("/bin/zsh", ".zshrc");
+    }
+
+    fn bash_with_marks() -> Option<&'static str> {
+        let found = [
+            "/opt/homebrew/bin/bash",
+            "/usr/local/bin/bash",
+            "/bin/bash",
+            "/usr/bin/bash",
+        ]
+        .into_iter()
+        .find(|command| Path::new(command).exists() && bash_sends_marks(command));
+        if found.is_none() {
+            eprintln!("skipping: no bash 4.4 or later is installed");
+        }
+        found
+    }
+
+    #[test]
+    fn bash_status_follows_prompt_marks() {
+        if let Some(command) = bash_with_marks() {
+            status_follows_prompt_marks(command, ".bash_profile");
+        }
+    }
+
+    /// A shell without the integration whose child prints only C, as an
+    /// agent's transcript zones do, still idles on silence.
+    #[test]
+    fn a_childs_c_marks_leave_a_shell_without_the_integration_on_silence() {
+        let home = tempfile::tempdir().unwrap();
+        write(&home.path().join(".bash_profile"), "PS1='NAV-READY> '\n");
+        let Some(mut shell) =
+            Shell::start_with_integration("/bin/bash", home.path(), nothing_inherited, false)
+        else {
+            return;
+        };
+        shell.send("printf '\\e]133;A\\ayou\\e]133;C\\aCHILD-%s\\n' done\r");
+        shell.expect("CHILD-done\r\n");
+        assert!(
+            shell.settles_to(SessionActivityState::Idle, Duration::from_secs(4)),
+            "{:?}",
+            shell.activity
+        );
+    }
+
+    struct ModelHost;
+
+    impl runner_terminal::terminal::TerminalHost for ModelHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: runner_terminal::input_state::InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+    }
+
+    /// An agent started by hand reports Working and marks its transcript
+    /// zones; its report holds while it runs and is cleared once the shell
+    /// is back at its prompt, so the sidebar falls back to shell activity.
+    fn program_status_clears_when_a_hand_started_agent_exits(command: &str, startup_file: &str) {
+        use runner_terminal::program_status::State;
+        let home = tempfile::tempdir().unwrap();
+        write(&home.path().join(startup_file), "PS1='AGENT> '\n");
+        let Some(mut shell) = Shell::start(command, home.path(), nothing_inherited) else {
+            return;
+        };
+        shell.expect("AGENT> ");
+        let model = runner_terminal::terminal::TerminalModel::new(
+            std::sync::Arc::new(ModelHost),
+            "agent".into(),
+            160,
+            40,
+            runner_terminal::terminal::ModelOptions {
+                shell: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut fed = 0;
+        let mut seq = 0;
+        let mut feed = |shell: &Shell| {
+            seq += 1;
+            model.feed_output(seq, &shell.output[fed..]);
+            fed = shell.output.len();
+            model
+                .take_program_status()
+                .map(|(_, report)| report.map(|report| report.state))
+        };
+        feed(&shell);
+        shell.send(
+            "printf '\\e]7501;state=working:app=pi\\e\\\\\\e]133;A\\e\\\\you\\e]133;C\\e\\\\AGENT-RUNNING\\n'; sleep 1\r",
+        );
+        shell.expect("AGENT-RUNNING\r\n");
+        assert_eq!(feed(&shell), Some(Some(State::Working)));
+        assert!(shell.settles_to(SessionActivityState::Idle, Duration::from_secs(3)));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while shell.text().matches("AGENT> ").count() < 2 && Instant::now() < deadline {
+            shell.receive(Duration::from_millis(10));
+        }
+        assert_eq!(feed(&shell), Some(None), "{}", shell.text());
+    }
+
+    #[test]
+    fn zsh_clears_a_hand_started_agents_status_at_the_prompt() {
+        program_status_clears_when_a_hand_started_agent_exits("/bin/zsh", ".zshrc");
+    }
+
+    #[test]
+    fn bash_clears_a_hand_started_agents_status_at_the_prompt() {
+        if let Some(command) = bash_with_marks() {
+            program_status_clears_when_a_hand_started_agent_exits(command, ".bash_profile");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -523,7 +738,7 @@ mod real_shells {
         }
         shell
             .send("echo MARK-env-${ZDOTDIR-unset}-${RUNNER_ZSH_ZDOTDIR-unset}-$precmd_functions\r");
-        shell.expect("MARK-env-unset-unset-__runner_osc7");
+        shell.expect("MARK-env-unset-unset-__runner_osc7 __runner_osc133_precmd");
         let (report, st) = shell.reports().pop().unwrap();
         assert!(st);
         assert!(report.starts_with("file:///"), "{report}");
@@ -573,7 +788,7 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-hooks-$precmd_functions-end\r");
-        shell.expect("MARK-hooks-_prompt_hook-end");
+        shell.expect("MARK-hooks-__runner_osc133_precmd _prompt_hook-end");
         let reports = shell.reports();
         assert!(reports.iter().all(|(_, st)| !st), "{reports:?}");
     }
@@ -593,7 +808,7 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-hooks-${#precmd_functions}-end\r");
-        shell.expect("MARK-hooks-0-end");
+        shell.expect("MARK-hooks-1-end");
         let reports = shell.reports();
         let first_user_report = reports.iter().position(|(_, st)| !st).unwrap();
         assert!(
@@ -626,7 +841,7 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-hooks-$precmd_functions-end\r");
-        shell.expect("MARK-hooks-_emit_cwd_hook-end");
+        shell.expect("MARK-hooks-__runner_osc133_precmd _emit_cwd_hook-end");
         let reports = shell.reports();
         assert!(reports.iter().all(|(_, st)| !st), "{reports:?}");
     }
@@ -652,7 +867,10 @@ mod real_shells {
         shell.expect("MARK-bashrc");
         shell.send("false\r");
         shell.send("echo MARK-status-$?-login-$(shopt -q login_shell && echo y)-exported-$(env | grep -c '^PROMPT_COMMAND=')-[$PROMPT_COMMAND]-${RUNNER_BASH_INTEGRATION-unset}\r");
-        shell.expect("MARK-status-1-login-y-exported-0-[history -a; __runner_osc7]-unset");
+        shell.expect(&format!(
+            "MARK-status-1-login-y-exported-0-[history -a; {}]-unset",
+            bash_hooks("/bin/bash")
+        ));
         assert!(!shell.text().contains("MARK-wrong"), "{}", shell.text());
         let reports = shell.reports();
         assert!(
@@ -679,7 +897,12 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-pc-[$PROMPT_COMMAND]\r");
-        shell.expect("MARK-pc-[_prompt_hook]");
+        shell.expect(&format!(
+            "MARK-pc-[_prompt_hook{}]",
+            bash_hooks("/bin/bash")
+                .strip_suffix("; __runner_osc7")
+                .map_or(String::new(), |marks| format!("; {marks}"))
+        ));
         let reports = shell.reports();
         assert!(reports.iter().all(|(_, st)| !st), "{reports:?}");
     }
@@ -698,7 +921,12 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-pc-[$PROMPT_COMMAND]\r");
-        shell.expect("MARK-pc-[_emit_cwd]");
+        shell.expect(&format!(
+            "MARK-pc-[{}_emit_cwd]",
+            bash_hooks("/bin/bash")
+                .strip_suffix("__runner_osc7")
+                .unwrap()
+        ));
         let reports = shell.reports();
         let first_user_report = reports.iter().position(|(_, st)| !st).unwrap();
         assert!(
@@ -722,7 +950,12 @@ mod real_shells {
         shell.send(CD_ENCODED_DIR);
         shell.expect("/sub dir/中文\x07");
         shell.send("echo MARK-pc-[$PROMPT_COMMAND]\r");
-        shell.expect("MARK-pc-[]");
+        shell.expect(&format!(
+            "MARK-pc-[{}]",
+            bash_hooks("/bin/bash")
+                .strip_suffix("; __runner_osc7")
+                .unwrap_or_default()
+        ));
         let reports = shell.reports();
         let first_user_report = reports.iter().position(|(_, st)| !st).unwrap();
         assert!(

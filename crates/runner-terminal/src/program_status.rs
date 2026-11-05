@@ -30,6 +30,34 @@ pub struct Report {
 pub(crate) enum Event {
     Query,
     Changed(Option<Report>),
+    Shell(ShellMark),
+}
+
+/// A shell's FinalTerm command marks: `133;C` as a command starts and
+/// `133;D` once the shell is back. `133;A` is not one, because agent TUIs
+/// also emit A, B and C for their own transcript zones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellMark {
+    CommandStarted,
+    CommandFinished,
+}
+
+/// Reads [`ShellMark`]s from a shell's PTY output, across reads.
+#[derive(Default)]
+pub struct ShellMarks(Parser);
+
+impl ShellMarks {
+    /// The command marks in `bytes`, in order.
+    pub fn scan(&mut self, bytes: &[u8]) -> Vec<ShellMark> {
+        self.0
+            .scan(bytes)
+            .into_iter()
+            .filter_map(|(_, event)| match event {
+                Event::Shell(mark) => Some(mark),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]
@@ -149,11 +177,11 @@ impl Parser {
         }
         if self.payload == b"133;D" || self.payload.starts_with(b"133;D;") {
             self.shell_finished = true;
-            return None;
+            return Some(Event::Shell(ShellMark::CommandFinished));
         }
         if self.payload == b"133;C" || self.payload.starts_with(b"133;C;") {
             self.shell_finished = false;
-            return None;
+            return Some(Event::Shell(ShellMark::CommandStarted));
         }
         if self.payload == b"133;A" || self.payload.starts_with(b"133;A;") {
             // TUIs also use A/B/C for transcript zones; D distinguishes a shell return.
@@ -522,6 +550,36 @@ mod tests {
         report(&mut parser, "state=working");
         parser.scan(b"\x1b]133;D\x07\x1b]133;C\x07\x1b]133;A\x07");
         assert_eq!(parser.current().unwrap().state, State::Working);
+    }
+
+    #[test]
+    fn shell_marks_survive_every_split_and_terminator_and_ignore_prompt_zones() {
+        for terminator in ["\x07", "\x1b\\"] {
+            use ShellMark::{CommandFinished, CommandStarted};
+            for (stream, expected) in [
+                (format!("out\x1b]133;C{terminator}"), vec![CommandStarted]),
+                (
+                    format!("\x1b]133;D;130{terminator}\x1b]133;A{terminator}% "),
+                    vec![CommandFinished],
+                ),
+                (
+                    format!("\x1b]133;D{terminator}\x1b]133;A{terminator}ls\x1b]133;C{terminator}"),
+                    vec![CommandFinished, CommandStarted],
+                ),
+            ] {
+                for split in 0..=stream.len() {
+                    let mut marks = ShellMarks::default();
+                    let mut found = marks.scan(&stream.as_bytes()[..split]);
+                    found.extend(marks.scan(&stream.as_bytes()[split..]));
+                    assert_eq!(found, expected, "{stream:?} at {split}");
+                }
+            }
+            let mut marks = ShellMarks::default();
+            let zones = format!(
+                "\x1b]133;A{terminator}user\x1b]133;B{terminator}\x1b]133;A;k=s{terminator}\x1b]133;Cx{terminator}\x1b]1337;D{terminator}\x1b]7501;state=working{terminator}"
+            );
+            assert!(marks.scan(zones.as_bytes()).is_empty());
+        }
     }
 
     #[test]

@@ -275,6 +275,7 @@ impl TerminalModel {
                         *self.pending_program_status.lock().unwrap() = Some((seq, report));
                     }
                 }
+                crate::program_status::Event::Shell(_) => {}
             }
         }
         queries.sort_by_key(|(end, _)| *end);
