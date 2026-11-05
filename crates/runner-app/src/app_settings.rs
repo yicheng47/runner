@@ -234,6 +234,32 @@ pub enum TerminalCursorStyle {
     Bar,
 }
 
+/// How a Markdown file opens in the viewer; the `</>` button switches a tab
+/// between the two.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MarkdownOpenAs {
+    Source,
+    #[default]
+    #[serde(other)]
+    Rendered,
+}
+
+impl MarkdownOpenAs {
+    pub const ALL: [Self; 2] = [Self::Rendered, Self::Source];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Rendered => "rendered",
+            Self::Source => "source",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FileLinkEditor {
@@ -369,6 +395,19 @@ pub struct AppSettings {
     pub file_viewer_width: f32,
     /// The tree's width on the outer edge of a panel widened by an open file.
     pub file_tree_width: f32,
+    /// Settings → Side panel → Panel: off hides every tab's panel and its
+    /// toggle, keeping the open state and the view switches below.
+    pub show_side_panel: bool,
+    pub info_view: bool,
+    pub files_view: bool,
+    pub file_icons: crate::file_icons::IconSet,
+    /// `None` follows the terminal's Font family.
+    pub files_font_family: Option<TerminalFontFamily>,
+    /// `None` follows the terminal's font size.
+    pub files_font_size: Option<u16>,
+    pub files_syntax_highlighting: bool,
+    pub files_single_click: bool,
+    pub markdown_open_as: MarkdownOpenAs,
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
     pub default_working_dir: String,
@@ -430,6 +469,15 @@ impl Default for AppSettings {
             mission_rail_width: MISSION_RAIL_DEFAULT,
             file_viewer_width: FILE_VIEWER_DEFAULT,
             file_tree_width: FILE_TREE_DEFAULT,
+            show_side_panel: true,
+            info_view: true,
+            files_view: true,
+            file_icons: Default::default(),
+            files_font_family: None,
+            files_font_size: None,
+            files_syntax_highlighting: true,
+            files_single_click: true,
+            markdown_open_as: MarkdownOpenAs::Rendered,
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
             default_working_dir: String::new(),
@@ -500,6 +548,14 @@ impl AppSettings {
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
         self.file_viewer_width = normalize_file_viewer_width(self.file_viewer_width);
         self.file_tree_width = normalize_file_tree_width(self.file_tree_width);
+        self.files_font_family = self
+            .files_font_family
+            .take()
+            .filter(|family| !family.family().trim().is_empty());
+        self.files_font_size = self
+            .files_font_size
+            .filter(|size| *size != 0)
+            .map(normalize_terminal_font_size);
         self.last_mission_terminal_ids
             .retain(|mission_id, session_id| !mission_id.is_empty() && !session_id.is_empty());
         self.default_crew_id = self.default_crew_id.trim().to_owned();
@@ -510,6 +566,29 @@ impl AppSettings {
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
         keymap::normalize_overrides(&mut self.keymap_overrides);
+    }
+
+    /// Whether a chat's or a terminal tab's panel is open: shown at all and
+    /// not collapsed.
+    pub fn chat_panel_shown(&self) -> bool {
+        self.show_side_panel && self.chat_panel_open
+    }
+
+    pub fn mission_rail_shown(&self) -> bool {
+        self.show_side_panel && self.mission_rail_open
+    }
+
+    /// The file viewer's code font: its own pick, or the terminal's; a font
+    /// that is not installed draws as the bundled one, the pick kept.
+    pub fn files_font(&self, cx: &gpui::App) -> Font {
+        self.files_font_family
+            .as_ref()
+            .unwrap_or(&self.terminal_font_family)
+            .font(cx)
+    }
+
+    pub fn files_font_size(&self) -> u16 {
+        self.files_font_size.unwrap_or(self.terminal_font_size)
     }
 
     pub fn model_runtimes(&self) -> Vec<Runtime> {
@@ -798,6 +877,120 @@ mod tests {
             Some(FileLinkEditor::Cursor)
         );
         assert_eq!(FileLinkEditor::parse("emacs"), None);
+    }
+
+    #[test]
+    fn side_panel_settings_default_to_todays_behaviour_and_round_trip() {
+        use crate::file_icons::IconSet;
+        let old: AppSettings = serde_json::from_str(r#"{"appZoom":1.0}"#).unwrap();
+        assert!(old.show_side_panel && old.info_view && old.files_view);
+        assert_eq!(old.file_icons, IconSet::Catppuccin);
+        assert_eq!(old.files_font_family, None);
+        assert_eq!(old.files_font_size, None);
+        assert_eq!(old.files_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
+        assert!(old.files_syntax_highlighting && old.files_single_click);
+        assert_eq!(old.markdown_open_as, MarkdownOpenAs::Rendered);
+        assert_eq!(old, AppSettings::default());
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        let settings = AppSettings {
+            show_side_panel: false,
+            info_view: false,
+            files_view: false,
+            file_icons: IconSet::Minimal,
+            files_font_family: Some(TerminalFontFamily::new("Berkeley Mono")),
+            files_font_size: Some(17),
+            files_syntax_highlighting: false,
+            files_single_click: false,
+            markdown_open_as: MarkdownOpenAs::Source,
+            ..AppSettings::default()
+        };
+        settings.save(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(json["showSidePanel"], false);
+        assert_eq!(json["fileIcons"], "minimal");
+        assert_eq!(json["filesFontFamily"], "Berkeley Mono");
+        assert_eq!(json["filesFontSize"], 17);
+        assert_eq!(json["markdownOpenAs"], "source");
+        assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        for set in IconSet::ALL {
+            assert_eq!(IconSet::from_key(set.key()), Some(set));
+        }
+        for mode in MarkdownOpenAs::ALL {
+            assert_eq!(MarkdownOpenAs::parse(mode.key()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn bad_side_panel_values_normalize_to_their_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        for (json, size) in [
+            (
+                r#"{"fileIcons":"seti","markdownOpenAs":"preview","filesFontFamily":"  ","filesFontSize":0}"#,
+                None,
+            ),
+            (
+                r#"{"filesFontFamily":"","filesFontSize":99}"#,
+                Some(TERMINAL_FONT_SIZE_MAX),
+            ),
+            (
+                r#"{"filesFontFamily":null,"filesFontSize":3}"#,
+                Some(TERMINAL_FONT_SIZE_MIN),
+            ),
+        ] {
+            fs::write(&path, json).unwrap();
+            let settings = AppSettings::load(&path).unwrap();
+            assert_eq!(settings.file_icons, crate::file_icons::IconSet::Catppuccin);
+            assert_eq!(settings.markdown_open_as, MarkdownOpenAs::Rendered);
+            assert_eq!(settings.files_font_family, None, "{json}");
+            assert_eq!(settings.files_font_size, size, "{json}");
+        }
+    }
+
+    #[test]
+    fn the_viewer_font_follows_the_terminal_and_a_missing_one_draws_bundled() {
+        let terminal = AppSettings {
+            terminal_font_size: 15,
+            ..AppSettings::default()
+        };
+        assert_eq!(terminal.files_font_size(), 15, "follows the terminal");
+        let own = AppSettings {
+            files_font_size: Some(11),
+            ..terminal.clone()
+        };
+        assert_eq!(own.files_font_size(), 11);
+        assert_eq!(
+            AppSettings {
+                files_font_size: None,
+                ..own
+            }
+            .files_font_size(),
+            15,
+            "Reset follows the terminal again"
+        );
+
+        // A saved font that is not installed draws as the bundled font,
+        // and the choice survives a save.
+        let missing = TerminalFontFamily::new("Gone Mono");
+        assert_eq!(
+            missing.resolved_font(false).family.as_ref(),
+            crate::terminal_fonts::BUNDLED_FONT
+        );
+        assert_eq!(missing.resolved_font(true).family.as_ref(), "Gone Mono");
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        AppSettings {
+            files_font_family: Some(missing.clone()),
+            ..AppSettings::default()
+        }
+        .save(&path)
+        .unwrap();
+        assert_eq!(
+            AppSettings::load(&path).unwrap().files_font_family,
+            Some(missing)
+        );
     }
 
     #[test]

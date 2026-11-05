@@ -338,6 +338,8 @@ impl NativeRoot {
             SettingsPane::Notifications => Some(self.render_notifications_settings(cx)),
             SettingsPane::Terminal => Some(self.render_terminal_settings(cx)),
             SettingsPane::Shortcuts => Some(self.render_shortcuts_settings(cx)),
+            SettingsPane::SidePanel => Some(self.render_side_panel_settings(cx)),
+            SettingsPane::Files => Some(self.render_files_settings(cx)),
             SettingsPane::Agents => self
                 .settings_page
                 .agents

@@ -48,9 +48,10 @@ impl NativeRoot {
             .border_b_1()
             .border_color(theme::border())
             .rounded_tl(rems(11. / 16.))
-            .when(!self.settings(cx).chat_panel_open, |header| {
-                header.rounded_tr(rems(11. / 16.))
-            })
+            .when(
+                !side_panel_open(self.settings(cx), PanelSurface::Chat),
+                |header| header.rounded_tr(rems(11. / 16.)),
+            )
             .children(sidebar_toggle)
             .children(sidebar_divider)
             .child(
@@ -85,21 +86,25 @@ impl NativeRoot {
                     }),
             )
             .child(div().min_w(px(0.)).flex_1())
-            .when(!self.settings(cx).chat_panel_open, |header| {
-                header.child(
-                    IconButton::new("open-archived-chat-panel", "panel-right-hidden.svg")
-                        .tooltip(crate::i18n::text("ui.open_side_panel"))
-                        .on_press(move |_, cx| {
-                            panel_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.chat_panel_open = true;
-                                    true
+            .when(
+                !self.settings(cx).chat_panel_open
+                    && side_panel_available(self.settings(cx), PanelSurface::Chat),
+                |header| {
+                    header.child(
+                        IconButton::new("open-archived-chat-panel", "panel-right-hidden.svg")
+                            .tooltip(crate::i18n::text("ui.open_side_panel"))
+                            .on_press(move |_, cx| {
+                                panel_root.update(cx, |this, cx| {
+                                    this.update_app_settings(cx, true, |settings| {
+                                        settings.chat_panel_open = true;
+                                        true
+                                    });
+                                    cx.notify();
                                 });
-                                cx.notify();
-                            });
-                        }),
-                )
-            });
+                            }),
+                    )
+                },
+            );
         let chat_column = div()
             .flex_1()
             .min_w(px(0.))
@@ -142,7 +147,7 @@ impl NativeRoot {
                             ),
                     ),
             );
-        let panel_open = self.settings(cx).chat_panel_open;
+        let panel_open = side_panel_open(self.settings(cx), PanelSurface::Chat);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),
@@ -353,7 +358,7 @@ impl NativeRoot {
         let surface = side_panel_surface(terminal_tab);
         let panel_open = self.remote_client.is_local()
             && !show_start
-            && side_panel_open(self.settings(cx).chat_panel_open, surface);
+            && side_panel_open(self.settings(cx), surface);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),

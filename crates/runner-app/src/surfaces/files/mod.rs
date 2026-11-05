@@ -33,6 +33,41 @@ use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 pub(crate) use view::FileOpen;
 pub(crate) use view::FilesView;
 
+/// The app's settings; `None` in a test that runs without a store.
+pub(super) fn settings(cx: &App) -> Option<&crate::app_settings::AppSettings> {
+    cx.try_global::<crate::app_store::GlobalAppStore>()
+        .map(|store| &store.0.read(cx).settings)
+}
+
+/// What Settings → Side panel → Files sets that the view draws with; a
+/// change redraws the open files.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Look {
+    pub(super) icons: crate::file_icons::IconSet,
+    font: String,
+    size: u16,
+    pub(super) highlighting: bool,
+    single_click: bool,
+}
+
+impl Look {
+    pub(super) fn current(cx: &App) -> Option<Self> {
+        let settings = settings(cx)?;
+        Some(Self {
+            icons: settings.file_icons,
+            font: settings
+                .files_font_family
+                .as_ref()
+                .unwrap_or(&settings.terminal_font_family)
+                .family()
+                .to_owned(),
+            size: settings.files_font_size(),
+            highlighting: settings.files_syntax_highlighting,
+            single_click: settings.files_single_click,
+        })
+    }
+}
+
 /// How many subjects' trees a panel keeps while they are not shown, so
 /// switching back keeps their expansion and scroll.
 const KEPT_VIEWS: usize = 12;

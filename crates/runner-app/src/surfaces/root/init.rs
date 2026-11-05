@@ -205,7 +205,7 @@ impl NativeRoot {
         });
         let sidebar_collapsed = settings.sidebar_collapsed;
         let sidebar_visibility = SidebarVisibilityTransition::new(!sidebar_collapsed);
-        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_open);
+        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_shown());
         let role_surfaces = RoleSurfaces::new(cx.entity(), settings.roles_page_size, cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), settings.crews_page_size, cx);
         let sidebar_shell = cx.entity().downgrade();

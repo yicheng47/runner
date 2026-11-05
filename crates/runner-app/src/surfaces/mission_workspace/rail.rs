@@ -21,6 +21,7 @@ impl MissionWorkspace {
         let settings = self.settings(cx);
         let subject = self
             .mission_view()
+            .filter(|_| settings.files_view)
             .map(|mission| PanelSubject::Mission(mission.id));
         self.rail_files.layout(
             subject.as_ref(),
@@ -55,7 +56,8 @@ impl MissionWorkspace {
         }
         let select_root = cx.entity();
         let collapse_root = cx.entity();
-        let shown = side_panel::shown_view(PanelSurface::Mission, self.rail_view);
+        let settings = self.settings(cx).clone();
+        let shown = side_panel::shown_view(PanelSurface::Mission, &settings, self.rail_view);
         let header = div()
             .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
             .flex_none()
@@ -73,6 +75,7 @@ impl MissionWorkspace {
             })
             .child(side_panel::header_views(
                 PanelSurface::Mission,
+                &settings,
                 shown,
                 Rc::new(move |view, cx| {
                     select_root.update(cx, |this, cx| this.set_mission_rail_view(view, cx));
