@@ -24,6 +24,8 @@ Use **⌘[** / **Ctrl+[** and **⌘]** / **Ctrl+]** to move focus between panes.
 
 Drag files from Finder or File Explorer onto a chat pane, a mission drawer terminal or a mission slot to insert their paths at the prompt, quoted as when you paste files. The terminal highlights while the files are over it and takes focus when you drop them; nothing runs until you press Return.
 
+Programs in a pane, such as Neovim, Helix or tmux, can copy text to your clipboard with OSC 52 while a window shows that pane in its active tab; a copy from a pane no window shows is dropped. On Linux, a copy to the primary selection goes to the primary selection. A copy over 1 MiB is ignored, and in a remote window the text lands on the computer you are using. Programs cannot read your clipboard this way.
+
 For shell splits, Runner follows the shell's reported working directory. It installs that reporting for zsh and bash on macOS. Windows shells without their own directory-reporting prompt use the original launch directory for a split, even after `cd`.
 
 ## Find in a terminal

@@ -24,7 +24,7 @@ impl std::fmt::Debug for AppEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut event = f.debug_struct("AppEvent");
         event.field("name", &self.name);
-        if self.name.starts_with("remote/") {
+        if self.name.starts_with("remote/") || self.name == "session/clipboard" {
             event.field("payload", &"[redacted]");
         } else {
             event.field("payload", &self.payload);

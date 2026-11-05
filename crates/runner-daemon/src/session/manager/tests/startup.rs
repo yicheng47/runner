@@ -1476,6 +1476,8 @@ fn generated_submit_cannot_publish_over_a_newer_composition_observation() {
         fn is_local_host(&self, _: &str) -> bool {
             true
         }
+        fn clipboard_store(&self, _: &str, _: runner_terminal::terminal::ClipboardTarget, _: &str) {
+        }
     }
 
     for guarded in [false, true] {

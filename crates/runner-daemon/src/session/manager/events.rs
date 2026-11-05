@@ -151,6 +151,14 @@ pub(super) fn drop_streak_is_loggable(streak: u64) -> bool {
 /// a no-op or a channel-capture impl.
 pub trait SessionEvents: Send + Sync + 'static {
     fn input_error(&self, _id: &str, _message: &str) {}
+    /// An OSC 52 write; the text stays in memory and out of logs.
+    fn clipboard(
+        &self,
+        _id: &str,
+        _target: runner_terminal::terminal::ClipboardTarget,
+        _text: &str,
+    ) {
+    }
     fn terminal_metadata_changed(&self, _id: &str) {}
     fn spawned(&self, _ev: &SessionSpawnedEvent) {}
     fn fork_started(&self, _ev: &SessionForkStartedEvent) {}
@@ -274,6 +282,12 @@ impl SessionEvents for CoreSessionEvents {
         self.events.emit(
             "session/input-error",
             &serde_json::json!({ "session_id": id, "message": message }),
+        );
+    }
+    fn clipboard(&self, id: &str, target: runner_terminal::terminal::ClipboardTarget, text: &str) {
+        self.events.emit(
+            "session/clipboard",
+            &serde_json::json!({ "session_id": id, "target": target.as_str(), "text": text }),
         );
     }
     fn spawned(&self, ev: &SessionSpawnedEvent) {

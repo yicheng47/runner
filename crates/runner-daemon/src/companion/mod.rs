@@ -141,6 +141,7 @@ struct Stream {
     queue: Arc<Mutex<Queue>>,
     snapshot: Option<(TerminalSnapshot, usize)>,
     output: Option<(Vec<u8>, usize)>,
+    clipboard: VecDeque<(String, String, usize)>,
     seq: u64,
     initial_size: Option<(u16, u16, TerminalController)>,
     core: Arc<dyn Core>,
@@ -193,6 +194,7 @@ impl Stream {
             initial_size: Some((snapshot.cols, snapshot.rows, snapshot.controller.clone())),
             snapshot: Some((snapshot, 0)),
             output: None,
+            clipboard: VecDeque::new(),
             core,
             channel,
             release: true,
@@ -235,6 +237,24 @@ impl Stream {
                 rows,
                 controller: self.controller(controller),
             }));
+        }
+        if let Some((target, text, offset)) = self.clipboard.front_mut() {
+            let mut end = (*offset + TERMINAL_CHUNK_SIZE).min(text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let message = HostMessage::Clipboard(ClipboardPush {
+                session: self.session.clone(),
+                target: target.clone(),
+                text: text[*offset..end].to_owned(),
+                offset: *offset as u64,
+                more: end < text.len(),
+            });
+            *offset = end;
+            if end == text.len() {
+                self.clipboard.pop_front();
+            }
+            return Some(message);
         }
         loop {
             if let Some((bytes, offset)) = &mut self.output {
@@ -449,6 +469,29 @@ impl Adapter {
         self.queued += bytes.len();
         self.priority.push_back(PendingMessage { bytes, state });
         Ok(())
+    }
+    /// Queues an OSC 52 write on the channel's stream for that terminal, sent
+    /// in terminal-sized pieces under the same credit as its output, one write
+    /// at a time in the order written. A newer write to a target replaces that
+    /// target's pending one.
+    fn clipboard(&mut self, payload: &serde_json::Value) {
+        let field = |name| payload.get(name).and_then(serde_json::Value::as_str);
+        let (Some(session), Some(target), Some(text)) =
+            (field("session_id"), field("target"), field("text"))
+        else {
+            return;
+        };
+        if let Some(stream) = self
+            .streams
+            .iter_mut()
+            .find(|stream| stream.session == session)
+        {
+            stream.clipboard.retain(|(pending, _, _)| pending != target);
+            stream
+                .clipboard
+                .push_back((target.to_owned(), text.to_owned(), 0));
+            self.ready.notify_one();
+        }
     }
     fn remove(&mut self, session: &str, release: bool) {
         if let Some(index) = self
@@ -863,6 +906,7 @@ impl Adapter {
                             self.ready.clone(),
                         );
                         fresh.seq = seq;
+                        fresh.clipboard = std::mem::take(&mut stream.clipboard);
                         stream = fresh;
                     }
                     Err(_) => {
@@ -971,6 +1015,7 @@ impl Adapter {
             _ = self.ready.notified() => {},
             event = self.events.recv() => {
                 match event {
+                    Ok(event) if event.name == "session/clipboard" => self.clipboard(&event.payload),
                     Ok(event) if relevant(event.name) => {
                         if matches!(event.name, "session/exit" | "session/archived") {
                             if let Some(session) = event.payload.get("session_id").and_then(|id| id.as_str()) {

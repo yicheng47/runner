@@ -202,6 +202,7 @@ pub enum HostMessage {
     Output(Output),
     Resized(Resized),
     Closed(Closed),
+    Clipboard(ClipboardPush),
     #[serde(untagged)]
     Unknown(UnknownPush),
 }
@@ -241,6 +242,7 @@ impl<'de> Deserialize<'de> for HostMessage {
             "output" => decode!(Output),
             "resized" => decode!(Resized),
             "closed" => decode!(Closed),
+            "clipboard" => decode!(Clipboard),
             _ => serde_json::from_value(value)
                 .map(Self::Unknown)
                 .map_err(D::Error::custom),
@@ -517,4 +519,30 @@ wire_enum!(ClosedReason, Unknown, {
 pub struct Closed {
     pub session: String,
     pub reason: ClosedReason,
+}
+
+/// A piece of an OSC 52 write by the program in an attached terminal.
+/// `target` is `clipboard` or `selection`; `offset` is the byte offset of
+/// `text` in the whole write, and `more` is set on every piece but the last.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardPush {
+    pub session: String,
+    pub target: String,
+    pub text: String,
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub more: bool,
+}
+
+impl std::fmt::Debug for ClipboardPush {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClipboardPush")
+            .field("session", &self.session)
+            .field("target", &self.target)
+            .field("offset", &self.offset)
+            .field("more", &self.more)
+            .finish_non_exhaustive()
+    }
 }
