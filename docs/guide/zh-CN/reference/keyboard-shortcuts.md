@@ -42,7 +42,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 复制终端选区 | ⌘C | Ctrl+C |
 | 粘贴 | ⌘V | Ctrl+V |
 
-Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制，否则作为中断送入终端。 **Ctrl+W** 留给终端程序；Runner 使用 **Ctrl+Shift+W** 关闭窗格或标签页。
+Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，因此下一次 **Ctrl+C** 会作为中断送入终端；没有选区时直接作为中断。 **Ctrl+W** 留给终端程序；Runner 使用 **Ctrl+Shift+W** 关闭窗格或标签页。
 
 ## 在终端中查找
 
