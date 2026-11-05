@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Runner production release — bump the workspace version, tag vX.Y.Z, let release.yml build the draft for macOS, Windows and Linux, write bilingual release notes (English, with 中文 collapsed in a details block), hand the publish switch to the user, and once the release is live write a Chinese markdown post for linux.do and other social media and sweep the shipped work's docs
+description: Cut a Runner production release — bump the workspace version, tag vX.Y.Z, let release.yml build the draft for macOS, Windows and Linux, write bilingual release notes (English, with 中文 collapsed in a details block), hand the publish switch to the user, and once the release is live write one Chinese plain-text post for the WeChat group and linux.do and sweep the shipped work's docs
 ---
 
 # Release
@@ -85,28 +85,31 @@ Rules for the 中文 half: translate the meaning, not the words; keep product te
 
 ## `post <version>`
 
-A Chinese markdown release post for the user to paste into Runner's linux.do thread and other social media. It needs the published release (`gh release view v<version> --json isDraft` is `false`), because the forum turns the release link into a preview card only for a public page. Build it from the published body's 中文 half (`gh release view v<version> --json body`), not from the git log, so the post says exactly what the release page says:
+One Chinese plain-text release post for the user to paste into Runner's WeChat user group and its linux.do thread (Jason, 2026-11-05: one post for both, no separate markdown version). It needs the published release (`gh release view v<version> --json isDraft` is `false`), because linux.do turns the release link into a preview card only for a public page. Build it from the published body's 中文 half (`gh release view v<version> --json body`), not from the git log, so the post agrees with the release page:
 
-```
-## Release Note: v<version> (<theme>)
+```text
+【Runner <version> 发布】
+macOS / Windows / Linux 均已上线，应用内 Settings → Updates 即可更新，设置、聊天和 mission 都会保留。
 
+✨ 新功能
+1. 终端设置重新分组，新增行高、光标闪烁、回滚行数、选中即复制四项设置
+2. ……
+
+🛠 问题修复
+1. Windows / Linux：Ctrl+D、Ctrl+K、Ctrl+S、Ctrl+M 在终端里不再被 Runner 占用……
+2. ……
+
+完整更新说明：
 https://github.com/yicheng47/runner/releases/tag/v<version>
 
-## 新功能
-
-- **Linux beta。** Runner 现在可原生运行于 Linux ARM64 和 x86_64……欢迎反馈问题。([#823](https://github.com/yicheng47/runner/issues/823))
-
-## 问题修复
-
-- **取消后可重新登录。** 在 Settings → Remote access 登录过程中点击 Cancel……([#1036](https://github.com/yicheng47/runner/issues/1036), [#1040](https://github.com/yicheng47/runner/issues/1040))
+有问题欢迎在群里反馈 🙏
 ```
 
-- The title stays English: `Release Note: v<version> (<theme>)`, where the theme is a few words naming the headline change (`Linux Beta Version` for 0.18.2), or `Bug Fixes` for a fix-only release.
-- The release URL sits bare on its own line so Discourse renders it as a card; do not wrap it in link text.
-- Copy the 新功能 and 问题修复 bullets word for word, with a blank line after each heading. Leave out the opening sentence, Nightly 渠道, 下载与升级, the support paragraph and 完整变更记录: the card links to the release page for those.
-- Rewrite every `#123` as `[#123](https://github.com/yicheng47/runner/issues/123)`, since forums do not autolink GitHub references; GitHub redirects the issue URL to a pull request when the number is one.
+- Plain text only: WeChat renders no markdown, so no `#` headings, `**bold**` or `[links](…)`. Number the items under the ✨ 新功能 and 🛠 问题修复 lines; omit a section that is empty.
+- Shorten each 中文 bullet to one line in plain words, keeping product terms as the app shows them and dropping issue numbers. Keep the changes users notice; drop internal ones and minor polish, which the release page still lists. Leave out Nightly 渠道 unless the release is about it.
+- The release URL sits bare on its own line, which linux.do renders as a card and WeChat as a link.
 
-Write it to `/tmp/runner-v<version>-release-note.zh-CN.md`, print the same text in the reply inside a `markdown` fence, and give the file path. Do not post it anywhere; the user does that.
+Write it to `/tmp/runner-v<version>-release-note.zh-CN.txt`, print the same text in the reply inside a `text` fence, and give the file path. Do not post it anywhere; the user does that.
 
 ## `sweep <version>`
 
