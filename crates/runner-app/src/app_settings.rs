@@ -17,10 +17,14 @@ pub const SIDEBAR_DEFAULT: f32 = 240.;
 pub const ZOOM_STEPS: [f32; 15] = [
     0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.,
 ];
-pub const TERMINAL_FONT_SIZE_MIN: u16 = 10;
-pub const TERMINAL_FONT_SIZE_MAX: u16 = 20;
+pub const TERMINAL_FONT_SIZE_MIN: u16 = 8;
+pub const TERMINAL_FONT_SIZE_MAX: u16 = 32;
 pub const TERMINAL_FONT_SIZE_DEFAULT: u16 = 13;
-pub const TERMINAL_SCROLLBACK_LINES: usize = 10_000;
+pub const TERMINAL_LINE_HEIGHT_MIN: f32 = 1.0;
+pub const TERMINAL_LINE_HEIGHT_MAX: f32 = 1.6;
+pub const TERMINAL_LINE_HEIGHT_DEFAULT: f32 = 1.4;
+pub const TERMINAL_SCROLLBACK_PRESETS: [usize; 5] = [1_000, 5_000, 10_000, 25_000, 50_000];
+pub const TERMINAL_SCROLLBACK_DEFAULT: usize = 10_000;
 pub const CHAT_PANEL_MIN: f32 = 200.;
 pub const CHAT_PANEL_MAX: f32 = 480.;
 pub const CHAT_PANEL_DEFAULT: f32 = 320.;
@@ -139,7 +143,11 @@ pub fn configure_terminal(
         TerminalCursorStyle::Underline => CursorShape::Underline,
         TerminalCursorStyle::Bar => CursorShape::Beam,
     };
-    terminal.configure(TERMINAL_SCROLLBACK_LINES, cursor);
+    terminal.configure(
+        settings.terminal_scrollback_lines,
+        cursor,
+        settings.terminal_cursor_blink,
+    );
 }
 
 /// The UI typeface is pinned to the bundled Inter (`assets/fonts/Inter-*.ttf`);
@@ -330,7 +338,11 @@ pub struct AppSettings {
     pub dark_terminal_theme: DarkTerminalTheme,
     pub terminal_font_family: TerminalFontFamily,
     pub terminal_font_size: u16,
+    pub terminal_line_height: f32,
     pub terminal_cursor_style: TerminalCursorStyle,
+    pub terminal_cursor_blink: bool,
+    pub terminal_scrollback_lines: usize,
+    pub terminal_copy_on_select: bool,
     pub option_as_meta: runner_app::terminal_ime::OptionAsMeta,
     pub sidebar_width: f32,
     pub roles_page_size: usize,
@@ -385,7 +397,11 @@ impl Default for AppSettings {
             dark_terminal_theme: DarkTerminalTheme::Runner,
             terminal_font_family: TerminalFontFamily::default(),
             terminal_font_size: TERMINAL_FONT_SIZE_DEFAULT,
+            terminal_line_height: TERMINAL_LINE_HEIGHT_DEFAULT,
             terminal_cursor_style: TerminalCursorStyle::Block,
+            terminal_cursor_blink: false,
+            terminal_scrollback_lines: TERMINAL_SCROLLBACK_DEFAULT,
+            terminal_copy_on_select: false,
             option_as_meta: Default::default(),
             sidebar_width: SIDEBAR_DEFAULT,
             roles_page_size: runner_app::ui::DEFAULT_PAGE_SIZE,
@@ -460,6 +476,9 @@ impl AppSettings {
     pub fn normalize(&mut self) {
         self.app_zoom = normalize_zoom(self.app_zoom);
         self.terminal_font_size = normalize_terminal_font_size(self.terminal_font_size);
+        self.terminal_line_height = normalize_terminal_line_height(self.terminal_line_height);
+        self.terminal_scrollback_lines =
+            normalize_terminal_scrollback(self.terminal_scrollback_lines);
         self.sidebar_width = normalize_sidebar_width(self.sidebar_width);
         self.roles_page_size = runner_app::ui::list::normalize_page_size(self.roles_page_size);
         self.crews_page_size = runner_app::ui::list::normalize_page_size(self.crews_page_size);
@@ -544,6 +563,25 @@ pub fn normalize_terminal_font_size(value: u16) -> u16 {
     } else {
         value.clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX)
     }
+}
+
+pub fn normalize_terminal_line_height(value: f32) -> f32 {
+    if !value.is_finite() {
+        return TERMINAL_LINE_HEIGHT_DEFAULT;
+    }
+    let tenths = (value * 10.).round() as i32;
+    tenths.clamp(
+        (TERMINAL_LINE_HEIGHT_MIN * 10.) as i32,
+        (TERMINAL_LINE_HEIGHT_MAX * 10.) as i32,
+    ) as f32
+        / 10.
+}
+
+pub fn normalize_terminal_scrollback(value: usize) -> usize {
+    value.clamp(
+        TERMINAL_SCROLLBACK_PRESETS[0],
+        TERMINAL_SCROLLBACK_PRESETS[TERMINAL_SCROLLBACK_PRESETS.len() - 1],
+    )
 }
 
 pub fn normalize_sidebar_width(value: f32) -> f32 {
@@ -845,6 +883,57 @@ mod tests {
 
         assert_eq!(normalize_terminal_font_size(0), TERMINAL_FONT_SIZE_DEFAULT);
         assert_eq!(normalize_terminal_font_size(1), TERMINAL_FONT_SIZE_MIN);
+    }
+
+    #[test]
+    fn terminal_settings_default_round_trip_and_normalize() {
+        let old: AppSettings =
+            serde_json::from_str(r#"{"terminalFontSize":14,"terminalCursorStyle":"bar"}"#).unwrap();
+        assert_eq!(old.terminal_font_size, 14);
+        assert_eq!(old.terminal_line_height, 1.4);
+        assert!(!old.terminal_cursor_blink);
+        assert_eq!(old.terminal_scrollback_lines, 10_000);
+        assert!(!old.terminal_copy_on_select);
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("ui-settings.json");
+        let settings = AppSettings {
+            terminal_font_size: 8,
+            terminal_line_height: 1.1,
+            terminal_cursor_blink: true,
+            terminal_scrollback_lines: 50_000,
+            terminal_copy_on_select: true,
+            ..AppSettings::default()
+        };
+        settings.save(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(json["terminalLineHeight"], serde_json::json!(1.1));
+        assert_eq!(json["terminalCursorBlink"], true);
+        assert_eq!(json["terminalScrollbackLines"], 50_000);
+        assert_eq!(json["terminalCopyOnSelect"], true);
+        assert_eq!(AppSettings::load(&path).unwrap(), settings);
+
+        fs::write(
+            &path,
+            r#"{"terminalFontSize":40,"terminalLineHeight":1.94,"terminalScrollbackLines":7000}"#,
+        )
+        .unwrap();
+        let loaded = AppSettings::load(&path).unwrap();
+        assert_eq!(loaded.terminal_font_size, 32);
+        assert_eq!(loaded.terminal_line_height, 1.6);
+        assert_eq!(loaded.terminal_scrollback_lines, 7_000);
+
+        assert_eq!(normalize_terminal_font_size(7), 8);
+        assert_eq!(normalize_terminal_font_size(20), 20);
+        assert_eq!(normalize_terminal_line_height(1.24), 1.2);
+        assert_eq!(normalize_terminal_line_height(1.25), 1.3);
+        assert_eq!(normalize_terminal_line_height(0.5), 1.0);
+        assert_eq!(normalize_terminal_line_height(f32::NAN), 1.4);
+        assert_eq!(normalize_terminal_scrollback(0), 1_000);
+        assert_eq!(normalize_terminal_scrollback(1_000_000), 50_000);
+        for preset in TERMINAL_SCROLLBACK_PRESETS {
+            assert_eq!(normalize_terminal_scrollback(preset), preset);
+        }
     }
 
     #[test]

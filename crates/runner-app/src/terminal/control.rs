@@ -347,8 +347,7 @@ pub(crate) fn measure_panes<E: ParentElement>(
                                     .text_system()
                                     .em_advance(font, font_size)
                                     .unwrap_or(gpui::px(style.font_size * 0.6));
-                                let line_height =
-                                    (style.font_size * super::element::LINE_HEIGHT_FACTOR).round();
+                                let line_height = style.row_height();
                                 let size = runner_app::terminal_resize::terminal_grid_size(
                                     f32::from(bounds.size.width),
                                     f32::from(bounds.size.height),

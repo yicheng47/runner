@@ -483,6 +483,9 @@ pub struct TerminalMirror {
     /// lock sees the mark that matches the grid.
     scroll_mark: Mutex<find::ScrollMark>,
     viewport_holds: Arc<AtomicUsize>,
+    /// Keys, typed text and pastes sent, so a blinking cursor shows again
+    /// before the echo arrives.
+    typed: AtomicU64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -723,6 +726,7 @@ impl TerminalMirror {
             coalesce_bursts,
             scroll_mark: Mutex::default(),
             viewport_holds: Arc::default(),
+            typed: AtomicU64::new(0),
         });
         mirror.restore(&attachment);
         mirror.refresh_metadata();
@@ -826,13 +830,15 @@ impl TerminalMirror {
     pub fn palette(&self) -> palette::TerminalPalette {
         self.palette.lock().unwrap().theme
     }
-    pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape) {
+    /// `blinking` is the default cursor's; a program's DECSCUSR still sets
+    /// its own. It stays app-side: runnerd's model never draws a cursor.
+    pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape, blinking: bool) {
         let config = Config {
             scrolling_history: scrollback,
             semantic_escape_chars: XTERM_WORD_SEPARATORS.to_owned(),
             default_cursor_style: CursorStyle {
                 shape: cursor_shape,
-                blinking: true,
+                blinking,
             },
             ..term_config()
         };
@@ -1018,7 +1024,7 @@ impl TerminalMirror {
         match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, mode) {
             Some(bytes) => {
                 self.observe_input(&input);
-                self.write_user_bytes(&bytes)?;
+                self.write_typed_bytes(&bytes)?;
                 Ok(true)
             }
             None => Ok(false),
@@ -1033,7 +1039,7 @@ impl TerminalMirror {
                 text: text.to_owned(),
             },
         });
-        self.write_user_bytes(text.as_bytes())
+        self.write_typed_bytes(text.as_bytes())
     }
     pub fn set_composing(self: &Arc<Self>, composing: bool) {
         let mut pending = self.composition_clear_pending.lock().unwrap();
@@ -1093,7 +1099,19 @@ impl TerminalMirror {
         self.observe_input(&InputEvent::Paste {
             text: text.to_owned(),
         });
-        self.write_user_bytes(&crate::mappings::encode_paste(text, bracketed))
+        self.write_typed_bytes(&crate::mappings::encode_paste(text, bracketed))
+    }
+    fn write_typed_bytes(&self, bytes: &[u8]) -> std::result::Result<(), ClientError> {
+        self.write_user_bytes(bytes)?;
+        if self.control().desktop() {
+            self.typed.fetch_add(1, Ordering::Relaxed);
+            (self.waker)();
+        }
+        Ok(())
+    }
+    /// How many keys, typed texts and pastes this mirror has sent.
+    pub fn typed_count(&self) -> u64 {
+        self.typed.load(Ordering::Relaxed)
     }
     fn observe_input(&self, input: &InputEvent) {
         if !self.control().desktop() {
@@ -2787,7 +2805,7 @@ mod tests {
         // A burst past the scrollback leaves a held viewport at its top, also
         // when it scrolls the ring buffer's whole length (1005 rows here) so
         // the same row allocations come back to the top.
-        mirror.configure(20, CursorShape::Block);
+        mirror.configure(20, CursorShape::Block, false);
         for (seq, burst) in [(8, 40), (9, 1005), (10, 1007)] {
             let mark = mirror.scroll_mark();
             let hold = mirror.hold_viewport();

@@ -177,7 +177,11 @@ struct TerminalSettingsSnapshot {
     is_light: bool,
     font_family: TerminalFontFamily,
     font_size: u16,
+    line_height_tenths: u16,
     cursor_style: TerminalCursorStyle,
+    cursor_blink: bool,
+    scrollback_lines: usize,
+    copy_on_select: bool,
 }
 
 impl From<&AppSettings> for TerminalSettingsSnapshot {
@@ -194,7 +198,11 @@ impl TerminalSettingsSnapshot {
             is_light: variant.is_light(),
             font_family: settings.terminal_font_family.clone(),
             font_size: settings.terminal_font_size,
+            line_height_tenths: (settings.terminal_line_height * 10.).round() as u16,
             cursor_style: settings.terminal_cursor_style,
+            cursor_blink: settings.terminal_cursor_blink,
+            scrollback_lines: settings.terminal_scrollback_lines,
+            copy_on_select: settings.terminal_copy_on_select,
         }
     }
 }

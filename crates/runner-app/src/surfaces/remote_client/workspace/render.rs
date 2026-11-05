@@ -123,7 +123,7 @@ impl RemoteClient {
                         f32::from(bounds.size.width),
                         f32::from(bounds.size.height),
                         f32::from(cell),
-                        (style.font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round(),
+                        style.row_height(),
                     ) {
                         let owner = owner.clone();
                         let session = session.clone();

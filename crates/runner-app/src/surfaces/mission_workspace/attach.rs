@@ -240,7 +240,8 @@ impl MissionWorkspace {
             .max(160.);
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        let line_height =
+            crate::terminal::element::row_height(font_size, self.settings(cx).terminal_line_height);
         (
             (width / cell_width).floor().max(2.) as u16,
             (height / line_height).floor().max(2.) as u16,
@@ -292,7 +293,8 @@ impl MissionWorkspace {
             .max(80. * zoom);
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
-        let line_height = (font_size * crate::terminal::element::LINE_HEIGHT_FACTOR).round();
+        let line_height =
+            crate::terminal::element::row_height(font_size, self.settings(cx).terminal_line_height);
         (
             (width / cell_width).floor().max(2.) as u16,
             (height / line_height).floor().max(2.) as u16,

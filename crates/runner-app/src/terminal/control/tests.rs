@@ -272,6 +272,8 @@ impl Render for ControlView {
                 .font(cx),
             font_size: 14.,
             app_zoom: 1.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
         };
         let panes = self
             .chats
@@ -444,6 +446,8 @@ fn hidden_mission_slots_use_the_slot_pane_and_closed_drawers_keep_the_grid() {
                     .font(cx),
                 font_size: 14.,
                 app_zoom: 1.,
+                line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+                copy_on_select: false,
             };
             let chats = self.chats.iter().collect::<Vec<_>>();
             let body = measure_panes(div().relative().flex_1().min_h(gpui::px(0.)), &chats, style);
