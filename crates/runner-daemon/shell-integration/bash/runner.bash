@@ -16,7 +16,7 @@ __runner_osc7_sent_elsewhere() {
   while (( i < ${#queue[@]} && i < 20000 && budget > 0 )); do
     f=${queue[i]}
     i=$((i + 1))
-    [[ -z $f || $f == __runner_osc7* ]] && continue
+    [[ -z $f || $f == __runner_osc* ]] && continue
     builtin declare -F -- "$f" >/dev/null 2>&1 || continue
     [[ $__runner_osc7_seen == *" $f "* ]] && continue
     __runner_osc7_seen+="$f "
@@ -94,13 +94,32 @@ __runner_osc7() {
   return $status
 }
 
+# FinalTerm marks for the terminal's status: C from PS0 as a command
+# starts, D then A once the shell is back at a prompt. They need bash 4.4's
+# PS0; older bash sends none, so its status still follows its output. They
+# stay when the OSC 7 hook removes itself, and put C back if PS0 is reset.
+__runner_osc133() {
+  builtin local status=$?
+  [[ ${PS0-} == *"$__runner_osc133_start"* ]] || PS0=${PS0-}$__runner_osc133_start
+  builtin printf '\033]133;D\033\\\033]133;A\033\\'
+  return $status
+}
+
 __runner_osc7_bootstrap='. "$RUNNER_BASH_INTEGRATION"'
-if [[ "$(builtin declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
-  PROMPT_COMMAND=("${PROMPT_COMMAND[@]//"$__runner_osc7_bootstrap"/__runner_osc7}")
+__runner_prompt_entry=__runner_osc7
+if (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then
+  __runner_osc133_start='\e]133;C\e\\'
+  __runner_prompt_entry="__runner_osc133; __runner_osc7"
 else
-  PROMPT_COMMAND=${PROMPT_COMMAND//"$__runner_osc7_bootstrap"/__runner_osc7}
+  builtin unset -f __runner_osc133
+fi
+if [[ "$(builtin declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
+  PROMPT_COMMAND=("${PROMPT_COMMAND[@]//"$__runner_osc7_bootstrap"/$__runner_prompt_entry}")
+else
+  PROMPT_COMMAND=${PROMPT_COMMAND//"$__runner_osc7_bootstrap"/$__runner_prompt_entry}
 fi
 builtin export -n PROMPT_COMMAND
-builtin unset RUNNER_BASH_INTEGRATION __runner_osc7_bootstrap
+builtin unset RUNNER_BASH_INTEGRATION __runner_osc7_bootstrap __runner_prompt_entry
+[[ -z ${__runner_osc133_start-} ]] || __runner_osc133
 __runner_osc7
 builtin eval "builtin unset __runner_osc7_status; builtin return $__runner_osc7_status"

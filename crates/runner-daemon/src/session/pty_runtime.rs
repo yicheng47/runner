@@ -295,6 +295,9 @@ impl SessionRuntime for PtyRuntime {
         });
         let mut idle_detector =
             IdleDetector::with_adapter_at(DEFAULT_IDLE_THRESHOLD, terminal_adapter, Instant::now());
+        if spec.agent_runtime == Some(crate::model::Runtime::Shell) {
+            idle_detector.read_shell_marks();
+        }
         idle_detector.awaiting_first_hook = spec.mission && hook_status.is_some();
         if hook_status.is_none() {
             if spec.mission {
@@ -738,6 +741,10 @@ pub(crate) struct IdleDetector {
     adapter: Option<Box<dyn crate::runtimes::TerminalAdapter>>,
     input_transition: bool,
     pending_cancel: u8,
+    /// A terminal shell's command marks. Once a D shows the shell sends them,
+    /// they alone set its activity: output, silence and resizes no longer do.
+    shell_marks: Option<runner_terminal::program_status::ShellMarks>,
+    follows_shell_marks: bool,
 }
 
 impl IdleDetector {
@@ -758,7 +765,12 @@ impl IdleDetector {
             adapter,
             input_transition,
             pending_cancel: 0,
+            shell_marks: None,
+            follows_shell_marks: false,
         }
+    }
+    pub(crate) fn read_shell_marks(&mut self) {
+        self.shell_marks = Some(Default::default());
     }
     #[cfg(test)]
     pub(crate) fn new_at(threshold: Duration, now: Instant) -> Self {
@@ -776,6 +788,27 @@ impl IdleDetector {
         use crate::runtimes::TerminalEvent;
         if !bytes.is_empty() {
             self.first_output.get_or_insert(now);
+        }
+        if let Some(marks) = self.shell_marks.as_mut() {
+            use runner_terminal::program_status::ShellMark;
+            let previous = self.current;
+            for mark in marks.scan(bytes) {
+                match mark {
+                    ShellMark::CommandFinished => {
+                        self.follows_shell_marks = true;
+                        self.current = SessionActivityState::Idle;
+                    }
+                    // An agent's transcript zones send C too, so C alone
+                    // cannot show that a shell without the integration has it.
+                    ShellMark::CommandStarted if self.follows_shell_marks => {
+                        self.current = SessionActivityState::Busy;
+                    }
+                    ShellMark::CommandStarted => {}
+                }
+            }
+            if self.follows_shell_marks {
+                return (self.current != previous).then_some(TerminalEvent::Activity(self.current));
+            }
         }
         let (event, activity_bytes) = if let Some(adapter) = self.adapter.as_mut() {
             let event = adapter.on_output(bytes);
@@ -918,7 +951,8 @@ impl IdleDetector {
         if std::mem::take(&mut self.input_transition) {
             return Some(TerminalEvent::Activity(self.current));
         }
-        if self.current == SessionActivityState::Busy
+        if !self.follows_shell_marks
+            && self.current == SessionActivityState::Busy
             && now.duration_since(self.last_byte) >= self.threshold
         {
             self.current = SessionActivityState::Idle;
@@ -1867,6 +1901,109 @@ mod tests {
         assert_eq!(
             detector.tick_at(start + threshold + Duration::from_secs(1)),
             None
+        );
+    }
+
+    #[test]
+    fn shell_detector_uses_silence_until_its_first_command_mark() {
+        use SessionActivityState::{Busy, Idle};
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut detector = IdleDetector::new_at(DEFAULT_IDLE_THRESHOLD, start);
+        detector.read_shell_marks();
+
+        assert_eq!(detector.on_output_at(b"motd\r\n", false, at(10)), None);
+        assert_eq!(
+            detector.tick_at(at(10) + DEFAULT_IDLE_THRESHOLD),
+            Some(Idle)
+        );
+        assert_eq!(detector.on_output_at(b"x", true, at(2100)), None);
+        assert_eq!(detector.on_output_at(b"x", false, at(2200)), Some(Busy));
+
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;D\x1b\\\x1b]133;A\x1b", false, at(2300)),
+            Some(Idle)
+        );
+        assert_eq!(detector.on_output_at(b"\\% ", false, at(2301)), None);
+        for (bytes, quiet) in [(b"l".as_slice(), false), (b"\x1b[2J% ", true)] {
+            assert_eq!(detector.on_output_at(bytes, quiet, at(2400)), None);
+        }
+        assert_eq!(
+            detector.on_output_at(b"s\r\n\x1b]133;C\x07", false, at(2500)),
+            Some(Busy)
+        );
+        assert_eq!(detector.tick_at(at(60_000)), None);
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;A\x07\x1b]133;C\x07", false, at(60_001)),
+            None
+        );
+        assert_eq!(
+            detector.on_output_at(b"out\x1b]133;D;0\x07\x1b]133;A\x07", false, at(60_002)),
+            Some(Idle)
+        );
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;A\x07", false, at(60_003)),
+            None
+        );
+        assert_eq!(detector.tick_at(at(120_000)), None);
+    }
+
+    #[test]
+    fn shell_without_the_integration_keeps_silence_after_a_childs_c_marks() {
+        use SessionActivityState::{Busy, Idle};
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut detector = IdleDetector::new_at(DEFAULT_IDLE_THRESHOLD, start);
+        detector.read_shell_marks();
+        assert_eq!(detector.tick_at(at(2000)), Some(Idle));
+        let zones = b"\x1b]133;A\x07you\x1b]133;B\x07\x1b]133;C\x07agent";
+        assert_eq!(detector.on_output_at(zones, false, at(2100)), Some(Busy));
+        assert_eq!(
+            detector.tick_at(at(2100) + DEFAULT_IDLE_THRESHOLD),
+            Some(Idle)
+        );
+        assert_eq!(detector.on_output_at(b"$ ", false, at(5000)), Some(Busy));
+        assert_eq!(
+            detector.tick_at(at(5000) + DEFAULT_IDLE_THRESHOLD),
+            Some(Idle)
+        );
+    }
+
+    #[test]
+    fn shell_marks_in_one_read_apply_in_order() {
+        use SessionActivityState::{Busy, Idle};
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(DEFAULT_IDLE_THRESHOLD, start);
+        detector.read_shell_marks();
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;D\x07\x1b]133;A\x07$ ", false, start),
+            Some(Idle)
+        );
+        let fast = b"\x1b]133;C\x07x\r\n\x1b]133;D\x07\x1b]133;A\x07$ ";
+        assert_eq!(detector.on_output_at(fast, false, start), None);
+        let next = b"\x1b]133;D\x07\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07";
+        assert_eq!(detector.on_output_at(next, false, start), Some(Busy));
+    }
+
+    #[test]
+    fn agent_detector_ignores_shell_marks() {
+        let start = Instant::now();
+        let mut detector = IdleDetector::new_at(DEFAULT_IDLE_THRESHOLD, start);
+        assert_eq!(
+            detector.tick_at(start + DEFAULT_IDLE_THRESHOLD),
+            Some(SessionActivityState::Idle)
+        );
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;C\x07", false, start + Duration::from_secs(3)),
+            Some(SessionActivityState::Busy)
+        );
+        assert_eq!(
+            detector.on_output_at(b"\x1b]133;D\x07", false, start + Duration::from_secs(4)),
+            None
+        );
+        assert_eq!(
+            detector.tick_at(start + Duration::from_secs(4) + DEFAULT_IDLE_THRESHOLD),
+            Some(SessionActivityState::Idle)
         );
     }
 

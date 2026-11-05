@@ -20,7 +20,7 @@ Press **⌘D** / **Ctrl+D** to split right, or **⇧⌘D** / **Ctrl+Shift+D** to
 
 ## Open a shell
 
-Press **⌘T** / **Ctrl+Shift+T** to open a terminal. Split a chat pane first to place a shell beside the agent. Chat and terminal tabs have no terminal drawer; **⌥F12** / **Alt+F12** remains a mission-workspace shortcut. A terminal has no Stop or Restart: use Ctrl+C to interrupt a command, and × or `exit` to close its pane. From a chat tab, **New terminal** in the command palette fills an available empty pane or opens a terminal tab; in a mission workspace it adds a drawer shell.
+Press **⌘T** / **Ctrl+Shift+T** to open a terminal. Split a chat pane first to place a shell beside the agent. Chat and terminal tabs have no terminal drawer; **⌥F12** / **Alt+F12** remains a mission-workspace shortcut. A terminal has no Stop or Restart: use Ctrl+C to interrupt a command, and × or `exit` to close its pane. From a chat tab, **New terminal** in the command palette fills an available empty pane or opens a terminal tab; in a mission workspace it adds a drawer shell. Unless the program running in a terminal reports its own status, the terminal's status dot in the sidebar shows the shell's activity: Working while a command runs, including a program left open such as `vim` or `ssh`, and Idle at the prompt. zsh, and bash 4.4 or later, on macOS and Linux mark where each command starts and ends, so the dot changes as soon as a command does; other shells, including macOS's built-in bash 3.2, fish and every shell on Windows, show Working while the terminal prints output and Idle after two seconds without output.
 
 ## Close and return later
 
