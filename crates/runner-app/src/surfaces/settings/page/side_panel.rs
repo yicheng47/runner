@@ -120,16 +120,6 @@ fn section_heading(label: &'static str, selector: &'static str) -> Div {
         .child(crate::i18n::text(label))
 }
 
-fn group_label(label: &'static str) -> Div {
-    div()
-        .px_4()
-        .pt(rems(14. / 16.))
-        .text_size(theme::text_caption())
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme::faint())
-        .child(crate::i18n::text(label).to_uppercase())
-}
-
 /// Names `element` for tests, recording its fill for the theme snapshots.
 fn snapshot(id: &'static str, element: Div) -> Div {
     #[cfg(test)]
@@ -289,7 +279,7 @@ impl NativeRoot {
                     .child(panel::header_views(
                         PanelSurface::Chat,
                         &settings,
-                        None,
+                        panel::shown_view(PanelSurface::Chat, &settings, panel::PanelViewId::Info),
                         Rc::new(|_, _| {}),
                         IconButton::new("settings-preview-collapse", "panel-right-open.svg"),
                     )),
@@ -304,9 +294,7 @@ impl NativeRoot {
             .bg(theme::panel())
             .map(|card| snapshot("SETTINGS_SIDE_PANEL_VIEWS", card))
             .child(preview)
-            .child(group_label("side_panel.this_chat").when(!shown, |label| label.opacity(DIMMED)))
             .child(info_row)
-            .child(group_label("side_panel.project").when(!shown, |label| label.opacity(DIMMED)))
             .child(files_row);
 
         div()
@@ -439,14 +427,6 @@ impl NativeRoot {
             |settings| &mut settings.files_syntax_highlighting,
             cx,
         );
-        let single_click = toggle_row(
-            "settings-files-single-click",
-            "side_panel.single_click",
-            crate::i18n::text("side_panel.single_click_description").into(),
-            settings.files_single_click,
-            |settings| &mut settings.files_single_click,
-            cx,
-        );
 
         div()
             .flex()
@@ -497,7 +477,6 @@ impl NativeRoot {
                             .subtitle(crate::i18n::text("side_panel.font_size_description"))
                             .into_any_element(),
                         highlighting,
-                        single_click,
                         SettingsRow::new(
                             crate::i18n::text("side_panel.markdown_open_as"),
                             div()
@@ -642,23 +621,29 @@ mod tests {
                         .visual
                         .debug_bounds("SIDE_PANEL_HEADER_PREVIEW")
                         .unwrap();
+                    let title = page.visual.debug_bounds("SIDE_PANEL_TITLE Info").unwrap();
                     let info = page.visual.debug_bounds("PANEL_VIEW Info").unwrap();
                     let files = page.visual.debug_bounds("PANEL_VIEW Files").unwrap();
                     assert!(preview.contains(&info.center()) && preview.contains(&files.center()));
-                    assert!(info.right() < files.left(), "This chat left, Project right");
+                    assert!(title.right() < info.left() && info.right() < files.left());
+                    assert_fill_color(&mut page.visual, "PANEL_VIEW Info", Some(theme::raised()));
+                    assert_fill_color(&mut page.visual, "PANEL_VIEW Files", None);
                     assert!(
                         (preview.size.width - px(HEADER_PREVIEW_WIDTH)).abs() <= px(1.),
                         "a real-size header: {preview:?}"
                     );
 
                     // The preview redraws as the switches change.
+                    // Files alone: its title, and no view buttons.
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     assert!(!page.settings().info_view);
-                    assert!(!page.has("PANEL_VIEW Info") && page.has("PANEL_VIEW Files"));
+                    assert!(page.has("SIDE_PANEL_TITLE Files"));
+                    assert!(!page.has("PANEL_VIEW Info") && !page.has("PANEL_VIEW Files"));
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(!page.has("PANEL_VIEW Files"));
+                    assert!(!page.has("SIDE_PANEL_TITLE Files"));
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
+                    assert!(page.has("SIDE_PANEL_TITLE Info"));
                     assert!(page.has("PANEL_VIEW Info") && page.has("PANEL_VIEW Files"));
 
                     // Off: the switches keep their values and stop answering.
@@ -710,10 +695,12 @@ mod tests {
                         "room for Catppuccin beside its samples: {icons:?}"
                     );
 
+                    assert!(
+                        !page.has("SETTINGS_FILES_SINGLE_CLICK_TOGGLE"),
+                        "every open keeps its tab, with no setting"
+                    );
                     page.click("SETTINGS_FILES_HIGHLIGHTING_TOGGLE");
-                    page.click("SETTINGS_FILES_SINGLE_CLICK_TOGGLE");
-                    let settings = page.settings();
-                    assert!(!settings.files_syntax_highlighting && !settings.files_single_click);
+                    assert!(!page.settings().files_syntax_highlighting);
 
                     page.host
                         .update(&mut page.visual, |root, _, cx| {

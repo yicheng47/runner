@@ -39,6 +39,7 @@ use runner_terminal::palette::{self, TerminalPalette};
 use runner_terminal::terminal::{LinkTarget, TerminalLink, TerminalMirror};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
+use crate::file_links::FileLinkRoute;
 
 /// A terminal row's height in pixels: the font size times the line-height
 /// setting, rounded so rows land on whole pixels.
@@ -120,6 +121,7 @@ type CursorBlinkRestart = (u64, u64, GridPoint);
 struct LinkTooltip {
     target: LinkTarget,
     modifier_held: bool,
+    previews: bool,
     view: AnyView,
     mouse_position: Point<Pixels>,
 }
@@ -248,20 +250,22 @@ impl TerminalInteraction {
         &mut self,
         target: LinkTarget,
         modifier_held: bool,
+        previews: bool,
         mouse_position: Point<Pixels>,
         cx: &mut App,
     ) -> LinkTooltip {
-        if let Some(cached) = self
-            .link_tooltip
-            .as_ref()
-            .filter(|cached| cached.target == target && cached.modifier_held == modifier_held)
-        {
+        if let Some(cached) = self.link_tooltip.as_ref().filter(|cached| {
+            cached.target == target
+                && cached.modifier_held == modifier_held
+                && cached.previews == previews
+        }) {
             return cached.clone();
         }
-        let content = crate::file_links::link_tooltip_content(&target, modifier_held, cx);
+        let content = crate::file_links::link_tooltip_content(&target, modifier_held, previews, cx);
         let tooltip = LinkTooltip {
             target,
             modifier_held,
+            previews,
             view: tooltip_view(content, cx),
             mouse_position,
         };
@@ -493,6 +497,7 @@ impl TerminalInteraction {
         geometry: TerminalGeometry,
         interactive: bool,
         copy_on_select: bool,
+        file_links: Option<&FileLinkRoute>,
         cx: &mut Context<Self>,
     ) {
         let Some(button) = mouse_button(event.button) else {
@@ -522,7 +527,10 @@ impl TerminalInteraction {
                     LinkTarget::Url(uri) => cx.open_url(&uri),
                     LinkTarget::File { path, line, column } => {
                         let target = crate::file_links::FileLinkTarget { path, line, column };
-                        crate::file_links::open_file_link(target, cx);
+                        match file_links.cloned() {
+                            Some(route) => cx.defer(move |cx| route.open(target, cx)),
+                            None => crate::file_links::open_file_link(target, cx),
+                        }
                     }
                 }
             }
@@ -798,6 +806,7 @@ pub struct TerminalElement {
     pub(super) resize_owner: bool,
     pub(super) style: TerminalStyle,
     pub(super) find: Option<Entity<super::TerminalFind>>,
+    pub(super) file_links: Option<FileLinkRoute>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -836,6 +845,7 @@ impl TerminalElement {
             resize_owner,
             style,
             find: None,
+            file_links: None,
         }
     }
 
@@ -846,6 +856,12 @@ impl TerminalElement {
 
     pub(crate) fn find(mut self, find: Entity<super::TerminalFind>) -> Self {
         self.find = Some(find);
+        self
+    }
+
+    /// Opens ⌘-clicked file links through the surface's side panel.
+    pub(crate) fn file_links(mut self, route: Option<FileLinkRoute>) -> Self {
+        self.file_links = route;
         self
     }
 
@@ -933,12 +949,20 @@ impl TerminalElement {
         let interaction = self.interaction.clone();
         let interactive = self.interactive;
         let copy_on_select = self.style.copy_on_select;
+        let file_links = self.file_links.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
             if phase != DispatchPhase::Capture || interaction.read(cx).drag.is_none() {
                 return;
             }
             interaction.update(cx, |interaction, interaction_cx| {
-                interaction.mouse_up(event, geometry, interactive, copy_on_select, interaction_cx);
+                interaction.mouse_up(
+                    event,
+                    geometry,
+                    interactive,
+                    copy_on_select,
+                    file_links.as_ref(),
+                    interaction_cx,
+                );
             });
         });
 
@@ -1131,14 +1155,29 @@ impl Element for TerminalElement {
                 interaction.link_modifier_held,
             )
         });
-        if let Some(link) = hovered_link
+        // Until the panel knows whether the preview takes the file, the
+        // tooltip waits rather than naming the wrong destination.
+        let previews = hovered_link
             .as_ref()
             .filter(|_| self.interaction.read(cx).link_tooltip_visible())
-        {
+            .and_then(|link| match (&link.target, &self.file_links) {
+                (LinkTarget::File { path, .. }, Some(route)) => {
+                    let since = self.interaction.read(cx).hover_since?;
+                    let interaction = self.interaction.downgrade();
+                    let redraw = Rc::new(move |cx: &mut App| {
+                        let _ = interaction.update(cx, |_, cx| cx.notify());
+                    });
+                    route
+                        .previews(path, since, redraw, cx)
+                        .map(|previews| (link, previews))
+                }
+                _ => Some((link, false)),
+            });
+        if let Some((link, previews)) = previews {
             let mouse_position = window.mouse_position();
             let target = link.target.clone();
             let tooltip = self.interaction.update(cx, |interaction, cx| {
-                interaction.link_tooltip(target, link_modifier_held, mouse_position, cx)
+                interaction.link_tooltip(target, link_modifier_held, previews, mouse_position, cx)
             });
             let interaction = self.interaction.downgrade();
             window.set_tooltip(AnyTooltip {

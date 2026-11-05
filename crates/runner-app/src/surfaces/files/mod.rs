@@ -4,6 +4,7 @@
 mod code;
 mod document;
 mod highlight;
+mod links;
 mod markdown;
 pub(crate) mod picker;
 mod syntax;
@@ -29,6 +30,7 @@ use runner_core::protocol::files::{
 use runner_core::protocol::DaemonClient;
 
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
+pub(crate) use links::ShowPreview;
 #[allow(unused_imports)]
 pub(crate) use view::FileOpen;
 pub(crate) use view::FilesView;
@@ -47,7 +49,6 @@ pub(super) struct Look {
     font: String,
     size: u16,
     pub(super) highlighting: bool,
-    single_click: bool,
 }
 
 impl Look {
@@ -63,7 +64,6 @@ impl Look {
                 .to_owned(),
             size: settings.files_font_size(),
             highlighting: settings.files_syntax_highlighting,
-            single_click: settings.files_single_click,
         })
     }
 }
@@ -183,6 +183,25 @@ impl FilesPanel {
         let excess = views.len().saturating_sub(KEPT_VIEWS);
         views.drain(..excess);
         view.into_any_element()
+    }
+
+    /// The subject's view for a ⌘-clicked link, made when the panel has not
+    /// shown it yet, so its root resolves.
+    pub(crate) fn link_view(&self, context: &PanelContext, cx: &mut App) -> Entity<FilesView> {
+        let mut views = self.views.borrow_mut();
+        if let Some((_, view)) = views
+            .iter()
+            .find(|(subject, _)| *subject == context.subject)
+        {
+            let view = view.clone();
+            view.update(cx, |view, cx| view.set_context(context.clone(), cx));
+            return view;
+        }
+        let view = cx.new(|cx| FilesView::new(context.clone(), cx));
+        views.push((context.subject.clone(), view.clone()));
+        let excess = views.len().saturating_sub(KEPT_VIEWS);
+        views.drain(..excess);
+        view
     }
 
     /// Whether the subject's view has a file open, widening the panel, and

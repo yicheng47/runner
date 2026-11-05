@@ -47,7 +47,7 @@ Appearance keeps Theme, Window material (macOS), the side-by-side theme preview 
 ### Out of scope
 
 - A live preview in the Terminal pane (option B).
-- Moving "Open file links in": it stays in General, since the #634 file viewer uses the same editor setting.
+- Moving "Open file links in": it stayed in General, since the #634 file viewer used the same editor setting; #634 m7 later removed the row, leaving the viewer's Open in control as the only place to choose the editor (Jason, 2026-11-05).
 - Free-form scrollback entry, unlimited scrollback or a memory readout.
 - Any change to palettes themselves, or to the Keyboard shortcuts pane.
 
