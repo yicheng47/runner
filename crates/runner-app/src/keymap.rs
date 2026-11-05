@@ -967,7 +967,7 @@ fn shifted_printable_key(code: &str) -> Option<&'static str> {
     })
 }
 
-fn binding_strings(combo: &KeyCombo) -> Vec<String> {
+pub(crate) fn binding_strings(combo: &KeyCombo) -> Vec<String> {
     let key = if combo
         .code
         .strip_prefix("Key")
@@ -1085,6 +1085,30 @@ pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
     ]);
 }
 
+/// Zoom's keys, as bound or rebound, step the file viewer's text while it has
+/// focus instead of the app (Jason, 2026-11-05); from the tree the Files
+/// view hands them on to the app's zoom. Installed after app zoom's
+/// bindings, since the later of two equally deep bindings wins.
+pub(crate) fn install_file_zoom_bindings(cx: &mut App, overrides: &KeymapOverrides) {
+    let combos = |id| {
+        effective_binding(id, overrides)
+            .map(|combo| binding_strings(&combo))
+            .unwrap_or_default()
+    };
+    // The find field is a text input inside the viewer.
+    for context in [Some("FileViewer"), Some("FileViewer > TextInput")] {
+        for binding in combos("zoom-in") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileIn, context)]);
+        }
+        for binding in combos("zoom-out") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileOut, context)]);
+        }
+        for binding in combos("zoom-reset") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileReset, context)]);
+        }
+    }
+}
+
 pub(crate) fn install_bindings(
     cx: &mut App,
     overrides: &KeymapOverrides,
@@ -1184,6 +1208,8 @@ pub(crate) fn install_bindings(
             cx.bind_keys([key_binding]);
         }
     }
+    // After app zoom's own bindings, which a later binding outranks.
+    install_file_zoom_bindings(cx, overrides);
     install_modal_bindings(cx);
 }
 
@@ -2234,6 +2260,30 @@ mod tests {
             (None, None) => {}
             _ => panic!("{key} in {stack:?}: expected {action:?}, got {actual:?}"),
         }
+    }
+
+    #[test]
+    fn zoom_keys_and_their_rebinds_step_the_file_text_only_in_the_viewer() {
+        let mut overrides = KeymapOverrides::new();
+        let rebound = combo_for("KeyK", false);
+        overrides.insert("zoom-in".into(), Some(rebound.clone()));
+        let rebound = binding_strings(&rebound)[0].clone();
+        let reset = binding_strings(&entry("zoom-reset").unwrap().default)[0].clone();
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
+            for viewer in [
+                &["Root", "FileViewer"][..],
+                &["Root", "FileViewer", "TextInput"],
+            ] {
+                assert_fires(cx, &rebound, viewer, Some(&crate::ZoomFileIn));
+                assert_fires(cx, &reset, viewer, Some(&crate::ZoomFileReset));
+            }
+            for elsewhere in [TERMINAL, SIDEBAR] {
+                assert_fires(cx, &rebound, elsewhere, Some(&ZoomIn));
+                assert_fires(cx, &reset, elsewhere, Some(&ZoomReset));
+            }
+        });
     }
 
     const TERMINAL: &[&str] = &["Root", "ChatSplit", "Terminal"];

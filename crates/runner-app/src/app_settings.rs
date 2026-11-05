@@ -274,19 +274,6 @@ pub enum FileLinkEditor {
 impl FileLinkEditor {
     pub const ALL: [Self; 4] = [Self::DefaultApp, Self::Zed, Self::VsCode, Self::Cursor];
 
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::DefaultApp => "default-app",
-            Self::Zed => "zed",
-            Self::VsCode => "vscode",
-            Self::Cursor => "cursor",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|editor| editor.key() == value)
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             Self::DefaultApp => crate::i18n::text("ui.default_app"),
@@ -302,20 +289,6 @@ impl FileLinkEditor {
             Self::Zed => Some("zed"),
             Self::VsCode => Some("code"),
             Self::Cursor => Some("cursor"),
-            Self::DefaultApp => None,
-        }
-    }
-
-    /// Where the editor's own UI installs that CLI.
-    pub fn install_hint(self) -> Option<&'static str> {
-        match self {
-            Self::Zed => Some(crate::i18n::text("ui.in_zed_run_zed_install_cli")),
-            Self::VsCode => Some(crate::i18n::text(
-                "ui.in_vs_code_run_shell_command_install_code_command_in_path",
-            )),
-            Self::Cursor => Some(crate::i18n::text(
-                "ui.in_cursor_run_shell_command_install_cursor_command",
-            )),
             Self::DefaultApp => None,
         }
     }
@@ -406,7 +379,6 @@ pub struct AppSettings {
     /// `None` follows the terminal's font size.
     pub files_font_size: Option<u16>,
     pub files_syntax_highlighting: bool,
-    pub files_single_click: bool,
     pub markdown_open_as: MarkdownOpenAs,
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
@@ -476,7 +448,6 @@ impl Default for AppSettings {
             files_font_family: None,
             files_font_size: None,
             files_syntax_highlighting: true,
-            files_single_click: true,
             markdown_open_as: MarkdownOpenAs::Rendered,
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
@@ -872,11 +843,6 @@ mod tests {
         assert!(json.contains(r#""fileLinkEditor":"vscode""#), "{json}");
         let reloaded: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(reloaded.file_link_editor, FileLinkEditor::VsCode);
-        assert_eq!(
-            FileLinkEditor::parse("cursor"),
-            Some(FileLinkEditor::Cursor)
-        );
-        assert_eq!(FileLinkEditor::parse("emacs"), None);
     }
 
     #[test]
@@ -888,7 +854,7 @@ mod tests {
         assert_eq!(old.files_font_family, None);
         assert_eq!(old.files_font_size, None);
         assert_eq!(old.files_font_size(), TERMINAL_FONT_SIZE_DEFAULT);
-        assert!(old.files_syntax_highlighting && old.files_single_click);
+        assert!(old.files_syntax_highlighting);
         assert_eq!(old.markdown_open_as, MarkdownOpenAs::Rendered);
         assert_eq!(old, AppSettings::default());
 
@@ -902,7 +868,6 @@ mod tests {
             files_font_family: Some(TerminalFontFamily::new("Berkeley Mono")),
             files_font_size: Some(17),
             files_syntax_highlighting: false,
-            files_single_click: false,
             markdown_open_as: MarkdownOpenAs::Source,
             ..AppSettings::default()
         };
@@ -914,6 +879,10 @@ mod tests {
         assert_eq!(json["filesFontSize"], 17);
         assert_eq!(json["markdownOpenAs"], "source");
         assert_eq!(AppSettings::load(&path).unwrap(), settings);
+        // The removed Open with a single click is ignored on load.
+        let saved: AppSettings =
+            serde_json::from_str(r#"{"appZoom":1.0,"filesSingleClick":false}"#).unwrap();
+        assert_eq!(saved, AppSettings::default());
         for set in IconSet::ALL {
             assert_eq!(IconSet::from_key(set.key()), Some(set));
         }

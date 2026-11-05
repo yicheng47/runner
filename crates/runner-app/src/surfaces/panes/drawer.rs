@@ -135,6 +135,7 @@ pub(crate) struct TerminalSurface {
     pub(crate) resize_owner: bool,
     pub(crate) scrollable: bool,
     pub(crate) find: Option<Entity<crate::terminal::TerminalFind>>,
+    pub(crate) file_links: Option<crate::file_links::FileLinkRoute>,
 }
 
 impl TerminalSurface {
@@ -173,6 +174,7 @@ impl TerminalSurface {
                             self.style,
                         )
                         .scrollable(self.scrollable)
+                        .file_links(self.file_links)
                         .map(|element| match self.find {
                             Some(find) => element.find(find),
                             None => element,

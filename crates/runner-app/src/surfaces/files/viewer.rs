@@ -61,6 +61,8 @@ pub(super) struct OpenFile {
     rendered: Option<Entity<MarkdownView>>,
     /// Whether a Markdown file shows its source.
     source: bool,
+    /// The line a ⌘-clicked link cites, shown once the file reads.
+    line: Option<u32>,
 }
 
 /// A Markdown file's page and the local images it shows.
@@ -260,11 +262,6 @@ impl FilesView {
             return;
         }
         self.look = look;
-        if self.look.as_ref().is_some_and(|look| !look.single_click) {
-            // No previews while single clicks keep their tabs: the one
-            // open now stays, and turning previews back on leaves it kept.
-            self.viewer.tabs.keep_all();
-        }
         for file in self.viewer.files.values() {
             if let Content::Text(view) | Content::Deleted(Some(view)) = &file.content {
                 view.update(cx, |view, cx| view.settings_changed(cx));
@@ -280,26 +277,41 @@ impl FilesView {
         !self.viewer.tabs.is_empty()
     }
 
-    /// Opens `path` in the preview tab, or a kept tab with `keep` or when
-    /// Settings → Side panel → Files turns single-click previews off.
-    pub(crate) fn open_file(&mut self, path: String, keep: bool, cx: &mut Context<Self>) {
-        let keep = keep || super::settings(cx).is_some_and(|settings| !settings.files_single_click);
-        let opened = self.viewer.tabs.open(&path, keep);
-        self.after_open(path, opened, cx);
+    /// Opens `path` in a tab of its own, or switches to its tab.
+    pub(crate) fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let new = self.viewer.tabs.open(&path);
+        self.after_open(path, new, cx);
     }
 
-    /// Opens `path` in a kept tab beside the active one, keeping every
-    /// other tab, as a link in a rendered page does.
-    fn open_beside(&mut self, path: String, cx: &mut Context<Self>) {
-        let opened = self.viewer.tabs.open_beside(&path);
-        self.after_open(path, opened, cx);
-    }
-
-    fn after_open(&mut self, path: String, opened: super::tabs::Opened, cx: &mut Context<Self>) {
-        if let Some(replaced) = opened.replaced {
-            self.viewer.files.remove(&replaced);
+    /// A ⌘-clicked link in a terminal: `path` in its tab, at `line`. A
+    /// Markdown file cited at a line shows its source there.
+    pub(super) fn open_cited(&mut self, path: String, line: Option<u32>, cx: &mut Context<Self>) {
+        self.open_file(path.clone(), cx);
+        if let Some(file) = self.viewer.files.get_mut(&path) {
+            file.line = line;
+            if line.is_some() && is_markdown(&path) {
+                file.source = true;
+            }
         }
-        if opened.new {
+        self.show_line(&path, cx);
+    }
+
+    /// Scrolls to the line a link cited once the file's text is in.
+    fn show_line(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(file) = self.viewer.files.get_mut(path) else {
+            return;
+        };
+        let Content::Text(view) = &file.content else {
+            return;
+        };
+        if let Some(line) = file.line.take() {
+            view.update(cx, |view, cx| view.go_to_line(line, cx));
+        }
+        cx.notify();
+    }
+
+    fn after_open(&mut self, path: String, new: bool, cx: &mut Context<Self>) {
+        if new {
             let source = super::settings(cx)
                 .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
             self.viewer.files.insert(
@@ -309,6 +321,7 @@ impl FilesView {
                     read: 0,
                     rendered: None,
                     source,
+                    line: None,
                 },
             );
             self.read_file(path.clone(), cx);
@@ -347,7 +360,8 @@ impl FilesView {
     }
 
     /// Whether the tree is drawn: always without a file open, and beside
-    /// one while its toggle is on and the panel has room.
+    /// one while its toggle is on, which the owner's layout follows
+    /// (Jason, 2026-11-05).
     pub(super) fn tree_shown(&self) -> bool {
         !self.has_tabs()
             || (!self.viewer.tree_hidden && self.viewer.widened.is_none_or(|widened| widened.tree))
@@ -519,6 +533,7 @@ impl FilesView {
             }
             Err(error) => Content::Failed(error.to_string().into()),
         };
+        self.show_line(&path, cx);
         if active {
             self.search(cx);
         }
@@ -663,7 +678,7 @@ impl FilesView {
                 #[cfg(not(test))]
                 cx.open_url(&url);
             }
-            LinkTarget::File(path) => self.open_beside(path, cx),
+            LinkTarget::File(path) => self.open_file(path, cx),
             LinkTarget::None => {}
         }
     }
@@ -726,7 +741,8 @@ impl FilesView {
     }
 
     /// Opens the active file in `editor`, at the line in view; picking an
-    /// editor from the menu also makes it General → Open file links in.
+    /// editor from the menu makes it the editor for Open in and for
+    /// ⌘-clicked links the preview does not take.
     fn open_in(&mut self, editor: Option<FileLinkEditor>, cx: &mut Context<Self>) {
         self.viewer.open_in_open = false;
         cx.notify();
@@ -809,6 +825,7 @@ impl FilesView {
                     if find.query.text != text {
                         find.query.text = text;
                         find.current = None;
+                        this.release_cited(cx);
                         this.search(cx);
                     }
                 }
@@ -868,6 +885,12 @@ impl FilesView {
             true
         } else {
             false
+        }
+    }
+
+    fn release_cited(&mut self, cx: &mut Context<Self>) {
+        if let Some(view) = self.active_view().cloned() {
+            view.update(cx, |view, _| view.release_cited());
         }
     }
 
@@ -992,6 +1015,7 @@ impl FilesView {
         if self.shown_matches(cx).is_none() {
             return;
         }
+        self.release_cited(cx);
         let Some(find) = &mut self.viewer.find else {
             return;
         };
@@ -1019,6 +1043,7 @@ impl FilesView {
             }
             find.current = None;
         }
+        self.release_cited(cx);
         self.search(cx);
         cx.notify();
     }
@@ -1098,10 +1123,7 @@ impl FilesView {
             .when(active, |element| element.bg(theme::raised()))
             .hover(|element| element.text_color(theme::text()))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                if event.click_count() >= 2 {
-                    this.viewer.tabs.keep(index);
-                }
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate_tab(index, cx);
                 match this.active_view() {
                     Some(view) => view.read(cx).focus_handle().clone().focus(window, cx),
@@ -1112,15 +1134,7 @@ impl FilesView {
                 MouseButton::Middle,
                 cx.listener(move |this, _, window, cx| this.close_tab(index, window, cx)),
             )
-            .child(
-                div()
-                    .when(tab.preview, |element| element.italic())
-                    .when(cfg!(test) && tab.preview, |element| {
-                        element.debug_selector(|| "FILE_TAB_PREVIEW".into())
-                    })
-                    .whitespace_nowrap()
-                    .child(tab.name().to_owned()),
-            )
+            .child(div().whitespace_nowrap().child(tab.name().to_owned()))
             .children(letter.map(|(text, color)| {
                 div()
                     .when(cfg!(test), |element| {
@@ -1708,7 +1722,6 @@ impl FilesView {
                             .flex_none()
                             .text_size(theme::text_ui())
                             .text_color(theme::text())
-                            .when(tab.preview, |element| element.italic())
                             .child(tab.name().to_owned()),
                     )
                     .child(
@@ -1928,6 +1941,45 @@ impl FilesView {
         ))
     }
 
+    /// Zoom's keys in the Files view: with focus in the viewer, its text a
+    /// pixel larger or smaller within the terminal's range, or `None` to
+    /// follow the terminal again; from the tree, its header or the picker,
+    /// the app's own zoom.
+    pub(super) fn zoom(
+        &mut self,
+        step: Option<i16>,
+        app: Box<dyn gpui::Action>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.viewer_focus.contains_focused(window, cx) {
+            self.zoom_text(step, cx);
+        } else {
+            window.dispatch_action(app, cx);
+        }
+    }
+
+    fn zoom_text(&mut self, step: Option<i16>, cx: &mut Context<Self>) {
+        use crate::app_settings::{TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN};
+        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    let size = step.map(|step| {
+                        settings
+                            .files_font_size()
+                            .saturating_add_signed(step)
+                            .clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX)
+                    });
+                    let changed = settings.files_font_size != size;
+                    settings.files_font_size = size;
+                    changed
+                },
+                true,
+                cx,
+            );
+        });
+    }
+
     /// The viewer's column: the strip, then the active file.
     pub(super) fn render_viewer(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
@@ -1959,12 +2011,12 @@ impl FilesView {
 
 #[cfg(test)]
 impl FilesView {
-    pub(crate) fn open_tabs(&self) -> Vec<(String, bool)> {
+    pub(crate) fn open_tabs(&self) -> Vec<String> {
         self.viewer
             .tabs
             .tabs()
             .iter()
-            .map(|tab| (tab.path.clone(), tab.preview))
+            .map(|tab| tab.path.clone())
             .collect()
     }
 

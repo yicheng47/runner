@@ -1761,6 +1761,140 @@ mod tests {
         assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
     }
 
+    #[test]
+    fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
+        use crate::file_links::{FileLinkTarget, LAUNCHED};
+        use crate::surfaces::side_panel::PanelSubject;
+        use crate::{AppRoute, NativeRoot};
+        use gpui::{TestAppContext, VisualTestContext};
+
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        for root in [&first, &second] {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(root.join("lib.rs"), "one\ntwo\n").unwrap();
+        }
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            let core = store.test_core.clone();
+            let conn = core.db.get().unwrap();
+            conn.execute_batch(
+                "INSERT INTO sessions (id, role_id, mission_id, slot_id, status, agent_runtime, agent_command)
+                 VALUES ('second-agent', 'test-shell-role', NULL, NULL, 'stopped', 'codex', 'codex');
+                 UPDATE sessions SET status = 'stopped' WHERE mission_id IS NULL;",
+            )
+            .unwrap();
+            for (id, root) in [("direct-agent", &first), ("second-agent", &second)] {
+                conn.execute(
+                    "UPDATE sessions SET files_root = ?1 WHERE id = ?2",
+                    [root.to_string_lossy().as_ref(), id],
+                )
+                .unwrap();
+            }
+            let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
+            let pane = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&pane, "second-agent").unwrap();
+            let shell = layout.split(&pane, SplitOrientation::Row).unwrap();
+            layout.assign_session(&shell, "busy-shell").unwrap();
+            runner_daemon::repo::node::create_tab(&conn, None, "", 0, &layout.serialize().unwrap())
+                .unwrap();
+            store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            store.settings.chat_panel_open = true;
+        });
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "link-two-chats".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.apply_tab_rows(cx);
+            assert!(root.tabs.activate_session("direct-agent"));
+            root.route = AppRoute::Chat;
+            root.sync_active_chat_detail(cx);
+            root
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(900.)));
+        visual.run_until_parked();
+        let since = std::time::Instant::now();
+        let previews = |visual: &mut VisualTestContext, pane: &str, path: std::path::PathBuf| {
+            let route = host
+                .update(visual, |root, _, cx| root.file_link_route(pane, cx))
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            loop {
+                let answer = visual
+                    .update(|_, cx| route.previews(&path, since, std::rc::Rc::new(|_| {}), cx));
+                if let Some(answer) = answer {
+                    return answer;
+                }
+                assert!(std::time::Instant::now() < deadline, "timed out: {pane}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                visual.run_until_parked();
+            }
+        };
+
+        // The first chat has focus; each pane's links name its own panel.
+        assert!(previews(&mut visual, "second-agent", second.join("lib.rs")));
+        assert!(!previews(&mut visual, "second-agent", first.join("lib.rs")));
+        assert!(previews(&mut visual, "direct-agent", first.join("lib.rs")));
+        assert!(!previews(
+            &mut visual,
+            "direct-agent",
+            second.join("lib.rs")
+        ));
+        // A terminal follows the tab's last focused chat.
+        assert!(previews(&mut visual, "busy-shell", first.join("lib.rs")));
+        assert!(!previews(&mut visual, "busy-shell", second.join("lib.rs")));
+
+        // Clicking in the second chat focuses it, as mouse-down does, and
+        // the link opens in its panel.
+        LAUNCHED.with(|launched| launched.borrow_mut().clear());
+        let route = host
+            .update(&mut visual, |root, _, cx| {
+                assert!(root
+                    .tabs
+                    .active_mut()
+                    .unwrap()
+                    .focus_session("second-agent"));
+                root.sync_active_chat_detail(cx);
+                root.file_link_route("second-agent", cx)
+            })
+            .unwrap();
+        let target = FileLinkTarget {
+            path: second.join("lib.rs"),
+            line: Some(2),
+            column: None,
+        };
+        visual.update(|_, cx| route.open(target, cx));
+        let subject = PanelSubject::Session("second-agent".into());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while host
+            .read_with(&visual, |root, cx| {
+                root.chat_files
+                    .view(&subject)
+                    .and_then(|view| view.read(cx).active_tab())
+            })
+            .unwrap()
+            != Some("lib.rs".into())
+        {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+        assert!(LAUNCHED.with(|launched| launched.borrow().is_empty()));
+        // Now the shell follows the second chat.
+        assert!(previews(&mut visual, "busy-shell", second.join("lib.rs")));
+    }
+
     fn panel_root(
         session: &'static str,
     ) -> (
@@ -1887,42 +2021,53 @@ mod tests {
     }
 
     #[test]
-    fn chat_panel_header_puts_info_left_and_files_right_in_both_themes() {
+    fn chat_panel_header_names_the_open_view_and_puts_its_views_right_in_both_themes() {
         use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
         use crate::theme::{self, ThemeIntent};
-        use crate::theme_snapshot::{assert_border, assert_fill_color};
+        use crate::theme_snapshot::{assert_fill_color, assert_text};
 
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
         let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        let title = visual.debug_bounds("SIDE_PANEL_TITLE Info").unwrap();
         let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
         let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
         assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_none());
-        assert!(info.left() - panel.left() <= px(20.), "{info:?} {panel:?}");
-        assert!(info.right() < files.left());
+        assert!(
+            title.left() - panel.left() <= px(20.),
+            "{title:?} {panel:?}"
+        );
+        assert!(
+            title.right() < info.left(),
+            "the title on the left, the views on the right"
+        );
+        assert_eq!(info.size, gpui::size(px(24.), px(24.)));
+        assert_eq!(files.size, info.size);
+        assert_eq!(files.left() - info.right(), px(4.));
         assert_eq!(info.center().y, files.center().y);
         assert!(
-            panel.right() - files.right() >= px(36.) && panel.right() - files.right() <= px(56.),
-            "the divider and collapse control follow Files: {files:?} {panel:?}"
+            panel.right() - files.right() >= px(28.) && panel.right() - files.right() <= px(48.),
+            "collapse follows the views: {files:?} {panel:?}"
         );
         assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
 
-        let selected = || Some(theme::with_alpha(theme::sidebar_selected(), 0.6));
         for (intent, variant) in [
             (ThemeIntent::Dark, theme::ThemeVariant::Carbon),
             (ThemeIntent::Light, theme::ThemeVariant::RunnerLight),
         ] {
             set_panel_theme(&store, &mut visual, intent);
             assert_eq!(theme::active_variant(), variant);
-            assert_fill_color(&mut visual, "PANEL_VIEW Info", selected());
+            assert_text(&mut visual, "SIDE_PANEL_TITLE Info", theme::text());
+            assert_fill_color(&mut visual, "PANEL_VIEW Info", Some(theme::raised()));
             assert_fill_color(&mut visual, "PANEL_VIEW Files", None);
-            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+            assert_text(&mut visual, "PANEL_VIEW_INK Info", theme::text());
+            assert_text(&mut visual, "PANEL_VIEW_INK Files", theme::faint());
         }
 
         #[cfg(target_os = "macos")]
         {
             use crate::platform_ui::{take_titlebar_actions, TitlebarAction};
-            let gap = gpui::point((info.right() + files.left()) / 2., info.center().y);
+            let gap = gpui::point((title.right() + info.left()) / 2., info.center().y);
             take_titlebar_actions();
             visual.simulate_mouse_down(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
             visual.simulate_mouse_up(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
@@ -1969,24 +2114,144 @@ mod tests {
             .debug_bounds(format!("FILES_VIEW {context:?}").leak())
             .is_some());
         assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_none());
+        assert!(visual.debug_bounds("SIDE_PANEL_TITLE Info").is_none());
         for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
             set_panel_theme(&store, &mut visual, intent);
+            assert_text(&mut visual, "SIDE_PANEL_TITLE Files", theme::text());
             assert_fill_color(&mut visual, "PANEL_VIEW Info", None);
-            assert_fill_color(&mut visual, "PANEL_VIEW Files", selected());
-            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+            assert_fill_color(&mut visual, "PANEL_VIEW Files", Some(theme::raised()));
+            assert_text(&mut visual, "PANEL_VIEW_INK Files", theme::text());
         }
 
         let info = visual.debug_bounds("PANEL_VIEW Info").unwrap();
         visual.simulate_click(info.center(), gpui::Modifiers::default());
         visual.run_until_parked();
         assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
+        assert!(visual.debug_bounds("SIDE_PANEL_TITLE Info").is_some());
+    }
+
+    #[test]
+    fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
+        use crate::file_links::{FileLinkTarget, LAUNCHED};
+        use crate::surfaces::side_panel::{PanelSubject, PanelViewId};
+
+        for session in ["direct-agent", "busy-shell"] {
+            let (temp, _cx, store, host, mut visual) = panel_root(session);
+            let root = temp.path().join("checkout");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("lib.rs"), "one\ntwo\nthree\n").unwrap();
+            let outside = temp.path().join("outside.txt");
+            std::fs::write(&outside, "x\n").unwrap();
+            store.update(&mut visual, |store, cx| {
+                store
+                    .test_core
+                    .db
+                    .get()
+                    .unwrap()
+                    .execute(
+                        "UPDATE sessions SET files_root = ?1 WHERE id = ?2",
+                        [root.to_string_lossy().as_ref(), session],
+                    )
+                    .unwrap();
+                store.update_settings(
+                    |settings| {
+                        settings.chat_panel_open = false;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            // A terminal tab showed its Files view before the root was saved.
+            host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+                .unwrap();
+            let wait =
+                |visual: &mut gpui::VisualTestContext,
+                 ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                    while !ready(visual) {
+                        assert!(std::time::Instant::now() < deadline, "timed out: {session}");
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        visual.run_until_parked();
+                    }
+                };
+            let click = |visual: &mut gpui::VisualTestContext, path: std::path::PathBuf| {
+                LAUNCHED.with(|launched| launched.borrow_mut().clear());
+                let route = host
+                    .update(visual, |root, _, cx| root.file_link_route(session, cx))
+                    .unwrap();
+                let target = FileLinkTarget {
+                    path,
+                    line: Some(2),
+                    column: None,
+                };
+                visual.update(|_, cx| route.open(target, cx));
+                visual.run_until_parked();
+            };
+            let launched = || LAUNCHED.with(|launched| launched.borrow().len());
+            let panel_open = |visual: &mut gpui::VisualTestContext| {
+                store.read_with(visual, |store, _| store.settings.chat_panel_open)
+            };
+
+            click(&mut visual, outside.clone());
+            wait(&mut visual, &|_| launched() == 1);
+            assert!(!panel_open(&mut visual), "{session}");
+
+            click(&mut visual, root.join("lib.rs"));
+            let subject = PanelSubject::Session(session.into());
+            wait(&mut visual, &|visual| {
+                host.read_with(visual, |root, cx| {
+                    root.chat_files
+                        .view(&subject)
+                        .and_then(|view| view.read(cx).active_tab())
+                        == Some("lib.rs".into())
+                })
+                .unwrap()
+            });
+            assert_eq!(launched(), 0, "{session}");
+            assert!(
+                panel_open(&mut visual),
+                "{session}: the collapsed panel opens"
+            );
+            assert_eq!(
+                host.read_with(&visual, |root, _| root.chat_panel_view)
+                    .unwrap(),
+                if session == "direct-agent" {
+                    PanelViewId::Files
+                } else {
+                    PanelViewId::Info
+                },
+                "{session}: a terminal tab shows Files alone and keeps the chat's choice"
+            );
+
+            for off in [
+                (|settings: &mut AppSettings| settings.files_view = false) as fn(&mut AppSettings),
+                |settings| settings.show_side_panel = false,
+            ] {
+                store.update(&mut visual, |store, cx| {
+                    store.update_settings(
+                        |settings| {
+                            settings.files_view = true;
+                            settings.show_side_panel = true;
+                            off(settings);
+                            true
+                        },
+                        false,
+                        cx,
+                    )
+                });
+                click(&mut visual, root.join("lib.rs"));
+                assert_eq!(launched(), 1, "{session}");
+            }
+        }
     }
 
     #[test]
     fn terminal_tab_panel_holds_files_alone_and_shares_the_chat_panel_state() {
         use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
         use crate::theme::{self, ThemeIntent};
-        use crate::theme_snapshot::{assert_border, assert_fill_color};
+        use crate::theme_snapshot::assert_text;
 
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let (_temp, _cx, store, host, mut visual) = panel_root("busy-shell");
@@ -1994,10 +2259,20 @@ mod tests {
         let width = store.read_with(&visual, |store, _| store.settings.chat_panel_width);
         assert!((panel.size.width - px(width)).abs() <= px(1.), "{panel:?}");
         assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_some());
-        assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
-        assert!(visual.debug_bounds("PANEL_VIEW Sessions").is_none());
-        let files = visual.debug_bounds("PANEL_VIEW Files").unwrap();
-        assert!(panel.right() - files.right() <= px(56.));
+        // One view: the title and collapse, with no view buttons.
+        for view in ["Info", "Sessions", "Files"] {
+            assert!(
+                visual
+                    .debug_bounds(format!("PANEL_VIEW {view}").leak())
+                    .is_none(),
+                "{view}"
+            );
+        }
+        let title = visual.debug_bounds("SIDE_PANEL_TITLE Files").unwrap();
+        assert!(
+            title.left() - panel.left() <= px(20.),
+            "{title:?} {panel:?}"
+        );
         let context = PanelContext {
             subject: PanelSubject::Session("busy-shell".into()),
             surface: crate::surfaces::side_panel::PanelSurface::Terminal,
@@ -2014,21 +2289,9 @@ mod tests {
             PanelViewId::Info,
             "showing Files alone keeps the chat's chosen view"
         );
-        #[cfg(target_os = "macos")]
-        {
-            crate::platform_ui::take_titlebar_actions();
-            visual.simulate_click(files.center(), gpui::Modifiers::default());
-            visual.run_until_parked();
-            assert!(crate::platform_ui::take_titlebar_actions().is_empty());
-        }
         for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
             set_panel_theme(&store, &mut visual, intent);
-            assert_fill_color(
-                &mut visual,
-                "PANEL_VIEW Files",
-                Some(theme::with_alpha(theme::sidebar_selected(), 0.6)),
-            );
-            assert_border(&mut visual, "PANEL_VIEW Files", theme::border());
+            assert_text(&mut visual, "SIDE_PANEL_TITLE Files", theme::text());
         }
 
         host.update(&mut visual, |root, _, cx| {
@@ -2098,9 +2361,10 @@ mod tests {
             0.
         );
 
-        // One view back: the panel opens on it.
+        // One view back: the panel opens on it, titled, with no view buttons.
         assert_eq!(set(&mut visual, |settings| settings.files_view = true), 1.);
-        assert!(visual.debug_bounds("PANEL_VIEW Files").is_some());
+        assert!(visual.debug_bounds("SIDE_PANEL_TITLE Files").is_some());
+        assert!(visual.debug_bounds("PANEL_VIEW Files").is_none());
         assert!(visual.debug_bounds("PANEL_VIEW Info").is_none());
     }
 

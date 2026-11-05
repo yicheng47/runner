@@ -12,6 +12,8 @@ use runner_app::ui::{
 };
 
 use super::*;
+use crate::file_links::FileLinkRoute;
+use crate::surfaces::files::FilesView;
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface};
 use crate::*;
 
@@ -31,6 +33,52 @@ impl MissionWorkspace {
             6.,
             cx,
         )
+    }
+
+    fn rail_context(
+        &self,
+        mission: crate::surfaces::front_page::model::WorkspaceMission,
+    ) -> PanelContext {
+        PanelContext {
+            subject: PanelSubject::Mission(mission.id),
+            surface: PanelSurface::Mission,
+            cwd: mission.cwd,
+            project: mission.project_id,
+            remote: self.presentation.is_remote(),
+        }
+    }
+
+    /// Where a ⌘-clicked file link in a member's or the drawer's terminal
+    /// opens: the rail's preview.
+    pub(super) fn file_link_route(&self, cx: &Context<Self>) -> FileLinkRoute {
+        FileLinkRoute::new(
+            cx.weak_entity(),
+            Self::link_files_view,
+            Self::show_link_preview,
+        )
+    }
+
+    /// The rail's Files view while its preview can take a link: the panel
+    /// and Files on, and the mission local.
+    fn link_files_view(&mut self, cx: &mut Context<Self>) -> Option<Entity<FilesView>> {
+        let settings = self.settings(cx);
+        if !settings.show_side_panel || !settings.files_view || self.presentation.is_remote() {
+            return None;
+        }
+        let context = self.rail_context(self.mission_view()?);
+        Some(self.rail_files.link_view(&context, cx))
+    }
+
+    /// A link opened in the preview: the rail opens on Files.
+    fn show_link_preview(&mut self, cx: &mut Context<Self>) {
+        self.rail_view = PanelViewId::Files;
+        if !self.settings(cx).mission_rail_open {
+            self.update_app_settings(cx, true, |settings| {
+                settings.mission_rail_open = true;
+                true
+            });
+        }
+        cx.notify();
     }
 
     pub(super) fn render_mission_rail(
@@ -94,13 +142,7 @@ impl MissionWorkspace {
             ));
         let files = match (shown, self.mission_view()) {
             (Some(PanelViewId::Files), Some(mission)) => Some(self.rail_files.show_with(
-                &PanelContext {
-                    subject: PanelSubject::Mission(mission.id),
-                    surface: PanelSurface::Mission,
-                    cwd: mission.cwd,
-                    project: mission.project_id,
-                    remote: self.presentation.is_remote(),
-                },
+                &self.rail_context(mission),
                 widened,
                 Some(cx.entity_id()),
                 cx,

@@ -150,35 +150,6 @@ impl NativeRoot {
             }),
         )
         .browse_focus(self.settings_page.working_dir_browse_focus.clone());
-        let file_link_editor = self.settings(cx).file_link_editor;
-        // The file viewer's Open in menu sets the same choice.
-        if self.settings_page.file_link_editor.read(cx).value() != file_link_editor.key() {
-            self.settings_page
-                .file_link_editor
-                .update(cx, |select, cx| {
-                    select.set_value(file_link_editor.key(), cx)
-                });
-        }
-        let found = file_link_editor.cli().map(|command| {
-            self.app_store
-                .read(cx)
-                .file_link_environment
-                .1
-                .get(command)
-                .copied()
-                .unwrap_or(false)
-        });
-        let (file_link_hint, file_link_warns) = file_link_hint(file_link_editor, found);
-        let file_link_row = SettingsRow::new(
-            crate::i18n::text("ui.open_file_links_in"),
-            self.settings_page.file_link_editor.clone(),
-        )
-        .subtitle(file_link_hint);
-        let file_link_row = if file_link_warns {
-            file_link_row.subtitle_color(theme::warning())
-        } else {
-            file_link_row
-        };
         let toggle_root = cx.entity();
         let (command_status, command_requires_escalation, command_action_target, skill_status) = {
             let store = self.app_store.read(cx);
@@ -243,7 +214,6 @@ impl NativeRoot {
                 )
                 .subtitle(crate::i18n::text("ui.default_for_new_chats_leave_blank_to_use_your_home_directory"))
                 .into_any_element(),
-                file_link_row.into_any_element(),
                 SettingsRow::new(crate::i18n::text("ui.app_zoom"), zoom)
                     .subtitle(
                         crate::i18n::text("ui.whole_app_scale_doesn_t_apply_to_the_terminal_canvas_see_terminal_pane"),
@@ -481,47 +451,5 @@ impl NativeRoot {
             lines,
             control,
         )
-    }
-}
-
-/// The row subtitle for the current editor choice, and whether it warns.
-pub(super) fn file_link_hint(editor: FileLinkEditor, cli_found: Option<bool>) -> (String, bool) {
-    match (editor, cli_found) {
-        (FileLinkEditor::DefaultApp, _) => (
-            crate::i18n::tf(
-                "format.click_opens_the_file_in_its_default_app_the_cited_line_is_lost",
-                &[(
-                    "shortcut",
-                    (crate::platform_ui::PRIMARY_MODIFIER).to_string(),
-                )],
-            ),
-            false,
-        ),
-        (editor, Some(false)) => (
-            crate::i18n::tf(
-                "format.not_found_on_path",
-                &[
-                    ("command", (editor.cli().unwrap_or_default()).to_string()),
-                    (
-                        "install_hint",
-                        (editor.install_hint().unwrap_or_default()).to_string(),
-                    ),
-                ],
-            ),
-            true,
-        ),
-        (editor, _) => (
-            crate::i18n::tf(
-                "format.click_opens_the_file_at_the_cited_line_via",
-                &[
-                    (
-                        "shortcut",
-                        (crate::platform_ui::PRIMARY_MODIFIER).to_string(),
-                    ),
-                    ("editor", (editor.cli().unwrap_or_default()).to_string()),
-                ],
-            ),
-            false,
-        ),
     }
 }

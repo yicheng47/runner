@@ -40,7 +40,7 @@ use crate::surfaces::*;
 
 use crate::app_settings::{
     normalize_terminal_line_height, normalize_terminal_scrollback, normalize_zoom, nudge_zoom,
-    DarkTerminalTheme, FileLinkEditor, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
+    DarkTerminalTheme, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
     TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_LINE_HEIGHT_MAX,
     TERMINAL_LINE_HEIGHT_MIN, TERMINAL_SCROLLBACK_PRESETS, ZOOM_STEPS,
 };
@@ -280,7 +280,6 @@ enum SettingsSelection {
     TerminalScrollback,
     #[cfg(target_os = "macos")]
     OptionAsMeta,
-    FileLinkEditor,
     QuitBehavior,
     FileIcons,
     FilesFont,
@@ -310,7 +309,6 @@ pub(crate) struct SettingsState {
     terminal_scrollback: Entity<StyledSelect>,
     #[cfg(target_os = "macos")]
     pub(crate) option_as_meta: Entity<StyledSelect>,
-    file_link_editor: Entity<StyledSelect>,
     file_icons: Entity<StyledSelect>,
     files_font: Entity<StyledSelect>,
     markdown_open_as: Entity<StyledSelect>,
@@ -465,26 +463,6 @@ impl SettingsState {
             SettingsSelection::OptionAsMeta,
             cx,
         );
-        let file_link_editor = settings_select(
-            &root,
-            "settings-file-link-editor",
-            settings.file_link_editor.key(),
-            FileLinkEditor::ALL
-                .into_iter()
-                .map(|editor| {
-                    SelectOption::new(
-                        editor.key(),
-                        if editor == FileLinkEditor::DefaultApp {
-                            i18n::message("ui.default_app")
-                        } else {
-                            editor.label().into()
-                        },
-                    )
-                })
-                .collect(),
-            SettingsSelection::FileLinkEditor,
-            cx,
-        );
         let file_icons = settings_select(
             &root,
             "settings-file-icons",
@@ -587,7 +565,6 @@ impl SettingsState {
             terminal_scrollback,
             #[cfg(target_os = "macos")]
             option_as_meta,
-            file_link_editor,
             file_icons,
             files_font,
             markdown_open_as,
@@ -735,7 +712,6 @@ fn settings_select(
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
         | SettingsSelection::TerminalScrollback
-        | SettingsSelection::FileLinkEditor
         | SettingsSelection::QuitBehavior
         | SettingsSelection::FilesFont
         | SettingsSelection::MarkdownOpenAs => None,
@@ -1046,8 +1022,6 @@ impl NativeRoot {
                 .into_iter()
                 .find(|pick| pick.key() == value)
                 .is_some_and(|value| update_if_changed(&mut settings.quit_behavior, value)),
-            SettingsSelection::FileLinkEditor => FileLinkEditor::parse(value)
-                .is_some_and(|value| update_if_changed(&mut settings.file_link_editor, value)),
             SettingsSelection::FileIcons => crate::file_icons::IconSet::from_key(value)
                 .is_some_and(|value| update_if_changed(&mut settings.file_icons, value)),
             SettingsSelection::FilesFont => update_if_changed(

@@ -71,6 +71,10 @@ pub(crate) struct CodeView {
     deleted: bool,
     metrics: Cell<Option<Metrics>>,
     reveal: Option<Position>,
+    /// A link's cited line holds the view: find's refreshed matches do not
+    /// scroll away from it until the user steps through them or changes
+    /// the query.
+    cited: bool,
     scrolled_at: Option<Instant>,
     open_line: Option<OpenLine>,
     /// The bytes shaped in the last frame.
@@ -101,6 +105,7 @@ impl CodeView {
             deleted: false,
             metrics: Cell::new(None),
             reveal: None,
+            cited: false,
             scrolled_at: None,
             open_line: None,
             #[cfg(test)]
@@ -205,7 +210,10 @@ impl CodeView {
         current: Option<usize>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(found) = current.and_then(|index| matches.get(index)) {
+        if let Some(found) = current
+            .filter(|_| !self.cited)
+            .and_then(|index| matches.get(index))
+        {
             self.reveal = Some(Position {
                 line: found.line,
                 offset: found.range.start,
@@ -214,6 +222,30 @@ impl CodeView {
         self.matches = matches;
         self.current = current;
         cx.notify();
+    }
+
+    /// Selects `line` (1-based) and scrolls it into view, for a link that
+    /// cites it.
+    pub(crate) fn go_to_line(&mut self, line: u32, cx: &mut Context<Self>) {
+        let line = (line.max(1) as usize - 1).min(self.document.line_count().saturating_sub(1));
+        let start = Position { line, offset: 0 };
+        let end = Position {
+            line,
+            offset: self
+                .document
+                .line(line)
+                .trim_end_matches(['\n', '\r'])
+                .len(),
+        };
+        self.selection = Some((start, end));
+        self.reveal = Some(start);
+        self.cited = true;
+        cx.notify();
+    }
+
+    /// The user took find over: its current match scrolls into view again.
+    pub(crate) fn release_cited(&mut self) {
+        self.cited = false;
     }
 
     /// The first line in view, 1-based, for opening the file there.
