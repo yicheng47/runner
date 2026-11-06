@@ -3,6 +3,7 @@
 
 mod code;
 mod document;
+mod finder;
 mod highlight;
 mod links;
 mod markdown;
@@ -48,7 +49,6 @@ pub(super) struct Look {
     pub(super) icons: crate::file_icons::IconSet,
     font: String,
     size: u16,
-    pub(super) highlighting: bool,
 }
 
 impl Look {
@@ -63,7 +63,6 @@ impl Look {
                 .family()
                 .to_owned(),
             size: settings.files_font_size(),
-            highlighting: settings.files_syntax_highlighting,
         })
     }
 }
@@ -204,14 +203,23 @@ impl FilesPanel {
         view
     }
 
-    /// Whether the subject's view has a file open, widening the panel, and
-    /// if so whether its tree toggle is on.
-    pub(crate) fn widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
+    /// Whether the subject's view widens the panel, and if so whether its
+    /// tree toggle is on: a root does while Files shows, and an open file
+    /// does beside the panel's other surfaces too.
+    pub(crate) fn widening(
+        &self,
+        subject: &PanelSubject,
+        files_shown: bool,
+        cx: &App,
+    ) -> Option<bool> {
         self.views
             .borrow()
             .iter()
             .find(|(shown, _)| shown == subject)
-            .and_then(|(_, view)| view.read(cx).widening())
+            .and_then(|(_, view)| {
+                let view = view.read(cx);
+                view.widening().filter(|_| files_shown || view.has_tabs())
+            })
     }
 
     /// Measures the width the panel shares with its chat or mission; drawn
@@ -232,23 +240,39 @@ impl FilesPanel {
         .into_any_element()
     }
 
-    /// The panel's width for `subject`: `standard`, or widened by an open
-    /// file and its tree into the room the chat or mission leaves, less `gap`.
+    /// The panel's width for `subject`: `standard`, or widened by the file
+    /// area and its tree into the room the chat or mission leaves, less `gap`.
+    /// Without a file open, a tree on that has no room beside the file area
+    /// takes the panel at `standard` instead, as the tree is the way to a file.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout(
         &self,
         subject: Option<&PanelSubject>,
+        files_shown: bool,
         standard: f32,
         file: f32,
         tree_width: f32,
         gap: f32,
         cx: &App,
     ) -> (f32, Option<Widened>) {
-        let Some(tree) = subject.and_then(|subject| self.widening(subject, cx)) else {
+        let Some(tree) = subject.and_then(|subject| self.widening(subject, files_shown, cx)) else {
             return (standard, None);
         };
-        let layout =
-            side_panel::widened(self.surface.get() - gap, standard, file, tree_width, tree);
+        let available = self.surface.get() - gap;
+        let measured = self.surface.get() > 0.;
+        let fits = available >= side_panel::MAIN_MIN_WIDTH + standard + tree_width;
+        if tree && measured && !fits && !self.has_file_open(subject, cx) {
+            return (standard, None);
+        }
+        let layout = side_panel::widened(available, standard, file, tree_width, tree);
         (layout.width(), Some(layout))
+    }
+
+    fn has_file_open(&self, subject: Option<&PanelSubject>, cx: &App) -> bool {
+        self.views
+            .borrow()
+            .iter()
+            .any(|(shown, view)| Some(shown) == subject && view.read(cx).has_tabs())
     }
 
     pub(crate) fn hide(&self, cx: &mut App) {

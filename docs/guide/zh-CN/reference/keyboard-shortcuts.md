@@ -17,6 +17,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 新建终端；填入焦点空窗格或创建标签页 | ⌘T | Ctrl+Shift+T |
 | 新建任务：显示启动器页面的小队步骤，不创建标签页 | ⇧⌘M | Ctrl+Shift+M |
 | 命令面板 | ⌘K | Ctrl+Shift+P |
+| 在侧面板的文件夹中按名称搜索文件 | ⇧⌘O | Ctrl+Shift+O |
 | 切换侧边栏 | ⌘S | Ctrl+B |
 | 切换任务终端抽屉 | ⌥F12 | Alt+F12 |
 | 打开设置 | ⌘, | Ctrl+, |

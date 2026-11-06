@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use runner_core::protocol::files::{
     EntryKind, FileContent, FileStatus, FilesRootOutcome, FilesRootSource, FilesSubject, GitStatus,
-    StatusEntry, WorktreeKind, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    IndexBudget, StatusEntry, WorktreeKind, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
 };
 use runner_core::protocol::DaemonClient;
 use tokio::sync::broadcast;
@@ -792,4 +792,116 @@ fn an_old_git_lists_worktrees_with_one_retry_then_one_run() {
         panic!("expected a root");
     };
     assert_eq!(root.git.unwrap().branch.as_deref(), Some("feat/x"));
+}
+
+#[test]
+fn the_index_lists_what_git_does_not_ignore_relative_to_the_root() {
+    let fixture = repo();
+    let path = fixture.path();
+    std::fs::write(path.join("new.txt"), "n").unwrap();
+    std::fs::write(path.join("debug.log"), "x").unwrap();
+    std::fs::create_dir_all(path.join("target")).unwrap();
+    std::fs::write(path.join("target/out"), "x").unwrap();
+    std::fs::remove_file(path.join("old.txt")).unwrap();
+    let (files, _rx) = service();
+
+    let index = files.index(path).unwrap();
+    assert!(!index.truncated);
+    assert_eq!(
+        index.paths,
+        [".gitignore", "a.txt", "bin.dat", "new.txt", "src/deep/x.rs"]
+    );
+    assert_eq!(files.index(&path.join("src")).unwrap().paths, ["deep/x.rs"]);
+}
+
+#[test]
+fn nested_repositories_and_submodules_are_not_listed_as_files() {
+    let fixture = repo();
+    let nested = fixture.path().join("vendor");
+    std::fs::create_dir_all(&nested).unwrap();
+    git(&nested, &["init", "-q", "-b", "main"]);
+    std::fs::create_dir_all(fixture.path().join("module")).unwrap();
+    let gitlink = format!("160000,{},module", "a".repeat(40));
+    git(
+        fixture.path(),
+        &["update-index", "--add", "--cacheinfo", &gitlink],
+    );
+    let (files, _rx) = service();
+    assert_eq!(
+        files.index(fixture.path()).unwrap().paths,
+        [".gitignore", "a.txt", "bin.dat", "old.txt", "src/deep/x.rs"]
+    );
+}
+
+#[test]
+fn an_ignored_root_is_walked_before_any_status_has_run() {
+    let fixture = repo();
+    let path = fixture.path();
+    std::fs::create_dir_all(path.join("target/debug")).unwrap();
+    std::fs::write(path.join("target/a.txt"), "a").unwrap();
+    std::fs::write(path.join("target/debug/b"), "b").unwrap();
+    let (files, _rx) = service();
+    assert_eq!(
+        files.index(&path.join("target")).unwrap().paths,
+        ["a.txt", "debug/b"]
+    );
+    assert_eq!(
+        files.index(&path.join("target/debug")).unwrap().paths,
+        ["b"]
+    );
+}
+
+#[test]
+fn the_budget_stops_the_listing_and_says_so() {
+    let fixture = repo();
+    let git = super::Git::find(std::env::var("PATH").unwrap_or_default()).unwrap();
+    let (files, truncated) = git
+        .files(fixture.path(), &mut IndexBudget::new(2, 1024))
+        .unwrap();
+    assert!(truncated);
+    assert_eq!(files.len(), 2);
+    let (files, truncated) = git
+        .files(fixture.path(), &mut IndexBudget::new(100, 1024))
+        .unwrap();
+    assert!(!truncated);
+    assert_eq!(files.len(), 5);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_git_that_never_stops_writing_is_stopped_at_the_budget() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("git");
+    let run = |body: &str| {
+        std::fs::write(&script, format!("#!/bin/sh\nwhile :; do {body}; done\n")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let git = super::Git::find(dir.path().display().to_string()).unwrap();
+        git.files(dir.path(), &mut IndexBudget::new(50, 1024))
+            .unwrap()
+    };
+    assert_eq!(run(r"printf 'missing\0'"), (Vec::new(), true), "records");
+    assert_eq!(run("printf aaaaaaaa"), (Vec::new(), true), "no record ends");
+}
+
+#[test]
+fn a_plain_folder_is_walked_without_dot_git_or_links_and_the_walk_is_bounded() {
+    let plain = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(plain.path().join("sub/deep")).unwrap();
+    std::fs::create_dir_all(plain.path().join(".git")).unwrap();
+    std::fs::write(plain.path().join(".git/config"), "x").unwrap();
+    std::fs::write(plain.path().join("sub/deep/n.txt"), "n").unwrap();
+    std::fs::write(plain.path().join("b.txt"), "b").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(plain.path(), plain.path().join("sub/loop")).unwrap();
+    let (files, _rx) = service();
+    let index = files.index(plain.path()).unwrap();
+    assert!(!index.truncated);
+    #[cfg(unix)]
+    assert_eq!(index.paths, ["b.txt", "sub/deep/n.txt", "sub/loop"]);
+    #[cfg(not(unix))]
+    assert_eq!(index.paths, ["b.txt", "sub/deep/n.txt"]);
+
+    let (_, truncated) = super::fs::walk(plain.path(), &mut IndexBudget::new(1, 1024));
+    assert!(truncated);
 }

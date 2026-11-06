@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use runner_core::protocol::files::{
-    DirEntry, FileContent, FilesRootOutcome, FilesSubject, GitStatus, WorktreeEntry,
+    DirEntry, FileContent, FileIndex, FilesRootOutcome, FilesSubject, GitStatus, IndexBudget,
+    WorktreeEntry,
 };
 use rusqlite::Connection;
 
@@ -108,6 +109,22 @@ impl FilesService {
             (Some(_), Some(git)) => git.worktrees(root),
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// The files under `root` for finding one by name. A root outside git, or
+    /// one git ignores whole or cannot read, is walked, as its tree still
+    /// shows everything in it.
+    pub fn index(&self, root: &Path) -> Result<FileIndex> {
+        fs::check_root(root)?;
+        let listed = match (git::checkout_top(root), self.git()) {
+            (Some(_), Some(git)) if !git.ignores(root) => {
+                git.files(root, &mut IndexBudget::default()).ok()
+            }
+            _ => None,
+        };
+        let (paths, truncated) =
+            listed.unwrap_or_else(|| fs::walk(root, &mut IndexBudget::default()));
+        Ok(FileIndex { paths, truncated })
     }
 
     /// Subscribes `client` to `root`'s `files/changed` and `files/status`.

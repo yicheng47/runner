@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use runner_core::companion::TerminalBytes;
 use runner_core::protocol::files::{
-    DirEntry, EntryKind, FileContent, GitStatus, BINARY_SNIFF_BYTES, MAX_READ_BYTES,
+    DirEntry, EntryKind, FileContent, GitStatus, IndexBudget, BINARY_SNIFF_BYTES, MAX_READ_BYTES,
 };
 
 use crate::error::{Error, Result};
@@ -117,6 +117,45 @@ pub fn list(root: &Path, folder: &str, status: Option<&GitStatus>) -> Result<Vec
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(entries)
+}
+
+/// The files under a root outside git, without following links, leaving out
+/// `.git`. Folders spend `budget` too, since they cost a read. Returns the
+/// sorted paths and whether the budget ran out first.
+pub fn walk(root: &Path, budget: &mut IndexBudget) -> (Vec<String>, bool) {
+    let mut files = Vec::new();
+    let mut folders = std::collections::VecDeque::from([String::new()]);
+    let mut truncated = false;
+    'walk: while let Some(folder) = folders.pop_front() {
+        let Ok(entries) = std::fs::read_dir(root.join(&folder)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name_text) = name.to_str() else {
+                if !budget.take(name.as_encoded_bytes()) {
+                    truncated = true;
+                    break 'walk;
+                }
+                continue;
+            };
+            if name_text == ".git" {
+                continue;
+            }
+            let path = join(&folder, name_text);
+            if !budget.take(path.as_bytes()) {
+                truncated = true;
+                break 'walk;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push_back(path),
+                Ok(_) => files.push(path),
+                Err(_) => {}
+            }
+        }
+    }
+    files.sort_unstable();
+    (files, truncated)
 }
 
 /// Reads `relative` under `root`: its text, or for a binary file its size,

@@ -25,8 +25,12 @@ impl MissionWorkspace {
             .mission_view()
             .filter(|_| settings.files_view)
             .map(|mission| PanelSubject::Mission(mission.id));
+        let files_shown =
+            side_panel::shown(PanelSurface::Mission, settings, &self.rail_surfaces.open)
+                == Some(PanelViewId::Files);
         self.rail_files.layout(
             subject.as_ref(),
+            files_shown,
             settings.mission_rail_width,
             settings.file_viewer_width,
             settings.file_tree_width,
@@ -67,6 +71,15 @@ impl MissionWorkspace {
         }
         let context = self.rail_context(self.mission_view()?);
         Some(self.rail_files.link_view(&context, cx))
+    }
+
+    /// ⇧⌘O: opens the rail on Files, as a link does, and its finder.
+    pub(crate) fn search_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.link_files_view(cx) else {
+            return;
+        };
+        self.show_link_preview(cx);
+        view.update(cx, |view, cx| view.toggle_finder(window, cx));
     }
 
     /// A link opened in the preview: the rail opens Files, or switches to it.
@@ -134,7 +147,7 @@ impl MissionWorkspace {
                 PanelSurface::Mission,
                 &settings,
                 &self.rail_surfaces.open,
-                Some((&self.rail_surfaces, window)),
+                (&self.rail_surfaces, window),
                 handler,
                 IconButton::new("collapse-mission-rail", "panel-right-open.svg")
                     .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))

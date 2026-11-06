@@ -6,12 +6,10 @@ use super::*;
 
 use gpui::Div;
 
-use crate::app_settings::{MarkdownOpenAs, NewChatPanel, TerminalFontFamily};
+use crate::app_settings::{MarkdownOpenAs, TerminalFontFamily};
 use crate::file_icons::{self, IconSet};
-use crate::surfaces::side_panel::{self as panel, PanelSurface};
+use crate::surfaces::side_panel as panel;
 
-/// The header preview's width: a chat's panel at the width it opens with.
-const HEADER_PREVIEW_WIDTH: f32 = 360.;
 /// The surfaces the Panel page dims while the panel is off.
 const DIMMED: f32 = 0.45;
 
@@ -95,22 +93,6 @@ pub(super) fn files_font_options(
 
 pub(super) fn files_font_value(family: Option<&TerminalFontFamily>) -> String {
     family.map_or_else(String::new, |family| family.family().to_owned())
-}
-
-pub(super) fn new_chat_panel_options() -> Vec<SelectOption> {
-    NewChatPanel::ALL
-        .into_iter()
-        .map(|open| {
-            SelectOption::new(
-                open.key(),
-                crate::i18n::message(match open {
-                    NewChatPanel::Info => "ui.info",
-                    NewChatPanel::Files => "ui.files",
-                    NewChatPanel::Nothing => "side_panel.nothing",
-                }),
-            )
-        })
-        .collect()
 }
 
 pub(super) fn markdown_open_as_options() -> Vec<SelectOption> {
@@ -284,99 +266,6 @@ impl NativeRoot {
             |settings| &mut settings.files_view,
             cx,
         );
-        let preview = div()
-            .px_4()
-            .pt_4()
-            .pb_4()
-            .border_b_1()
-            .border_color(theme::border())
-            .flex()
-            .flex_col()
-            .gap_2()
-            .when(!shown, |preview| preview.opacity(DIMMED))
-            .child(
-                div()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text("side_panel.header_in_a_chat")),
-            )
-            .child(
-                div()
-                    .w(rems(HEADER_PREVIEW_WIDTH / 16.))
-                    .max_w_full()
-                    .h(rems(40. / 16.))
-                    .pl_4()
-                    .pr_2()
-                    .flex()
-                    .items_center()
-                    .rounded(rems(8. / 16.))
-                    .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::bg())
-                    .map(|preview| snapshot("SIDE_PANEL_HEADER_PREVIEW", preview))
-                    .child(panel::header_tabs(
-                        PanelSurface::Chat,
-                        &settings,
-                        &panel::OpenSurfaces::new_chat(&settings),
-                        None,
-                        Rc::new(|_, _, _| {}),
-                        IconButton::new("settings-preview-collapse", "panel-right-open.svg"),
-                    )),
-            );
-        let opens_row = div()
-            .debug_selector(|| "SETTINGS_NEW_CHAT_PANEL_ROW".into())
-            .flex()
-            .items_center()
-            .gap_3()
-            .px_4()
-            .pt_2()
-            .pb_3()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .flex()
-                    .items_start()
-                    .gap_3()
-                    .when(!shown, |text| text.opacity(DIMMED))
-                    .child(
-                        svg()
-                            .flex_none()
-                            .mt(rems(2. / 16.))
-                            .size(rems(1.))
-                            .path("panel-right-open.svg")
-                            .text_color(theme::muted()),
-                    )
-                    .child(
-                        div()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .gap(rems(2. / 16.))
-                            .child(
-                                div()
-                                    .text_size(theme::text_body())
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(theme::text())
-                                    .child(crate::i18n::text("side_panel.new_chat_opens")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::text_meta())
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text(
-                                        "side_panel.new_chat_opens_description",
-                                    )),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .debug_selector(|| "SETTINGS_NEW_CHAT_PANEL".into())
-                    .when(!shown, |select| select.opacity(DIMMED))
-                    .child(self.settings_page.new_chat_panel.clone()),
-            );
         let surfaces_card = div()
             .flex()
             .flex_col()
@@ -386,10 +275,8 @@ impl NativeRoot {
             .border_color(theme::border())
             .bg(theme::panel())
             .map(|card| snapshot("SETTINGS_SIDE_PANEL_SURFACES", card))
-            .child(preview)
             .child(info_row)
-            .child(files_row)
-            .child(opens_row);
+            .child(files_row);
 
         div()
             .flex()
@@ -489,41 +376,6 @@ impl NativeRoot {
                     }),
                 )
             });
-        let toggle_row = |id: &'static str,
-                          label: &'static str,
-                          description: SharedString,
-                          on: bool,
-                          field: fn(&mut AppSettings) -> &mut bool,
-                          cx: &mut Context<Self>| {
-            let root = cx.entity();
-            SettingsRow::new(
-                crate::i18n::text(label),
-                div()
-                    .debug_selector(move || {
-                        format!("{}_TOGGLE", id.to_uppercase().replace('-', "_"))
-                    })
-                    .child(Toggle::new(id, on).on_change(move |on, _, cx| {
-                        root.update(cx, |this, cx| this.set_side_panel_setting(cx, field, on));
-                    })),
-            )
-            .subtitle(description)
-            .into_any_element()
-        };
-        let highlighting = toggle_row(
-            "settings-files-highlighting",
-            "side_panel.syntax_highlighting",
-            crate::i18n::tf(
-                "side_panel.syntax_highlighting_description",
-                &[
-                    ("dark", settings.dark_terminal_theme.label().to_owned()),
-                    ("light", settings.light_terminal_theme.label().to_owned()),
-                ],
-            )
-            .into(),
-            settings.files_syntax_highlighting,
-            |settings| &mut settings.files_syntax_highlighting,
-            cx,
-        );
 
         div()
             .flex()
@@ -573,7 +425,6 @@ impl NativeRoot {
                         SettingsRow::new(crate::i18n::text("side_panel.font_size"), size_control)
                             .subtitle(crate::i18n::text("side_panel.font_size_description"))
                             .into_any_element(),
-                        highlighting,
                         SettingsRow::new(
                             crate::i18n::text("side_panel.markdown_open_as"),
                             div()
@@ -689,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_page_offers_the_surfaces_and_what_a_new_chat_opens_and_dims_them_while_off() {
+    fn the_panel_page_offers_the_surfaces_and_dims_them_while_off() {
         let _theme = ThemeGuard::new();
         for locale in [Locale::English, Locale::SimplifiedChinese] {
             with_locale(locale, || {
@@ -708,7 +559,6 @@ mod tests {
                         "SETTINGS_SIDE_PANEL_SURFACES_HEADING",
                         "SETTINGS_INFO_VIEW_KEY",
                         "SETTINGS_FILES_VIEW_KEY",
-                        "SETTINGS_NEW_CHAT_PANEL",
                     ] {
                         assert!(page.has(selector), "{selector}");
                     }
@@ -716,27 +566,6 @@ mod tests {
                         &mut page.visual,
                         "SETTINGS_SIDE_PANEL_SURFACES",
                         Some(theme::panel()),
-                    );
-                    assert_fill_color(
-                        &mut page.visual,
-                        "SIDE_PANEL_HEADER_PREVIEW",
-                        Some(theme::bg()),
-                    );
-                    // The header a new chat shows: Info open, `+`, collapse.
-                    let preview = page
-                        .visual
-                        .debug_bounds("SIDE_PANEL_HEADER_PREVIEW")
-                        .unwrap();
-                    let info = page.visual.debug_bounds("PANEL_TAB Info").unwrap();
-                    let add = page.visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
-                    assert!(preview.contains(&info.center()) && preview.contains(&add.center()));
-                    assert!(info.right() < add.left());
-                    assert!(page.has("PANEL_TAB_CLOSE Info"));
-                    assert!(!page.has("PANEL_TAB Files"));
-                    assert_fill_color(&mut page.visual, "PANEL_TAB Info", Some(theme::raised()));
-                    assert!(
-                        (preview.size.width - px(HEADER_PREVIEW_WIDTH)).abs() <= px(1.),
-                        "a real-size header: {preview:?}"
                     );
                     // The key sits between the description and the switch.
                     let key = page.visual.debug_bounds("SETTINGS_INFO_VIEW_KEY").unwrap();
@@ -746,52 +575,13 @@ mod tests {
                         .unwrap();
                     assert!(key.right() < toggle.left());
 
-                    // The preview redraws as the switches change. Files
-                    // alone: its permanent tab, with no × and no `+`.
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     assert!(!page.settings().info_view);
-                    assert!(page.has("PANEL_TAB Files"));
-                    assert!(!page.has("PANEL_TAB_CLOSE Files") && !page.has("PANEL_ADD_SURFACE"));
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(!page.has("PANEL_TAB Files"));
+                    assert!(!page.settings().files_view);
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(page.has("PANEL_TAB Info") && page.has("PANEL_ADD_SURFACE"));
-
-                    // A new chat's panel opens Files, Nothing, or Info.
-                    for (value, open, tab) in [
-                        ("files", NewChatPanel::Files, Some("PANEL_TAB Files")),
-                        ("nothing", NewChatPanel::Nothing, None),
-                        ("info", NewChatPanel::Info, Some("PANEL_TAB Info")),
-                    ] {
-                        page.host
-                            .update(&mut page.visual, |root, window, cx| {
-                                root.apply_settings_selection(
-                                    SettingsSelection::NewChatPanel,
-                                    value,
-                                    window,
-                                    cx,
-                                )
-                            })
-                            .unwrap();
-                        page.visual.run_until_parked();
-                        assert_eq!(page.settings().new_chat_panel, open);
-                        let value_now = page
-                            .host
-                            .read_with(&page.visual, |root, cx| {
-                                root.settings_page
-                                    .new_chat_panel
-                                    .read(cx)
-                                    .value()
-                                    .to_owned()
-                            })
-                            .unwrap();
-                        assert_eq!(value_now, value);
-                        assert!(page.has("PANEL_ADD_SURFACE"), "{value}");
-                        for shown in ["PANEL_TAB Info", "PANEL_TAB Files"] {
-                            assert_eq!(page.has(shown), Some(shown) == tab, "{value}: {shown}");
-                        }
-                    }
+                    assert!(page.settings().info_view && page.settings().files_view);
 
                     // Off: the switches keep their values and stop answering.
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");
@@ -846,8 +636,10 @@ mod tests {
                         !page.has("SETTINGS_FILES_SINGLE_CLICK_TOGGLE"),
                         "every open keeps its tab, with no setting"
                     );
-                    page.click("SETTINGS_FILES_HIGHLIGHTING_TOGGLE");
-                    assert!(!page.settings().files_syntax_highlighting);
+                    assert!(
+                        !page.has("SETTINGS_FILES_HIGHLIGHTING_TOGGLE"),
+                        "code is always highlighted, with no setting"
+                    );
 
                     page.host
                         .update(&mut page.visual, |root, _, cx| {
@@ -930,11 +722,6 @@ mod tests {
                 root.apply_settings_selection(selection, value, window, cx);
             }
             root.set_files_font_size(Some(15), cx);
-            root.set_side_panel_setting(
-                cx,
-                |settings| &mut settings.files_syntax_highlighting,
-                false,
-            );
         })
         .unwrap();
         here_visual.run_until_parked();

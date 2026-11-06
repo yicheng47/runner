@@ -163,6 +163,7 @@ actions!(
         ShowAll,
         SplitPaneDown,
         SplitPaneRight,
+        SearchFiles,
         ResumeFocusedSession,
         StopFocusedSession,
         ToggleFullscreen,
