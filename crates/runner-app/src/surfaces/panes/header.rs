@@ -216,11 +216,9 @@ impl NativeRoot {
             .filter(|_| settings.files_view)
             .map(|detail| PanelSubject::Session(detail.session_id.clone()));
         let surface = side_panel_surface(self.active_tab_is_terminal(cx));
-        let files_shown = side_panel::shown(surface, settings, &self.chat_surfaces.open)
-            == Some(PanelViewId::Files);
         self.chat_files.layout(
             subject.as_ref(),
-            files_shown,
+            crate::surfaces::files::FilesSurface::of(surface, settings, &self.chat_surfaces.open),
             settings.chat_panel_width,
             settings.file_viewer_width,
             settings.file_tree_width,

@@ -26,7 +26,7 @@ use git::Git;
 
 /// The last git status per root, from `files_status` or the root's watcher,
 /// which marks ignored entries in listings.
-pub type StatusCache = Arc<Mutex<HashMap<PathBuf, GitStatus>>>;
+pub type StatusCache = Arc<Mutex<HashMap<PathBuf, Arc<GitStatus>>>>;
 const STATUS_CACHE_LIMIT: usize = 64;
 
 fn remember(cache: &StatusCache, root: &Path, status: &GitStatus) {
@@ -34,7 +34,7 @@ fn remember(cache: &StatusCache, root: &Path, status: &GitStatus) {
     if cache.len() >= STATUS_CACHE_LIMIT && !cache.contains_key(root) {
         cache.clear();
     }
-    cache.insert(root.to_path_buf(), status.clone());
+    cache.insert(root.to_path_buf(), Arc::new(status.clone()));
 }
 
 struct Watched {
@@ -100,7 +100,7 @@ impl FilesService {
     /// the root's last status, and unmarked before its first.
     pub fn list(&self, root: &Path, folder: &str) -> Result<Vec<DirEntry>> {
         let cached = self.statuses.lock().unwrap().get(root).cloned();
-        fs::list(root, folder, cached.as_ref())
+        fs::list(root, folder, cached.as_deref())
     }
 
     pub fn worktrees(&self, root: &Path) -> Result<Vec<WorktreeEntry>> {

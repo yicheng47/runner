@@ -501,10 +501,10 @@ fn wrapped_git() -> (
     let script = format!(
         "#!/bin/sh\n\
          echo \"$*\" >> \"{d}/runs\"\n\
-         if [ \"$1\" = worktree ] && [ \"$4\" = -z ] && [ -e \"{d}/old\" ]; then\n\
+         if [ \"$3\" = worktree ] && [ \"$6\" = -z ] && [ -e \"{d}/old\" ]; then\n\
          echo \"error: unknown switch z\" >&2; exit 129\n\
          fi\n\
-         if [ \"$2\" = status ] && [ -e \"{d}/delay\" ] && mkdir \"{d}/delayed\" 2>/dev/null; then\n\
+         if [ \"$4\" = status ] && [ -e \"{d}/delay\" ] && mkdir \"{d}/delayed\" 2>/dev/null; then\n\
          \"{real}\" \"$@\" > \"{d}/out\"; code=$?\n\
          touch \"{d}/inspected\"; sleep 2; cat \"{d}/out\"; exit $code\n\
          fi\n\
@@ -682,6 +682,161 @@ fn an_ignored_root_marks_everything_beneath_it() {
         assert!(entries.iter().all(|entry| entry.ignored), "{entries:?}");
     }
     assert!(!files.status(path).unwrap().root_ignored);
+}
+
+/// `git reset --soft` moves the branch and leaves `HEAD` and the index alone.
+fn a_soft_reset_reports_its_status(checkout: &Path) {
+    std::fs::write(checkout.join("a.txt"), "a\nsecond\n").unwrap();
+    git(checkout, &["commit", "-q", "-am", "second"]);
+    let (files, mut rx) = service();
+    assert_eq!(watch_ready(&files, &mut rx, checkout).changed, 0);
+
+    git(checkout, &["reset", "-q", "--soft", "HEAD~1"]);
+    let status = status_of(&next_event(&mut rx, checkout, FILES_STATUS_EVENT));
+    assert_eq!(status.entries, [entry("a.txt", FileStatus::Modified)]);
+}
+
+#[test]
+fn moving_the_branch_of_a_main_checkout_refreshes_the_status() {
+    let fixture = repo();
+    a_soft_reset_reports_its_status(fixture.path());
+}
+
+#[test]
+fn moving_the_branch_of_a_linked_worktree_refreshes_the_status() {
+    let fixture = repo();
+    let outside = tempfile::tempdir().unwrap();
+    let linked = outside.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/x",
+            linked.to_str().unwrap(),
+        ],
+    );
+    // The branch's folder goes away when its refs are packed, and comes back
+    // with the next commit.
+    git(fixture.path(), &["pack-refs", "--all", "--prune"]);
+    a_soft_reset_reports_its_status(&linked);
+}
+
+#[test]
+fn another_worktree_s_index_refreshes_no_status() {
+    let fixture = repo();
+    let outside = tempfile::tempdir().unwrap();
+    let linked = outside.path().join("linked");
+    git(
+        fixture.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let (files, mut rx) = service();
+    watch_ready(&files, &mut rx, &linked);
+    let runs = files.status_runs(&linked);
+    std::fs::write(fixture.path().join("a.txt"), "main's edit\n").unwrap();
+    git(fixture.path(), &["add", "a.txt"]);
+    let events = events_during(
+        &mut rx,
+        &linked,
+        super::watch::MAX_WAIT + Duration::from_secs(1),
+    );
+    assert!(events.is_empty(), "{events:?}");
+    #[cfg(not(windows))]
+    assert_eq!(files.status_runs(&linked), runs);
+    #[cfg(windows)]
+    let _ = runs;
+}
+
+#[test]
+fn a_reftable_branch_refreshes_the_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let init = std::process::Command::new("git")
+        .current_dir(path)
+        .args(["init", "-q", "-b", "main", "--ref-format=reftable"])
+        .output()
+        .unwrap();
+    if !init.status.success() {
+        return; // A git before 2.45.
+    }
+    std::fs::write(path.join("a.txt"), "a\n").unwrap();
+    git(path, &["add", "-A"]);
+    git(path, &["commit", "-q", "-m", "init"]);
+    a_soft_reset_reports_its_status(path);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repository_s_fsmonitor_setting_runs_nothing() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = repo();
+    let path = fixture.path();
+    let ran = path.join(".git/fsmonitor-ran");
+    let hook = path.join(".git/fsmonitor-hook");
+    std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(path, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+    git(path, &["status", "--porcelain"]);
+    assert!(ran.exists(), "git alone runs it");
+    std::fs::remove_file(&ran).unwrap();
+
+    let (files, _rx) = service();
+    files.status(path).unwrap();
+    files.index(path).unwrap();
+    files.worktrees(path).unwrap();
+    assert!(!ran.exists());
+}
+
+#[test]
+fn a_failed_status_says_why() {
+    let fixture = repo();
+    let path = fixture.path();
+    std::fs::write(path.join(".git/HEAD"), "garbage\n").unwrap();
+    let error = fixture.git.status(path, "").unwrap_err().to_string();
+    assert!(error.starts_with("git status: "), "{error}");
+    assert!(error.len() > "git status: ".len(), "{error}");
+}
+
+#[test]
+fn rev_parse_finds_the_common_directory_from_a_subfolder() {
+    let fixture = repo();
+    let path = fixture.path();
+    let same = |a: &Path, b: &Path| a.canonicalize().unwrap() == b.canonicalize().unwrap();
+    let repo_paths = fixture.git.rev_parse(&path.join("src/deep")).unwrap();
+    assert!(same(&repo_paths.common_dir, &path.join(".git")));
+    assert_eq!(repo_paths.prefix, "src/deep/");
+    assert!(same(&repo_paths.git_dir, &repo_paths.common_dir));
+
+    let outside = tempfile::tempdir().unwrap();
+    let linked = outside.path().join("linked");
+    git(
+        path,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let repo_paths = fixture.git.rev_parse(&linked).unwrap();
+    assert!(same(&repo_paths.common_dir, &path.join(".git")));
+    assert!(same(
+        &repo_paths.git_dir,
+        &path.join(".git/worktrees/linked")
+    ));
 }
 
 #[test]

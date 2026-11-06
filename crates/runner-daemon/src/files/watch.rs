@@ -4,8 +4,8 @@
 //! `.worktrees/`, `node_modules/`) are dropped as they arrive, so a build
 //! never reaches the debounce. The rest collect until the root has been quiet
 //! for [`DEBOUNCE`], or for at most [`MAX_WAIT`] while changes keep coming;
-//! then one `files/changed` goes out and, when the files or the git
-//! directory's `index` or `HEAD` changed, one `git status` runs. Status runs on
+//! then one `files/changed` goes out and, when the files, the git directory's
+//! `index` or `HEAD` or a branch changed, one `git status` runs. Status runs on
 //! this thread, so only one runs at a time and changes during it coalesce
 //! into the next.
 //!
@@ -66,6 +66,7 @@ impl RootWatch {
             git,
             repo: None,
             git_dir_canonical: None,
+            common_dir_canonical: None,
             status: GitStatus::default(),
             events,
             statuses,
@@ -122,6 +123,7 @@ struct Watch {
     git: Option<Git>,
     repo: Option<RepoPaths>,
     git_dir_canonical: Option<PathBuf>,
+    common_dir_canonical: Option<PathBuf>,
     status: GitStatus,
     events: EventChannel,
     statuses: StatusCache,
@@ -148,8 +150,25 @@ impl Watch {
         self.repo = self.git.as_ref().and_then(|git| git.rev_parse(&self.root));
         if let Some(repo) = &self.repo {
             self.git_dir_canonical = repo.git_dir.canonicalize().ok();
-            if let Err(error) = watcher.watch(&repo.git_dir, RecursiveMode::NonRecursive) {
-                log::warn!("files watcher on {}: {error}", repo.git_dir.display());
+            self.common_dir_canonical = repo.common_dir.canonicalize().ok();
+            // What moves a branch without touching `index` or `HEAD`, such as
+            // `git reset --soft`: its ref, which a linked worktree keeps in the
+            // common directory, and a `packed-refs` or reftable there.
+            let common = &repo.common_dir;
+            let mut watches = vec![
+                (repo.git_dir.clone(), RecursiveMode::NonRecursive),
+                (common.join("refs/heads"), RecursiveMode::Recursive),
+            ];
+            if self.common_dir_canonical != self.git_dir_canonical {
+                watches.push((common.clone(), RecursiveMode::NonRecursive));
+            }
+            if common.join("reftable").is_dir() {
+                watches.push((common.join("reftable"), RecursiveMode::NonRecursive));
+            }
+            for (path, mode) in watches {
+                if let Err(error) = watcher.watch(&path, mode) {
+                    log::warn!("files watcher on {}: {error}", path.display());
+                }
             }
         }
         // Every watch is in place before the first status is taken, so a
@@ -206,15 +225,32 @@ impl Watch {
         )
     }
 
-    /// Whether `path` is the git directory's `index` or `HEAD`; `None` when
-    /// it is not in the git directory at all.
+    /// Whether `path` is one of the git files a status depends on: the git
+    /// directory's `index` or `HEAD`, or a branch in the common directory.
+    /// `None` when it is in neither directory.
     fn git_file(&self, path: &Path) -> Option<bool> {
         let repo = self.repo.as_ref()?;
-        let inside = path
-            .strip_prefix(&repo.git_dir)
-            .ok()
-            .or_else(|| path.strip_prefix(self.git_dir_canonical.as_ref()?).ok())?;
-        Some(inside == Path::new("index") || inside == Path::new("HEAD"))
+        let inside = |dir: &Path, canonical: &Option<PathBuf>| {
+            path.strip_prefix(dir)
+                .ok()
+                .or_else(|| path.strip_prefix(canonical.as_ref()?).ok())
+                .map(Path::to_path_buf)
+        };
+        let own = inside(&repo.git_dir, &self.git_dir_canonical);
+        let common = inside(&repo.common_dir, &self.common_dir_canonical);
+        if own.is_none() && common.is_none() {
+            return None;
+        }
+        let state = own.is_some_and(|own| own == Path::new("index") || own == Path::new("HEAD"));
+        let branch = common.is_some_and(|common| {
+            common == Path::new("packed-refs")
+                || common == Path::new("reftable/tables.list")
+                || (common.starts_with("refs/heads")
+                    && common
+                        .extension()
+                        .is_none_or(|extension| extension != "lock"))
+        });
+        Some(state || branch)
     }
 
     fn ignored(&self, relative: &str) -> bool {

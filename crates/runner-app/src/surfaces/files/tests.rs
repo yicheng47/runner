@@ -9,7 +9,7 @@ use gpui::{
 };
 use runner_core::protocol::files::{FilesRootSource, WorktreeKind};
 
-use super::{FileOpen, FilesPanel, FilesView};
+use super::{FilesEvent, FilesPanel, FilesSurface, FilesView};
 use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
 use crate::theme::{self, ThemeVariant};
 use crate::theme_snapshot::{assert_border, assert_fill_color, assert_text, ThemeGuard};
@@ -747,18 +747,9 @@ fn the_keyboard_moves_opens_and_types_ahead() {
     h.settle();
     assert_eq!(h.read(|view| view.selected()), Some("old.txt".into()));
 
-    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let view = h.view();
-    let seen = opened.clone();
-    let _subscription = h.visual.update(|_, cx| {
-        cx.subscribe(&view, move |_, event: &FileOpen, _| {
-            seen.borrow_mut().push(event.path.clone())
-        })
-    });
     h.visual.simulate_keystrokes("space");
     h.visual.simulate_keystrokes("enter");
     h.settle();
-    assert_eq!(*opened.borrow(), ["old.txt", "old.txt"]);
     assert_eq!(
         h.tabs(),
         [".gitignore", "old.txt"],
@@ -1506,21 +1497,31 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel
-                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
+                host.panel.layout(
+                    Some(&subject),
+                    FilesSurface::Shown,
+                    288.,
+                    440.,
+                    240.,
+                    6.,
+                    cx,
+                )
             })
             .unwrap()
     };
-    let elsewhere = h
-        .host
-        .read_with(&h.visual, |host, cx| {
-            host.panel
-                .layout(Some(&subject), false, 288., 440., 240., 6., cx)
-        })
-        .unwrap();
+    let beside = |h: &mut Harness, files: FilesSurface| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.panel.surface.set(1200.);
+                host.panel
+                    .layout(Some(&subject), files, 288., 440., 240., 6., cx)
+                    .0
+            })
+            .unwrap()
+    };
     assert_eq!(
-        elsewhere,
-        (288., None),
+        beside(&mut h, FilesSurface::Open),
+        288.,
         "no file and another surface showing, the standard width"
     );
     assert!(
@@ -1544,6 +1545,13 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
         "the file never below the standard width, the tree still shown"
     );
     assert!(layout(&mut h, 600.).1.unwrap().tree);
+
+    // A file left open keeps the width while another surface shows, and
+    // closing Files gives it back, with the file tabs kept for reopening.
+    assert!(beside(&mut h, FilesSurface::Open) > 288.);
+    assert_eq!(beside(&mut h, FilesSurface::Closed), 288.);
+    assert!(h.read(|view| view.has_tabs()));
+    assert!(beside(&mut h, FilesSurface::Shown) > 288.);
 }
 
 #[test]
@@ -1554,8 +1562,15 @@ fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel
-                    .layout(Some(&subject), true, 288., 440., 320., 6., cx)
+                host.panel.layout(
+                    Some(&subject),
+                    FilesSurface::Shown,
+                    288.,
+                    440.,
+                    320.,
+                    6.,
+                    cx,
+                )
             })
             .unwrap()
     };
@@ -2912,8 +2927,15 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel
-                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
+                host.panel.layout(
+                    Some(&subject),
+                    FilesSurface::Shown,
+                    288.,
+                    440.,
+                    240.,
+                    6.,
+                    cx,
+                )
             })
             .unwrap()
     };
@@ -3515,8 +3537,15 @@ fn the_layout_gives_a_tree_with_no_room_the_panel_until_a_file_opens() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel
-                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
+                host.panel.layout(
+                    Some(&subject),
+                    FilesSurface::Shown,
+                    288.,
+                    440.,
+                    240.,
+                    6.,
+                    cx,
+                )
             })
             .unwrap()
     };
@@ -3639,4 +3668,476 @@ fn the_arrows_choose_the_match_enter_opens() {
     h.visual.simulate_keystrokes("enter");
     h.wait("the file", |h| h.has("FILE_CODE"));
     assert_eq!(h.tabs(), ["old.txt"], "a.txt ranks first, being shorter");
+}
+
+#[test]
+fn files_stands_shown_open_or_closed_among_the_surfaces() {
+    use crate::surfaces::side_panel::{OpenSurfaces, PanelViewId};
+    let settings = crate::app_settings::AppSettings::default();
+    let of = |surface, open: &OpenSurfaces| FilesSurface::of(surface, &settings, open);
+    let mut open = OpenSurfaces::default();
+    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Closed);
+    open.open(PanelViewId::Files);
+    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Shown);
+    open.open(PanelViewId::Info);
+    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Open);
+    open.close(PanelViewId::Files, false);
+    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Closed);
+
+    // A terminal tab's only surface is Files, with no tab to close.
+    assert_eq!(
+        of(PanelSurface::Terminal, &OpenSurfaces::default()),
+        FilesSurface::Shown
+    );
+    assert_eq!(
+        of(PanelSurface::Mission, &OpenSurfaces::default()),
+        FilesSurface::Closed,
+        "a mission shows Sessions until Files opens"
+    );
+}
+
+fn tick(h: &mut Harness) {
+    h.visual
+        .executor()
+        .advance_clock(super::viewer::IGNORED_REFRESH);
+    h.settle();
+}
+
+#[test]
+fn an_open_ignored_file_refreshes_and_shows_as_deleted() {
+    let mut h = viewer(chat("in-project"));
+    let path = h.repo.join("z.log");
+    std::fs::write(&path, "first\n").unwrap();
+    h.wait("the file to be ignored", |h| {
+        h.read(|view| {
+            view.git_status()
+                .is_some_and(|status| status.is_ignored("z.log"))
+        })
+    });
+    h.open("z.log");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.line(0), "first");
+
+    // The watcher stays quiet about it, so only a read notices.
+    std::fs::write(&path, "second, longer\n").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    h.settle();
+    assert_eq!(h.line(0), "first");
+    h.wait("the refresh", |h| {
+        tick(h);
+        h.line(0) == "second, longer"
+    });
+
+    // A read that finds the file as it was leaves the tab alone.
+    let code = h.code();
+    let document = code.read_with(&h.visual, |code, _| code.document().clone());
+    tick(&mut h);
+    h.wait("the read", |h| h.read(|view| !view.reading("z.log")));
+    let same = code.read_with(&h.visual, |code, _| Arc::ptr_eq(code.document(), &document));
+    assert!(same, "nothing to redraw");
+
+    // Behind another tab too, it goes on being read.
+    h.open("a.txt");
+    h.wait("the other tab", |h| h.line(0) == "a");
+    std::fs::remove_file(&path).unwrap();
+    h.wait("the deleted mark", |h| {
+        tick(h);
+        h.has("FILE_TAB_LETTER z.log D")
+    });
+    h.click("FILE_TAB z.log");
+    assert!(h.has("FILE_DELETED"));
+    assert_eq!(h.line(0), "second, longer", "the last version read stays");
+
+    // And it comes back.
+    std::fs::write(&path, "third\n").unwrap();
+    h.wait("the file again", |h| {
+        tick(h);
+        !h.has("FILE_DELETED")
+    });
+    assert_eq!(h.line(0), "third");
+}
+
+#[test]
+fn an_ignored_file_stays_refreshed_after_the_status_stops_listing_it() {
+    let mut h = viewer(chat("in-project"));
+    let path = h.repo.join("z.log");
+    std::fs::write(&path, "first\n").unwrap();
+    h.wait("the file to be ignored", |h| {
+        h.read(|view| {
+            view.git_status()
+                .is_some_and(|status| status.is_ignored("z.log"))
+        })
+    });
+    h.open("z.log");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+
+    // Deleted, and a status for another change arrives before the next read.
+    std::fs::remove_file(&path).unwrap();
+    receive_status(&mut h, runner_core::protocol::files::GitStatus::default());
+    h.wait("the deleted state", |h| {
+        tick(h);
+        h.has("FILE_DELETED")
+    });
+    assert!(h.has("FILE_TAB_LETTER z.log D"));
+
+    // Still deleted through another status, and noticed when it returns.
+    receive_status(&mut h, runner_core::protocol::files::GitStatus::default());
+    std::fs::write(&path, "again\n").unwrap();
+    h.wait("the file again", |h| {
+        tick(h);
+        !h.has("FILE_DELETED")
+    });
+    assert_eq!(h.line(0), "again");
+}
+
+#[test]
+fn a_file_opened_before_the_status_arrives_is_noted_when_it_does() {
+    use runner_core::protocol::files::GitStatus;
+    let mut h = viewer(chat("in-project"));
+    h.open("old.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
+    let view = h.view();
+    let reads = |h: &mut Harness, view: &Entity<FilesView>| {
+        view.read_with(&h.visual, |view, _| view.read_seq("old.txt"))
+    };
+    let before = reads(&mut h, &view);
+    tick(&mut h);
+    assert_eq!(reads(&mut h, &view), before, "a file git does not ignore");
+    receive_status(&mut h, GitStatus::new(vec![], vec!["old.txt".into()]));
+    tick(&mut h);
+    assert!(reads(&mut h, &view) > before, "read once git ignores it");
+}
+
+#[test]
+fn switching_to_an_ignored_file_s_tab_reads_it_again() {
+    let mut h = viewer(chat("in-project"));
+    let path = h.repo.join("z.log");
+    std::fs::write(&path, "first\n").unwrap();
+    h.wait("the file to be ignored", |h| {
+        h.read(|view| {
+            view.git_status()
+                .is_some_and(|status| status.is_ignored("z.log"))
+        })
+    });
+    h.open("z.log");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.open("a.txt");
+    h.wait("the other tab", |h| h.line(0) == "a");
+    std::fs::write(&path, "second, longer\n").unwrap();
+    h.open("z.log");
+    h.wait("the read", |h| h.line(0) == "second, longer");
+}
+
+#[test]
+fn a_rescan_lists_every_loaded_folder_again() {
+    // Never shown, so never watching: only the event below can refresh it.
+    let mut h = harness(Some(chat("in-project")));
+    h.show(None);
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.unshown = Some(cx.new(|cx| FilesView::new(chat("in-project"), cx)));
+            cx.notify();
+        })
+        .unwrap();
+    let view = h
+        .host
+        .read_with(&h.visual, |host, _| host.unshown.clone())
+        .unwrap()
+        .unwrap();
+    h.wait("the working directory", |h| h.has("FILES_ROW src/deep"));
+    h.click("FILES_ROW src/deep");
+    h.wait("the nested folder", |h| h.has("FILES_ROW src/deep/x.rs"));
+    let selected = view.read_with(&h.visual, |view, _| view.selected());
+    let root = view.read_with(&h.visual, |view, _| view.root().unwrap().path.clone());
+    std::fs::write(h.repo.join("src/deep/new.rs"), "new\n").unwrap();
+    std::fs::remove_file(h.repo.join("src/deep/x.rs")).unwrap();
+
+    // Naming only what changed lists only that.
+    view.update(&mut h.visual, |view, cx| {
+        view.receive(
+            FilesEvent::Changed(runner_core::protocol::files::FilesChanged {
+                root: root.clone(),
+                folders: vec![String::new()],
+                paths: vec!["a.txt".into()],
+            }),
+            cx,
+        )
+    });
+    h.settle();
+    assert!(h.has("FILES_ROW src/deep/x.rs"));
+
+    view.update(&mut h.visual, |view, cx| {
+        view.receive(
+            FilesEvent::Changed(runner_core::protocol::files::FilesChanged {
+                root,
+                folders: vec![String::new()],
+                paths: vec![],
+            }),
+            cx,
+        )
+    });
+    h.wait("the new file", |h| h.has("FILES_ROW src/deep/new.rs"));
+    assert!(!h.has("FILES_ROW src/deep/x.rs"), "the deleted file went");
+    assert_eq!(
+        view.read_with(&h.visual, |view, _| view.selected()),
+        selected,
+        "the selection stays"
+    );
+}
+
+/// Delivers `status` as the daemon would. The watcher's first real status can
+/// arrive after it and replace it, so it is delivered again until it holds.
+fn receive_status(h: &mut Harness, status: runner_core::protocol::files::GitStatus) {
+    let view = h.view();
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    h.wait("the status to hold", |h| {
+        let update = runner_core::protocol::files::FilesStatusChanged {
+            root: root.clone(),
+            status: status.clone(),
+        };
+        view.update(&mut h.visual, |view, cx| {
+            view.receive(FilesEvent::Status(update), cx)
+        });
+        h.settle();
+        h.read(|view| view.git_status().as_ref() == Some(&status))
+    });
+}
+
+#[test]
+fn a_status_past_its_limits_says_so() {
+    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+    let mut h = viewer(chat("in-project"));
+    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
+    assert!(!h.has("FILES_STATUS_TRUNCATED"));
+    receive_status(
+        &mut h,
+        GitStatus {
+            changed: 300_000,
+            truncated: true,
+            ..GitStatus::new(
+                vec![StatusEntry {
+                    path: "a.txt".into(),
+                    status: FileStatus::Modified,
+                }],
+                vec![],
+            )
+        },
+    );
+    assert!(h.has("FILES_STATUS_TRUNCATED"));
+    assert!(h.has("FILE_CHANGED a.txt"), "what it holds still lists");
+    receive_status(&mut h, GitStatus::default());
+    assert!(!h.has("FILES_STATUS_TRUNCATED"));
+}
+
+#[test]
+fn a_nested_repository_is_no_changed_file() {
+    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+    let mut h = viewer(chat("in-project"));
+    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
+    let entry = |path: &str, status| StatusEntry {
+        path: path.into(),
+        status,
+    };
+    receive_status(
+        &mut h,
+        GitStatus::new(
+            vec![
+                entry("nested/", FileStatus::Untracked),
+                entry("vendor/sub/", FileStatus::Modified),
+                entry("a.txt", FileStatus::Modified),
+            ],
+            vec![],
+        ),
+    );
+    assert!(h.has("FILE_CHANGED a.txt"));
+    assert!(!h.has("FILE_CHANGED nested/"));
+    assert!(!h.has("FILE_CHANGED vendor/sub/"));
+
+    receive_status(
+        &mut h,
+        GitStatus::new(vec![entry("nested/", FileStatus::Untracked)], vec![]),
+    );
+    assert!(h.has("FILE_NO_FILE"), "nothing to list");
+}
+
+#[test]
+fn the_select_all_key_selects_the_file() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("a"));
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h.visual.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some("a\n"));
+}
+
+#[test]
+fn select_all_copies_the_file_with_its_line_endings() {
+    for text in [
+        "one\ntwo\n",
+        "one\r\ntwo\r\n",
+        "one\ntwo",
+        "one\n\n",
+        "\n\n",
+        "\n",
+    ] {
+        let mut h = viewer(chat("in-project"));
+        std::fs::write(h.repo.join("whole.txt"), text).unwrap();
+        h.open("whole.txt");
+        h.wait("the file", |h| h.has("FILE_CODE"));
+        h.focus_code();
+        h.visual.simulate_keystrokes(&primary("a"));
+        h.visual.simulate_keystrokes(&primary("c"));
+        h.settle();
+        let copied = h.visual.read_from_clipboard().and_then(|item| item.text());
+        assert_eq!(copied.as_deref(), Some(text));
+    }
+}
+
+#[test]
+fn only_select_all_takes_the_final_line_ending() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("token.txt"), "token\n").unwrap();
+    h.open("token.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.settle();
+    let code = h.code();
+    let selected = |h: &mut Harness| code.read_with(&h.visual, |code, _| code.selected_text());
+    let (advance, left, bounds) = code.read_with(&h.visual, |code, _| code.geometry());
+    let y = code.read_with(&h.visual, |code, _| code.row_y(0));
+    let word = gpui::point(bounds.left() + left + advance * 2., y);
+    let double_click = |h: &mut Harness| {
+        for click_count in [1, 2] {
+            h.visual.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: word,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            h.visual.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: word,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+        h.settle();
+    };
+
+    double_click(&mut h);
+    assert_eq!(selected(&mut h).as_deref(), Some("token"));
+
+    h.visual.simulate_keystrokes(&primary("a"));
+    assert_eq!(selected(&mut h).as_deref(), Some("token\n"));
+
+    double_click(&mut h);
+    assert_eq!(
+        selected(&mut h).as_deref(),
+        Some("token"),
+        "a later selection is only what it covers"
+    );
+}
+
+#[test]
+fn select_all_ends_a_drag_in_progress() {
+    let mut h = viewer(chat("in-project"));
+    let text = "one\ntwo\nthree\n";
+    std::fs::write(h.repo.join("drag.txt"), text).unwrap();
+    h.open("drag.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.settle();
+    let code = h.code();
+    let (advance, left, bounds) = code.read_with(&h.visual, |code, _| code.geometry());
+    let at = |h: &mut Harness, line| {
+        let y = code.read_with(&h.visual, |code, _| code.row_y(line));
+        gpui::point(bounds.left() + left + advance, y)
+    };
+
+    let start = at(&mut h, 0);
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    h.visual.simulate_keystrokes(&primary("a"));
+    let inside = at(&mut h, 1);
+    h.visual
+        .simulate_mouse_move(inside, Some(gpui::MouseButton::Left), Modifiers::default());
+    h.visual
+        .simulate_mouse_up(inside, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+
+    let (selection, end) = code.read_with(&h.visual, |code, _| {
+        (code.selection(), code.document().end())
+    });
+    assert_eq!(
+        selection,
+        Some((super::document::Position::default(), end)),
+        "what shows selected is the file"
+    );
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    let copied = h.visual.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some(text));
+}
+
+#[test]
+fn select_all_follows_the_file_when_it_is_read_again() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.focus_code();
+    h.visual.simulate_keystrokes(&primary("a"));
+    let code = h.code();
+    let reread = |h: &mut Harness, text: &str| {
+        let document = Arc::new(super::document::Document::decode(text.as_bytes()));
+        code.update(&mut h.visual, |code, cx| code.set_document(document, cx));
+        code.read_with(&h.visual, |code, _| code.selected_text())
+    };
+    assert_eq!(
+        reread(&mut h, "longer\nnow\n").as_deref(),
+        Some("longer\nnow\n")
+    );
+    assert_eq!(reread(&mut h, ""), None, "an empty file copies nothing");
+}
+
+#[test]
+fn moving_a_chat_into_a_project_finds_its_root() {
+    let mut h = harness(Some(chat("outside")));
+    h.wait("the choice", |h| h.read(|view| view.state() == "choose"));
+    let src = h.repo.join("src");
+    h.store.update(&mut h.visual, |store, _| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute_batch(&format!(
+                "UPDATE sessions SET project_id = 'runner', cwd = '{}' WHERE id = 'outside'",
+                sql(&src)
+            ))
+            .unwrap();
+    });
+    let mut moved = chat("outside");
+    moved.project = Some("runner".into());
+    h.show(Some(moved));
+    h.wait("the root", |h| h.read(|view| view.state() == "root"));
+}
+
+#[test]
+fn resolving_the_same_root_leaves_no_tab_loading() {
+    let mut h = viewer(chat("in-project"));
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.open_file("a.txt".into(), cx);
+        // A change of project resolves the root again before the read's reply
+        // arrives, and the reply is dropped.
+        let mut moved = chat("in-project");
+        moved.project = Some("other".into());
+        view.set_context(moved, cx);
+    });
+    h.wait("the file", |h| h.has("FILE_CODE"));
 }

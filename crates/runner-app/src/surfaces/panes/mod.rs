@@ -2068,7 +2068,7 @@ mod tests {
         for locale in [Locale::English, Locale::SimplifiedChinese] {
             with_locale(locale, || {
                 let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
-                // A new chat's panel opens Info: its tab, `+`, then collapse.
+                // Info open: its tab, `+`, then collapse.
                 let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
                 let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
                 let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();

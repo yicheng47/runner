@@ -7,7 +7,7 @@ use std::time::Instant;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, img, px, rems, svg, AnyElement, App, Bounds, ClipboardItem, Context, Entity,
-    EventEmitter, FocusHandle, FontWeight, ImageSource, KeyDownEvent, MouseButton, MouseDownEvent,
+    FocusHandle, FontWeight, ImageSource, KeyDownEvent, MouseButton, MouseDownEvent,
     PathPromptOptions, Pixels, Resource, ScrollHandle, ScrollStrategy, SharedString, Subscription,
     Task, UniformListScrollHandle, Window,
 };
@@ -35,13 +35,6 @@ const INDENT: f32 = 14.;
 const ROW_PAD_LEFT: f32 = 14.;
 const CHEVRON_SIZE: f32 = 12.;
 const PICKER_WIDTH: f32 = 300.;
-
-/// Space or Enter on a file in the tree, which opens it in a tab.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FileOpen {
-    pub(crate) root: PathBuf,
-    pub(crate) path: String,
-}
 
 type Listings = Vec<(String, Result<Vec<DirEntry>, ClientError>)>;
 
@@ -135,11 +128,11 @@ pub(crate) struct FilesView {
     tree_resizing: bool,
     /// Settings → Side panel → Files as last drawn.
     pub(super) look: Option<super::Look>,
+    /// Reads an open ignored file again while the view shows.
+    ignored_refresh: Option<Task<()>>,
     _hub: Subscription,
     _settings: Subscription,
 }
-
-impl EventEmitter<FileOpen> for FilesView {}
 
 fn subject(context: &PanelContext) -> FilesSubject {
     match &context.subject {
@@ -284,6 +277,7 @@ impl FilesView {
             reported: (None, false),
             tree_resizing: false,
             look: super::Look::current(cx),
+            ignored_refresh: None,
             _hub: hub_subscription,
             _settings: settings_subscription,
         };
@@ -313,9 +307,10 @@ impl FilesView {
         if self.context == context {
             return;
         }
-        let remote_changed = self.context.remote != context.remote;
+        let moved =
+            self.context.remote != context.remote || self.context.project != context.project;
         self.context = context;
-        if remote_changed {
+        if moved {
             self.resolve(cx);
         }
         cx.notify();
@@ -414,6 +409,7 @@ impl FilesView {
             self.finder = None;
             self.menu = None;
         }
+        self.ignored_refresh = shown.then(|| self.refresh_ignored_tabs(cx));
         self.sync_watch(cx);
     }
 
@@ -524,32 +520,35 @@ impl FilesView {
         outcome: Result<FilesRootOutcome, ClientError>,
         cx: &mut Context<Self>,
     ) {
-        self.generation += 1;
+        let same = matches!(
+            &outcome,
+            Ok(FilesRootOutcome::Root(root)) if self.root_path() == Some(root.path.as_path())
+        );
+        if !same {
+            self.generation += 1;
+        }
         self.error = None;
         match outcome {
-            Ok(FilesRootOutcome::Root(root)) => {
-                let same = self.root_path() == Some(root.path.as_path());
-                match &mut self.body {
-                    Body::Root(state) if same => state.root = root,
-                    _ => {
-                        self.reset_viewer();
-                        self.finder_root_changed();
-                        let tree = FileTree::new(root.cwd.clone());
-                        let loads = tree.initial_loads();
-                        self.body = Body::Root(Box::new(RootState {
-                            root,
-                            tree,
-                            listed: Default::default(),
-                            next_listing: 0,
-                        }));
-                        self.scroll = UniformListScrollHandle::new();
-                        let owner = cx.entity_id();
-                        let base = self.scroll.0.borrow().base_handle.clone();
-                        self.scrollbar = cx.new(|_| Scrollbar::app(base, owner));
-                        self.load(loads, cx);
-                    }
+            Ok(FilesRootOutcome::Root(root)) => match &mut self.body {
+                Body::Root(state) if same => state.root = root,
+                _ => {
+                    self.reset_viewer();
+                    self.finder_root_changed();
+                    let tree = FileTree::new(root.cwd.clone());
+                    let loads = tree.initial_loads();
+                    self.body = Body::Root(Box::new(RootState {
+                        root,
+                        tree,
+                        listed: Default::default(),
+                        next_listing: 0,
+                    }));
+                    self.scroll = UniformListScrollHandle::new();
+                    let owner = cx.entity_id();
+                    let base = self.scroll.0.borrow().base_handle.clone();
+                    self.scrollbar = cx.new(|_| Scrollbar::app(base, owner));
+                    self.load(loads, cx);
                 }
-            }
+            },
             Ok(FilesRootOutcome::ChooseFolder) => {
                 self.reset_viewer();
                 self.body = Body::Choose;
@@ -563,6 +562,9 @@ impl FilesView {
                 self.reset_viewer();
                 self.body = Body::Failed(error.to_string().into());
             }
+        }
+        if same {
+            self.read_again_after_resolve(cx);
         }
         if !self.searchable() {
             self.finder = None;
@@ -654,6 +656,7 @@ impl FilesView {
     fn apply_status(&mut self, status: GitStatus, cx: &mut Context<Self>) {
         if let Body::Root(state) = &mut self.body {
             state.tree.set_status(status);
+            self.note_ignored_tabs();
             cx.notify();
         }
     }
@@ -731,7 +734,13 @@ impl FilesView {
                 let Body::Root(state) = &self.body else {
                     return;
                 };
-                let folders = state.tree.listed(&changed.folders);
+                // No paths: the watcher cannot say what changed, so a folder
+                // listed earlier may be out of date however deep it is.
+                let folders = if changed.paths.is_empty() {
+                    state.tree.loaded_folders()
+                } else {
+                    state.tree.listed(&changed.folders)
+                };
                 self.load(folders, cx);
                 self.reload_changed(Some(changed), cx);
             }
@@ -748,6 +757,10 @@ impl FilesView {
                     self.resolve(cx);
                     return;
                 };
+                // Showing it reads everything again, with a new watch.
+                if !self.shown {
+                    return;
+                }
                 let folders = state.tree.loaded_folders();
                 if *rewatch {
                     // The daemon forgot its watches; nothing to release.
@@ -1080,10 +1093,6 @@ impl FilesView {
                 match selected {
                     Some(row) if row.folder => tree.toggle(&row.path),
                     Some(row) => {
-                        cx.emit(FileOpen {
-                            root: state.root.path.clone(),
-                            path: row.path.clone(),
-                        });
                         cx.stop_propagation();
                         self.open_file(row.path, cx);
                         return;
@@ -1782,18 +1791,42 @@ impl FilesView {
         .track_scroll(&self.scroll)
         .py(px(6.))
         .size_full();
+        let truncated = tree.status().is_some_and(|status| status.truncated);
         div()
-            .id("files-tree-scroll")
-            .when(cfg!(test), |element| {
-                element.debug_selector(|| "FILES_TREE".into())
-            })
-            .relative()
             .flex_1()
             .min_h(px(0.))
-            .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_tree_key))
-            .child(list)
-            .child(self.scrollbar.clone())
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("files-tree-scroll")
+                    .when(cfg!(test), |element| {
+                        element.debug_selector(|| "FILES_TREE".into())
+                    })
+                    .relative()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .track_focus(&self.focus)
+                    .on_key_down(cx.listener(Self::on_tree_key))
+                    .child(list)
+                    .child(self.scrollbar.clone()),
+            )
+            .when(truncated, |element| {
+                element.child(
+                    div()
+                        .when(cfg!(test), |element| {
+                            element.debug_selector(|| "FILES_STATUS_TRUNCATED".into())
+                        })
+                        .flex_none()
+                        .px(px(12.))
+                        .py(px(6.))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(crate::i18n::text("ui.files_status_truncated")),
+                )
+            })
             .into_any_element()
     }
 
@@ -2068,6 +2101,15 @@ fn compact_missing_path(path: &Path) -> String {
 
 #[cfg(test)]
 impl FilesView {
+    /// A `files/*` event arriving from the daemon.
+    pub(crate) fn receive(&mut self, event: FilesEvent, cx: &mut Context<Self>) {
+        self.on_files_event(&event, cx);
+    }
+
+    pub(crate) fn git_status(&self) -> Option<GitStatus> {
+        self.tree_ref()?.status().cloned()
+    }
+
     pub(crate) fn watched(&self) -> Option<&Path> {
         self.watched.as_deref()
     }

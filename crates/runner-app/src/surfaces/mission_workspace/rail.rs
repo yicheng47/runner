@@ -25,12 +25,13 @@ impl MissionWorkspace {
             .mission_view()
             .filter(|_| settings.files_view)
             .map(|mission| PanelSubject::Mission(mission.id));
-        let files_shown =
-            side_panel::shown(PanelSurface::Mission, settings, &self.rail_surfaces.open)
-                == Some(PanelViewId::Files);
         self.rail_files.layout(
             subject.as_ref(),
-            files_shown,
+            crate::surfaces::files::FilesSurface::of(
+                PanelSurface::Mission,
+                settings,
+                &self.rail_surfaces.open,
+            ),
             settings.mission_rail_width,
             settings.file_viewer_width,
             settings.file_tree_width,
@@ -150,7 +151,7 @@ impl MissionWorkspace {
                 (&self.rail_surfaces, window),
                 handler,
                 IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                    .tooltip(crate::i18n::text("ui.collapse_sessions_panel"))
+                    .tooltip(crate::i18n::text("ui.collapse_side_panel"))
                     .on_press(move |_, cx| {
                         collapse_root.update(cx, |this, cx| {
                             this.update_app_settings(cx, true, |settings| {
