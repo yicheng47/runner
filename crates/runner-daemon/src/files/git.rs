@@ -1,13 +1,14 @@
 //! `git` as a subprocess, resolved through the login-shell PATH, and the
 //! parsers for its porcelain output.
 
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use runner_core::protocol::files::{
-    FileStatus, GitStatus, StatusEntry, WorktreeEntry, WorktreeKind,
+    FileStatus, GitStatus, IndexBudget, StatusEntry, WorktreeEntry, WorktreeKind,
 };
 
 use crate::error::{Error, Result};
@@ -136,6 +137,69 @@ impl Git {
         Ok(parse_status(&stdout, prefix))
     }
 
+    /// Whether `dir` is, or is inside, a folder git ignores, where `ls-files`
+    /// lists nothing though the tree shows everything.
+    pub fn ignores(&self, dir: &Path) -> bool {
+        self.command(dir)
+            .args(["check-ignore", "-q", "--", "."])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// The files under `dir` that git does not ignore, tracked or not,
+    /// relative to `dir`, and whether `budget` ran out first, which stops git.
+    /// Tracked files since deleted, submodules and nested repositories are
+    /// not files on disk, so they are left out.
+    pub fn files(&self, dir: &Path, budget: &mut IndexBudget) -> Result<(Vec<String>, bool)> {
+        let fail = |error: std::io::Error| Error::msg(format!("run git: {error}"));
+        let mut child = self
+            .command(dir)
+            .args([
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+            ])
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(fail)?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        // One more than the budget, so that a record too long to fit ends the
+        // read rather than filling memory.
+        let mut reader = BufReader::new(stdout.take(budget.bytes() as u64 + 1));
+        let mut files = Vec::new();
+        let mut record = Vec::new();
+        let mut truncated = false;
+        let read = loop {
+            record.clear();
+            match reader.read_until(0, &mut record) {
+                Ok(0) => break Ok(()),
+                Ok(_) => {}
+                Err(error) => break Err(error),
+            }
+            if record.pop() != Some(0) || !budget.take(&record) {
+                truncated = true;
+                break Ok(());
+            }
+            if let Some(path) = file_on_disk(dir, &record) {
+                files.push(path);
+            }
+        };
+        if truncated || read.is_err() {
+            // git is left mid-write, and ends only when told to.
+            let _ = child.kill();
+        }
+        let status = child.wait().map_err(fail)?;
+        read.map_err(fail)?;
+        if !truncated && !status.success() {
+            return Err(Error::msg(format!("git ls-files: {status}")));
+        }
+        files.sort_unstable();
+        files.dedup();
+        Ok((files, truncated))
+    }
+
     /// One run, except on a git before 2.36, which lacks `-z`: there the
     /// first list is refused and retried without it, and later lists run
     /// without it once (Jason, 2026-11-04).
@@ -156,6 +220,16 @@ impl Git {
             }
         }
     }
+}
+
+/// A record of `git ls-files` as a path, if it names a file that is there.
+fn file_on_disk(dir: &Path, record: &[u8]) -> Option<String> {
+    let path = std::str::from_utf8(record).ok()?;
+    if path.is_empty() || path.ends_with('/') {
+        return None;
+    }
+    let kind = dir.join(path).symlink_metadata().ok()?.file_type();
+    (!kind.is_dir()).then(|| path.to_owned())
 }
 
 /// Parses `git status --porcelain=v2 -z`. Paths are relative to the

@@ -1712,6 +1712,9 @@ mod tests {
                 window,
                 cx,
             );
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             root.apply_tab_rows(cx);
             assert!(root.tabs.activate_session("direct-agent"));
             root.route = AppRoute::Chat;
@@ -1815,6 +1818,9 @@ mod tests {
                 window,
                 cx,
             );
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             root.apply_tab_rows(cx);
             assert!(root.tabs.activate_session("direct-agent"));
             root.route = AppRoute::Chat;
@@ -1932,6 +1938,9 @@ mod tests {
                 window,
                 cx,
             );
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             root.apply_tab_rows(cx);
             assert!(root.tabs.activate_session(session));
             root.route = crate::AppRoute::Chat;
@@ -2312,84 +2321,14 @@ mod tests {
     }
 
     #[test]
-    fn a_new_chat_opens_the_surface_settings_name() {
-        use crate::app_settings::NewChatPanel;
+    fn a_new_chat_opens_on_the_surface_list_and_leaves_the_keys_with_the_chat() {
         use crate::surfaces::front_page::client::ChatLaunched;
         use crate::surfaces::side_panel::{OpenSurfaces, PanelViewId};
 
-        for (open, expected, selector) in [
-            (
-                NewChatPanel::Info,
-                surfaces_of(&[PanelViewId::Info], PanelViewId::Info),
-                "PANEL_TAB Info",
-            ),
-            (
-                NewChatPanel::Files,
-                surfaces_of(&[PanelViewId::Files], PanelViewId::Files),
-                "PANEL_TAB Files",
-            ),
-            (
-                NewChatPanel::Nothing,
-                OpenSurfaces::default(),
-                "PANEL_EMPTY",
-            ),
-        ] {
-            let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
-            host.update(&mut visual, |root, window, cx| {
-                root.update_app_settings(cx, false, |settings| {
-                    settings.new_chat_panel = open;
-                    true
-                });
-                root.chat_surfaces.open =
-                    surfaces_of(&[PanelViewId::Files, PanelViewId::Info], PanelViewId::Info);
-                root.finish_local_chat_launch(
-                    Some("direct-agent".into()),
-                    Ok(ChatLaunched {
-                        session: "direct-agent".into(),
-                        layout: None,
-                    }),
-                    window,
-                    cx,
-                );
-            })
-            .unwrap();
-            visual.run_until_parked();
-            assert_eq!(chat_surfaces(&host, &mut visual), expected, "{open:?}");
-            assert!(visual.debug_bounds(selector).is_some(), "{open:?}");
-            let list_focused = |visual: &mut gpui::VisualTestContext| {
-                host.update(visual, |root, window, _| {
-                    root.chat_surfaces.list_focus().is_focused(window)
-                })
-                .unwrap()
-            };
-            // Past the start transition, which focuses the terminal.
-            visual
-                .executor()
-                .advance_clock(std::time::Duration::from_secs(30));
-            visual.run_until_parked();
-            assert_eq!(
-                list_focused(&mut visual),
-                open == NewChatPanel::Nothing,
-                "{open:?}: the list takes focus when the panel opens on it"
-            );
-            if open == NewChatPanel::Nothing {
-                visual.simulate_keystrokes("i");
-                assert_eq!(
-                    chat_surfaces(&host, &mut visual),
-                    surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
-                );
-                assert!(!list_focused(&mut visual), "the chat takes the keys back");
-            }
-        }
-
-        // A collapsed panel, or a terminal-only tab, never takes focus.
         let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
         host.update(&mut visual, |root, window, cx| {
-            root.update_app_settings(cx, false, |settings| {
-                settings.new_chat_panel = NewChatPanel::Nothing;
-                settings.chat_panel_open = false;
-                true
-            });
+            root.chat_surfaces.open =
+                surfaces_of(&[PanelViewId::Files, PanelViewId::Info], PanelViewId::Info);
             root.finish_local_chat_launch(
                 Some("direct-agent".into()),
                 Ok(ChatLaunched {
@@ -2399,6 +2338,32 @@ mod tests {
                 window,
                 cx,
             );
+        })
+        .unwrap();
+        visual.run_until_parked();
+        assert_eq!(chat_surfaces(&host, &mut visual), OpenSurfaces::default());
+        assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
+        // Past the start transition, which focuses the terminal.
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(30));
+        visual.run_until_parked();
+        let focused = host
+            .update(&mut visual, |root, window, _| {
+                root.chat_surfaces.list_focus().is_focused(window)
+            })
+            .unwrap();
+        assert!(!focused, "typing goes to the new chat, not the list");
+
+        // A collapsed panel, or a terminal-only tab, never takes focus.
+        let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
+        host.update(&mut visual, |root, window, cx| {
+            root.update_app_settings(cx, false, |settings| {
+                settings.chat_panel_open = false;
+                true
+            });
+            root.chat_surfaces.open = OpenSurfaces::default();
+            root.focus_empty_chat_panel(window, cx);
         })
         .unwrap();
         visual.run_until_parked();
@@ -2586,6 +2551,53 @@ mod tests {
                 click(&mut visual, root.join("lib.rs"));
                 assert_eq!(launched(), 1, "{session}");
             }
+        }
+    }
+
+    #[test]
+    fn search_files_opens_the_collapsed_panel_on_files_and_its_finder() {
+        let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+        let root = temp.path().join("checkout");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("lib.rs"), "one\n").unwrap();
+        store.update(&mut visual, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET files_root = ?1 WHERE id = 'direct-agent'",
+                    [root.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.update_settings(
+                |settings| {
+                    settings.chat_panel_open = false;
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+            .unwrap();
+
+        visual.dispatch_action(crate::SearchFiles);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while visual.debug_bounds("FILES_FINDER_ITEM 0").is_none() {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+        assert!(store.read_with(&visual, |store, _| store.settings.chat_panel_open));
+        visual.simulate_keystrokes("enter");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while visual.debug_bounds("FILE_CODE").is_none() {
+            assert!(std::time::Instant::now() < deadline, "timed out");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
         }
     }
 
@@ -2893,6 +2905,9 @@ mod tests {
                 window,
                 cx,
             );
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             root.apply_tab_rows(cx);
             assert!(root.tabs.activate_session("direct-agent"));
             root.route = crate::AppRoute::Chat;

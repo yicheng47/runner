@@ -32,6 +32,8 @@ use crate::theme;
 
 const ROW_HEIGHT: f32 = 26.;
 const INDENT: f32 = 14.;
+const ROW_PAD_LEFT: f32 = 14.;
+const CHEVRON_SIZE: f32 = 12.;
 const PICKER_WIDTH: f32 = 300.;
 
 /// Space or Enter on a file in the tree, which opens it in a tab.
@@ -78,6 +80,8 @@ pub(super) struct Picker {
     worktrees: Vec<WorktreeEntry>,
     pub(super) items: Vec<PickerItem>,
     pub(super) highlighted: usize,
+    /// The arrows moved the highlight, so a list that grows leaves it there.
+    moved: bool,
     scroll: ScrollHandle,
     /// Scroll the highlighted item into view on the next frame.
     reveal: Cell<bool>,
@@ -115,14 +119,18 @@ pub(crate) struct FilesView {
     pub(super) choose_field: Entity<TextField>,
     pub(super) picker: Option<Picker>,
     picker_anchor: Rc<Cell<Bounds<Pixels>>>,
-    menu: Option<Entity<ContextMenu>>,
+    pub(super) finder: Option<super::finder::Finder>,
+    /// The whole view, which the finder centres over.
+    pub(super) view_bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub(super) menu: Option<Entity<ContextMenu>>,
     pub(super) scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
     pub(super) viewer: Viewer,
     pub(super) links: Links,
     /// Redrawn when the panel's width should change.
     owner: Option<gpui::EntityId>,
-    reported: Option<bool>,
+    /// The widening and open file last told to the owner, whose layout reads both.
+    reported: (Option<bool>, bool),
     /// Whether the divider between the file and the tree is being dragged.
     tree_resizing: bool,
     /// Settings → Side panel → Files as last drawn.
@@ -265,13 +273,15 @@ impl FilesView {
             choose_field,
             picker: None,
             picker_anchor: Rc::default(),
+            finder: None,
+            view_bounds: Rc::default(),
             menu: None,
             scroll,
             scrollbar,
             viewer: Viewer::default(),
             links: Links::default(),
             owner: None,
-            reported: None,
+            reported: (None, false),
             tree_resizing: false,
             look: super::Look::current(cx),
             _hub: hub_subscription,
@@ -373,9 +383,25 @@ impl FilesView {
         }
     }
 
-    /// With a file open, the panel widens: whether the tree toggle is on.
+    /// With a root to show, the view is the file area and the tree.
+    pub(super) fn wide(&self) -> bool {
+        self.has_tabs() || matches!(self.body, Body::Root(_))
+    }
+
+    /// Whether the view draws the file area: with a file open, or a root the
+    /// owner found room to widen for.
+    pub(super) fn shows_file_area(&self) -> bool {
+        self.has_tabs() || (self.wide() && self.viewer.widened.is_some())
+    }
+
+    /// Whether a root is shown or loading, for the finder to search.
+    pub(super) fn searchable(&self) -> bool {
+        matches!(self.body, Body::Root(_) | Body::Loading)
+    }
+
+    /// The panel widens for the file area: whether the tree toggle is on.
     pub(crate) fn widening(&self) -> Option<bool> {
-        self.has_tabs().then_some(!self.viewer.tree_hidden)
+        self.wide().then_some(!self.viewer.tree_hidden)
     }
 
     pub(crate) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
@@ -385,6 +411,7 @@ impl FilesView {
         self.shown = shown;
         if !shown {
             self.picker = None;
+            self.finder = None;
             self.menu = None;
         }
         self.sync_watch(cx);
@@ -506,6 +533,7 @@ impl FilesView {
                     Body::Root(state) if same => state.root = root,
                     _ => {
                         self.reset_viewer();
+                        self.finder_root_changed();
                         let tree = FileTree::new(root.cwd.clone());
                         let loads = tree.initial_loads();
                         self.body = Body::Root(Box::new(RootState {
@@ -536,6 +564,10 @@ impl FilesView {
                 self.body = Body::Failed(error.to_string().into());
             }
         }
+        if !self.searchable() {
+            self.finder = None;
+        }
+        self.load_finder_index(cx);
         self.watched_root_changed(cx);
         self.settle_links(cx);
         cx.notify();
@@ -847,8 +879,11 @@ impl FilesView {
             if let Some(picker) = &mut this.picker {
                 if picker.query != query {
                     picker.query = query;
-                    picker.highlighted = 0;
-                    picker.reveal.set(true);
+                    picker.moved = false;
+                    picker.highlighted = picker::default_highlight(
+                        picker::filter(&picker.items, &picker.query).len(),
+                    );
+                    picker.scroll.set_offset(gpui::Point::default());
                     cx.notify();
                 }
             }
@@ -860,6 +895,7 @@ impl FilesView {
             worktrees: Vec::new(),
             items: Vec::new(),
             highlighted: 0,
+            moved: false,
             scroll: ScrollHandle::new(),
             reveal: Cell::new(false),
             _observe: observe,
@@ -908,7 +944,11 @@ impl FilesView {
             choose_folder_label: crate::i18n::text("ui.choose_folder"),
         });
         let visible = picker::filter(&picker.items, &picker.query).len();
-        picker.highlighted = picker.highlighted.min(visible.saturating_sub(1));
+        picker.highlighted = if picker.moved {
+            picker.highlighted.min(visible.saturating_sub(1))
+        } else {
+            picker::default_highlight(visible)
+        };
     }
 
     fn visible_picker_items(&self) -> Vec<usize> {
@@ -931,10 +971,12 @@ impl FilesView {
         match event.keystroke.key.as_str() {
             "down" => {
                 picker.highlighted = (picker.highlighted + 1).min(visible.len().saturating_sub(1));
+                picker.moved = true;
                 picker.reveal.set(true);
             }
             "up" => {
                 picker.highlighted = picker.highlighted.saturating_sub(1);
+                picker.moved = true;
                 picker.reveal.set(true);
             }
             "escape" => {
@@ -1210,7 +1252,7 @@ impl FilesView {
         let chevron = if row.folder {
             svg()
                 .flex_none()
-                .size(px(12.))
+                .size(px(CHEVRON_SIZE))
                 .path(if row.expanded {
                     "chevron-down.svg"
                 } else {
@@ -1219,7 +1261,7 @@ impl FilesView {
                 .text_color(theme::faint())
                 .into_any_element()
         } else {
-            div().flex_none().size(px(12.)).into_any_element()
+            div().flex_none().size(px(CHEVRON_SIZE)).into_any_element()
         };
         let name_color = if row.ignored {
             theme::faint()
@@ -1233,14 +1275,14 @@ impl FilesView {
                 let path = path.clone();
                 element.debug_selector(move || format!("FILES_ROW {path}"))
             })
+            .relative()
+            .w_full()
             .h(px(ROW_HEIGHT))
-            .mx(px(8.))
-            .pl(px(6. + row.depth as f32 * INDENT))
+            .pl(px(ROW_PAD_LEFT + row.depth as f32 * INDENT))
             .pr(px(10.))
             .flex()
             .items_center()
             .gap(px(6.))
-            .rounded_md()
             .border_1()
             .border_color(gpui::transparent_black())
             .cursor_pointer()
@@ -1277,6 +1319,24 @@ impl FilesView {
                     this.open_row_menu(menu_row.clone(), event, window, cx)
                 }),
             )
+            .children((0..row.depth).map(|ancestor| {
+                // Runs under each ancestor's chevron, past the row's border so
+                // that the rows' segments join into one line.
+                div()
+                    .when(cfg!(test), |element| {
+                        let path = path.clone();
+                        element.debug_selector(move || format!("FILES_GUIDE {path} {ancestor}"))
+                    })
+                    .absolute()
+                    .top(px(-1.))
+                    .bottom(px(-1.))
+                    .left(px(ROW_PAD_LEFT
+                        + CHEVRON_SIZE / 2.
+                        + ancestor as f32 * INDENT))
+                    .w(px(1.))
+                    // The theme's line colours can match the panel's background.
+                    .bg(theme::with_alpha(theme::faint(), 0.5))
+            }))
             .child(chevron)
             .child(self.icon(&row))
             .child(
@@ -1481,10 +1541,46 @@ impl FilesView {
             .child(div().min_w(px(0.)).flex_shrink(1.).child(trigger))
             .child(div().flex_1())
             .children(status)
+            .when(!missing, |element| {
+                element.child(
+                    div()
+                        .id("files-search")
+                        .when(cfg!(test), |element| {
+                            element.debug_selector(|| "FILES_SEARCH".into())
+                        })
+                        .flex_none()
+                        .size(px(24.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .when(self.finder.is_some(), |element| {
+                            element.bg(theme::sidebar_selected())
+                        })
+                        .hover(|element| {
+                            element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
+                        })
+                        .tooltip(|_, cx| {
+                            runner_app::ui::tooltip::tooltip_view(
+                                crate::i18n::t("ui.search_files"),
+                                cx,
+                            )
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_finder(window, cx)))
+                        .child(
+                            svg()
+                                .size(px(14.))
+                                .path("search.svg")
+                                .text_color(theme::muted()),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
-    fn root_is_git(&self) -> bool {
+    pub(super) fn root_is_git(&self) -> bool {
         matches!(&self.body, Body::Root(state) if state.root.git.is_some())
     }
 
@@ -2003,9 +2099,9 @@ impl FilesView {
 
 impl Render for FilesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let widening = self.widening();
-        if widening != self.reported {
-            self.reported = widening;
+        let reported = (self.widening(), self.has_tabs());
+        if reported != self.reported {
+            self.reported = reported;
             if let Some(owner) = self.owner {
                 cx.defer(move |cx| cx.notify(owner));
             }
@@ -2059,6 +2155,9 @@ impl Render for FilesView {
         };
         let header = self.render_header(cx);
         let picker = self.render_picker(window, cx);
+        let finder = self.render_finder(window, cx);
+        let view_bounds = self.view_bounds.clone();
+        let finder_open = self.finder.is_some();
         let tree_column = div()
             .flex_1()
             .min_h(px(0.))
@@ -2078,7 +2177,7 @@ impl Render for FilesView {
                     .child(error)
             }))
             .child(body);
-        let viewing = self.has_tabs();
+        let viewing = self.shows_file_area();
         let tree_shown = self.tree_shown();
         let tree_width = self
             .viewer
@@ -2183,6 +2282,20 @@ impl Render for FilesView {
                 )
             })
             .relative()
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        // The finder is placed from these, a frame behind.
+                        if finder_open && view_bounds.get() != bounds {
+                            window.request_animation_frame();
+                        }
+                        view_bounds.set(bounds);
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .children(tree_resize)
             .on_drag_move::<FileTreeResizeDrag>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<FileTreeResizeDrag>, _, cx| {
@@ -2200,6 +2313,7 @@ impl Render for FilesView {
                 cx.listener(|this, _, _, cx| this.finish_tree_resize(cx)),
             )
             .children(picker)
+            .children(finder)
             .children(self.menu.clone())
             .children(popups)
     }

@@ -98,6 +98,7 @@ const SCROLL_ACTIVITY_LINGER: Duration = Duration::from_millis(900);
 
 pub struct Scrollbar {
     kind: ScrollbarKind,
+    horizontal: bool,
     metrics: MetricsReader,
     scroll_to: ScrollWriter,
     track_bounds: Bounds<Pixels>,
@@ -161,6 +162,7 @@ impl Scrollbar {
     fn new(kind: ScrollbarKind, metrics: MetricsReader, scroll_to: ScrollWriter) -> Self {
         Self {
             kind,
+            horizontal: false,
             metrics,
             scroll_to,
             track_bounds: Bounds::default(),
@@ -172,6 +174,29 @@ impl Scrollbar {
             strip_hovered: false,
             activity_generation: 0,
         }
+    }
+
+    /// Lies along the bottom edge and scrolls sideways: its metrics measure
+    /// the width.
+    pub fn horizontal(mut self) -> Self {
+        self.horizontal = true;
+        self
+    }
+
+    fn track_length(&self) -> f32 {
+        f32::from(if self.horizontal {
+            self.track_bounds.size.width
+        } else {
+            self.track_bounds.size.height
+        })
+    }
+
+    fn along_track(&self, position: Point<Pixels>) -> f32 {
+        f32::from(if self.horizontal {
+            position.x - self.track_bounds.origin.x
+        } else {
+            position.y - self.track_bounds.origin.y
+        })
     }
 
     fn mark_activity(&mut self, cx: &mut Context<Self>) {
@@ -206,21 +231,20 @@ impl Scrollbar {
         if !self.is_visible() {
             return;
         }
-        let track_height = f32::from(self.track_bounds.size.height);
-        let Some((thumb_top, thumb_height)) = (self.metrics)().thumb(track_height, self.min_thumb)
+        let Some((thumb_start, thumb_length)) =
+            (self.metrics)().thumb(self.track_length(), self.min_thumb)
         else {
             return;
         };
-        let local = event.position.y - self.track_bounds.origin.y;
-        let local_value = f32::from(local);
+        let local = self.along_track(event.position);
         self.drag_grab = Some(
-            if local_value >= thumb_top && local_value <= thumb_top + thumb_height {
-                px(local_value - thumb_top)
+            if local >= thumb_start && local <= thumb_start + thumb_length {
+                px(local - thumb_start)
             } else {
-                px(thumb_height / 2.)
+                px(thumb_length / 2.)
             },
         );
-        self.scroll_for_pointer(event.position.y, cx);
+        self.scroll_for_pointer(event.position, cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -232,22 +256,22 @@ impl Scrollbar {
         cx: &mut Context<Self>,
     ) {
         if self.drag_grab.is_some() {
-            self.scroll_for_pointer(event.event.position.y, cx);
+            self.scroll_for_pointer(event.event.position, cx);
             cx.stop_propagation();
             cx.notify();
         }
     }
 
-    fn scroll_for_pointer(&self, pointer_y: Pixels, cx: &mut Context<Self>) {
+    fn scroll_for_pointer(&self, pointer: Point<Pixels>, cx: &mut Context<Self>) {
         let metrics = (self.metrics)();
-        let track_height = f32::from(self.track_bounds.size.height);
-        let Some((_, thumb_height)) = metrics.thumb(track_height, self.min_thumb) else {
+        let track_length = self.track_length();
+        let Some((_, thumb_length)) = metrics.thumb(track_length, self.min_thumb) else {
             return;
         };
-        let grab = f32::from(self.drag_grab.unwrap_or(px(thumb_height / 2.)));
-        let top = f32::from(pointer_y - self.track_bounds.origin.y) - grab;
-        let available = (track_height - thumb_height).max(1.);
-        let ratio = (top / available).clamp(0., 1.);
+        let grab = f32::from(self.drag_grab.unwrap_or(px(thumb_length / 2.)));
+        let start = self.along_track(pointer) - grab;
+        let available = (track_length - thumb_length).max(1.);
+        let ratio = (start / available).clamp(0., 1.);
         (self.scroll_to)(ratio * (metrics.content - metrics.viewport).max(0.), cx);
     }
 }
@@ -257,10 +281,15 @@ impl Render for Scrollbar {
         let zoom = app_zoom(window);
         self.min_thumb = 20. * zoom;
         let metrics = (self.metrics)();
-        let track_height = f32::from(self.track_bounds.size.height);
-        let thumb = metrics.thumb(track_height, self.min_thumb);
+        let thumb = metrics.thumb(self.track_length(), self.min_thumb);
         let gutter = self.kind.gutter();
-        let (left, right) = match self.kind {
+        let horizontal = self.horizontal;
+        let (track_selector, thumb_selector) = if horizontal {
+            ("SCROLLBAR_TRACK_X", "SCROLLBAR_THUMB_X")
+        } else {
+            ("SCROLLBAR_TRACK", "SCROLLBAR_THUMB")
+        };
+        let (inner, outer) = match self.kind {
             ScrollbarKind::App if self.strip_hovered || self.drag_grab.is_some() => (1., 3.),
             ScrollbarKind::App => (3., 3.),
             ScrollbarKind::Terminal => (1., 1.),
@@ -275,12 +304,12 @@ impl Render for Scrollbar {
         };
         let track = div()
             .id("theme-scrollbar")
-            .debug_selector(|| "SCROLLBAR_TRACK".into())
+            .debug_selector(move || track_selector.into())
             .absolute()
-            .top_0()
-            .right_0()
             .bottom_0()
-            .w(rems(gutter / 16.))
+            .right_0()
+            .when(horizontal, |track| track.left_0().h(rems(gutter / 16.)))
+            .when(!horizontal, |track| track.top_0().w(rems(gutter / 16.)))
             .when(self.kind == ScrollbarKind::Terminal || visible, |track| {
                 track
                     .cursor(CursorStyle::Arrow)
@@ -333,19 +362,29 @@ impl Render for Scrollbar {
                 .absolute()
                 .inset_0(),
             )
-            .children(thumb.filter(|_| visible).map(|(top, height)| {
+            .children(thumb.filter(|_| visible).map(|(start, length)| {
                 div()
                     .absolute()
-                    .top(px(top))
-                    .left(rems(left / 16.))
-                    .right(rems(right / 16.))
-                    .h(px(height))
+                    .when(horizontal, |thumb| {
+                        thumb
+                            .left(px(start))
+                            .w(px(length))
+                            .top(rems(inner / 16.))
+                            .bottom(rems(outer / 16.))
+                    })
+                    .when(!horizontal, |thumb| {
+                        thumb
+                            .top(px(start))
+                            .h(px(length))
+                            .left(rems(inner / 16.))
+                            .right(rems(outer / 16.))
+                    })
                     .rounded_full()
-                    .debug_selector(|| "SCROLLBAR_THUMB".into())
+                    .debug_selector(move || thumb_selector.into())
                     .bg(thumb_color)
                     .map(|thumb| {
                         #[cfg(test)]
-                        let thumb = crate::theme_snapshot::record_fill("SCROLLBAR_THUMB", thumb);
+                        let thumb = crate::theme_snapshot::record_fill(thumb_selector, thumb);
                         thumb
                     })
                     .hover(move |thumb| thumb.bg(active_color))
@@ -354,13 +393,14 @@ impl Render for Scrollbar {
         div()
             .id("scrollbar-list-hover")
             .absolute()
-            .top_0()
-            .right_0()
             .bottom_0()
-            .w(rems(gutter / 16.))
+            .right_0()
+            .when(horizontal, |list| list.left_0().h(rems(gutter / 16.)))
+            .when(!horizontal, |list| list.top_0().w(rems(gutter / 16.)))
             .when(self.kind == ScrollbarKind::App, |list| {
-                list.left_0()
-                    .w_full()
+                list.top_0()
+                    .left_0()
+                    .size_full()
                     .hover_listener_mode(gpui::HoverListenerMode::InputModalityIndependent)
                     .on_hover(cx.listener(|this, hovered, _, cx| {
                         if this.list_hovered != *hovered {
@@ -655,6 +695,71 @@ mod tests {
         visual.executor().advance_clock(Duration::from_millis(900));
         visual.run_until_parked();
         assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+    }
+
+    struct HorizontalHost {
+        bar: gpui::Entity<Scrollbar>,
+    }
+
+    impl Render for HorizontalHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().p(px(20.)).child(
+                div()
+                    .debug_selector(|| "SCROLLBAR_LIST".into())
+                    .relative()
+                    .w(px(300.))
+                    .h(px(200.))
+                    .child(self.bar.clone()),
+            )
+        }
+    }
+
+    #[test]
+    fn a_horizontal_scrollbar_lies_along_the_bottom_and_drags_sideways() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut cx = gpui::TestAppContext::single();
+        let position = Rc::new(std::cell::Cell::new(0.));
+        let host = cx.add_window(|_, cx| {
+            let read = position.clone();
+            let write = position.clone();
+            let bar = cx.new(|_| {
+                Scrollbar::external(
+                    ScrollbarKind::App,
+                    Rc::new(move || ScrollbarMetrics {
+                        viewport: 300.,
+                        content: 1200.,
+                        position: read.get(),
+                    }),
+                    Rc::new(move |value, _| write.set(value)),
+                )
+                .horizontal()
+            });
+            HorizontalHost { bar }
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+
+        let list = visual.debug_bounds("SCROLLBAR_LIST").unwrap();
+        let track = visual.debug_bounds("SCROLLBAR_TRACK_X").unwrap();
+        assert_eq!(track.size.width, list.size.width);
+        assert_eq!(track.bottom(), list.bottom());
+        assert!((track.size.height - px(10.)).abs() < px(0.5));
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB_X").is_none());
+
+        visual.simulate_mouse_move(list.center(), None, Default::default());
+        visual.run_until_parked();
+        let thumb = visual.debug_bounds("SCROLLBAR_THUMB_X").unwrap();
+        assert!((thumb.size.width - px(75.)).abs() < px(0.5), "a quarter");
+        assert_eq!(thumb.left(), track.left());
+
+        let target = thumb.center() + gpui::point(px(112.5), px(0.));
+        visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Default::default());
+        // The first move starts the drag; the next one moves it.
+        for _ in 0..2 {
+            visual.simulate_mouse_move(target, Some(MouseButton::Left), Default::default());
+        }
+        visual.simulate_mouse_up(target, MouseButton::Left, Default::default());
+        assert!((position.get() - 450_f32).abs() < 1., "{}", position.get());
     }
 
     #[test]

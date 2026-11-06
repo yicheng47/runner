@@ -1113,25 +1113,19 @@ struct Look {
     ui: Font,
     mono: Font,
     syntax: SyntaxTheme,
-    highlighting: bool,
 }
 
 impl Look {
     fn current(window: &Window, cx: &App) -> Self {
-        let (mono, size, highlighting) = match super::settings(cx) {
-            Some(settings) => (
-                settings.files_font(cx),
-                settings.files_font_size() as f32,
-                settings.files_syntax_highlighting,
-            ),
-            None => (gpui::font(theme::UI_MONOSPACE_FONT), 13., true),
+        let (mono, size) = match super::settings(cx) {
+            Some(settings) => (settings.files_font(cx), settings.files_font_size() as f32),
+            None => (gpui::font(theme::UI_MONOSPACE_FONT), 13.),
         };
         Self {
             base: size,
             ui: window.text_style().font(),
             mono,
             syntax: SyntaxTheme::current(cx),
-            highlighting,
         }
     }
 
@@ -1570,7 +1564,6 @@ impl Draw<'_> {
             .into_iter()
             .map(|(len, capture)| {
                 let color = capture
-                    .filter(|_| look.highlighting)
                     .and_then(|capture| look.syntax.color(capture))
                     .unwrap_or(theme::text());
                 self.run(len, look.mono.clone(), color)

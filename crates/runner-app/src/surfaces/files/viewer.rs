@@ -264,7 +264,7 @@ impl FilesView {
         self.look = look;
         for file in self.viewer.files.values() {
             if let Content::Text(view) | Content::Deleted(Some(view)) = &file.content {
-                view.update(cx, |view, cx| view.settings_changed(cx));
+                view.update(cx, |_, cx| cx.notify());
             }
             if let Some(rendered) = &file.rendered {
                 rendered.update(cx, |_, cx| cx.notify());
@@ -363,7 +363,7 @@ impl FilesView {
     /// one while its toggle is on, which the owner's layout follows
     /// (Jason, 2026-11-05).
     pub(super) fn tree_shown(&self) -> bool {
-        !self.has_tabs()
+        !self.shows_file_area()
             || (!self.viewer.tree_hidden && self.viewer.widened.is_none_or(|widened| widened.tree))
     }
 
@@ -1299,93 +1299,101 @@ impl FilesView {
                         })),
                 )
             })
-            .child(
-                div()
-                    .relative()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(theme::border())
-                    // A deleted file has nothing to open: closing is its only action.
-                    .when(deleted, |element| element.opacity(0.4))
-                    .child(
-                        canvas(
-                            move |bounds, _, _| open_in_anchor.set(bounds),
-                            |_, _, _, _| {},
+            .when(self.has_tabs(), |strip| {
+                strip.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(theme::border())
+                        // A deleted file has nothing to open: closing is its only action.
+                        .when(deleted, |element| element.opacity(0.4))
+                        .child(
+                            canvas(
+                                move |bounds, _, _| open_in_anchor.set(bounds),
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
                         )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .child(
-                        div()
-                            .id("file-open-in")
-                            .when(cfg!(test), |element| {
-                                element.debug_selector(|| "FILE_OPEN_IN".into())
-                            })
-                            .h(px(24.))
-                            .w(px(26.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_l_md()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .when(!deleted, |element| {
-                                element
-                                    .cursor_pointer()
-                                    .hover(|element| {
-                                        element
-                                            .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                                    })
-                                    .tooltip(move |_, cx| {
-                                        runner_app::ui::tooltip::tooltip_view(
-                                            open_in_label.clone(),
-                                            cx,
+                        .child(
+                            div()
+                                .id("file-open-in")
+                                .when(cfg!(test), |element| {
+                                    element.debug_selector(|| "FILE_OPEN_IN".into())
+                                })
+                                .h(px(24.))
+                                .w(px(26.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_l_md()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .when(!deleted, |element| {
+                                    element
+                                        .cursor_pointer()
+                                        .hover(|element| {
+                                            element.bg(theme::with_alpha(
+                                                theme::sidebar_selected(),
+                                                0.6,
+                                            ))
+                                        })
+                                        .tooltip(move |_, cx| {
+                                            runner_app::ui::tooltip::tooltip_view(
+                                                open_in_label.clone(),
+                                                cx,
+                                            )
+                                        })
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.open_in(None, cx)),
                                         )
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| this.open_in(None, cx)))
-                            })
-                            .child(editor_icon(effective, 14.)),
-                    )
-                    .child(div().w(px(1.)).h(px(14.)).bg(theme::border()))
-                    .child(
-                        div()
-                            .id("file-open-in-menu")
-                            .when(cfg!(test), |element| {
-                                element.debug_selector(|| "FILE_OPEN_IN_MENU".into())
-                            })
-                            .h(px(24.))
-                            .w(px(18.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_r_md()
-                            .when(self.viewer.open_in_open, |element| {
-                                element.bg(theme::sidebar_selected())
-                            })
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .when(!deleted, |element| {
-                                element
-                                    .cursor_pointer()
-                                    .hover(|element| {
-                                        element
-                                            .bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.viewer.open_in_open = !this.viewer.open_in_open;
-                                        this.viewer.list_open = false;
-                                        cx.notify();
-                                    }))
-                            })
-                            .child(
-                                svg()
-                                    .size(px(11.))
-                                    .path("chevron-down.svg")
-                                    .text_color(theme::muted()),
-                            ),
-                    ),
-            )
+                                })
+                                .child(editor_icon(effective, 14.)),
+                        )
+                        .child(div().w(px(1.)).h(px(14.)).bg(theme::border()))
+                        .child(
+                            div()
+                                .id("file-open-in-menu")
+                                .when(cfg!(test), |element| {
+                                    element.debug_selector(|| "FILE_OPEN_IN_MENU".into())
+                                })
+                                .h(px(24.))
+                                .w(px(18.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_r_md()
+                                .when(self.viewer.open_in_open, |element| {
+                                    element.bg(theme::sidebar_selected())
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .when(!deleted, |element| {
+                                    element
+                                        .cursor_pointer()
+                                        .hover(|element| {
+                                            element.bg(theme::with_alpha(
+                                                theme::sidebar_selected(),
+                                                0.6,
+                                            ))
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.viewer.open_in_open = !this.viewer.open_in_open;
+                                            this.viewer.list_open = false;
+                                            cx.notify();
+                                        }))
+                                })
+                                .child(
+                                    svg()
+                                        .size(px(11.))
+                                        .path("chevron-down.svg")
+                                        .text_color(theme::muted()),
+                                ),
+                        ),
+                )
+            })
             .child(
                 strip_button("file-tree-toggle", !self.viewer.tree_hidden)
                     .tooltip(|_, cx| {
@@ -1455,9 +1463,161 @@ impl FilesView {
             .into_any_element()
     }
 
+    fn search_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("file-empty-search")
+            .when(cfg!(test), |element| {
+                element.debug_selector(|| "FILE_EMPTY_SEARCH".into())
+            })
+            .flex_none()
+            .px(px(10.))
+            .py(px(5.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .cursor_pointer()
+            .text_size(theme::text_ui())
+            .text_color(theme::text())
+            .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_finder(window, cx)))
+            .child(
+                svg()
+                    .size(px(13.))
+                    .path("search.svg")
+                    .text_color(theme::muted()),
+            )
+            .child(crate::i18n::text("ui.search_files"))
+            .children(super::finder::search_key_hint(cx))
+            .into_any_element()
+    }
+
+    /// Where the file goes before one is chosen: the checkout's changes, one
+    /// click from opening, or a prompt when there are none to list.
+    fn render_no_file(&self, cx: &mut Context<Self>) -> AnyElement {
+        let reading =
+            self.root_is_git() && self.tree_ref().is_none_or(|tree| tree.status().is_none());
+        if reading {
+            return div().flex_1().into_any_element();
+        }
+        let changed = self
+            .tree_ref()
+            .map(|tree| tree.changed_files())
+            .unwrap_or_default();
+        if changed.is_empty() {
+            return self.render_placeholder(
+                "FILE_NO_FILE",
+                "file-text.svg",
+                crate::i18n::t("ui.no_file_open").to_string(),
+                crate::i18n::t("ui.choose_a_file_or_search").to_string(),
+                self.search_button(cx),
+            );
+        }
+        let count = changed.len();
+        let changed = Rc::new(changed);
+        let rows = changed.clone();
+        div()
+            .when(cfg!(test), |element| {
+                element.debug_selector(|| "FILE_CHANGED_LIST".into())
+            })
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .px(px(16.))
+            .pt(px(12.))
+            .child(
+                div()
+                    .flex_none()
+                    .pb(px(8.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(theme::text_ui())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(crate::i18n::tn("count.changed", count)),
+                    )
+                    .child(self.search_button(cx)),
+            )
+            .child(
+                gpui::uniform_list(
+                    "file-changed-list",
+                    count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        rows[range]
+                            .iter()
+                            .map(|(path, letter)| this.render_changed_row(path, *letter, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .flex_1()
+                .min_h(px(0.)),
+            )
+            .into_any_element()
+    }
+
+    fn render_changed_row(&self, path: &str, letter: Letter, cx: &mut Context<Self>) -> AnyElement {
+        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let open = path.to_owned();
+        div()
+            .id(gpui::SharedString::from(format!("file-changed-{path}")))
+            .when(cfg!(test), |element| {
+                let selector = format!("FILE_CHANGED {path}");
+                element.debug_selector(move || selector)
+            })
+            .w_full()
+            .h(px(28.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .rounded_md()
+            .cursor_pointer()
+            .text_size(theme::text_ui())
+            .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.focus.focus(window, cx);
+                this.open_file(open.clone(), cx);
+            }))
+            .child(self.file_icon(name))
+            .child(
+                div()
+                    .flex_none()
+                    .max_w(gpui::relative(0.6))
+                    .truncate()
+                    .text_color(theme::text())
+                    .child(name.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(folder.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_size(theme::text_meta())
+                    .text_color(letter_color(letter))
+                    .child(letter.text()),
+            )
+            .into_any_element()
+    }
+
     fn render_file(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(tab) = self.viewer.tabs.active() else {
-            return div().flex_1().into_any_element();
+            return self.render_no_file(cx);
         };
         let name = tab.name().to_owned();
         let Some(file) = self.viewer.files.get(&tab.path) else {

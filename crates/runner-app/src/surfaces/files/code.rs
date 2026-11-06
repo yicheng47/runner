@@ -8,7 +8,6 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
@@ -24,13 +23,12 @@ use super::highlight::{self, Grammar, Highlights};
 use super::syntax::SyntaxTheme;
 use crate::theme;
 use crate::{Copy, SelectAll};
+use runner_app::ui::{app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics};
 
 const GUTTER_PAD_LEFT: f32 = 12.;
 const GUTTER_PAD_RIGHT: f32 = 16.;
 const TEXT_PAD_RIGHT: f32 = 24.;
 const TOP_PAD: f32 = 8.;
-/// How long the scrollbars stay after the last scroll.
-const SCROLLBAR_SHOWN: Duration = Duration::from_millis(1200);
 
 /// ⌘-click (Ctrl-click) on a line: opens the file at that line, 1-based.
 pub(crate) type OpenLine = Rc<dyn Fn(u32, &mut Window, &mut App)>;
@@ -75,7 +73,10 @@ pub(crate) struct CodeView {
     /// scroll away from it until the user steps through them or changes
     /// the query.
     cited: bool,
-    scrolled_at: Option<Instant>,
+    /// What the scrollbars read, vertical then horizontal, measured each frame.
+    bar_metrics: Rc<Cell<(ScrollbarMetrics, ScrollbarMetrics)>>,
+    vertical_bar: Entity<Scrollbar>,
+    horizontal_bar: Entity<Scrollbar>,
     open_line: Option<OpenLine>,
     /// The bytes shaped in the last frame.
     #[cfg(test)]
@@ -91,6 +92,9 @@ impl CodeView {
         grammar: Option<&'static Grammar>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let bar_metrics = Rc::new(Cell::new(Default::default()));
+        let vertical_bar = code_scrollbar(&bar_metrics, false, cx);
+        let horizontal_bar = code_scrollbar(&bar_metrics, true, cx);
         let mut view = Self {
             document,
             grammar,
@@ -106,7 +110,9 @@ impl CodeView {
             metrics: Cell::new(None),
             reveal: None,
             cited: false,
-            scrolled_at: None,
+            bar_metrics,
+            vertical_bar,
+            horizontal_bar,
             open_line: None,
             #[cfg(test)]
             shaped_bytes: Cell::new(0),
@@ -124,12 +130,6 @@ impl CodeView {
         let Some(grammar) = self.grammar else {
             return;
         };
-        if !highlighting(cx) {
-            // Spans for earlier text must not be drawn over this text when
-            // highlighting comes back on.
-            self.highlights = None;
-            return;
-        }
         let cancel = Arc::new(AtomicUsize::new(0));
         self.cancel = cancel.clone();
         let document = self.document.clone();
@@ -148,15 +148,6 @@ impl CodeView {
             });
         })
         .detach();
-    }
-
-    /// Settings → Side panel → Files changed: highlights the text if
-    /// highlighting came on before it was, and redraws.
-    pub(crate) fn settings_changed(&mut self, cx: &mut Context<Self>) {
-        if highlighting(cx) && self.highlights.is_none() {
-            self.highlight(cx);
-        }
-        cx.notify();
     }
 
     /// The line height of the last frame, which follows the font size.
@@ -310,6 +301,22 @@ impl CodeView {
         (width, height)
     }
 
+    fn measure_scrollbars(&self, metrics: &Metrics) {
+        let (width, height) = self.content_size(metrics);
+        self.bar_metrics.set((
+            ScrollbarMetrics {
+                viewport: f32::from(metrics.bounds.size.height),
+                content: f32::from(height),
+                position: f32::from(self.scroll.y),
+            },
+            ScrollbarMetrics {
+                viewport: f32::from(metrics.text_width()),
+                content: f32::from(width),
+                position: f32::from(self.scroll.x),
+            },
+        ));
+    }
+
     fn clamp_scroll(&mut self, metrics: &Metrics) {
         let (width, height) = self.content_size(metrics);
         let max_x = (width - metrics.text_width()).max(px(0.));
@@ -345,12 +352,6 @@ impl CodeView {
         self.scroll.y -= delta.y;
         self.clamp_scroll(&metrics);
         if self.scroll != before {
-            self.scrolled_at = Some(Instant::now());
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(SCROLLBAR_SHOWN).await;
-                let _ = this.update(cx, |_, cx| cx.notify());
-            })
-            .detach();
             cx.notify();
         }
     }
@@ -390,9 +391,41 @@ impl CodeView {
     }
 }
 
-/// Settings → Side panel → Files → Syntax highlighting; on without a store.
-fn highlighting(cx: &App) -> bool {
-    super::settings(cx).is_none_or(|settings| settings.files_syntax_highlighting)
+fn code_scrollbar(
+    bar_metrics: &Rc<Cell<(ScrollbarMetrics, ScrollbarMetrics)>>,
+    horizontal: bool,
+    cx: &mut Context<CodeView>,
+) -> Entity<Scrollbar> {
+    let read = bar_metrics.clone();
+    let view = cx.weak_entity();
+    cx.new(|_| {
+        let bar = Scrollbar::external(
+            ScrollbarKind::App,
+            Rc::new(move || {
+                let (vertical, sideways) = read.get();
+                if horizontal {
+                    sideways
+                } else {
+                    vertical
+                }
+            }),
+            Rc::new(move |position, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    if horizontal {
+                        view.scroll.x = px(position);
+                    } else {
+                        view.scroll.y = px(position);
+                    }
+                    cx.notify();
+                });
+            }),
+        );
+        if horizontal {
+            bar.horizontal()
+        } else {
+            bar
+        }
+    })
 }
 
 impl Drop for CodeView {
@@ -403,17 +436,32 @@ impl Drop for CodeView {
 
 impl Render for CodeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text_left = self
+            .metrics
+            .get()
+            .map_or(px(0.), |metrics| metrics.text_left);
         div()
             .id("file-code")
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILE_CODE".into())
             })
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::select_all))
             .on_key_down(cx.listener(Self::on_key))
             .child(CodeElement { view: cx.entity() })
+            .child(self.vertical_bar.clone())
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(text_left)
+                    .right(app_scrollbar_gutter())
+                    .child(self.horizontal_bar.clone()),
+            )
     }
 }
 
@@ -508,7 +556,6 @@ pub(crate) struct CodePrepaint {
     matches: Vec<Bounds<Pixels>>,
     current: Option<Bounds<Pixels>>,
     selections: Vec<Bounds<Pixels>>,
-    scrollbars: Vec<Bounds<Pixels>>,
 }
 
 impl IntoElement for CodeElement {
@@ -585,6 +632,7 @@ impl Element for CodeElement {
             view.metrics.set(Some(metrics));
             view.apply_reveal(&metrics);
             view.clamp_scroll(&metrics);
+            view.measure_scrollbars(&metrics);
         });
         let view = self.view.read(cx);
         let document = view.document.clone();
@@ -603,10 +651,7 @@ impl Element for CodeElement {
         let mut rows = Vec::with_capacity(last.saturating_sub(first));
         let mut numbers = Vec::with_capacity(rows.capacity());
         let number_color = theme::faint();
-        let highlights = view
-            .highlights
-            .clone()
-            .filter(|_| !view.deleted && highlighting(cx));
+        let highlights = view.highlights.clone().filter(|_| !view.deleted);
         let syntax = highlights.as_ref().map(|_| SyntaxTheme::current(cx));
         let style = RowStyle {
             font: &font,
@@ -703,35 +748,6 @@ impl Element for CodeElement {
                 selections.push(bounds);
             }
         }
-        let mut scrollbars = Vec::new();
-        if view
-            .scrolled_at
-            .is_some_and(|at| at.elapsed() < SCROLLBAR_SHOWN)
-        {
-            let (width, height) = view.content_size(&metrics);
-            let thickness = px(4.);
-            if height > bounds.size.height {
-                let ratio = bounds.size.height / height;
-                let length = (bounds.size.height * ratio).max(px(24.));
-                let y = (bounds.size.height - length) * (scroll.y / (height - bounds.size.height));
-                scrollbars.push(Bounds::new(
-                    point(bounds.right() - thickness - px(2.), bounds.top() + y),
-                    size(thickness, length),
-                ));
-            }
-            if width > visible {
-                let ratio = visible / width;
-                let length = (visible * ratio).max(px(24.));
-                let x = (visible - length) * (scroll.x / (width - visible));
-                scrollbars.push(Bounds::new(
-                    point(
-                        bounds.left() + text_left + x,
-                        bounds.bottom() - thickness - px(2.),
-                    ),
-                    size(length, thickness),
-                ));
-            }
-        }
         CodePrepaint {
             hitbox,
             metrics,
@@ -741,7 +757,6 @@ impl Element for CodeElement {
             matches,
             current,
             selections,
-            scrollbars,
         }
     }
 
@@ -806,10 +821,6 @@ impl Element for CodeElement {
                     window,
                     cx,
                 );
-            }
-            let thumb = theme::with_alpha(theme::muted(), 0.5);
-            for bar in &prepaint.scrollbars {
-                window.paint_quad(fill(*bar, thumb).corner_radii(px(2.)));
             }
         });
         register_mouse(self.view.clone(), prepaint.hitbox.clone(), metrics, window);

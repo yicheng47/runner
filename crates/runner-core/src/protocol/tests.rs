@@ -693,6 +693,35 @@ record!(WindowEntry {
     focused
 });
 variant!(WorkDetail => Self::UsingTools);
+#[test]
+fn a_full_file_index_of_the_costliest_paths_fits_a_frame() {
+    for piece in ["\u{1}", "\"", "\\", "a"] {
+        let path = piece.repeat(4000);
+        let mut budget = files::IndexBudget::default();
+        let mut paths = Vec::new();
+        while budget.take(path.as_bytes()) {
+            paths.push(path.clone());
+        }
+        let encoded = serde_json::to_vec(&paths).unwrap().len();
+        assert!(encoded <= files::MAX_INDEX_BYTES, "{piece:?}: {encoded}");
+        let response = Response::files_index(Ok(files::FileIndex {
+            paths,
+            truncated: true,
+        }));
+        let frame = wire::Frame::json(wire::RESPONSE, &response).unwrap();
+        assert!(frame.check_size().unwrap() <= wire::MAX_FRAME, "{piece:?}");
+    }
+}
+
+#[test]
+fn the_index_budget_stops_at_either_limit() {
+    let mut files = files::IndexBudget::new(2, 100);
+    assert!(files.take(b"a") && files.take(b"b") && !files.take(b"c"));
+    let mut bytes = files::IndexBudget::new(100, 8);
+    assert!(bytes.take(b"aaaaa"), "five bytes, two quotes and a comma");
+    assert!(!bytes.take(b""), "nothing left for an empty string's three");
+}
+
 fn round_trip<T: Serialize + DeserializeOwned + std::fmt::Debug>(value: T) {
     let bytes = serde_json::to_vec(&value).unwrap();
     let decoded: T = serde_json::from_slice(&bytes).unwrap();
@@ -918,6 +947,14 @@ impl Sample for files::WorktreeEntry {
             kind: files::WorktreeKind::Main,
             locked: true,
             prunable: true,
+        }
+    }
+}
+impl Sample for files::FileIndex {
+    fn sample() -> Self {
+        Self {
+            paths: vec!["src/样例.rs".into()],
+            truncated: true,
         }
     }
 }

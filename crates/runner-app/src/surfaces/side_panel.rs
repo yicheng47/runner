@@ -12,7 +12,7 @@ use gpui::{
 use runner_app::ui::menu::popup_layer;
 use runner_app::ui::{IconButton, IconButtonSize};
 
-use crate::app_settings::{AppSettings, NewChatPanel};
+use crate::app_settings::AppSettings;
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
@@ -173,17 +173,6 @@ pub(crate) struct OpenSurfaces {
 }
 
 impl OpenSurfaces {
-    /// What a new chat's panel opens, as Settings names it.
-    pub(crate) fn new_chat(settings: &AppSettings) -> Self {
-        let mut surfaces = Self::default();
-        match settings.new_chat_panel {
-            NewChatPanel::Info => surfaces.open(PanelViewId::Info),
-            NewChatPanel::Files => surfaces.open(PanelViewId::Files),
-            NewChatPanel::Nothing => {}
-        }
-        surfaces
-    }
-
     /// Opens `id` as a tab once, and switches to it.
     pub(crate) fn open(&mut self, id: PanelViewId) {
         if id != PanelViewId::Sessions && !self.open.contains(&id) {
@@ -452,7 +441,7 @@ pub(crate) fn header_tabs(
     surface: PanelSurface,
     settings: &AppSettings,
     surfaces: &OpenSurfaces,
-    menu: Option<(&PanelSurfaces, &Window)>,
+    (menu, window): (&PanelSurfaces, &Window),
     handler: SurfaceHandler,
     collapse: impl IntoElement,
 ) -> Div {
@@ -465,35 +454,32 @@ pub(crate) fn header_tabs(
             Some(surface_tab(view, shown == Some(id), closable, handler.clone()).into_any_element())
         })
         .collect::<Vec<_>>();
-    let add = (!rows.is_empty()).then(|| {
-        let toggle = handler.clone();
-        let anchor = menu.map(|(menu, _)| menu.anchor.clone());
-        div()
-            .relative()
-            .flex_none()
-            .debug_selector(|| "PANEL_ADD_SURFACE".into())
-            .child(
-                IconButton::new("side-panel-add-surface", "plus.svg")
-                    .size(IconButtonSize::Sm)
-                    .tooltip(crate::i18n::text("ui.open_a_surface"))
-                    .on_press(move |window, cx| toggle(SurfaceAction::ToggleMenu, window, cx)),
-            )
-            .children(anchor.map(|anchor| {
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, _, _| anchor.set(Some(bounds)),
+    let add =
+        (!rows.is_empty()).then(|| {
+            let toggle = handler.clone();
+            let anchor = menu.anchor.clone();
+            div()
+                .relative()
+                .flex_none()
+                .debug_selector(|| "PANEL_ADD_SURFACE".into())
+                .child(
+                    IconButton::new("side-panel-add-surface", "plus.svg")
+                        .size(IconButtonSize::Sm)
+                        .tooltip(crate::i18n::text("ui.open_a_surface"))
+                        .on_press(move |window, cx| toggle(SurfaceAction::ToggleMenu, window, cx)),
                 )
-                .absolute()
-                .inset_0()
-            }))
-            .children(
-                menu.filter(|(menu, _)| menu.menu_open)
-                    .and_then(|(menu, window)| Some((menu, window, menu.anchor.get()?)))
-                    .map(|(menu, window, anchor)| {
-                        surface_menu(&rows, surfaces, menu, anchor, handler.clone(), window)
-                    }),
-            )
-    });
+                .child(
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, _, _| anchor.set(Some(bounds)),
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .children(menu.anchor.get().filter(|_| menu.menu_open).map(|anchor| {
+                    surface_menu(&rows, surfaces, menu, anchor, handler.clone(), window)
+                }))
+        });
     // Tabs shrink, their names first, so `+` and collapse always show.
     div()
         .flex_1()
@@ -1073,8 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_turning_a_surface_off_close_its_tab_and_name_what_a_new_chat_opens() {
-        use crate::app_settings::NewChatPanel;
+    fn settings_turning_a_surface_off_close_its_tab() {
         use PanelViewId::*;
         let mut surfaces = open(&[Info, Files], Some(Files));
         let files_off = AppSettings {
@@ -1085,18 +1070,6 @@ mod tests {
         assert_eq!(surfaces.ids(), (&[Info][..], Some(Info)));
         surfaces.close_off(&AppSettings::default(), false);
         assert_eq!(surfaces.ids(), (&[Info][..], Some(Info)));
-
-        for (open, ids, active) in [
-            (NewChatPanel::Info, &[Info][..], Some(Info)),
-            (NewChatPanel::Files, &[Files][..], Some(Files)),
-            (NewChatPanel::Nothing, &[][..], None),
-        ] {
-            let settings = AppSettings {
-                new_chat_panel: open,
-                ..AppSettings::default()
-            };
-            assert_eq!(OpenSurfaces::new_chat(&settings).ids(), (ids, active));
-        }
     }
 
     #[test]
