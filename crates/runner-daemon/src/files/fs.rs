@@ -55,10 +55,22 @@ pub fn resolve(root: &Path, relative: &str) -> Result<PathBuf> {
     let canonical = loop {
         match existing.canonicalize() {
             Ok(canonical) => break canonical,
-            Err(_) => match existing.parent() {
-                Some(parent) if parent.starts_with(root) => existing = parent,
-                _ => return Err(refused()),
-            },
+            // Only what does not exist yet may be judged by its parent: any
+            // other failure says nothing about where the path leads.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                match existing.parent() {
+                    Some(parent) if parent.starts_with(root) => existing = parent,
+                    _ => return Err(refused()),
+                }
+            }
+            Err(error) => {
+                return Err(Error::msg(format!("{}: {error}", existing.display())));
+            }
         }
     };
     if !canonical.starts_with(&canonical_root) {
@@ -247,6 +259,54 @@ mod tests {
             dir.path().join("src").join("deep").join("x.rs")
         );
         assert!(resolve(Path::new("relative"), "").is_err());
+    }
+
+    /// `realpath` gives up on a resolved path over `PATH_MAX` where `open`,
+    /// which forgets each folder as it passes it, does not. The check must not
+    /// take that failure for a missing file and judge the path by its parent.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_too_long_to_resolve_is_refused_rather_than_read() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(dir.path().join("outside")).unwrap();
+        // `go` always leads to the deepest folder, so each step is a short
+        // path; 18 folders of 240 bytes pass macOS's limit and Linux's.
+        let go = dir.path().join("outside/go");
+        symlink(".", &go).unwrap();
+        let name = "d".repeat(240);
+        for _ in 0..18 {
+            std::fs::create_dir(go.join(&name)).unwrap();
+            symlink(".", go.join(&name).join("go")).unwrap();
+            symlink(format!("{name}/go"), go.join("next")).unwrap();
+            std::fs::rename(go.join("next"), go.join("go")).unwrap();
+        }
+        std::fs::write(go.join("secret"), "OUTSIDE THE ROOT").unwrap();
+        symlink("../outside/go/secret", root.join("via")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("via")).unwrap(),
+            "OUTSIDE THE ROOT",
+            "the link does lead to the file"
+        );
+
+        assert!(resolve(&root, "via").is_err());
+        assert!(read(&root, "via", false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_still_reads_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("dangling"))
+            .unwrap();
+        assert_eq!(
+            read(dir.path(), "dangling", false).unwrap(),
+            FileContent::Missing
+        );
+        std::fs::write(dir.path().join("file"), "").unwrap();
+        assert!(resolve(dir.path(), "file/below").is_ok(), "not a directory");
     }
 
     #[cfg(unix)]

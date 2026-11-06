@@ -9,6 +9,7 @@ use gpui::{
 };
 use runner_core::protocol::files::{FilesRootSource, WorktreeKind};
 
+use super::tree::PreparedStatus;
 use super::{FilesEvent, FilesPanel, FilesSurface, FilesView};
 use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
 use crate::theme::{self, ThemeVariant};
@@ -3831,7 +3832,7 @@ fn switching_to_an_ignored_file_s_tab_reads_it_again() {
 
 #[test]
 fn a_rescan_lists_every_loaded_folder_again() {
-    // Never shown, so never watching: only the event below can refresh it.
+    // Marked shown without being watched: only the event below can refresh it.
     let mut h = harness(Some(chat("in-project")));
     h.show(None);
     h.host
@@ -3845,6 +3846,7 @@ fn a_rescan_lists_every_loaded_folder_again() {
         .read_with(&h.visual, |host, _| host.unshown.clone())
         .unwrap()
         .unwrap();
+    view.update(&mut h.visual, |view, _| view.shown = true);
     h.wait("the working directory", |h| h.has("FILES_ROW src/deep"));
     h.click("FILES_ROW src/deep");
     h.wait("the nested folder", |h| h.has("FILES_ROW src/deep/x.rs"));
@@ -3892,13 +3894,11 @@ fn receive_status(h: &mut Harness, status: runner_core::protocol::files::GitStat
     let view = h.view();
     let root = h.read(|view| view.root().unwrap().path.clone());
     h.wait("the status to hold", |h| {
-        let update = runner_core::protocol::files::FilesStatusChanged {
+        let update = FilesEvent::Status {
             root: root.clone(),
-            status: status.clone(),
+            status: PreparedStatus::new(status.clone()),
         };
-        view.update(&mut h.visual, |view, cx| {
-            view.receive(FilesEvent::Status(update), cx)
-        });
+        view.update(&mut h.visual, |view, cx| view.receive(update, cx));
         h.settle();
         h.read(|view| view.git_status().as_ref() == Some(&status))
     });
@@ -4140,4 +4140,131 @@ fn resolving_the_same_root_leaves_no_tab_loading() {
         view.set_context(moved, cx);
     });
     h.wait("the file", |h| h.has("FILE_CODE"));
+}
+
+/// A second chat on the same root as `in-project`.
+fn same_root_chat(h: &mut Harness) -> PanelContext {
+    h.store.update(&mut h.visual, |store, _| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command, cwd, project_id)
+                 VALUES ('same-root', 'stopped', 'shell', 'shell', '{}', 'runner');",
+                sql(&h.repo),
+            ))
+            .unwrap();
+    });
+    PanelContext {
+        project: Some("runner".into()),
+        ..chat("same-root")
+    }
+}
+
+#[test]
+fn a_hidden_view_does_no_work_for_its_root_and_catches_up_when_shown() {
+    use runner_core::protocol::files::{FilesChanged, GitStatus};
+    let mut h = harness(Some(chat("in-project")));
+    let other = same_root_chat(&mut h);
+    h.wait("the first status", |h| {
+        h.status_read() && h.has("FILES_ROW a.txt")
+    });
+    let hidden = h.view();
+    let root = h.read(|view| view.root().unwrap().path.clone());
+
+    h.show(Some(other.clone()));
+    h.wait("the second status", |h| {
+        h.status_read() && h.has("FILES_ROW a.txt")
+    });
+    assert_same(h.read(|view| view.watched().map(Path::to_path_buf)), &root);
+    let snapshot = |h: &mut Harness| {
+        hidden.read_with(&h.visual, |view, _| {
+            let tree = view.tree_ref().unwrap();
+            (tree.rebuilds(), tree.status().cloned())
+        })
+    };
+    let before = snapshot(&mut h);
+
+    // The shown view's watcher reports a real edit; only the shown view reacts.
+    let fresh = h.repo.join("fresh.txt");
+    let mut touched = Instant::now() - Duration::from_secs(1);
+    h.wait("the watcher", |h| {
+        if touched.elapsed() >= Duration::from_secs(1) {
+            std::fs::write(&fresh, format!("{:?}\n", Instant::now())).unwrap();
+            touched = Instant::now();
+        }
+        h.has("FILES_LETTER fresh.txt")
+    });
+    assert_eq!(snapshot(&mut h), before, "the hidden view did nothing");
+
+    // Delivered to it directly, too, with no timing to depend on.
+    hidden.update(&mut h.visual, |view, cx| {
+        view.receive(
+            FilesEvent::Changed(FilesChanged {
+                root: root.clone(),
+                folders: vec![String::new()],
+                paths: Vec::new(),
+            }),
+            cx,
+        );
+        view.receive(
+            FilesEvent::Status {
+                root: root.clone(),
+                status: PreparedStatus::new(GitStatus::new(Vec::new(), vec!["a.txt".into()])),
+            },
+            cx,
+        );
+    });
+    h.settle();
+    assert_eq!(
+        snapshot(&mut h),
+        before,
+        "events to a hidden view are dropped"
+    );
+
+    h.show(Some(chat("in-project")));
+    h.wait("the view to catch up", |h| h.has("FILES_LETTER fresh.txt"));
+}
+
+#[test]
+fn a_status_that_arrives_clears_the_error_of_one_that_failed() {
+    use runner_core::protocol::files::GitStatus;
+    let mut h = harness(Some(chat("in-project")));
+    h.wait("the status", |h| h.status_read());
+    let view = h.view();
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    let deadline = |view: &mut FilesView, cx: &mut Context<FilesView>| {
+        view.status_error = Some("runnerd request deadline exceeded".into());
+        cx.notify();
+    };
+    view.update(&mut h.visual, deadline);
+    h.settle();
+    assert!(h.has("FILES_ERROR"));
+
+    // Another root's status says nothing about this one.
+    view.update(&mut h.visual, |view, cx| {
+        view.receive(
+            FilesEvent::Status {
+                root: root.join("src"),
+                status: PreparedStatus::new(GitStatus::default()),
+            },
+            cx,
+        )
+    });
+    h.settle();
+    assert!(h.has("FILES_ERROR"));
+
+    receive_status(&mut h, GitStatus::default());
+    assert!(!h.has("FILES_ERROR"), "the status arrived after all");
+
+    // An error about something else stays through a status.
+    let picker_error = h.temp.path().join("nowhere").to_string_lossy().into_owned();
+    h.click("FILES_ROOT_BUTTON");
+    h.visual.simulate_input(&picker_error);
+    h.visual.simulate_keystrokes("enter");
+    h.wait("the error", |h| h.has("FILES_ERROR"));
+    receive_status(&mut h, GitStatus::new(Vec::new(), vec!["other.log".into()]));
+    assert!(h.has("FILES_ERROR"));
 }

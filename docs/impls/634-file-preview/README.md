@@ -4,9 +4,9 @@ Implementation record for [feature 634](../../features/634-file-preview.md) ([#6
 
 ## Status (2026-11-06)
 
-The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. m10 fixes what the review of the whole umbrella found. The umbrella holds one commit per mission on top of `main`, and what remains is the gate before landing in [plan.md](plan.md).
+The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. m10, the fixes from the review of the whole umbrella, merged the same day, and m11 fixes what the second such review found. The umbrella holds one commit per mission on top of `main`, and what remains is the gate before landing in [plan.md](plan.md).
 
-The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, which already holds the spec. Ten missions merge into it, and it reaches `main` as one pull request, the draft [#1157](https://github.com/yicheng47/runner/pull/1157), once the gate in the plan passes.
+The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, which already holds the spec. Eleven missions merge into it, and it reaches `main` as one pull request, the draft [#1157](https://github.com/yicheng47/runner/pull/1157), once the gate in the plan passes.
 
 | Mission | Phase | Branch | Waits on | Pull request | State |
 | --- | --- | --- | --- | --- | --- |
@@ -19,7 +19,8 @@ The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, w
 | m7 — file links open in the preview | 4 | `feat/634-m7-link-preview` | m6 | [#1198](https://github.com/yicheng47/runner/pull/1198) | Merged 2026-11-05; from Jason's live run, which he also used for its live checks |
 | m8 — side panel surfaces with a + menu | 4 | `feat/634-m8-panel-surfaces` | m7 | [#1199](https://github.com/yicheng47/runner/pull/1199) | Merged 2026-11-06; qa passed its six live checks on macOS in the dark theme on the second attempt |
 | m9 — fixes from Jason's live run | 4 | `feat/634-m9-fixes` | m8 | [#1200](https://github.com/yicheng47/runner/pull/1200) | Merged 2026-11-06; Jason ran the live checks on macOS in the dark theme and passed the core change |
-| m10 — fixes from the umbrella's review | 4 | `feat/634-m10-review-fixes` | m9 | [#1202](https://github.com/yicheng47/runner/pull/1202) | In review |
+| m10 — fixes from the umbrella's review | 4 | `feat/634-m10-review-fixes` | m9 | [#1202](https://github.com/yicheng47/runner/pull/1202) | Merged 2026-11-06 |
+| m11 — fixes from the umbrella's second review | 4 | `feat/634-m11-review2-fixes` | m10 | [#1205](https://github.com/yicheng47/runner/pull/1205) | In review |
 
 ## Decisions that bind
 
@@ -54,6 +55,9 @@ The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, w
 - **Code is always highlighted** (Jason, 2026-11-06): the Syntax highlighting setting is removed, as are the new-chat panel setting and the Settings header preview.
 - **Closing Files gives the width back** (operator, 2026-11-06, Jason may overrule): closing the Files tab, or a surface list reset on re-entering a mission or chat, returns the panel to its normal width and keeps the file tabs, which come back when Files reopens. A file left open still keeps the panel wide while another surface's tab shows.
 - **An open ignored file is read again, not watched** (m10, 2026-11-06): the watcher keeps dropping ignored paths, so that a build stays quiet; the view reads open ignored files every 3 seconds while Files shows, and skips redrawing one whose size and time have not changed. It costs a read of up to 10 MB per such tab per tick, against a new request, per-client state and per-file inotify watches in runnerd.
+- **A repository's clean filters still run** (m11, operator under Jason's mandate, 2026-11-06): `git status` runs a `filter.<name>.clean` from the repository's config on a stat-dirty file, and Runner does not turn that off. It takes a repository whose local config someone set, which a clone does not bring and `safe.directory` stops for another owner, and Runner runs as that same user; blanking filters would change what status reports for a repository that normalizes content on purpose. Only `core.fsmonitor` is forced off.
+- **One `git status` at a time per root** (m11, 2026-11-06): a view asking while one runs shares it, and the watcher, which must see the disk as of its event, waits for the next, which everyone then waiting shares. There is still no `git` timeout, so a status that never ends parks those waiting on it.
+- **A saved root is forgotten only when it is gone** (m11, 2026-11-06): confirmed missing or no longer a folder. Any other error keeps it saved and shows the error with Try again. Whether an unmounted volume counts as gone is Jason's question in m11's pull request; today it does, as the spec says.
 - **No CLI surface.** Agents already read files; the new requests are not exposed as `runner` commands.
 
 ## Open

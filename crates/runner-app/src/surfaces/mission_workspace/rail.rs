@@ -74,9 +74,11 @@ impl MissionWorkspace {
         Some(self.rail_files.link_view(&context, cx))
     }
 
-    /// ⇧⌘O: opens the rail on Files, as a link does, and its finder.
+    /// ⇧⌘O: opens the rail on Files, as a link does, and its finder. With no
+    /// view to search the key goes on, so a terminal program gets it.
     pub(crate) fn search_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(view) = self.link_files_view(cx) else {
+            cx.propagate();
             return;
         };
         self.show_link_preview(cx);

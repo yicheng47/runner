@@ -18,7 +18,9 @@ mod viewer;
 mod tests;
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::{
@@ -32,6 +34,7 @@ use runner_core::protocol::DaemonClient;
 
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 pub(crate) use links::ShowPreview;
+use tree::PreparedStatus;
 pub(crate) use view::FilesView;
 
 /// The app's settings; `None` in a test that runs without a store.
@@ -72,7 +75,10 @@ const KEPT_VIEWS: usize = 12;
 #[derive(Clone, Debug)]
 pub(crate) enum FilesEvent {
     Changed(FilesChanged),
-    Status(FilesStatusChanged),
+    Status {
+        root: PathBuf,
+        status: Arc<PreparedStatus>,
+    },
     /// Events may have been missed; with `rewatch` the daemon restarted and
     /// forgot every watch.
     Resync {
@@ -102,9 +108,12 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
                     FILES_CHANGED_EVENT => serde_json::from_value(event.payload)
                         .ok()
                         .map(FilesEvent::Changed),
-                    FILES_STATUS_EVENT => serde_json::from_value(event.payload)
-                        .ok()
-                        .map(FilesEvent::Status),
+                    FILES_STATUS_EVENT => serde_json::from_value(event.payload).ok().map(
+                        |update: FilesStatusChanged| FilesEvent::Status {
+                            root: update.root,
+                            status: PreparedStatus::new(update.status),
+                        },
+                    ),
                     "daemon/reconnected" => Some(FilesEvent::Resync { rewatch: true }),
                     _ => None,
                 },

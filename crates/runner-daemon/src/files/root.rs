@@ -1,5 +1,6 @@
 //! Where a subject's Files view starts.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use runner_core::protocol::files::{
@@ -7,6 +8,7 @@ use runner_core::protocol::files::{
 };
 
 use super::git::{checkout_top, Git};
+use crate::error::{Error, Result};
 
 #[derive(Debug, PartialEq)]
 pub struct Resolved {
@@ -18,17 +20,32 @@ pub struct Resolved {
 /// Resolution order: a saved root that still exists; otherwise the subject's
 /// own checkout from `own`, its working directory (`None` for a chat or
 /// terminal outside a project). A saved root that is gone is forgotten and
-/// resolution continues; an own working directory that is gone is missing.
-pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> Resolved {
+/// resolution continues; an own working directory that is gone is missing. A
+/// saved root that cannot be examined may only be away for now, as on a
+/// network drive, so it stays saved and the error is returned.
+pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> Result<Resolved> {
     let mut forget_saved = false;
     if let Some(saved) = saved {
-        if saved.is_dir() {
-            return Resolved {
-                outcome: FilesRootOutcome::Root(describe(git, saved, FilesRootSource::Saved, own)),
-                forget_saved,
-            };
+        match std::fs::metadata(saved) {
+            Ok(metadata) if metadata.is_dir() => {
+                return Ok(Resolved {
+                    outcome: FilesRootOutcome::Root(describe(
+                        git,
+                        saved,
+                        FilesRootSource::Saved,
+                        own,
+                    )),
+                    forget_saved,
+                });
+            }
+            Ok(_) => forget_saved = true,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+            {
+                forget_saved = true;
+            }
+            Err(error) => return Err(Error::msg(format!("{}: {error}", saved.display()))),
         }
-        forget_saved = true;
     }
     let outcome = match own {
         None => FilesRootOutcome::ChooseFolder,
@@ -37,10 +54,10 @@ pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> R
         },
         Some(cwd) => FilesRootOutcome::Root(describe(git, cwd, FilesRootSource::Own, Some(cwd))),
     };
-    Resolved {
+    Ok(Resolved {
         outcome,
         forget_saved,
-    }
+    })
 }
 
 /// A saved root is the folder chosen; an own root is the top of the checkout
@@ -109,6 +126,10 @@ mod tests {
     use super::super::fixture::{git, repo};
     use super::*;
     use runner_core::protocol::files::WorktreeKind;
+
+    fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> Resolved {
+        super::resolve(git, saved, own).unwrap()
+    }
 
     fn root(resolved: Resolved) -> FilesRoot {
         match resolved.outcome {
@@ -182,7 +203,7 @@ mod tests {
         let root = root(resolve(Some(&fixture.git), None, Some(plain.path())));
         assert_eq!(root.path, plain.path());
         assert_eq!(root.git, None);
-        let without_git = super::resolve(None, None, Some(fixture.path()));
+        let without_git = resolve(None, None, Some(fixture.path()));
         assert_eq!(self::root(without_git).git, None);
     }
 
@@ -211,6 +232,26 @@ mod tests {
         let root = root(resolved);
         assert_eq!(root.source, FilesRootSource::Own);
         assert!(same(&root.path, fixture.path()));
+    }
+
+    #[test]
+    fn a_saved_root_that_became_a_file_is_forgotten() {
+        let fixture = repo();
+        let file = fixture.path().join("a.txt");
+        assert!(resolve(Some(&fixture.git), Some(&file), Some(fixture.path())).forget_saved);
+        let below = file.join("below");
+        assert!(resolve(Some(&fixture.git), Some(&below), Some(fixture.path())).forget_saved);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_root_that_cannot_be_examined_stays_saved_with_its_error() {
+        let fixture = repo();
+        let looping = fixture.path().join("loop");
+        std::os::unix::fs::symlink(&looping, &looping).unwrap();
+        let error = super::resolve(Some(&fixture.git), Some(&looping), Some(fixture.path()))
+            .expect_err("neither forgotten nor replaced by the own checkout");
+        assert!(error.to_string().contains("loop"), "{error}");
     }
 
     #[test]

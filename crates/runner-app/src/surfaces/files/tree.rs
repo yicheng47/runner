@@ -3,7 +3,7 @@
 //! keyboard moves.
 
 use std::collections::{BTreeSet, HashMap};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use runner_core::protocol::files::{DirEntry, EntryKind, FileStatus, GitStatus};
@@ -65,20 +65,57 @@ pub(crate) struct Moved {
     pub(crate) changed: bool,
 }
 
+/// A status with what the tree needs from it worked out, which grows with
+/// the size of the repository, so it is built off the UI thread and shared by
+/// every view of the root.
+#[derive(Debug)]
+pub(crate) struct PreparedStatus {
+    status: GitStatus,
+    /// The files the status letters mark, in git's order.
+    changed: Arc<Vec<(String, Letter)>>,
+    letters: HashMap<String, Letter>,
+    dots: BTreeSet<String>,
+}
+
+impl PreparedStatus {
+    pub(crate) fn new(status: GitStatus) -> Arc<Self> {
+        let changed = Arc::new(
+            status
+                .entries
+                .iter()
+                .filter(|entry| entry.is_changed_file())
+                .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
+                .collect(),
+        );
+        let letters = status
+            .entries
+            .iter()
+            .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
+            .collect();
+        let dots = status.rollup();
+        // Builds the index here even when no folder carries a dot.
+        status.is_ignored("");
+        Arc::new(Self {
+            status,
+            changed,
+            letters,
+            dots,
+        })
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct FileTree {
     listings: HashMap<String, Vec<DirEntry>>,
     expanded: BTreeSet<String>,
-    status: Option<GitStatus>,
-    /// The files the status letters mark, in git's order.
-    changed: Rc<Vec<(String, Letter)>>,
-    letters: HashMap<String, Letter>,
-    dots: BTreeSet<String>,
+    status: Option<Arc<PreparedStatus>>,
     cwd: Option<String>,
     rows: Vec<Row>,
     selected: Option<String>,
     type_ahead: String,
     typed_at: Option<Instant>,
+    #[cfg(test)]
+    rebuilds: usize,
 }
 
 pub(crate) fn join(folder: &str, name: &str) -> String {
@@ -125,12 +162,15 @@ impl FileTree {
         &self.rows
     }
 
-    pub(crate) fn changed_files(&self) -> Rc<Vec<(String, Letter)>> {
-        self.changed.clone()
+    pub(crate) fn changed_files(&self) -> Arc<Vec<(String, Letter)>> {
+        self.status
+            .as_ref()
+            .map(|prepared| prepared.changed.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn status(&self) -> Option<&GitStatus> {
-        self.status.as_ref()
+        self.status.as_ref().map(|prepared| &prepared.status)
     }
 
     pub(crate) fn selected(&self) -> Option<&str> {
@@ -159,34 +199,38 @@ impl FileTree {
             .collect()
     }
 
+    /// One reply's folders, with `None` for one that can no longer be listed,
+    /// as when it was deleted. The rows are rebuilt once for all of them.
+    pub(crate) fn set_listings(&mut self, listings: Vec<(String, Option<Vec<DirEntry>>)>) {
+        if listings.is_empty() {
+            return;
+        }
+        for (folder, entries) in listings {
+            match entries {
+                Some(entries) => {
+                    self.listings.insert(folder, entries);
+                }
+                None => {
+                    let prefix = format!("{folder}/");
+                    self.listings
+                        .retain(|path, _| *path != folder && !path.starts_with(&prefix));
+                }
+            }
+        }
+        self.rebuild();
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_listing(&mut self, folder: &str, entries: Vec<DirEntry>) {
-        self.listings.insert(folder.to_owned(), entries);
-        self.rebuild();
+        self.set_listings(vec![(folder.to_owned(), Some(entries))]);
     }
 
-    /// A folder that can no longer be listed, as when it was deleted.
-    pub(crate) fn drop_listing(&mut self, folder: &str) {
-        let prefix = format!("{folder}/");
-        self.listings
-            .retain(|path, _| path != folder && !path.starts_with(&prefix));
-        self.rebuild();
+    #[cfg(test)]
+    pub(crate) fn rebuilds(&self) -> usize {
+        self.rebuilds
     }
 
-    pub(crate) fn set_status(&mut self, status: GitStatus) {
-        self.changed = Rc::new(
-            status
-                .entries
-                .iter()
-                .filter(|entry| entry.is_changed_file())
-                .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
-                .collect(),
-        );
-        self.letters = status
-            .entries
-            .iter()
-            .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
-            .collect();
-        self.dots = status.rollup();
+    pub(crate) fn set_status(&mut self, status: Arc<PreparedStatus>) {
         self.status = Some(status);
         self.rebuild();
     }
@@ -201,7 +245,7 @@ impl FileTree {
 
     /// The status letter git gives `path`.
     pub(crate) fn letter(&self, path: &str) -> Option<Letter> {
-        self.letters.get(path).copied()
+        self.status.as_ref()?.letters.get(path).copied()
     }
 
     /// Selects `path` with every folder above it open, as switching file
@@ -373,13 +417,17 @@ impl FileTree {
     }
 
     fn ignored(&self, path: &str, entry: &DirEntry) -> bool {
-        match &self.status {
+        match self.status() {
             Some(status) => status.is_ignored(path),
             None => entry.ignored,
         }
     }
 
     fn rebuild(&mut self) {
+        #[cfg(test)]
+        {
+            self.rebuilds += 1;
+        }
         let mut rows = Vec::new();
         self.push_rows("", 0, false, &mut rows);
         self.rows = rows;
@@ -392,7 +440,7 @@ impl FileTree {
         for entry in entries {
             let path = join(folder, &entry.name);
             let folder_row = entry.kind == EntryKind::Folder;
-            let letter = self.letters.get(&path).copied();
+            let letter = self.letter(&path);
             // Deleted entries still on disk are rare; a path git only knows as
             // deleted never shows, since the listing comes from the disk.
             let ignored = ignored_above || self.ignored(&path, entry);
@@ -404,7 +452,12 @@ impl FileTree {
                 expanded,
                 ignored,
                 letter: if folder_row || ignored { None } else { letter },
-                dot: folder_row && !ignored && self.dots.contains(&path),
+                dot: folder_row
+                    && !ignored
+                    && self
+                        .status
+                        .as_ref()
+                        .is_some_and(|prepared| prepared.dots.contains(&path)),
                 cwd: self.cwd.as_deref() == Some(path.as_str()),
                 path: path.clone(),
             });
@@ -465,6 +518,79 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_of_listings_rebuilds_the_rows_once() {
+        let mut tree = sample();
+        tree.toggle("crates");
+        tree.toggle("docs");
+        let before = tree.rebuilds();
+        tree.set_listings(vec![
+            ("crates".into(), Some(vec![file("a.rs")])),
+            ("docs".into(), Some(vec![file("b.md")])),
+            ("target".into(), None),
+        ]);
+        assert_eq!(tree.rebuilds(), before + 1);
+        assert!(paths(&tree).contains(&"crates/a.rs"));
+        assert!(paths(&tree).contains(&"docs/b.md"));
+        tree.set_listings(vec![]);
+        assert_eq!(tree.rebuilds(), before + 1, "nothing to rebuild for");
+    }
+
+    /// Every row, every folder with a dot and every status looked through the
+    /// whole ignored list, on the thread that draws the terminals: a status
+    /// of this shape cost a reviewer's optimized build over 600 ms in the
+    /// rollup alone, and an unoptimized test build many times that. Preparing
+    /// it now runs off that thread, and installing it only swaps it in.
+    #[test]
+    fn a_status_installs_and_rows_rebuild_cheaply_over_many_ignored_paths() {
+        let count = 30_000;
+        let changes = (0..count)
+            .map(|index| change(&format!("src/d{index:06}/f.rs"), FileStatus::Modified))
+            .collect();
+        let ignored = (0..count)
+            .map(|index| format!("build/d{index:06}/"))
+            .collect();
+        let status = GitStatus::new(changes, ignored);
+        let mut tree = FileTree::new(None);
+        tree.set_listings(vec![(
+            String::new(),
+            Some(
+                (0..2_000)
+                    .map(|index| file(&format!("f{index:04}")))
+                    .collect(),
+            ),
+        )]);
+
+        let start = Instant::now();
+        let prepared = PreparedStatus::new(status);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "a status took {elapsed:?} to prepare"
+        );
+        let start = Instant::now();
+        tree.set_status(prepared.clone());
+        let installed = start.elapsed();
+        assert!(
+            installed < Duration::from_secs(1),
+            "a status took {installed:?} to install"
+        );
+        assert!(
+            Arc::ptr_eq(&tree.changed_files(), &prepared.changed),
+            "installing derives nothing of its own"
+        );
+        let start = Instant::now();
+        for _ in 0..30 {
+            tree.rebuild();
+        }
+        let rebuilt = start.elapsed();
+        assert!(
+            rebuilt < Duration::from_secs(3),
+            "30 rebuilds of 2,000 rows took {rebuilt:?}"
+        );
+        assert_eq!(tree.rows().len(), 2_000);
+    }
+
+    #[test]
     fn folders_open_lazily_and_close_keeping_their_listing() {
         let mut tree = sample();
         assert_eq!(
@@ -515,7 +641,7 @@ mod tests {
         tree.toggle("target");
         tree.set_listing("target", vec![file("build.rs")]);
         assert!(tree.status().is_none());
-        tree.set_status(GitStatus::new(
+        tree.set_status(PreparedStatus::new(GitStatus::new(
             vec![
                 change("crates/lib.rs", FileStatus::Modified),
                 change("crates/new.rs", FileStatus::Untracked),
@@ -530,7 +656,7 @@ mod tests {
                 ),
             ],
             vec!["target/".into()],
-        ));
+        )));
         let row = |path: &str| {
             tree.rows()
                 .iter()
@@ -689,7 +815,10 @@ mod tests {
     #[test]
     fn reopening_an_ignored_folder_lists_it_again_with_its_open_folders() {
         let mut tree = sample();
-        tree.set_status(GitStatus::new(vec![], vec!["target/".into()]));
+        tree.set_status(PreparedStatus::new(GitStatus::new(
+            vec![],
+            vec!["target/".into()],
+        )));
         assert_eq!(tree.toggle("target").load, ["target"]);
         tree.set_listing("target", vec![folder("debug")]);
         assert_eq!(tree.toggle("target/debug").load, ["target/debug"]);
@@ -739,7 +868,7 @@ mod tests {
         assert_eq!(tree.selected(), Some("crates/app/main.rs"));
         assert_eq!(tree.selected_index(), Some(2));
 
-        tree.drop_listing("crates/app");
+        tree.set_listings(vec![("crates/app".into(), None)]);
         assert_eq!(tree.loaded_folders(), ["", "crates"]);
         assert_eq!(tree.selected_index(), None, "its rows left with it");
     }

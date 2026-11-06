@@ -390,7 +390,7 @@ impl NativeRoot {
             AppRoute::Mission(_) => self.mission_workspace.update(cx, |workspace, cx| {
                 workspace.search_files(window, cx);
             }),
-            _ => {}
+            _ => cx.propagate(),
         }
     }
 

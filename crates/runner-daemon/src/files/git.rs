@@ -75,8 +75,9 @@ impl Git {
         command
             .current_dir(dir)
             .env("PATH", &self.path_env)
-            // A folder chosen in the picker may not be the user's own, and
-            // this setting names a program for every status to run.
+            // This setting names a program for every status to run. It is the
+            // only one turned off: a repository's own clean filters still run,
+            // as they do for any git command the user runs there.
             .args(["-c", "core.fsmonitor=false"])
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
@@ -458,6 +459,7 @@ pub fn parse_status_fields(
         ignored,
         root_ignored,
         truncated: entries_full || ignored_full,
+        ignored_index: Default::default(),
     }
 }
 
