@@ -320,8 +320,7 @@ pub(crate) struct NativeRoot {
     pub(crate) terminal_close_confirm: Option<TerminalCloseConfirm>,
     pub(crate) pending_pane_closes: HashMap<String, PendingPaneClose>,
     pub(crate) pending_tab_close: Option<PendingTabClose>,
-    #[cfg(any(windows, target_os = "linux"))]
-    pub(crate) update_dialog: Option<Entity<surfaces::update_dialog::UpdateDialog>>,
+    pub(crate) update_popover: surfaces::update_ui::UpdatePopoverState,
     pub(crate) quit_dialog: Option<Entity<surfaces::quit_dialog::QuitDialog>>,
     pub(crate) agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     pub(crate) fork_confirm: Option<ForkConfirm>,

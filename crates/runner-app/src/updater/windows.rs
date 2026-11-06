@@ -1,7 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::os::windows::process::CommandExt as _;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -11,74 +13,12 @@ use base64::Engine as _;
 use gpui::{AsyncApp, Context, Task, WeakEntity};
 use serde::Deserialize;
 
-use super::{UpdateInfo, Updater};
+use super::{release_urls, UpdateInfo, UpdateState, UpdateStep, Updater};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const DETACHED_PROCESS: u32 = 0x00000008;
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 const PUBLIC_KEY: &str = include_str!("../../../../packaging/windows-update-public-key");
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UpdateStep {
-    Check,
-    Download,
-    Verify,
-    Install,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UpdateState {
-    UpToDate {
-        checking: bool,
-    },
-    Available {
-        info: UpdateInfo,
-        installer_url: String,
-        sig_url: Option<String>,
-    },
-    Downloading {
-        received: u64,
-        total: u64,
-    },
-    Ready {
-        path: PathBuf,
-        info: UpdateInfo,
-    },
-    Failed {
-        step: UpdateStep,
-        message: String,
-        info: Option<UpdateInfo>,
-    },
-}
-
-impl UpdateState {
-    pub fn available(&self) -> Option<&UpdateInfo> {
-        match self {
-            Self::Available { info, .. } | Self::Ready { info, .. } => Some(info),
-            Self::Failed { info, .. } => info.as_ref(),
-            _ => None,
-        }
-    }
-}
-
-fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
-    match channel {
-        Some("production") => (
-            "https://api.github.com/repos/yicheng47/runner/releases/latest",
-            "https://github.com/yicheng47/runner/releases/latest",
-        ),
-        Some("preview-nightly") => (
-            "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
-            "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
-        ),
-        _ => (
-            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
-            "https://github.com/yicheng47/runner/releases/tag/nightly",
-        ),
-    }
-}
-
-pub fn windows_download_url() -> &'static str {
-    release_urls(option_env!("RUNNER_RELEASE_CHANNEL")).1
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Candidate {
@@ -93,8 +33,8 @@ impl Candidate {
     fn available(&self) -> UpdateState {
         UpdateState::Available {
             info: self.info.clone(),
-            installer_url: self.installer_url.clone(),
-            sig_url: self.sig_url.clone(),
+            size: self.size,
+            manual_only: self.sig_url.is_none(),
         }
     }
 }
@@ -103,6 +43,7 @@ impl Candidate {
 struct Transfer {
     received: Arc<AtomicU64>,
     total: Arc<AtomicU64>,
+    verifying: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -134,6 +75,9 @@ pub(super) struct NativeUpdater {
     progress_task: Option<Task<()>>,
     verified_path: Option<PathBuf>,
     install_log: Option<PathBuf>,
+    /// What the person chose during a check: to download, which starts when the check succeeds,
+    /// or to cancel, which also holds off an automatic download for that check.
+    download_after_check: Option<bool>,
 }
 
 impl Drop for NativeUpdater {
@@ -151,7 +95,7 @@ impl NativeUpdater {
 
     pub(super) fn start(&self) {
         // Unstamped local builds have no release identity to compare against.
-        if option_env!("RUNNER_BUILD_STAMP").is_none() || super::dev_available().is_some() {
+        if option_env!("RUNNER_BUILD_STAMP").is_none() {
             return;
         }
         self.check_for_updates();
@@ -242,14 +186,7 @@ impl Updater {
         updates_dir: PathBuf,
         cx: &mut Context<Self>,
     ) -> Self {
-        let state =
-            super::dev_available().map_or(UpdateState::UpToDate { checking: false }, |info| {
-                UpdateState::Available {
-                    info,
-                    installer_url: windows_download_url().into(),
-                    sig_url: None,
-                }
-            });
+        let (state, preview) = Self::initial_state();
         Self {
             native: NativeUpdater {
                 automatically_downloads: Cell::new(automatically_downloads),
@@ -264,44 +201,28 @@ impl Updater {
                 progress_task: None,
                 verified_path: None,
                 install_log: None,
+                download_after_check: None,
             },
             state,
+            skipped_version: None,
+            preview,
         }
     }
 
-    pub fn state(&self) -> &UpdateState {
-        &self.state
-    }
-    pub fn available(&self) -> Option<&UpdateInfo> {
-        self.state.available()
-    }
-    pub fn update_info(&self) -> Option<&UpdateInfo> {
-        self.available().or_else(|| {
-            self.native
-                .candidate
-                .as_ref()
-                .map(|candidate| &candidate.info)
-        })
-    }
-    pub fn download_size(&self) -> u64 {
-        self.native
-            .candidate
-            .as_ref()
-            .map_or(0, |candidate| candidate.size)
-    }
     pub fn automatically_downloads_updates(&self) -> bool {
         self.native.automatically_downloads.get()
     }
     pub fn set_automatically_downloads_updates(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.native.automatically_downloads.set(enabled);
-        if enabled && matches!(self.state, UpdateState::Available { .. }) {
-            self.download_update(cx);
+        if enabled && matches!(self.state, UpdateState::Available { .. }) && !self.is_skipped() {
+            self.request_download(cx);
         }
         cx.notify();
     }
 
     fn finish_windows_check(&mut self, result: CheckResult, cx: &mut Context<Self>) {
         self.native.checking.set(false);
+        let download_after_check = self.native.download_after_check.take();
         match result {
             Ok((candidate, staged)) => {
                 self.native.last_check_at.set(Some(SystemTime::now()));
@@ -314,7 +235,9 @@ impl Updater {
                 self.native.candidate = candidate;
                 if let Some(staged) = staged {
                     self.finish_download(staged.map(Some), cx);
-                } else if self.automatically_downloads_updates() {
+                } else if download_after_check
+                    .unwrap_or_else(|| self.automatically_downloads_updates() && !self.is_skipped())
+                {
                     self.download_update(cx);
                 }
             }
@@ -332,7 +255,11 @@ impl Updater {
                     self.state = UpdateState::Failed {
                         step: UpdateStep::Check,
                         message: format!("Could not check for updates: {error}"),
-                        info: self.update_info().cloned(),
+                        info: self
+                            .state
+                            .info()
+                            .or(self.native.candidate.as_ref().map(|c| &c.info))
+                            .cloned(),
                     };
                 }
             }
@@ -341,7 +268,7 @@ impl Updater {
     }
 
     pub fn download_update(&mut self, cx: &mut Context<Self>) {
-        if self.native.transfer.is_some() || self.native.checking.get() {
+        if self.native.transfer.is_some() {
             return;
         }
         if !matches!(
@@ -362,13 +289,26 @@ impl Updater {
         else {
             return;
         };
+        // A check replaces the candidate when it finishes, so the download waits for it.
+        if self.native.checking.get() {
+            self.native.download_after_check = Some(true);
+            self.state = UpdateState::Downloading {
+                info: candidate.info,
+                received: 0,
+                total: 0,
+            };
+            cx.notify();
+            return;
+        }
         let transfer = Transfer::default();
         self.native.transfer = Some(transfer.clone());
         self.state = UpdateState::Downloading {
+            info: candidate.info.clone(),
             received: 0,
             total: 0,
         };
         let progress = transfer.clone();
+        let progress_info = candidate.info.clone();
         self.native.progress_task = Some(cx.spawn(async move |weak, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(250))
@@ -376,9 +316,16 @@ impl Updater {
             if weak
                 .update(cx, |updater, cx| {
                     if matches!(updater.state, UpdateState::Downloading { .. }) {
-                        updater.state = UpdateState::Downloading {
-                            received: progress.received.load(Ordering::Relaxed),
-                            total: progress.total.load(Ordering::Relaxed),
+                        updater.state = if progress.verifying.load(Ordering::Relaxed) {
+                            UpdateState::Verifying {
+                                info: progress_info.clone(),
+                            }
+                        } else {
+                            UpdateState::Downloading {
+                                info: progress_info.clone(),
+                                received: progress.received.load(Ordering::Relaxed),
+                                total: progress.total.load(Ordering::Relaxed),
+                            }
                         };
                         cx.notify();
                     }
@@ -400,9 +347,16 @@ impl Updater {
         cx.notify();
     }
 
-    pub fn cancel_download(&mut self) {
+    pub(super) fn cancel_download(&mut self, cx: &mut Context<Self>) {
         if let Some(transfer) = &self.native.transfer {
             transfer.cancelled.store(true, Ordering::Relaxed);
+        }
+        if self.native.download_after_check == Some(true) {
+            self.native.download_after_check = Some(false);
+            if let Some(candidate) = &self.native.candidate {
+                self.state = candidate.available();
+            }
+            cx.notify();
         }
     }
 
@@ -410,7 +364,29 @@ impl Updater {
         self.native.install_log.as_deref()
     }
 
-    pub fn prepare_install(&mut self, log_dir: &Path) -> Result<(PathBuf, PathBuf)> {
+    pub(super) fn install_update(&mut self, log_dir: &Path, cx: &mut Context<Self>) {
+        if matches!(self.state, UpdateState::Installing { .. }) {
+            return;
+        }
+        let result = self.prepare_install(log_dir).and_then(|(path, log)| {
+            installer_command(&path, &log, std::process::id())
+                .spawn()
+                .context("Could not start the Windows installer")
+        });
+        match result {
+            Ok(_) => {
+                if let Some(info) = self.state.info().cloned() {
+                    self.state = UpdateState::Installing { info };
+                }
+                crate::lifecycle::mark_update_quit();
+                cx.notify();
+                cx.quit();
+            }
+            Err(error) => self.fail_install(error, cx),
+        }
+    }
+
+    fn prepare_install(&mut self, log_dir: &Path) -> Result<(PathBuf, PathBuf)> {
         if !matches!(
             self.state,
             UpdateState::Ready { .. }
@@ -443,7 +419,11 @@ impl Updater {
         self.state = UpdateState::Failed {
             step: UpdateStep::Install,
             message: error.to_string(),
-            info: self.update_info().cloned(),
+            info: self
+                .state
+                .info()
+                .or(self.native.candidate.as_ref().map(|c| &c.info))
+                .cloned(),
         };
         cx.notify();
     }
@@ -481,13 +461,13 @@ impl Updater {
                 if self.native.install_log.is_some() {
                     UpdateState::Failed {
                         step: UpdateStep::Install,
-                        message: "The installer did not finish the update. Check the installer log in Settings → Diagnostics, then try again.".into(),
+                        message: crate::i18n::text("ui.installer_did_not_finish_the_update").into(),
                         info: Some(candidate.info.clone()),
                     }
                 } else {
                     UpdateState::Ready {
-                        path,
                         info: candidate.info.clone(),
+                        size: candidate.size,
                     }
                 }
             }
@@ -534,6 +514,24 @@ fn fetch_release(client: &reqwest::blocking::Client, url: &str) -> Result<Releas
         .error_for_status()?
         .json()
         .context("read Windows release")
+}
+
+fn installer_command(path: &Path, log: &Path, pid: u32) -> Command {
+    let mut command = Command::new(path);
+    command
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .args([
+            "/VERYSILENT".into(),
+            "/SUPPRESSMSGBOXES".into(),
+            "/NORESTART".into(),
+            format!("/WAITPID={pid}"),
+            "/RELAUNCH=1".into(),
+            format!("/LOG={}", log.display()),
+        ]);
+    command
 }
 
 fn installer_version(name: &str) -> Option<(&str, &str)> {
@@ -704,6 +702,7 @@ fn download(
         let client = http_client().map_err(|error| Failure::new(UpdateStep::Download, error))?;
         let final_path = dir.join(&candidate.name);
         if final_path.is_file() {
+            transfer.verifying.store(true, Ordering::Relaxed);
             verify_staged(&client, &final_path, candidate, public_key)?;
             return Ok(Some(final_path));
         }
@@ -722,6 +721,7 @@ fn download(
         if !streamed || transfer.cancelled.load(Ordering::Relaxed) {
             return Ok(None);
         }
+        transfer.verifying.store(true, Ordering::Relaxed);
         verify_staged(&client, &partial, candidate, public_key)?;
         if transfer.cancelled.load(Ordering::Relaxed) {
             return Ok(None);
@@ -794,6 +794,29 @@ mod tests {
             }
         });
         (url, task)
+    }
+
+    #[test]
+    fn installer_runs_with_no_window_and_preserves_paths_with_spaces() {
+        let path =
+            Path::new(r"C:\Users\Test User\updates\Runner-Setup-0.8.2.20260908.0100-x64.exe");
+        let log = Path::new(r"C:\Users\Test User\logs\update-20260908.0100.log");
+        let command = installer_command(path, log, 42);
+        assert_eq!(command.get_program(), path.as_os_str());
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/WAITPID=42",
+                "/RELAUNCH=1",
+                r"/LOG=C:\Users\Test User\logs\update-20260908.0100.log"
+            ]
+        );
     }
 
     #[test]
@@ -1208,12 +1231,13 @@ mod tests {
                     UpdateState::UpToDate { checking: false },
                     candidate.available(),
                     UpdateState::Downloading {
+                        info: candidate.info.clone(),
                         received: 1,
                         total: 2,
                     },
                     UpdateState::Ready {
-                        path: path.clone(),
                         info: candidate.info.clone(),
+                        size: candidate.size,
                     },
                     UpdateState::Failed {
                         step: UpdateStep::Install,
@@ -1252,7 +1276,7 @@ mod tests {
                         ..
                     }
                 ));
-                assert!(updater.available().is_some());
+                assert!(updater.state().info().is_some());
                 assert_eq!(
                     updater.install_log_path(),
                     Some(logs.join("update-20260908.0100.log").as_path())
@@ -1296,6 +1320,119 @@ mod tests {
     }
 
     #[test]
+    fn a_download_asked_for_during_a_check_starts_once_when_the_check_finishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let pending_download = |cx: &mut gpui::App| {
+                let updater = cx.new(|cx| Updater::new(false, dir.path().to_owned(), cx));
+                updater.update(cx, |updater, cx| {
+                    updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
+                    assert!(matches!(updater.state(), UpdateState::Available { .. }));
+                    updater.native.checking.set(true);
+                    updater.request_download(cx);
+                    assert!(matches!(
+                        updater.state(),
+                        UpdateState::Downloading {
+                            received: 0,
+                            total: 0,
+                            ..
+                        }
+                    ));
+                    assert!(updater.native.transfer.is_none());
+                    // A second click while it waits changes nothing.
+                    updater.request_download(cx);
+                    assert!(updater.native.transfer.is_none());
+                });
+                updater
+            };
+
+            let finished = pending_download(cx);
+            finished.update(cx, |updater, cx| {
+                updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
+                assert!(matches!(updater.state(), UpdateState::Downloading { .. }));
+                assert!(updater.native.transfer.is_some());
+                assert_eq!(updater.native.download_after_check, None);
+                let started = updater.native.transfer.as_ref().unwrap().received.clone();
+                updater.download_update(cx);
+                let still = &updater.native.transfer.as_ref().unwrap().received;
+                assert!(Arc::ptr_eq(&started, still));
+            });
+
+            // A failed check reports its error, which can be one only a restart fixes.
+            let failed_check = pending_download(cx);
+            failed_check.update(cx, |updater, cx| {
+                updater.finish_windows_check(Err(anyhow::anyhow!("restart Runner")), cx);
+                let UpdateState::Failed {
+                    step: UpdateStep::Check,
+                    message,
+                    info: Some(_),
+                } = updater.state()
+                else {
+                    panic!("{:?}", updater.state());
+                };
+                assert!(message.contains("restart Runner"));
+                assert!(updater.native.transfer.is_none());
+                assert_eq!(updater.native.download_after_check, None);
+            });
+
+            let update_gone = pending_download(cx);
+            update_gone.update(cx, |updater, cx| {
+                updater.finish_windows_check(Ok((None, None)), cx);
+                assert_eq!(*updater.state(), UpdateState::UpToDate { checking: false });
+                assert!(updater.native.transfer.is_none());
+            });
+
+            // Cancel holds for this check whichever way the setting is, and leaves the setting.
+            for automatic in [false, true] {
+                let cancelled = pending_download(cx);
+                cancelled.update(cx, |updater, cx| {
+                    updater.native.automatically_downloads.set(automatic);
+                    updater.request_cancel(cx);
+                    assert!(matches!(updater.state(), UpdateState::Available { .. }));
+                    updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
+                    assert!(matches!(updater.state(), UpdateState::Available { .. }));
+                    assert!(updater.native.transfer.is_none());
+                    assert_eq!(updater.automatically_downloads_updates(), automatic);
+                    // An explicit Download still works afterwards.
+                    updater.request_download(cx);
+                    assert!(updater.native.transfer.is_some());
+                });
+
+                // Changing their mind during the same check downloads after all.
+                let changed_mind = pending_download(cx);
+                changed_mind.update(cx, |updater, cx| {
+                    updater.native.automatically_downloads.set(automatic);
+                    updater.request_cancel(cx);
+                    updater.request_download(cx);
+                    assert!(matches!(updater.state(), UpdateState::Downloading { .. }));
+                    assert!(updater.native.transfer.is_none());
+                    updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
+                    assert!(updater.native.transfer.is_some());
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn a_skipped_version_is_not_downloaded_automatically() {
+        let dir = tempfile::tempdir().unwrap();
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let updater = cx.new(|cx| Updater::new(true, dir.path().to_owned(), cx));
+            updater.update(cx, |updater, cx| {
+                updater.set_skipped_version(Some(candidate().info.version().to_owned()));
+                updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
+                assert!(matches!(updater.state(), UpdateState::Available { .. }));
+                assert!(updater.native.transfer.is_none());
+                assert!(updater.is_skipped());
+                updater.set_automatically_downloads_updates(true, cx);
+                assert!(updater.native.transfer.is_none());
+            });
+        });
+    }
+
+    #[test]
     fn check_and_transfer_transitions_keep_sidebar_and_retry_state_consistent() {
         let dir = tempfile::tempdir().unwrap();
         let cx = gpui::TestAppContext::single();
@@ -1306,18 +1443,17 @@ mod tests {
                 updater.set_automatically_checks_for_updates(false, cx);
                 assert!(updater.automatically_checks_for_updates());
                 updater.finish_windows_check(Ok((Some(candidate()), None)), cx);
-                assert!(matches!(updater.state(), UpdateState::Available { sig_url: Some(_), .. }));
-                assert!(updater.available().is_some());
+                assert!(matches!(updater.state(), UpdateState::Available { manual_only: false, .. }));
+                assert!(updater.state().info().is_some());
                 let checked_at = updater.last_check_at();
                 updater.finish_windows_check(Err(anyhow::anyhow!("offline")), cx);
                 assert_eq!(updater.last_check_at(), checked_at);
-                assert!(updater.available().is_some());
+                assert!(updater.state().info().is_some());
                 for step in [UpdateStep::Download, UpdateStep::Verify] {
-                    updater.state = UpdateState::Downloading { received: 8, total: 16 };
-                    assert!(updater.available().is_none());
+                    updater.state = UpdateState::Downloading { info: candidate().info, received: 8, total: 16 };
                     updater.finish_download(Err(Failure::new(step, "test error")), cx);
                     assert!(matches!(updater.state(), UpdateState::Failed { step: actual, .. } if *actual == step));
-                    assert!(updater.available().is_some());
+                    assert!(updater.state().info().is_some());
                 }
                 updater.finish_download(Ok(None), cx);
                 assert!(matches!(updater.state(), UpdateState::Available { .. }));
@@ -1327,7 +1463,7 @@ mod tests {
                 assert!(matches!(updater.state(), UpdateState::Ready { .. }));
                 updater.finish_windows_check(Ok((None, None)), cx);
                 assert_eq!(*updater.state(), UpdateState::UpToDate { checking: false });
-                assert!(updater.available().is_none());
+                assert!(updater.state().info().is_none());
             });
         });
     }

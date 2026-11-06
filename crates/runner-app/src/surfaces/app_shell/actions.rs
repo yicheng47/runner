@@ -98,6 +98,7 @@ impl NativeRoot {
         self.sidebar_collapsed = collapsed;
         if collapsed {
             self.usage_open = false;
+            self.update_popover.close_without_focus();
         }
         self.mission_workspace
             .update(cx, |workspace, workspace_cx| {
@@ -157,7 +158,6 @@ impl NativeRoot {
         if self.shortcut_recording_active() {
             self.finish_shortcut_recording(window, cx);
         }
-        self.pause_updates_pane(cx);
         self.save_settings(cx);
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {

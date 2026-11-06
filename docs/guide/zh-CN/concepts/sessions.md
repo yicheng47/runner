@@ -40,4 +40,4 @@ Runner 的后台服务 `runnerd` 独立于应用窗口管理进程。 **设置 �
 
 如果智能体在恢复时退出，Runner 会保留它的对话，再次点击恢复会重试同一对话。只有当运行时保存的对话已不存在时，Runner 才会开始新对话。对于 Codex，如果记录的对话已不存在，但聊天最初的对话仍在磁盘上，Runner 会改为恢复最初的对话。
 
-如果守护进程崩溃，Runner 会重新连接并为受影响聊天提供恢复；没有正常退出恢复标记的 Shell 会关闭窗格。反复出现故障时，使用 **设置 → 诊断 → 打开日志文件夹（Settings → Diagnostics → Open log folder）** 。对话丢失或启动失败时，请参阅[故障排查](../guides/troubleshooting.md)。
+如果守护进程崩溃，Runner 会重新连接并为受影响聊天提供恢复；没有正常退出恢复标记的 Shell 会关闭窗格。反复出现故障时，使用 **设置 → 关于 → 打开日志文件夹（Settings → About → Open log folder）** （macOS 上为 **在访达中显示日志（Reveal logs in Finder）** ）。对话丢失或启动失败时，请参阅[故障排查](../guides/troubleshooting.md)。

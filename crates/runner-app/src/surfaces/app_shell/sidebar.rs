@@ -90,66 +90,13 @@ impl NativeRoot {
 
     pub(super) fn render_sidebar_brand(
         &self,
-        update_version: Option<String>,
+        update: Option<runner_app::updater::UpdateState>,
+        window: &Window,
         cx: &Context<Self>,
     ) -> Div {
-        let zoom = self.settings(cx).app_zoom;
-        let updater = global_updater(cx);
-        let update_hint = update_version
+        let update_hint = update
             .filter(|_| self.remote_client.is_local())
-            .map(|version| {
-                let click_updater = updater.clone();
-                let click_root = cx.weak_entity();
-                #[cfg(target_os = "macos")]
-                let tooltip = crate::platform_ui::update_hint_tooltip(&version);
-                #[cfg(any(windows, target_os = "linux"))]
-                let tooltip =
-                    crate::platform_ui::update_hint_tooltip(&version, updater.read(cx).state());
-                Tooltip::new(
-                    "sidebar-update-tooltip",
-                    tooltip,
-                    div()
-                        .id("sidebar-update")
-                        .when(cfg!(test), |button| {
-                            button.debug_selector(|| "SIDEBAR_UPDATE".into())
-                        })
-                        .flex_none()
-                        .size(rems(24. / 16.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .cursor_pointer()
-                        .hover(|button| {
-                            button
-                                .border_color(alpha(theme::accent(), 0.4))
-                                .bg(alpha(theme::accent(), 0.1))
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, _window, cx| {
-                            cx.stop_propagation();
-                            if !click_root
-                                .upgrade()
-                                .is_some_and(|root| root.read(cx).remote_client.is_local())
-                            {
-                                return;
-                            }
-                            #[cfg(target_os = "macos")]
-                            crate::platform_ui::activate_update_hint(&click_updater, cx);
-                            #[cfg(any(windows, target_os = "linux"))]
-                            crate::platform_ui::activate_update_hint(&click_updater, _window, cx);
-                        })
-                        .child(
-                            svg()
-                                .path("circle-arrow-down.svg")
-                                .flex_none()
-                                .size(px(14. * zoom))
-                                .text_color(theme::accent()),
-                        ),
-                )
-            });
+            .and_then(|update| self.render_update_hint(&update, window, cx));
         let active_only = self.front_page_sidebar().read(cx).active_only(cx);
         let active_toggle = IconButton::new("sidebar-active-toggle", "list-filter.svg")
             .size(IconButtonSize::Md)
@@ -314,10 +261,8 @@ impl NativeRoot {
         self.sync_sidebar_shortcut_rows(cx);
         let titlebar = self.render_sidebar_titlebar(window, cx);
         let zoom = self.settings(cx).app_zoom;
-        let updater = global_updater(cx);
-        let update_version =
-            app_update_hint_version(updater.read(cx).available()).map(str::to_owned);
-        let brand = self.render_sidebar_brand(update_version, cx);
+        let update = crate::surfaces::update_ui::visible_update_state(global_updater(cx).read(cx));
+        let brand = self.render_sidebar_brand(update, window, cx);
         let enabled = self.settings(cx).model_runtimes();
         let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
         let show_usage = !visible_usage_runtimes.is_empty() && !self.front_page_sidebar_collapsed();
@@ -443,7 +388,8 @@ impl NativeRoot {
                         })
                     })
                     .flatten(),
-            );
+            )
+            .children(self.render_update_popover(window, cx));
         content.into_any_element()
     }
 

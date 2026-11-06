@@ -358,11 +358,6 @@ impl NativeRoot {
                 .updates
                 .clone()
                 .map(IntoElement::into_any_element),
-            SettingsPane::Diagnostics => self
-                .settings_page
-                .diagnostics
-                .clone()
-                .map(IntoElement::into_any_element),
             SettingsPane::About => self
                 .settings_page
                 .about

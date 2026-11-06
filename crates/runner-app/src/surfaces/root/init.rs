@@ -292,8 +292,7 @@ impl NativeRoot {
             terminal_close_confirm: None,
             pending_pane_closes: HashMap::new(),
             pending_tab_close: None,
-            #[cfg(any(windows, target_os = "linux"))]
-            update_dialog: None,
+            update_popover: crate::surfaces::update_ui::UpdatePopoverState::new(cx),
             quit_dialog: None,
             agent_update: None,
             fork_confirm: None,
@@ -341,17 +340,8 @@ impl NativeRoot {
             _activation_subscription: None,
             _bounds_subscription: None,
             _project_cwd_subscription: None,
-            #[cfg(target_os = "macos")]
-            _updater_subscription: cx.observe(&updater, |_, _, cx| cx.notify()),
-            #[cfg(any(windows, target_os = "linux"))]
-            _updater_subscription: cx.observe_in(&updater, window, |root, updater, window, cx| {
-                if matches!(
-                    updater.read(cx).state(),
-                    runner_app::updater::UpdateState::UpToDate { .. }
-                ) {
-                    root.close_update_dialog(window, cx);
-                }
-                cx.notify();
+            _updater_subscription: cx.observe_in(&updater, window, |root, _, window, cx| {
+                root.handle_updater_change(window, cx);
             }),
             _store_subscription: cx.observe_in(&app_store, window, |this, _, window, cx| {
                 this.leave_other_computers_when_signed_out(window, cx);

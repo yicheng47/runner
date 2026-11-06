@@ -24,11 +24,7 @@ pub(crate) mod sidebar;
 pub(crate) mod sidebar_logic;
 pub(crate) mod start_chat;
 mod terminal_attachment;
-#[cfg(windows)]
-pub(crate) mod update_dialog;
-#[cfg(target_os = "linux")]
-#[path = "update_dialog_linux.rs"]
-pub(crate) mod update_dialog;
+pub(crate) mod update_ui;
 pub(crate) mod windowing;
 
 pub(crate) use app_shell::AppRoute;

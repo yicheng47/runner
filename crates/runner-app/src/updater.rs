@@ -1,6 +1,7 @@
-use std::time::SystemTime;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 
-use gpui::{App, Context, Entity, Global};
+use gpui::{App, Context, Entity, Global, Task};
 
 #[cfg(windows)]
 #[path = "updater/windows.rs"]
@@ -11,10 +12,14 @@ mod native;
 pub mod linux;
 #[cfg(target_os = "linux")]
 use linux as native;
-#[cfg(target_os = "linux")]
-pub use linux::{download_url, UpdateState, UpdateStep};
-#[cfg(windows)]
-pub use native::{windows_download_url, UpdateState, UpdateStep};
+
+#[cfg(all(target_os = "macos", feature = "updater"))]
+#[path = "updater/sparkle.rs"]
+mod native;
+
+#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
+#[path = "updater/sparkle_flow.rs"]
+mod sparkle_flow;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateInfo {
@@ -55,61 +60,165 @@ impl UpdateInfo {
     }
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-#[derive(Debug, Eq, PartialEq)]
-enum UpdateTransition {
-    Found(String),
-    NotFound,
-    Aborted,
-    UserSkipped,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpdateStep {
+    Check,
+    Download,
+    Verify,
+    Install,
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-const RUNNER_UPDATE_ERROR_DOMAIN: &str = "com.wycstudios.runner.updater";
-
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-const SPU_UPDATE_CHECK_UPDATES_IN_BACKGROUND: isize = 1;
-
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-fn should_proceed(update_check: isize) -> bool {
-    update_check != SPU_UPDATE_CHECK_UPDATES_IN_BACKGROUND
+/// What every platform's update engine reports to the UI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpdateState {
+    UpToDate {
+        checking: bool,
+    },
+    Available {
+        info: UpdateInfo,
+        size: u64,
+        manual_only: bool,
+    },
+    Downloading {
+        info: UpdateInfo,
+        received: u64,
+        total: u64,
+    },
+    Verifying {
+        info: UpdateInfo,
+    },
+    Ready {
+        info: UpdateInfo,
+        size: u64,
+    },
+    Installing {
+        info: UpdateInfo,
+    },
+    Failed {
+        step: UpdateStep,
+        message: String,
+        info: Option<UpdateInfo>,
+    },
 }
 
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-fn transition_for_abort(error_domain: &str) -> Option<UpdateTransition> {
-    (error_domain != RUNNER_UPDATE_ERROR_DOMAIN).then_some(UpdateTransition::Aborted)
-}
-
-#[cfg(any(test, all(target_os = "macos", feature = "updater")))]
-fn apply_available_transition(
-    available: &mut Option<UpdateInfo>,
-    transition: UpdateTransition,
-) -> bool {
-    let next = match transition {
-        UpdateTransition::Found(version) => Some(UpdateInfo::new(version)),
-        UpdateTransition::NotFound | UpdateTransition::Aborted | UpdateTransition::UserSkipped => {
-            None
+impl UpdateState {
+    pub fn info(&self) -> Option<&UpdateInfo> {
+        match self {
+            Self::UpToDate { .. } => None,
+            Self::Available { info, .. }
+            | Self::Downloading { info, .. }
+            | Self::Verifying { info }
+            | Self::Ready { info, .. }
+            | Self::Installing { info } => Some(info),
+            Self::Failed { info, .. } => info.as_ref(),
         }
-    };
-    if *available == next {
-        false
-    } else {
-        *available = next;
-        true
+    }
+
+    fn in_progress(&self) -> bool {
+        matches!(
+            self,
+            Self::Downloading { .. }
+                | Self::Verifying { .. }
+                | Self::Ready { .. }
+                | Self::Installing { .. }
+        )
     }
 }
 
+fn release_urls(channel: Option<&str>) -> (&'static str, &'static str) {
+    match channel {
+        Some("production") => (
+            "https://api.github.com/repos/yicheng47/runner/releases/latest",
+            "https://github.com/yicheng47/runner/releases/latest",
+        ),
+        Some("preview-nightly") => (
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/preview-nightly",
+            "https://github.com/yicheng47/runner/releases/tag/preview-nightly",
+        ),
+        _ => (
+            "https://api.github.com/repos/yicheng47/runner/releases/tags/nightly",
+            "https://github.com/yicheng47/runner/releases/tag/nightly",
+        ),
+    }
+}
+
+/// Where What's new and View downloads go, on every platform.
+pub fn release_page_url() -> &'static str {
+    release_urls(option_env!("RUNNER_RELEASE_CHANNEL")).1
+}
+
+/// `RUNNER_DEV_UPDATE_AVAILABLE=<version>[:<state>]`, for looking at each state in a
+/// development build. Nothing is downloaded, staged or installed.
+fn parse_dev_preview(value: &str) -> Option<UpdateState> {
+    let (version, state) = value.split_once(':').unwrap_or((value, "available"));
+    let version = version.trim();
+    if version.is_empty() {
+        return None;
+    }
+    let info = UpdateInfo::new(version);
+    Some(match state.trim() {
+        "available" => UpdateState::Available {
+            info,
+            size: PREVIEW_SIZE,
+            manual_only: false,
+        },
+        "manual" => UpdateState::Available {
+            info,
+            size: PREVIEW_SIZE,
+            manual_only: true,
+        },
+        "downloading" => UpdateState::Downloading {
+            info,
+            received: PREVIEW_SIZE * 9 / 20,
+            total: PREVIEW_SIZE,
+        },
+        "downloading-unknown" => UpdateState::Downloading {
+            info,
+            received: PREVIEW_SIZE * 9 / 20,
+            total: 0,
+        },
+        "verifying" => UpdateState::Verifying { info },
+        "ready" => UpdateState::Ready {
+            info,
+            size: PREVIEW_SIZE,
+        },
+        "installing" => UpdateState::Installing { info },
+        "failed" => UpdateState::Failed {
+            step: UpdateStep::Download,
+            message: "The network connection was lost.".into(),
+            info: Some(info),
+        },
+        "uptodate" => UpdateState::UpToDate { checking: false },
+        _ => return None,
+    })
+}
+
+const PREVIEW_SIZE: u64 = 40_400_000;
+
 #[cfg(debug_assertions)]
-fn dev_available() -> Option<UpdateInfo> {
-    std::env::var("RUNNER_DEV_UPDATE_AVAILABLE")
-        .ok()
-        .filter(|version| !version.trim().is_empty())
-        .map(UpdateInfo::new)
+fn dev_preview() -> Option<UpdateState> {
+    parse_dev_preview(&std::env::var("RUNNER_DEV_UPDATE_AVAILABLE").ok()?)
 }
 
 #[cfg(not(debug_assertions))]
-fn dev_available() -> Option<UpdateInfo> {
+fn dev_preview() -> Option<UpdateState> {
     None
+}
+
+struct Preview {
+    initial: UpdateState,
+    last_check_at: Option<SystemTime>,
+    task: Option<Task<()>>,
+}
+
+impl Preview {
+    fn new(initial: UpdateState) -> Self {
+        Self {
+            initial,
+            last_check_at: None,
+            task: None,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -123,44 +232,45 @@ pub fn global_updater(cx: &App) -> Entity<Updater> {
 
 pub struct Updater {
     native: native::NativeUpdater,
-    #[cfg(target_os = "macos")]
-    available: Option<UpdateInfo>,
-    #[cfg(any(windows, target_os = "linux"))]
     state: UpdateState,
+    skipped_version: Option<String>,
+    preview: Option<Preview>,
 }
 
 impl Updater {
-    #[cfg(target_os = "macos")]
-    pub fn new(automatically_checks: bool, cx: &mut Context<Self>) -> Self {
-        Self {
-            native: native::NativeUpdater::new(
-                automatically_checks,
-                cx.weak_entity(),
-                cx.to_async(),
-            ),
-            available: if cfg!(target_os = "linux") {
-                None
-            } else {
-                dev_available()
-            },
+    fn initial_state() -> (UpdateState, Option<Preview>) {
+        match dev_preview() {
+            Some(state) => (state.clone(), Some(Preview::new(state))),
+            None => (UpdateState::UpToDate { checking: false }, None),
         }
     }
 
     pub fn is_available(&self) -> bool {
-        self.native.is_available()
+        self.preview.is_some() || self.native.is_available()
     }
 
     pub fn start(&self) {
-        self.native.start();
+        if self.preview.is_none() {
+            self.native.start();
+        }
     }
 
     pub fn check_for_updates(&self) {
-        self.native.check_for_updates();
+        if self.preview.is_none() {
+            self.native.check_for_updates();
+        }
     }
 
-    #[cfg(target_os = "macos")]
-    pub fn available(&self) -> Option<&UpdateInfo> {
-        self.available.as_ref()
+    pub fn is_preview(&self) -> bool {
+        self.preview.is_some()
+    }
+
+    pub fn state(&self) -> &UpdateState {
+        &self.state
+    }
+
+    pub fn is_checking(&self) -> bool {
+        matches!(self.state, UpdateState::UpToDate { checking: true }) || self.native.is_checking()
     }
 
     pub fn automatically_checks_for_updates(&self) -> bool {
@@ -173,315 +283,217 @@ impl Updater {
     }
 
     pub fn last_check_at(&self) -> Option<SystemTime> {
-        self.native.last_check_at()
-    }
-
-    #[cfg(any(windows, target_os = "linux"))]
-    pub fn is_checking(&self) -> bool {
-        self.native.is_checking()
-    }
-
-    #[cfg(any(windows, target_os = "linux"))]
-    pub fn check_error(&self) -> Option<String> {
-        match &self.state {
-            UpdateState::Failed { message, .. } => Some(message.clone()),
-            _ => None,
+        match &self.preview {
+            Some(preview) => preview.last_check_at,
+            None => self.native.last_check_at(),
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "updater"))]
-    fn apply_transition(&mut self, transition: UpdateTransition, cx: &mut Context<Self>) {
-        if apply_available_transition(&mut self.available, transition) {
-            cx.notify();
+    pub fn skipped_version(&self) -> Option<&str> {
+        self.skipped_version.as_deref()
+    }
+
+    pub fn set_skipped_version(&mut self, version: Option<String>) {
+        self.skipped_version = version;
+    }
+
+    /// True when the current update is the version the person chose to skip.
+    pub fn is_skipped(&self) -> bool {
+        self.state
+            .info()
+            .is_some_and(|info| self.skipped_version.as_deref() == Some(info.version()))
+    }
+
+    /// Hides the current update until the next manual check, and returns the version to persist.
+    pub fn skip_update(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let version = self.state.info()?.version().to_owned();
+        self.skipped_version = Some(version.clone());
+        cx.notify();
+        Some(version)
+    }
+
+    /// A check the person asked for, which also brings back a skipped version.
+    pub fn manual_check(&mut self, cx: &mut Context<Self>) {
+        self.skipped_version = None;
+        if self.preview.is_some() {
+            self.preview_check(cx);
+        } else if !self.state.in_progress() {
+            self.check_for_updates();
         }
+        cx.notify();
+    }
+
+    pub fn request_download(&mut self, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.preview_download(cx);
+        } else {
+            self.download_update(cx);
+        }
+    }
+
+    pub fn request_cancel(&mut self, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.preview_cancel(cx);
+        } else {
+            self.cancel_download(cx);
+        }
+    }
+
+    /// Closes Runner and reopens it on the new version, the same way from every entry point.
+    pub fn request_install(&mut self, log_dir: &Path, cx: &mut Context<Self>) {
+        if self.preview.is_some() {
+            self.preview_install(cx);
+        } else {
+            self.install_update(log_dir, cx);
+        }
+    }
+
+    pub fn request_retry(&mut self, log_dir: &Path, cx: &mut Context<Self>) {
+        match self.state {
+            UpdateState::Failed {
+                step: UpdateStep::Check,
+                ..
+            } => self.manual_check(cx),
+            UpdateState::Failed {
+                step: UpdateStep::Install,
+                ..
+            } if self.preview.is_none() => self.install_update(log_dir, cx),
+            _ => self.request_download(cx),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_state_for_test(&mut self, state: UpdateState, cx: &mut Context<Self>) {
+        self.state = state;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_preview_for_test(&mut self, state: UpdateState, cx: &mut Context<Self>) {
+        self.preview = Some(Preview::new(state.clone()));
+        self.state = state;
+        cx.notify();
+    }
+
+    fn preview_check(&mut self, cx: &mut Context<Self>) {
+        let Some(initial) = self.preview.as_ref().map(|preview| preview.initial.clone()) else {
+            return;
+        };
+        if matches!(initial, UpdateState::UpToDate { .. }) {
+            self.state = UpdateState::UpToDate { checking: true };
+        }
+        let task = cx.spawn(async move |updater, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(800))
+                .await;
+            let _ = updater.update(cx, |updater, cx| {
+                updater.state = initial;
+                if let Some(preview) = &mut updater.preview {
+                    preview.last_check_at = Some(SystemTime::now());
+                }
+                cx.notify();
+            });
+        });
+        if let Some(preview) = &mut self.preview {
+            preview.task = Some(task);
+        }
+    }
+
+    fn preview_download(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = self.state.info().cloned() else {
+            return;
+        };
+        self.state = UpdateState::Downloading {
+            info: info.clone(),
+            received: 0,
+            total: PREVIEW_SIZE,
+        };
+        let task = cx.spawn(async move |updater, cx| {
+            for step in 1..=20 {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let next = UpdateState::Downloading {
+                    info: info.clone(),
+                    received: PREVIEW_SIZE * step / 20,
+                    total: PREVIEW_SIZE,
+                };
+                let _ = updater.update(cx, |updater, cx| {
+                    updater.state = next;
+                    cx.notify();
+                });
+            }
+            let verifying = UpdateState::Verifying { info: info.clone() };
+            let _ = updater.update(cx, |updater, cx| {
+                updater.state = verifying;
+                cx.notify();
+            });
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
+            let _ = updater.update(cx, |updater, cx| {
+                updater.state = UpdateState::Ready {
+                    info,
+                    size: PREVIEW_SIZE,
+                };
+                cx.notify();
+            });
+        });
+        if let Some(preview) = &mut self.preview {
+            preview.task = Some(task);
+        }
+    }
+
+    fn preview_cancel(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = self.state.info().cloned() else {
+            return;
+        };
+        if let Some(preview) = &mut self.preview {
+            preview.task = None;
+        }
+        self.state = UpdateState::Available {
+            info,
+            size: PREVIEW_SIZE,
+            manual_only: false,
+        };
+        cx.notify();
+    }
+
+    fn preview_install(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = self.state.info().cloned() else {
+            return;
+        };
+        self.state = UpdateState::Installing { info: info.clone() };
+        let task = cx.spawn(async move |updater, cx| {
+            cx.background_executor().timer(Duration::from_secs(3)).await;
+            let _ = updater.update(cx, |updater, cx| {
+                updater.state = UpdateState::Ready {
+                    info,
+                    size: PREVIEW_SIZE,
+                };
+                cx.notify();
+            });
+        });
+        if let Some(preview) = &mut self.preview {
+            preview.task = Some(task);
+        }
+        cx.notify();
     }
 }
 
-#[cfg(all(target_os = "macos", feature = "updater"))]
-mod native {
-    use std::time::{Duration, SystemTime};
-
-    use gpui::{AsyncApp, WeakEntity};
-    use objc2::ffi::NSInteger;
-    use objc2::rc::{Allocated, Retained};
-    use objc2::runtime::{AnyObject, Bool, NSObject};
-    use objc2::{
-        define_class, extern_class, extern_methods, msg_send, AnyThread, DefinedClass,
-        MainThreadMarker, MainThreadOnly,
-    };
-    use objc2_foundation::{NSDate, NSDictionary, NSError, NSObjectProtocol, NSString};
-
-    use super::{
-        should_proceed, transition_for_abort, UpdateTransition, Updater, RUNNER_UPDATE_ERROR_DOMAIN,
-    };
-
-    const RUNNER_UPDATE_ERROR_CODE: NSInteger = 1;
-    const SPU_USER_UPDATE_CHOICE_SKIP: isize = 0;
-
-    #[link(name = "Sparkle", kind = "framework")]
-    unsafe extern "C" {}
-
-    extern_class!(
-        #[unsafe(super(NSObject))]
-        #[thread_kind = MainThreadOnly]
-        struct SPUStandardUpdaterController;
-    );
-
-    extern_class!(
-        #[unsafe(super(NSObject))]
-        #[thread_kind = MainThreadOnly]
-        struct SPUUpdater;
-    );
-
-    extern_class!(
-        #[unsafe(super(NSObject))]
-        #[thread_kind = MainThreadOnly]
-        struct SUAppcastItem;
-    );
-
-    impl SUAppcastItem {
-        extern_methods!(
-            #[unsafe(method(displayVersionString))]
-            #[unsafe(method_family = none)]
-            fn display_version_string(&self) -> Retained<NSString>;
-
-            #[unsafe(method(versionString))]
-            #[unsafe(method_family = none)]
-            fn version_string(&self) -> Retained<NSString>;
-        );
-    }
-
-    fn update_version(item: &SUAppcastItem) -> String {
-        let display_version = item.display_version_string().to_string();
-        if display_version.trim().is_empty() {
-            item.version_string().to_string()
-        } else {
-            display_version
-        }
-    }
-
-    fn background_check_declined_error() -> Retained<NSError> {
-        let domain = NSString::from_str(RUNNER_UPDATE_ERROR_DOMAIN);
-        let description = NSString::from_str(crate::i18n::text(
-            "ui.runner_recorded_an_update_during_a_background_check",
-        ));
-        let user_info =
-            NSDictionary::from_slices(&[NSError::NSLocalizedDescriptionKey()], &[&*description]);
-        unsafe {
-            msg_send![
-                NSError::alloc(),
-                initWithDomain: &*domain,
-                code: RUNNER_UPDATE_ERROR_CODE,
-                userInfo: &*user_info
-            ]
-        }
-    }
-
-    struct UpdaterDelegateIvars {
-        updater: WeakEntity<Updater>,
-        cx: AsyncApp,
-    }
-
-    define_class!(
-        #[unsafe(super(NSObject))]
-        #[thread_kind = MainThreadOnly]
-        #[ivars = UpdaterDelegateIvars]
-        struct UpdaterDelegate;
-
-        unsafe impl NSObjectProtocol for UpdaterDelegate {}
-
-        impl UpdaterDelegate {
-            #[unsafe(method(updater:shouldProceedWithUpdate:updateCheck:error:))]
-            fn should_proceed_with_update(
-                &self,
-                _updater: &SPUUpdater,
-                item: &SUAppcastItem,
-                update_check: NSInteger,
-                error: Option<&mut *mut NSError>,
-            ) -> Bool {
-                self.apply_transition(UpdateTransition::Found(update_version(item)));
-                if should_proceed(update_check) {
-                    return true.into();
-                }
-
-                if let Some(error) = error {
-                    *error = Retained::autorelease_ptr(background_check_declined_error());
-                }
-                false.into()
-            }
-
-            #[unsafe(method(updater:didFindValidUpdate:))]
-            fn did_find_valid_update(&self, _updater: &SPUUpdater, item: &SUAppcastItem) {
-                self.apply_transition(UpdateTransition::Found(update_version(item)));
-            }
-
-            #[unsafe(method(updaterDidNotFindUpdate:))]
-            fn did_not_find_update(&self, _updater: &SPUUpdater) {
-                self.apply_transition(UpdateTransition::NotFound);
-            }
-
-            #[unsafe(method(updater:userDidMakeChoice:forUpdate:state:))]
-            fn user_did_make_choice(
-                &self,
-                _updater: &SPUUpdater,
-                choice: isize,
-                _item: &SUAppcastItem,
-                _state: &AnyObject,
-            ) {
-                if choice == SPU_USER_UPDATE_CHOICE_SKIP {
-                    self.apply_transition(UpdateTransition::UserSkipped);
-                }
-            }
-
-            #[unsafe(method(updaterWillRelaunchApplication:))]
-            fn will_relaunch_application(&self, _updater: &SPUUpdater) {
-                crate::lifecycle::mark_update_quit();
-            }
-
-            #[unsafe(method(updater:didAbortWithError:))]
-            fn did_abort_with_error(&self, _updater: &SPUUpdater, error: &NSError) {
-                if let Some(transition) = transition_for_abort(&error.domain().to_string()) {
-                    self.apply_transition(transition);
-                }
-            }
-        }
-    );
-
-    impl UpdaterDelegate {
-        fn new(
-            marker: MainThreadMarker,
-            updater: WeakEntity<Updater>,
-            cx: AsyncApp,
-        ) -> Retained<Self> {
-            let this = Self::alloc(marker).set_ivars(UpdaterDelegateIvars { updater, cx });
-            unsafe { msg_send![super(this), init] }
-        }
-
-        fn apply_transition(&self, transition: UpdateTransition) {
-            let _main_thread =
-                MainThreadMarker::new().expect("Sparkle updater delegate must run on main thread");
-            let updater = self.ivars().updater.clone();
-            self.ivars()
-                .cx
-                .spawn(async move |cx| {
-                    let _ = cx.update(|cx| {
-                        updater.update(cx, |updater, cx| {
-                            updater.apply_transition(transition, cx);
-                        })
-                    });
-                })
-                .detach();
-        }
-    }
-
-    impl SPUStandardUpdaterController {
-        extern_methods!(
-            #[unsafe(method(initWithStartingUpdater:updaterDelegate:userDriverDelegate:))]
-            #[unsafe(method_family = init)]
-            fn init_with_starting_updater(
-                this: Allocated<Self>,
-                start_updater: bool,
-                updater_delegate: Option<&AnyObject>,
-                user_driver_delegate: Option<&AnyObject>,
-            ) -> Retained<Self>;
-
-            #[unsafe(method(updater))]
-            #[unsafe(method_family = none)]
-            fn updater(&self) -> Retained<SPUUpdater>;
-
-            #[unsafe(method(startUpdater))]
-            #[unsafe(method_family = none)]
-            fn start_updater(&self);
-
-            #[unsafe(method(checkForUpdates:))]
-            #[unsafe(method_family = none)]
-            fn check_for_updates(&self, sender: Option<&AnyObject>);
-        );
-    }
-
-    impl SPUUpdater {
-        extern_methods!(
-            #[unsafe(method(checkForUpdatesInBackground))]
-            #[unsafe(method_family = none)]
-            fn check_for_updates_in_background(&self);
-
-            #[unsafe(method(automaticallyChecksForUpdates))]
-            #[unsafe(method_family = none)]
-            fn automatically_checks_for_updates(&self) -> bool;
-
-            #[unsafe(method(setAutomaticallyChecksForUpdates:))]
-            #[unsafe(method_family = none)]
-            fn set_automatically_checks_for_updates(&self, enabled: bool);
-
-            #[unsafe(method(lastUpdateCheckDate))]
-            #[unsafe(method_family = none)]
-            fn last_update_check_date(&self) -> Option<Retained<NSDate>>;
-        );
-    }
-
-    pub(super) struct NativeUpdater {
-        controller: Retained<SPUStandardUpdaterController>,
-        _delegate: Retained<UpdaterDelegate>,
-        automatically_checks: bool,
-    }
-
-    impl NativeUpdater {
-        pub(super) fn new(
-            automatically_checks: bool,
-            updater: WeakEntity<Updater>,
-            cx: AsyncApp,
-        ) -> Self {
-            let marker =
-                MainThreadMarker::new().expect("Runner updater must start on the main thread");
-            let delegate = UpdaterDelegate::new(marker, updater, cx);
-            let controller = SPUStandardUpdaterController::init_with_starting_updater(
-                SPUStandardUpdaterController::alloc(marker),
-                false,
-                Some(&delegate),
-                None,
-            );
-            Self {
-                controller,
-                _delegate: delegate,
+#[cfg(target_os = "macos")]
+impl Updater {
+    pub fn new(automatically_checks: bool, cx: &mut Context<Self>) -> Self {
+        let (state, preview) = Self::initial_state();
+        Self {
+            native: native::NativeUpdater::new(
                 automatically_checks,
-            }
-        }
-
-        pub(super) fn start(&self) {
-            self.controller.start_updater();
-            let updater = self.controller.updater();
-            updater.set_automatically_checks_for_updates(self.automatically_checks);
-            if updater.automatically_checks_for_updates() {
-                updater.check_for_updates_in_background();
-            }
-        }
-
-        pub(super) fn is_available(&self) -> bool {
-            // SPUStandardUpdaterController aborts if startup fails, so a live controller is usable.
-            true
-        }
-
-        pub(super) fn check_for_updates(&self) {
-            self.controller.check_for_updates(None);
-        }
-
-        pub(super) fn automatically_checks_for_updates(&self) -> bool {
-            self.controller.updater().automatically_checks_for_updates()
-        }
-
-        pub(super) fn set_automatically_checks_for_updates(&self, enabled: bool) {
-            self.controller
-                .updater()
-                .set_automatically_checks_for_updates(enabled);
-        }
-
-        pub(super) fn last_check_at(&self) -> Option<SystemTime> {
-            let seconds = self
-                .controller
-                .updater()
-                .last_update_check_date()?
-                .timeIntervalSince1970();
-            (seconds >= 0.).then(|| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(seconds))
+                cx.weak_entity(),
+                cx.to_async(),
+            ),
+            state,
+            skipped_version: None,
+            preview,
         }
     }
 }
@@ -494,7 +506,9 @@ mod native {
 mod native {
     use std::time::SystemTime;
 
-    use gpui::{AsyncApp, WeakEntity};
+    use std::path::Path;
+
+    use gpui::{AsyncApp, Context, WeakEntity};
 
     use super::Updater;
 
@@ -526,6 +540,18 @@ mod native {
         pub(super) fn last_check_at(&self) -> Option<SystemTime> {
             None
         }
+
+        pub(super) fn is_checking(&self) -> bool {
+            false
+        }
+    }
+
+    impl Updater {
+        pub(super) fn download_update(&mut self, _cx: &mut Context<Self>) {}
+
+        pub(super) fn cancel_download(&mut self, _cx: &mut Context<Self>) {}
+
+        pub(super) fn install_update(&mut self, _log_dir: &Path, _cx: &mut Context<Self>) {}
     }
 }
 
@@ -571,83 +597,137 @@ mod tests {
     }
 
     #[test]
-    fn found_update_sets_available_version() {
-        let mut available = None;
-        apply_available_transition(&mut available, UpdateTransition::Found("0.6.1".into()));
-
-        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
-    }
-
-    #[test]
-    fn duplicate_found_update_does_not_change_available_state() {
-        let mut available = Some(UpdateInfo::new("0.6.1"));
-
-        assert!(!apply_available_transition(
-            &mut available,
-            UpdateTransition::Found("0.6.1".into()),
+    fn dev_preview_reaches_every_state_and_ignores_unknown_ones() {
+        let info = UpdateInfo::new("0.19.5");
+        assert_eq!(
+            parse_dev_preview("0.19.5"),
+            Some(UpdateState::Available {
+                info: info.clone(),
+                size: PREVIEW_SIZE,
+                manual_only: false,
+            })
+        );
+        assert!(matches!(
+            parse_dev_preview("0.19.5:manual"),
+            Some(UpdateState::Available {
+                manual_only: true,
+                ..
+            })
         ));
-    }
-
-    #[test]
-    fn not_found_clears_available_update() {
-        let mut available = Some(UpdateInfo::new("0.6.1"));
-        apply_available_transition(&mut available, UpdateTransition::NotFound);
-
-        assert_eq!(available, None);
-    }
-
-    #[test]
-    fn abort_clears_available_update() {
-        let mut available = Some(UpdateInfo::new("0.6.1"));
-        apply_available_transition(&mut available, UpdateTransition::Aborted);
-
-        assert_eq!(available, None);
-    }
-
-    #[test]
-    fn only_background_update_checks_are_declined() {
-        assert!(should_proceed(0));
-        assert!(!should_proceed(1));
-        assert!(should_proceed(2));
-    }
-
-    #[test]
-    fn runner_decline_abort_preserves_available_update() {
-        let mut available = Some(UpdateInfo::new("0.6.1"));
-
-        if let Some(transition) = transition_for_abort(RUNNER_UPDATE_ERROR_DOMAIN) {
-            apply_available_transition(&mut available, transition);
-        }
-        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
-
-        if let Some(transition) = transition_for_abort("com.example.other") {
-            apply_available_transition(&mut available, transition);
-        }
-        assert_eq!(available, None);
-    }
-
-    #[test]
-    fn runner_decline_does_not_renotify_same_found_update() {
-        let mut available = None;
-        assert!(apply_available_transition(
-            &mut available,
-            UpdateTransition::Found("0.6.1".into()),
+        assert!(matches!(
+            parse_dev_preview("0.19.5:downloading"),
+            Some(UpdateState::Downloading { total, .. }) if total == PREVIEW_SIZE
         ));
-
-        assert_eq!(transition_for_abort(RUNNER_UPDATE_ERROR_DOMAIN), None);
-        assert!(!apply_available_transition(
-            &mut available,
-            UpdateTransition::Found("0.6.1".into()),
+        assert!(matches!(
+            parse_dev_preview("0.19.5:downloading-unknown"),
+            Some(UpdateState::Downloading { total: 0, .. })
         ));
-        assert_eq!(available, Some(UpdateInfo::new("0.6.1")));
+        assert_eq!(
+            parse_dev_preview("0.19.5:verifying"),
+            Some(UpdateState::Verifying { info: info.clone() })
+        );
+        assert_eq!(
+            parse_dev_preview("0.19.5:ready"),
+            Some(UpdateState::Ready {
+                info: info.clone(),
+                size: PREVIEW_SIZE,
+            })
+        );
+        assert_eq!(
+            parse_dev_preview("0.19.5:installing"),
+            Some(UpdateState::Installing { info })
+        );
+        assert!(matches!(
+            parse_dev_preview("0.19.5:failed"),
+            Some(UpdateState::Failed {
+                step: UpdateStep::Download,
+                ..
+            })
+        ));
+        assert_eq!(
+            parse_dev_preview("0.19.5:uptodate"),
+            Some(UpdateState::UpToDate { checking: false })
+        );
+        assert_eq!(parse_dev_preview(" "), None);
+        assert_eq!(parse_dev_preview("0.19.5:nonsense"), None);
     }
 
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        all(target_os = "macos", feature = "updater")
+    )))]
     #[test]
-    fn user_skip_clears_available_update() {
-        let mut available = Some(UpdateInfo::new("0.6.1"));
-        apply_available_transition(&mut available, UpdateTransition::UserSkipped);
+    fn preview_walks_the_download_and_install_states_without_an_engine() {
+        let mut cx = gpui::TestAppContext::single();
+        let updater = cx.new(|cx| {
+            let mut updater = Updater::new(false, cx);
+            let state = parse_dev_preview("0.19.5").unwrap();
+            updater.preview = Some(Preview::new(state.clone()));
+            updater.state = state;
+            updater
+        });
+        let log_dir = Path::new("");
+        updater.update(&mut cx, |updater, cx| updater.request_download(cx));
+        assert!(matches!(
+            updater.read_with(&cx, |updater, _| updater.state().clone()),
+            UpdateState::Downloading { received: 0, .. }
+        ));
+        updater.update(&mut cx, |updater, cx| updater.request_cancel(cx));
+        assert!(matches!(
+            updater.read_with(&cx, |updater, _| updater.state().clone()),
+            UpdateState::Available { .. }
+        ));
+        updater.update(&mut cx, |updater, cx| updater.request_download(cx));
+        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        assert!(matches!(
+            updater.read_with(&cx, |updater, _| updater.state().clone()),
+            UpdateState::Verifying { .. }
+        ));
+        cx.executor().advance_clock(Duration::from_secs(2));
+        cx.run_until_parked();
+        assert!(matches!(
+            updater.read_with(&cx, |updater, _| updater.state().clone()),
+            UpdateState::Ready { .. }
+        ));
+        updater.update(&mut cx, |updater, cx| {
+            updater.request_install(log_dir, cx);
+        });
+        assert!(matches!(
+            updater.read_with(&cx, |updater, _| updater.state().clone()),
+            UpdateState::Installing { .. }
+        ));
+        assert!(!crate::lifecycle::update_quit_pending());
+    }
 
-        assert_eq!(available, None);
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        all(target_os = "macos", feature = "updater")
+    )))]
+    #[test]
+    fn a_skipped_version_is_only_skipped_until_the_next_manual_check() {
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            let updater = cx.new(|cx| {
+                let mut updater = Updater::new(false, cx);
+                updater.state = parse_dev_preview("0.19.5").unwrap();
+                updater
+            });
+            updater.update(cx, |updater, cx| {
+                assert!(!updater.is_skipped());
+                assert_eq!(updater.skip_update(cx).as_deref(), Some("0.19.5"));
+                assert!(updater.is_skipped());
+                updater.state = parse_dev_preview("0.19.6").unwrap();
+                assert!(!updater.is_skipped());
+                updater.state = parse_dev_preview("0.19.5").unwrap();
+                assert!(updater.is_skipped());
+                updater.manual_check(cx);
+                assert!(!updater.is_skipped());
+                assert_eq!(updater.skipped_version(), None);
+            });
+        });
     }
 
     #[cfg(not(any(
