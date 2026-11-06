@@ -2,6 +2,7 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::prelude::*;
@@ -17,13 +18,13 @@ use runner_app::ui::{
     Button, ButtonVariant, IconButton, Scrollbar, TextField,
 };
 use runner_core::protocol::files::{
-    DirEntry, FilesRoot, FilesRootOutcome, FilesSubject, GitStatus, WorktreeEntry, WorktreeKind,
+    DirEntry, FilesRoot, FilesRootOutcome, FilesSubject, WorktreeEntry, WorktreeKind,
 };
 use runner_core::protocol::{ClientError, DaemonClient};
 
 use super::links::{LinkRoot, Links};
 use super::picker::{self, PickerItem, PickerKind, PickerSources};
-use super::tree::{FileTree, Letter, Moved, Row};
+use super::tree::{FileTree, Letter, Moved, PreparedStatus, Row};
 use super::viewer::Viewer;
 use super::{FilesEvent, FilesHub};
 use crate::file_icons::{self, IconSet};
@@ -96,7 +97,7 @@ pub(crate) struct FilesView {
     generation: u64,
     /// Bumped per root change sent, so only the latest one's reply applies.
     root_change: u64,
-    shown: bool,
+    pub(super) shown: bool,
     watched: Option<PathBuf>,
     /// The last watch or unwatch sent; each waits for the one before, so an
     /// unwatch never overtakes the watch it undoes.
@@ -108,6 +109,8 @@ pub(crate) struct FilesView {
     #[cfg(test)]
     pub(super) root_gate: Option<futures::channel::oneshot::Receiver<()>>,
     error: Option<SharedString>,
+    /// Why the last asked-for status failed, until a status arrives.
+    pub(super) status_error: Option<SharedString>,
     recent: Vec<PathBuf>,
     pub(super) choose_field: Entity<TextField>,
     pub(super) picker: Option<Picker>,
@@ -262,6 +265,7 @@ impl FilesView {
             #[cfg(test)]
             root_gate: None,
             error: None,
+            status_error: None,
             recent: Vec::new(),
             choose_field,
             picker: None,
@@ -528,6 +532,7 @@ impl FilesView {
             self.generation += 1;
         }
         self.error = None;
+        self.status_error = None;
         match outcome {
             Ok(FilesRootOutcome::Root(root)) => match &mut self.body {
                 Body::Root(state) if same => state.root = root,
@@ -631,7 +636,8 @@ impl FilesView {
             let _ = status_tx.send(
                 client
                     .files_watch(&root)
-                    .and_then(|()| client.files_status(&root)),
+                    .and_then(|()| client.files_status(&root))
+                    .map(PreparedStatus::new),
             );
         });
         let generation = self.generation;
@@ -644,7 +650,7 @@ impl FilesView {
                 match result {
                     Ok(status) => this.apply_status(status, cx),
                     Err(error) => {
-                        this.error = Some(error.to_string().into());
+                        this.status_error = Some(error.to_string().into());
                         cx.notify();
                     }
                 }
@@ -653,8 +659,9 @@ impl FilesView {
         .detach();
     }
 
-    fn apply_status(&mut self, status: GitStatus, cx: &mut Context<Self>) {
+    fn apply_status(&mut self, status: Arc<PreparedStatus>, cx: &mut Context<Self>) {
         if let Body::Root(state) = &mut self.body {
+            self.status_error = None;
             state.tree.set_status(status);
             self.note_ignored_tabs();
             cx.notify();
@@ -686,6 +693,7 @@ impl FilesView {
                 let Ok(listings) = result else { return };
                 let mut root_gone = false;
                 if let Body::Root(state) = &mut this.body {
+                    let mut batch = Vec::with_capacity(listings.len());
                     for (folder, listing) in listings {
                         if state
                             .listed
@@ -696,11 +704,12 @@ impl FilesView {
                         }
                         state.listed.insert(folder.clone(), sequence);
                         match listing {
-                            Ok(entries) => state.tree.set_listing(&folder, entries),
+                            Ok(entries) => batch.push((folder, Some(entries))),
                             Err(_) if folder.is_empty() => root_gone = true,
-                            Err(_) => state.tree.drop_listing(&folder),
+                            Err(_) => batch.push((folder, None)),
                         }
                     }
+                    state.tree.set_listings(batch);
                 }
                 if root_gone {
                     this.resolve(cx);
@@ -727,8 +736,9 @@ impl FilesView {
 
     fn on_files_event(&mut self, event: &FilesEvent, cx: &mut Context<Self>) {
         match event {
+            // Hidden, each of these is wasted: showing it reads everything again.
             FilesEvent::Changed(changed) => {
-                if self.root_path() != Some(changed.root.as_path()) {
+                if !self.shown || self.root_path() != Some(changed.root.as_path()) {
                     return;
                 }
                 let Body::Root(state) = &self.body else {
@@ -744,9 +754,9 @@ impl FilesView {
                 self.load(folders, cx);
                 self.reload_changed(Some(changed), cx);
             }
-            FilesEvent::Status(update) => {
-                if self.root_path() == Some(update.root.as_path()) {
-                    self.apply_status(update.status.clone(), cx);
+            FilesEvent::Status { root, status } => {
+                if self.shown && self.root_path() == Some(root.as_path()) {
+                    self.apply_status(status.clone(), cx);
                 }
             }
             FilesEvent::Resync { rewatch } => {
@@ -769,7 +779,7 @@ impl FilesView {
                 } else if let Some(root) = self.watched.clone() {
                     self.request(
                         cx,
-                        move |client| client.files_status(&root),
+                        move |client| client.files_status(&root).map(PreparedStatus::new),
                         |this, result, cx| {
                             if let Ok(status) = result {
                                 this.apply_status(status, cx);
@@ -2106,7 +2116,7 @@ impl FilesView {
         self.on_files_event(&event, cx);
     }
 
-    pub(crate) fn git_status(&self) -> Option<GitStatus> {
+    pub(crate) fn git_status(&self) -> Option<runner_core::protocol::files::GitStatus> {
         self.tree_ref()?.status().cloned()
     }
 
@@ -2207,17 +2217,22 @@ impl Render for FilesView {
             .flex()
             .flex_col()
             .child(header)
-            .children(self.error.clone().map(|error| {
-                div()
-                    .when(cfg!(test), |element| {
-                        element.debug_selector(|| "FILES_ERROR".into())
-                    })
-                    .px_4()
-                    .py_2()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::danger())
-                    .child(error)
-            }))
+            .children(
+                self.error
+                    .clone()
+                    .or(self.status_error.clone())
+                    .map(|error| {
+                        div()
+                            .when(cfg!(test), |element| {
+                                element.debug_selector(|| "FILES_ERROR".into())
+                            })
+                            .px_4()
+                            .py_2()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::danger())
+                            .child(error)
+                    }),
+            )
             .child(body);
         let viewing = self.shows_file_area();
         let tree_shown = self.tree_shown();

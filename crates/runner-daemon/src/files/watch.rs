@@ -6,8 +6,8 @@
 //! for [`DEBOUNCE`], or for at most [`MAX_WAIT`] while changes keep coming;
 //! then one `files/changed` goes out and, when the files, the git directory's
 //! `index` or `HEAD` or a branch changed, one `git status` runs. Status runs on
-//! this thread, so only one runs at a time and changes during it coalesce
-//! into the next.
+//! this thread, so changes during it coalesce into the next, and through the
+//! root's [`StatusRuns`], so it waits out one that a view asked for.
 //!
 //! macOS and Windows watch the root recursively. Linux's inotify needs a
 //! watch per folder, so it watches each folder that is not ignored, adding
@@ -30,7 +30,7 @@ use runner_core::protocol::files::{
 };
 
 use super::git::{Git, RepoPaths};
-use super::StatusCache;
+use super::{PreparedWatch, StatusRuns, StatusSince};
 use crate::error::{Error, Result};
 use crate::events::EventChannel;
 
@@ -54,22 +54,22 @@ pub struct RootWatch {
 impl RootWatch {
     pub fn spawn(
         root: PathBuf,
-        git: Option<Git>,
+        prepared: PreparedWatch,
         events: EventChannel,
-        statuses: StatusCache,
+        runs: Arc<StatusRuns>,
     ) -> Result<Self> {
         let (tx, rx) = channel();
         let status_runs = Arc::new(AtomicUsize::new(0));
         let watch = Watch {
-            root_canonical: root.canonicalize().unwrap_or_else(|_| root.clone()),
             root,
-            git,
+            root_canonical: prepared.root_canonical,
+            git: prepared.git,
             repo: None,
             git_dir_canonical: None,
             common_dir_canonical: None,
             status: GitStatus::default(),
             events,
-            statuses,
+            runs,
             status_runs: status_runs.clone(),
             pending: Pending::default(),
             #[cfg(target_os = "linux")]
@@ -126,7 +126,7 @@ struct Watch {
     common_dir_canonical: Option<PathBuf>,
     status: GitStatus,
     events: EventChannel,
-    statuses: StatusCache,
+    runs: Arc<StatusRuns>,
     status_runs: Arc<AtomicUsize>,
     pending: Pending,
     #[cfg(target_os = "linux")]
@@ -173,9 +173,10 @@ impl Watch {
         }
         // Every watch is in place before the first status is taken, so a
         // change while it runs arrives as an event and refreshes it. Linux
-        // reads the ignored folders first, to leave them unwatched.
+        // reads the ignored folders first, to leave them unwatched; any status
+        // serves for that, since the one after the watches corrects it.
         #[cfg(target_os = "linux")]
-        if let Some(status) = self.run_status() {
+        if let Some(status) = self.run_status(StatusSince::Running) {
             self.status = status;
         }
         self.watch_root(&mut watcher);
@@ -337,21 +338,23 @@ impl Watch {
         );
     }
 
-    /// Runs `git status` and reports it when it changed, or always on the
-    /// first run. Returns whether it changed.
-    fn run_status(&self) -> Option<GitStatus> {
+    fn run_status(&self, since: StatusSince) -> Option<GitStatus> {
         let (Some(git), Some(repo)) = (&self.git, &self.repo) else {
             return None;
         };
         self.status_runs.fetch_add(1, Ordering::SeqCst);
-        git.status(&self.root, &repo.prefix)
+        self.runs
+            .run(&self.root, since, || git.status(&self.root, &repo.prefix))
             .inspect_err(|error| log::warn!("files status of {}: {error}", self.root.display()))
             .ok()
     }
 
+    /// Runs `git status` and reports it when it changed, or always on the
+    /// first run. Returns whether it changed.
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn refresh_status(&mut self, watcher: &mut RecommendedWatcher, first: bool) -> bool {
-        let Some(status) = self.run_status() else {
+        // An event brought this here, so a run that began before it won't do.
+        let Some(status) = self.run_status(StatusSince::Now) else {
             return false;
         };
         let changed = status != self.status;
@@ -359,7 +362,6 @@ impl Watch {
         let ignored_changed = (&status.ignored, status.root_ignored)
             != (&self.status.ignored, self.status.root_ignored);
         self.status = status;
-        super::remember(&self.statuses, &self.root, &self.status);
         if first || changed {
             self.events.emit(
                 FILES_STATUS_EVENT,
@@ -461,7 +463,7 @@ impl Watch {
         match event.kind {
             notify::EventKind::Create(_)
             | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-                if path.is_dir() =>
+                if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) =>
             {
                 let folders = self.folders_under(path);
                 self.add_watches(watcher, folders);
@@ -481,5 +483,54 @@ impl Watch {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use notify::event::CreateKind;
+    use notify::EventKind;
+
+    #[test]
+    fn a_new_link_to_a_folder_is_not_followed_out_of_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(root.join("real/nested")).unwrap();
+        std::fs::create_dir_all(outside.join("dataset/deep")).unwrap();
+        let link = root.join("data");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+        let mut watch = Watch {
+            root_canonical: root.clone(),
+            root: root.clone(),
+            git: None,
+            repo: None,
+            git_dir_canonical: None,
+            common_dir_canonical: None,
+            status: GitStatus::default(),
+            events: EventChannel::new(),
+            runs: Default::default(),
+            status_runs: Default::default(),
+            pending: Pending::default(),
+            watched: BTreeSet::new(),
+            polling: false,
+        };
+        let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
+        let created = |path: &Path| {
+            Event::new(EventKind::Create(CreateKind::Folder)).add_path(path.to_path_buf())
+        };
+
+        watch.follow_folders(&mut watcher, &created(&link), &link);
+        assert!(watch.watched.is_empty(), "{:?}", watch.watched);
+
+        let real = root.join("real");
+        watch.follow_folders(&mut watcher, &created(&real), &real);
+        assert_eq!(
+            watch.watched,
+            BTreeSet::from([real.clone(), real.join("nested")]),
+            "a real folder is still followed"
+        );
     }
 }

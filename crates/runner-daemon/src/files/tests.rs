@@ -136,7 +136,7 @@ fn a_worktree_under_dot_worktrees_keeps_its_own_status() {
     std::fs::write(main.join("src/main-only.rs"), "m\n").unwrap();
 
     let (files, _rx) = service();
-    let resolved = super::root::resolve(files.git().as_ref(), None, Some(&worktree));
+    let resolved = super::root::resolve(files.git().as_ref(), None, Some(&worktree)).unwrap();
     let FilesRootOutcome::Root(root) = resolved.outcome else {
         panic!("expected a root");
     };
@@ -604,8 +604,9 @@ fn each_request_runs_git_at_most_once() {
     };
 
     let resolve = |dir: &Path| {
-        let FilesRootOutcome::Root(root) =
-            super::root::resolve(git.as_ref(), None, Some(dir)).outcome
+        let FilesRootOutcome::Root(root) = super::root::resolve(git.as_ref(), None, Some(dir))
+            .unwrap()
+            .outcome
         else {
             panic!("expected a root");
         };
@@ -889,14 +890,18 @@ fn symlinked_roots_see_the_status_git_reports_through_them() {
         );
         assert_eq!(files.worktrees(&root).unwrap().len(), 1);
 
-        let saved = super::root::resolve(git.as_ref(), Some(&root), None).outcome;
+        let saved = super::root::resolve(git.as_ref(), Some(&root), None)
+            .unwrap()
+            .outcome;
         let FilesRootOutcome::Root(saved) = saved else {
             panic!("expected a root for {}", root.display());
         };
         assert_eq!(saved.path, root);
         assert!(same(&saved.git.unwrap().top, path));
 
-        let own = super::root::resolve(git.as_ref(), None, Some(&root)).outcome;
+        let own = super::root::resolve(git.as_ref(), None, Some(&root))
+            .unwrap()
+            .outcome;
         let FilesRootOutcome::Root(own) = own else {
             panic!("expected a root for {}", root.display());
         };
@@ -942,6 +947,7 @@ fn an_old_git_lists_worktrees_with_one_retry_then_one_run() {
         None,
         Some(&root.join(".worktrees/feat x")),
     )
+    .unwrap()
     .outcome
     else {
         panic!("expected a root");
@@ -1059,4 +1065,195 @@ fn a_plain_folder_is_walked_without_dot_git_or_links_and_the_walk_is_bounded() {
 
     let (_, truncated) = super::fs::walk(plain.path(), &mut IndexBudget::new(1, 1024));
     assert!(truncated);
+}
+
+/// A status run held open until `release`, reporting that it began.
+fn held_run(
+    runs: &Arc<super::StatusRuns>,
+    root: &Path,
+    since: super::StatusSince,
+    answer: crate::error::Result<GitStatus>,
+) -> (
+    std::thread::JoinHandle<crate::error::Result<GitStatus>>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (began_tx, began_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let (runs, root) = (runs.clone(), root.to_path_buf());
+    let worker = std::thread::spawn(move || {
+        runs.run(&root, since, || {
+            began_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            answer
+        })
+    });
+    began_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    (worker, release_tx)
+}
+
+fn marked(path: &str) -> GitStatus {
+    GitStatus::new(vec![entry(path, FileStatus::Modified)], vec![])
+}
+
+/// Waits until `waiting` callers are parked on `root`'s runs.
+fn wait_for_waiters(runs: &super::StatusRuns, root: &Path, waiting: usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while runs
+        .roots
+        .lock()
+        .unwrap()
+        .get(root)
+        .map(|state| state.waiting)
+        != Some(waiting)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "no {waiting} waiting on {root:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn callers_share_the_status_that_is_running() {
+    let runs = Arc::new(super::StatusRuns::default());
+    let root = Path::new("/shared");
+    let (first, release) = held_run(&runs, root, super::StatusSince::Now, Ok(marked("first")));
+    let sharers = (0..3)
+        .map(|_| {
+            let runs = runs.clone();
+            std::thread::spawn(move || {
+                runs.run(root, super::StatusSince::Running, || {
+                    panic!("a second git status while one runs")
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    wait_for_waiters(&runs, root, 3);
+    release.send(()).unwrap();
+    assert_eq!(first.join().unwrap().unwrap(), marked("first"));
+    for sharer in sharers {
+        assert_eq!(sharer.join().unwrap().unwrap(), marked("first"));
+    }
+    assert_eq!(*runs.cached(root).unwrap(), marked("first"));
+    assert!(runs.roots.lock().unwrap().is_empty(), "nothing kept after");
+}
+
+#[test]
+fn a_caller_that_needs_the_disk_as_of_now_waits_for_one_more_run_they_all_share() {
+    let runs = Arc::new(super::StatusRuns::default());
+    let root = Path::new("/fresh");
+    let (first, release) = held_run(&runs, root, super::StatusSince::Now, Ok(marked("first")));
+    let ran = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fresh = (0..3)
+        .map(|_| {
+            let (runs, ran) = (runs.clone(), ran.clone());
+            std::thread::spawn(move || {
+                runs.run(root, super::StatusSince::Now, || {
+                    ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(marked("after"))
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    wait_for_waiters(&runs, root, 3);
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 0, "none yet");
+    release.send(()).unwrap();
+    assert_eq!(first.join().unwrap().unwrap(), marked("first"));
+    for caller in fresh {
+        assert_eq!(caller.join().unwrap().unwrap(), marked("after"));
+    }
+    assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(runs.roots.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_status_fails_those_sharing_it_and_the_next_runs_again() {
+    let runs = Arc::new(super::StatusRuns::default());
+    let root = Path::new("/failing");
+    let (first, release) = held_run(
+        &runs,
+        root,
+        super::StatusSince::Now,
+        Err(crate::error::Error::msg("git broke")),
+    );
+    let sharer = {
+        let runs = runs.clone();
+        std::thread::spawn(move || runs.run(root, super::StatusSince::Running, || unreachable!()))
+    };
+    wait_for_waiters(&runs, root, 1);
+    release.send(()).unwrap();
+    assert!(first.join().unwrap().is_err());
+    let shared = sharer.join().unwrap().unwrap_err();
+    assert!(shared.to_string().contains("git broke"), "{shared}");
+    assert!(runs.cached(root).is_none(), "a failure is not remembered");
+    assert_eq!(
+        runs.run(root, super::StatusSince::Running, || Ok(marked("next")))
+            .unwrap(),
+        marked("next")
+    );
+}
+
+#[test]
+fn a_status_that_panics_does_not_strand_those_waiting() {
+    let runs = Arc::new(super::StatusRuns::default());
+    let root = Path::new("/panicking");
+    let (began_tx, began_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let panicking = {
+        let runs = runs.clone();
+        std::thread::spawn(move || {
+            runs.run(root, super::StatusSince::Now, || {
+                began_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                panic!("the parser broke")
+            })
+        })
+    };
+    began_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let sharer = {
+        let runs = runs.clone();
+        std::thread::spawn(move || runs.run(root, super::StatusSince::Running, || unreachable!()))
+    };
+    wait_for_waiters(&runs, root, 1);
+    release_tx.send(()).unwrap();
+    assert!(panicking.join().is_err());
+    assert!(sharer.join().unwrap().is_err());
+    assert!(runs.roots.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_repeated_status_shares_the_slow_one_and_a_new_watcher_runs_after_it() {
+    let fixture = repo();
+    let root = fixture.path().to_path_buf();
+    let (files, mut rx) = service();
+    let (slow, release) = held_run(
+        &files.status_runs,
+        &root,
+        super::StatusSince::Now,
+        Ok(marked("slow")),
+    );
+
+    // Each re-show asks again, and shares the run instead of starting git.
+    let files = Arc::new(files);
+    let repeat = {
+        let (files, root) = (files.clone(), root.clone());
+        std::thread::spawn(move || files.status(&root))
+    };
+    wait_for_waiters(&files.status_runs, &root, 1);
+
+    // A new watcher's first status must see the disk after its watches went
+    // in, so it waits rather than running alongside.
+    files.watch(1, root.clone()).unwrap();
+    wait_for_waiters(&files.status_runs, &root, 2);
+    assert!(
+        rx.try_recv().is_err(),
+        "the watcher reports nothing while the slow status runs"
+    );
+
+    release.send(()).unwrap();
+    assert_eq!(slow.join().unwrap().unwrap(), marked("slow"));
+    assert_eq!(repeat.join().unwrap().unwrap(), marked("slow"));
+    let first = status_of(&next_event(&mut rx, &root, FILES_STATUS_EVENT));
+    assert_ne!(first, marked("slow"), "from a run of its own");
 }

@@ -163,6 +163,12 @@ The two reviewers' findings on the whole umbrella, 2026-11-06, every one fixed b
 
 Checks: Markdown nested past the limit in a process of its own on a 512 KiB stack; a status past its limits fitting a frame, an oversized event replaced by a lag; a soft reset in a main checkout, a linked worktree and a reftable repository; a rescan refreshing nested folders; an ignored open file refreshing and showing as deleted; the width after closing Files. Live, by `qa` on macOS in the dark theme: the checks in the pull request.
 
+## m11 — fixes from the umbrella's second review
+
+The two reviewers' second pass over the whole umbrella, 2026-11-06, with the decisions in its [brief](../briefs/634-m11-review2-fixes.md). The [log](impl_log.md) has each finding's outcome and the notes left, with why.
+
+Checks that fail without their fix: another connection's input and window requests going through while a watch prepares at a gate; a many-folder, many-ignored rollup, a status prepared off the UI thread and installed by swapping it in, and one rebuild per listing batch; two views on one root with the hidden one doing nothing until shown; a link too long to resolve refused; a new link to a folder not followed on Linux; callers sharing a running status, and the watcher waiting for a fresh one; a status clearing its own error; a saved root that cannot be examined staying saved; Ctrl+Shift+O reaching the terminal with Files off. Checks that guard what must not change: a watch preparing when its connection closes never starting; a dangling link still reading as missing; a status that panics not stranding those waiting on it.
+
 ## Linux
 
 Every mission builds and passes its tests on both Linux CI jobs. The pieces that differ, and what ships if one proves hard (Jason, 2026-11-04):

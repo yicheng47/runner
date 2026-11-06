@@ -549,15 +549,16 @@ impl ConnectionWindows {
             });
         }
         if let Request::files_watch { root } = request {
-            // Under the owners lock, so a watch in flight cannot outlive `remove`.
+            // Before the owners lock, since typing in any window waits on it.
+            let prepared = self.core.files.prepare_watch(&root);
+            // Under it, so a watch in flight cannot outlive `remove`.
             let _owners = self.owners.lock().unwrap();
             if self.closed.is_cancelled() {
                 return None;
             }
             return Some(Response::files_watch(
-                self.core
-                    .files
-                    .watch(self.id, root)
+                prepared
+                    .and_then(|prepared| self.core.files.subscribe(self.id, root, prepared))
                     .map_err(|error| ClientError::msg(error.to_string())),
             ));
         }
@@ -1858,6 +1859,70 @@ mod tests {
         assert_eq!(core.files.watched_roots(), [root.path().to_path_buf()]);
         second.closed.cancel();
         second.remove();
+        assert!(core.files.watched_roots().is_empty());
+    }
+
+    #[test]
+    fn a_watch_preparing_on_a_slow_disk_holds_up_no_other_connection() {
+        use runner_core::protocol::terminal::InputEvent;
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let owners = Arc::new(Mutex::default());
+        let connection = |id| {
+            Arc::new(ConnectionWindows {
+                core: core.clone(),
+                owners: Arc::clone(&owners),
+                id,
+                closed: CancellationToken::new(),
+            })
+        };
+        let (watching, typing) = (connection(1), connection(2));
+        let (entered, release) = core.files.hold_next_watch();
+        let path = root.path().to_path_buf();
+        let worker =
+            std::thread::spawn(move || watching.dispatch(Request::files_watch { root: path }));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            typing.dispatch(Request::terminal_observe_input {
+                session_id: "elsewhere".into(),
+                input: InputEvent::Composing { composing: false },
+            });
+            typing.dispatch(Request::window_register {
+                label: "other".into(),
+            });
+            done_tx.send(()).unwrap();
+        });
+        let passed = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        release.send(()).unwrap();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Some(Response::files_watch(Ok(())))
+        ));
+        assert!(passed, "typing waited on a watch's disk work");
+        assert_eq!(core.files.watched_roots(), [root.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn a_watch_preparing_when_its_connection_closes_never_starts() {
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let windows = Arc::new(ConnectionWindows {
+            core: core.clone(),
+            owners: Arc::new(Mutex::default()),
+            id: 1,
+            closed: CancellationToken::new(),
+        });
+        let (entered, release) = core.files.hold_next_watch();
+        let (queued, path) = (windows.clone(), root.path().to_path_buf());
+        let worker =
+            std::thread::spawn(move || queued.dispatch(Request::files_watch { root: path }));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        windows.closed.cancel();
+        windows.remove();
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_none());
         assert!(core.files.watched_roots().is_empty());
     }
 

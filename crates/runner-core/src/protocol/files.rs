@@ -6,8 +6,9 @@
 
 use crate::companion::TerminalBytes;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 /// The largest file `files_read` returns: 10 MB.
 pub const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
@@ -211,6 +212,59 @@ pub struct GitStatus {
     /// missing.
     #[serde(default)]
     pub truncated: bool,
+    /// `ignored`, indexed by the first lookup; never on the wire.
+    #[serde(skip)]
+    pub ignored_index: IgnoredIndex,
+}
+
+/// Lets a lookup cost the path's depth rather than the length of
+/// [`GitStatus::ignored`], which can hold 200,000 paths. A copy of a status
+/// indexes itself again, and two statuses compare by their fields alone.
+#[derive(Debug, Default)]
+pub struct IgnoredIndex(OnceLock<IgnoredSets>);
+
+#[derive(Debug)]
+struct IgnoredSets {
+    folders: HashSet<String>,
+    files: HashSet<String>,
+}
+
+impl Clone for IgnoredIndex {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for IgnoredIndex {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for IgnoredIndex {}
+
+impl IgnoredSets {
+    fn new(ignored: &[String]) -> Self {
+        let mut sets = Self {
+            folders: HashSet::new(),
+            files: HashSet::with_capacity(ignored.len()),
+        };
+        for path in ignored {
+            match path.strip_suffix('/') {
+                Some(folder) => sets.folders.insert(folder.to_owned()),
+                None => sets.files.insert(path.clone()),
+            };
+        }
+        sets
+    }
+
+    fn holds(&self, path: &str) -> bool {
+        self.files.contains(path)
+            || self.folders.contains(path)
+            || path
+                .match_indices('/')
+                .any(|(slash, _)| self.folders.contains(&path[..slash]))
+    }
 }
 
 impl GitStatus {
@@ -225,6 +279,7 @@ impl GitStatus {
             ignored,
             root_ignored: false,
             truncated: false,
+            ignored_index: IgnoredIndex::default(),
         }
     }
 
@@ -234,13 +289,10 @@ impl GitStatus {
         if self.root_ignored {
             return true;
         }
-        let path = path.trim_end_matches('/');
-        self.ignored
-            .iter()
-            .any(|ignored| match ignored.strip_suffix('/') {
-                Some(folder) => path == folder || path.starts_with(ignored.as_str()),
-                None => path == ignored,
-            })
+        self.ignored_index
+            .0
+            .get_or_init(|| IgnoredSets::new(&self.ignored))
+            .holds(path.trim_end_matches('/'))
     }
 
     /// The folders carrying a changed-dot; see [`rollup`].
@@ -333,6 +385,103 @@ mod tests {
             path: path.into(),
             status,
         }
+    }
+
+    /// What the index replaced, the definition of an ignored path.
+    fn scanned(ignored: &[String], path: &str) -> bool {
+        let path = path.trim_end_matches('/');
+        ignored
+            .iter()
+            .any(|ignored| match ignored.strip_suffix('/') {
+                Some(folder) => path == folder || path.starts_with(ignored.as_str()),
+                None => path == ignored,
+            })
+    }
+
+    #[test]
+    fn the_ignored_index_answers_as_a_scan_of_the_list_does() {
+        let ignored = [
+            "target/",
+            "a/build/",
+            "a/z.log",
+            "a/z.log.d/",
+            "é/ü/",
+            "top.log",
+        ]
+        .map(String::from)
+        .to_vec();
+        let status = GitStatus::new(vec![], ignored.clone());
+        for path in [
+            "",
+            "target",
+            "target/",
+            "target/debug",
+            "target/debug/x/",
+            "targets",
+            "targets/x",
+            "a",
+            "a/",
+            "a/build",
+            "a/build/x",
+            "a/builds",
+            "a/z.log",
+            "a/z.log/x",
+            "a/z.log.d",
+            "a/z.log.d/x",
+            "b/target",
+            "é",
+            "é/ü",
+            "é/ü/x",
+            "top.log",
+            "top.log/x",
+            "/target",
+            "target//x",
+        ] {
+            assert_eq!(status.is_ignored(path), scanned(&ignored, path), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn a_copy_of_a_status_indexes_its_own_list_and_equals_it() {
+        let status = GitStatus::new(vec![], vec!["target/".into()]);
+        assert!(status.is_ignored("target/x"));
+        let mut copy = status.clone();
+        assert_eq!(copy, status, "the index plays no part in equality");
+        copy.ignored = vec!["other/".into()];
+        assert!(!copy.is_ignored("target/x"));
+        assert!(copy.is_ignored("other/x"));
+    }
+
+    #[test]
+    fn the_index_never_reaches_the_wire() {
+        let status = GitStatus::new(vec![], vec!["target/".into()]);
+        assert!(status.is_ignored("target"));
+        let wire = serde_json::to_value(&status).unwrap();
+        assert!(wire.get("ignored_index").is_none(), "{wire}");
+        let back: GitStatus = serde_json::from_value(wire).unwrap();
+        assert!(back.is_ignored("target"));
+    }
+
+    /// Reviewers measured 618 ms for this shape in an optimized build, one
+    /// folder per change, when each folder scanned the ignored list; an
+    /// unoptimized test build took many times that.
+    #[test]
+    fn rollup_stays_cheap_over_many_folders_and_ignored_paths() {
+        let count = 30_000;
+        let entries = (0..count)
+            .map(|index| entry(&format!("src/d{index:06}/f.rs"), FileStatus::Modified))
+            .collect();
+        let ignored = (0..count)
+            .map(|index| format!("build/d{index:06}/"))
+            .collect();
+        let status = GitStatus::new(entries, ignored);
+        let start = std::time::Instant::now();
+        assert_eq!(status.rollup().len(), count + 1);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "rollup took {elapsed:?}"
+        );
     }
 
     #[test]

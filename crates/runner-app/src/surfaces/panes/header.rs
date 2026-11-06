@@ -179,12 +179,14 @@ impl NativeRoot {
         }
     }
 
-    /// ⇧⌘O: opens the panel on Files, as a link does, and its finder.
+    /// ⇧⌘O: opens the panel on Files, as a link does, and its finder. With no
+    /// view to search the key goes on, so a terminal program gets it.
     pub(crate) fn search_files_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.active_focused_session_id() else {
-            return;
-        };
-        let Some(view) = self.link_files_view(&session, cx) else {
+        let view = self
+            .active_focused_session_id()
+            .and_then(|session| self.link_files_view(&session, cx));
+        let Some(view) = view else {
+            cx.propagate();
             return;
         };
         self.show_link_preview(cx);

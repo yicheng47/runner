@@ -2601,6 +2601,99 @@ mod tests {
         }
     }
 
+    /// The chat under a parent that records the keys that reach it, as the
+    /// terminal's key listener would.
+    struct KeyProbe {
+        root: gpui::Entity<crate::NativeRoot>,
+        keys: Vec<String>,
+    }
+
+    impl gpui::Render for KeyProbe {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::prelude::*;
+            gpui::div()
+                .size_full()
+                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, _| {
+                    this.keys.push(event.keystroke.key.clone());
+                }))
+                .child(self.root.clone())
+        }
+    }
+
+    #[test]
+    fn the_finder_key_goes_back_to_the_terminal_when_there_is_no_view_to_search() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, cx| {
+            crate::app_store::seed_mixed_working_sessions(store);
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+            store.settings.files_view = false;
+        });
+        cx.update(|cx| {
+            cx.bind_keys([gpui::KeyBinding::new(
+                "ctrl-shift-o",
+                crate::SearchFiles,
+                None,
+            )])
+        });
+        let host = cx.add_window(|window, cx| {
+            let root = cx.new(|cx| {
+                let mut root = crate::NativeRoot::new(
+                    "finder-key".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                );
+                root.apply_tab_rows(cx);
+                assert!(root.tabs.activate_session("direct-agent"));
+                root.route = crate::AppRoute::Chat;
+                root.sync_active_chat_detail(cx);
+                root
+            });
+            KeyProbe {
+                root,
+                keys: Vec::new(),
+            }
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1600.), px(900.)));
+        visual.run_until_parked();
+        let root = host
+            .read_with(&visual, |probe, _| probe.root.clone())
+            .unwrap();
+        visual.update(|window, cx| {
+            let focus = root.read(cx).root_focus.clone();
+            focus.focus(window, cx);
+        });
+        visual.run_until_parked();
+
+        visual.simulate_keystrokes("ctrl-shift-o");
+        visual.run_until_parked();
+        let keys = host
+            .read_with(&visual, |probe, _| probe.keys.clone())
+            .unwrap();
+        assert_eq!(keys, ["o"], "Files off: the key carries on past the action");
+
+        store.update(&mut visual, |store, _| store.settings.files_view = true);
+        visual.run_until_parked();
+        host.update(&mut visual, |probe, _, _| probe.keys.clear())
+            .unwrap();
+        visual.simulate_keystrokes("ctrl-shift-o");
+        visual.run_until_parked();
+        let keys = host
+            .read_with(&visual, |probe, _| probe.keys.clone())
+            .unwrap();
+        assert!(keys.is_empty(), "Files on: the finder took it, {keys:?}");
+    }
+
     #[test]
     fn terminal_tab_panel_holds_files_alone_and_shares_the_chat_panel_state() {
         use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
