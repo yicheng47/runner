@@ -15,6 +15,11 @@ pub const MAX_READ_BYTES: u64 = 10 * 1024 * 1024;
 pub const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 /// How many chosen folders `files_recent_folders` remembers.
 pub const RECENT_FOLDERS: usize = 10;
+/// The most files `files_index` returns.
+pub const MAX_INDEX_FILES: usize = 200_000;
+/// The most `files_index` may read and return, in bytes of encoded JSON: half a
+/// wire frame, leaving ample room for the response around the paths.
+pub const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
 
 pub const FILES_CHANGED_EVENT: &str = "files/changed";
 pub const FILES_STATUS_EVENT: &str = "files/status";
@@ -117,6 +122,59 @@ pub enum FileStatus {
 pub struct StatusEntry {
     pub path: String,
     pub status: FileStatus,
+}
+
+/// Every file under a root that git does not ignore, for finding one by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileIndex {
+    /// Relative to the root, sorted.
+    pub paths: Vec<String>,
+    /// The root holds more than the limits above, so some are missing.
+    pub truncated: bool,
+}
+
+/// What a `files_index` may still read. Everything read counts, kept or not, so
+/// the work is bounded as well as the reply.
+#[derive(Debug, Clone)]
+pub struct IndexBudget {
+    files: usize,
+    bytes: usize,
+}
+
+impl Default for IndexBudget {
+    fn default() -> Self {
+        Self::new(MAX_INDEX_FILES, MAX_INDEX_BYTES)
+    }
+}
+
+impl IndexBudget {
+    pub fn new(files: usize, bytes: usize) -> Self {
+        Self { files, bytes }
+    }
+
+    /// The bytes left, an upper bound on the raw bytes still worth reading.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Spends `path`'s size as a JSON string in an array, or returns false
+    /// when it does not fit.
+    #[must_use]
+    pub fn take(&mut self, path: &[u8]) -> bool {
+        let encoded = path.iter().fold(3, |size, byte| {
+            size + match byte {
+                0..0x20 => 6,
+                b'"' | b'\\' => 2,
+                _ => 1,
+            }
+        });
+        if self.files == 0 || encoded > self.bytes {
+            return false;
+        }
+        self.files -= 1;
+        self.bytes -= encoded;
+        true
+    }
 }
 
 /// A root's `git status`, with paths relative to the root.

@@ -1,5 +1,5 @@
-//! The root picker's list: the repository's worktrees, then recent folders and
-//! projects, then Choose folder…; and what its field's text means.
+//! The root picker's list: Choose folder…, then the repository's worktrees,
+//! then projects and recent folders; and what its field's text means.
 
 use std::path::{Path, PathBuf};
 
@@ -53,26 +53,30 @@ pub(crate) struct PickerSources<'a> {
 pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
     let mut worktrees = sources.worktrees.iter().collect::<Vec<_>>();
     worktrees.sort_by_key(|worktree| worktree.kind != WorktreeKind::Main);
-    let mut items = worktrees
-        .into_iter()
-        .map(|worktree| {
-            let mut subtitle = vec![worktree
-                .branch
-                .clone()
-                .unwrap_or_else(|| sources.detached_label.to_owned())];
-            subtitle.extend(worktree.commit.clone());
-            if worktree.kind == WorktreeKind::Main {
-                subtitle.push(sources.main_checkout_label.to_owned());
-            }
-            PickerItem {
-                kind: PickerKind::Worktree(worktree.kind),
-                title: folder_name(&worktree.path),
-                subtitle: subtitle.join(" · "),
-                current: worktree.path == sources.current,
-                path: Some(worktree.path.clone()),
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut items = vec![PickerItem {
+        kind: PickerKind::ChooseFolder,
+        title: sources.choose_folder_label.to_owned(),
+        subtitle: String::new(),
+        path: None,
+        current: false,
+    }];
+    items.extend(worktrees.into_iter().map(|worktree| {
+        let mut subtitle = vec![worktree
+            .branch
+            .clone()
+            .unwrap_or_else(|| sources.detached_label.to_owned())];
+        subtitle.extend(worktree.commit.clone());
+        if worktree.kind == WorktreeKind::Main {
+            subtitle.push(sources.main_checkout_label.to_owned());
+        }
+        PickerItem {
+            kind: PickerKind::Worktree(worktree.kind),
+            title: folder_name(&worktree.path),
+            subtitle: subtitle.join(" · "),
+            current: worktree.path == sources.current,
+            path: Some(worktree.path.clone()),
+        }
+    }));
     let listed = |items: &[PickerItem], path: &Path| {
         items.iter().any(|item| item.path.as_deref() == Some(path))
     };
@@ -98,14 +102,13 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
             });
         }
     }
-    items.push(PickerItem {
-        kind: PickerKind::ChooseFolder,
-        title: sources.choose_folder_label.to_owned(),
-        subtitle: String::new(),
-        path: None,
-        current: false,
-    });
     items
+}
+
+/// The row Enter takes until the arrows move: the first folder listed, so
+/// that Enter does not open the system picker from Choose folder… above it.
+pub(crate) fn default_highlight(visible: usize) -> usize {
+    usize::from(visible > 1)
 }
 
 /// The items whose name, branch or path contains `query`, ignoring case;
@@ -178,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn worktrees_come_first_with_the_main_checkout_then_folders_then_choose() {
+    fn choose_folder_comes_first_then_worktrees_from_the_main_checkout_then_folders() {
         let projects = [("quill".to_owned(), PathBuf::from("/home/me/quill"))];
         let items = items("/r/runner/.worktrees/feat-x", &projects);
         let rows = items
@@ -191,17 +194,17 @@ mod tests {
         assert_eq!(
             rows,
             [
+                ("Choose folder…", String::new(), false),
                 ("runner", "main · 9094032 · main checkout".into(), false),
                 ("feat-x", "feat/x · 9094032".into(), true),
                 ("detached", "detached · 9094032".into(), false),
                 ("quill", "~/quill".into(), false),
                 ("notes", "~/notes".into(), false),
-                ("Choose folder…", String::new(), false),
             ]
         );
-        assert_eq!(items[3].kind, PickerKind::Project);
-        assert_eq!(items[4].kind, PickerKind::Recent);
-        assert_eq!(items[5].path, None);
+        assert_eq!(items[0].path, None);
+        assert_eq!(items[4].kind, PickerKind::Project);
+        assert_eq!(items[5].kind, PickerKind::Recent);
     }
 
     #[test]
@@ -213,11 +216,18 @@ mod tests {
                 .map(|index| items[index].title.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(titles("FEAT"), ["feat-x", "Choose folder…"]);
-        assert_eq!(titles("main"), ["runner", "Choose folder…"]);
-        assert_eq!(titles("NOTES"), ["notes", "Choose folder…"]);
+        assert_eq!(titles("FEAT"), ["Choose folder…", "feat-x"]);
+        assert_eq!(titles("main"), ["Choose folder…", "runner"]);
+        assert_eq!(titles("NOTES"), ["Choose folder…", "notes"]);
         assert_eq!(titles("zzz"), ["Choose folder…"]);
         assert_eq!(titles("  ").len(), items.len());
+    }
+
+    #[test]
+    fn enter_starts_on_the_first_folder_unless_only_choose_folder_is_left() {
+        assert_eq!(default_highlight(1), 0);
+        assert_eq!(default_highlight(2), 1);
+        assert_eq!(default_highlight(6), 1);
     }
 
     #[test]

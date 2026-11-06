@@ -20,8 +20,7 @@ impl NativeRoot {
         });
         match result {
             Ok(session_id) => {
-                let open = crate::surfaces::side_panel::OpenSurfaces::new_chat(self.settings(cx));
-                self.chat_surfaces.reset(open);
+                self.chat_surfaces.reset(Default::default());
                 self.reveal_started_scope(
                     &ProjectScope::or_root(self.active_tab_project_id(cx)),
                     cx,
@@ -38,7 +37,6 @@ impl NativeRoot {
                     window,
                     cx,
                 );
-                self.focus_empty_chat_panel(window, cx);
             }
             Err(start_error) => {
                 if let Some(session_id) = spawned_id {

@@ -11,9 +11,10 @@ use crate::{
     CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FindInTerminal, FocusNextPane,
     FocusPreviousPane, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage,
     NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
-    SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6, SelectTab7, SelectTab8,
-    SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession, ToggleFullscreen,
-    ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
+    SearchFiles, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
+    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
+    ToggleFullscreen, ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,6 +209,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.command-palette.description",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-k", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "search-files",
+                title_key: "keymap.search-files.title",
+                description_key: "keymap.search-files.description",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-o", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -1174,6 +1183,7 @@ pub(crate) fn install_bindings(
                 "new-terminal" => KeyBinding::new(&binding, NewTerminal, context),
                 "new-mission" => KeyBinding::new(&binding, NewMission, context),
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
+                "search-files" => KeyBinding::new(&binding, SearchFiles, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
                 "toggle-terminal-drawer" => {
                     KeyBinding::new(&binding, ToggleTerminalDrawer, context)
@@ -1275,7 +1285,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 34);
+        assert_eq!(entries().len(), 35);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1692,7 +1702,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 31] = [
+        let expected: [ExpectedEntry<'_>; 32] = [
             (
                 "new-window",
                 &[("shift-cmd-n", "n", true, false, false, true)],
@@ -1701,6 +1711,10 @@ mod tests {
             (
                 "command-palette",
                 &[("cmd-k", "k", true, false, false, false)],
+            ),
+            (
+                "search-files",
+                &[("shift-cmd-o", "o", true, false, false, true)],
             ),
             (
                 "toggle-sidebar",
@@ -1851,6 +1865,10 @@ mod tests {
             (
                 "command-palette",
                 key_combo("KeyK", true, false, false, false, None, false),
+            ),
+            (
+                "search-files",
+                key_combo("KeyO", true, false, false, true, None, false),
             ),
             (
                 "toggle-sidebar",
@@ -2201,6 +2219,7 @@ mod tests {
             ("new-mission", "Ctrl+Shift+M"),
             ("new-window", "Ctrl+Shift+N"),
             ("command-palette", "Ctrl+Shift+P"),
+            ("search-files", "Ctrl+Shift+O"),
             ("toggle-sidebar", "Ctrl+B"),
             ("split-pane-right", "Ctrl+Shift+D"),
             ("split-pane-down", "Alt+Shift+D"),

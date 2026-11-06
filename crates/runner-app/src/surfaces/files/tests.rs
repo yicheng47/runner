@@ -36,13 +36,19 @@ impl Render for Host {
         let body = match &self.context {
             Some(context) => {
                 let settings = &crate::app_store::global_app_store(cx).read(cx).settings;
-                let widened = Widened {
+                let has_file = self
+                    .panel
+                    .view(&context.subject)
+                    .is_some_and(|view| view.read(cx).has_tabs());
+                // As `FilesPanel::layout`: no room and no file, no widening.
+                let widened = (self.tree_fits || has_file).then_some(Widened {
                     file: settings.file_viewer_width.max(288.),
                     tree: self.tree_fits,
                     tree_width: settings.file_tree_width,
                     standard: 288.,
-                };
-                Some(self.panel.show_with(context, Some(widened), None, cx))
+                });
+                let owner = cx.entity_id();
+                Some(self.panel.show_with(context, widened, Some(owner), cx))
             }
             None => {
                 self.panel.hide(cx);
@@ -363,6 +369,97 @@ fn status_letters_selection_and_dimmed_entries_follow_both_themes() {
 }
 
 #[test]
+fn tree_rows_span_the_column_with_a_guide_for_each_ancestor() {
+    let mut h = harness(Some(chat("in-project")));
+    h.wait("the folder", |h| h.has("FILES_ROW src/deep"));
+    h.click("FILES_ROW src/deep");
+    h.wait("the nested folder", |h| h.has("FILES_ROW src/deep/x.rs"));
+
+    let tree = h.visual.debug_bounds("FILES_TREE").unwrap();
+    for selector in ["FILES_ROW a.txt", "FILES_ROW src/deep/x.rs"] {
+        let row = h.visual.debug_bounds(selector).unwrap();
+        assert_eq!(row.left(), tree.left(), "{selector}");
+        assert_eq!(row.right(), tree.right(), "{selector}");
+    }
+
+    assert!(!h.has("FILES_GUIDE a.txt 0"));
+    assert!(h.has("FILES_GUIDE src/deep 0"));
+    assert!(!h.has("FILES_GUIDE src/deep 1"));
+    let deep = h.visual.debug_bounds("FILES_GUIDE src/deep 0").unwrap();
+    let outer = h
+        .visual
+        .debug_bounds("FILES_GUIDE src/deep/x.rs 0")
+        .unwrap();
+    let inner = h
+        .visual
+        .debug_bounds("FILES_GUIDE src/deep/x.rs 1")
+        .unwrap();
+    assert_eq!(
+        outer.left(),
+        deep.left(),
+        "an ancestor's guide stays straight"
+    );
+    assert_eq!(outer.top(), deep.bottom(), "the rows' guides join");
+    assert!(inner.left() > outer.left());
+}
+
+#[test]
+fn a_long_line_scrolls_by_a_horizontal_scrollbar_that_shows_on_hover() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("src/long.rs"), format!("{}\n", "x".repeat(600))).unwrap();
+    h.open("src/long.rs");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.redraw();
+    let code = h.code();
+    let bounds = h.visual.debug_bounds("FILE_CODE").unwrap();
+    assert!(
+        !h.has("SCROLLBAR_THUMB_X"),
+        "hidden until the pointer is over the file"
+    );
+
+    h.visual
+        .simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    h.settle();
+    let thumb = h.visual.debug_bounds("SCROLLBAR_THUMB_X").unwrap();
+    assert!(thumb.bottom() <= bounds.bottom());
+    assert!(thumb.size.width < bounds.size.width / 2.);
+
+    let target = thumb.center() + gpui::point(px(80.), px(0.));
+    h.visual.simulate_mouse_down(
+        thumb.center(),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    // The first move starts the drag; the next one moves it.
+    for _ in 0..2 {
+        h.visual
+            .simulate_mouse_move(target, Some(gpui::MouseButton::Left), Modifiers::default());
+    }
+    h.visual
+        .simulate_mouse_up(target, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    assert!(code.read_with(&h.visual, |code, _| code.scroll_offset().x) > px(0.));
+    assert_eq!(
+        code.read_with(&h.visual, |code, _| code.selected_text()),
+        None,
+        "dragging the thumb selects no text"
+    );
+}
+
+#[test]
+fn a_file_that_fits_shows_no_horizontal_scrollbar() {
+    let mut h = viewer(chat("in-project"));
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    h.redraw();
+    let bounds = h.visual.debug_bounds("FILE_CODE").unwrap();
+    h.visual
+        .simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    h.settle();
+    assert!(!h.has("SCROLLBAR_THUMB_X"));
+}
+
+#[test]
 fn reading_status_shows_until_the_first_status_arrives() {
     let mut h = harness(None);
     // Status arrives with the watch, which only a shown view holds.
@@ -449,13 +546,18 @@ fn a_mission_opens_its_worktree_and_the_picker_roots_it_at_the_main_checkout() {
 
     h.click("FILES_ROOT_BUTTON");
     assert!(h.has("FILES_PICKER"));
-    h.wait("the worktrees", |h| h.has("FILES_PICKER_ITEM 1"));
+    h.wait("the worktrees", |h| h.has("FILES_PICKER_ITEM 2"));
     let items = h.read(|view| view.picker.as_ref().unwrap().items.clone());
-    assert_eq!(items[0].title, "runner", "the main checkout first");
-    assert!(items[0].subtitle.starts_with("main · "));
-    assert_eq!(items[1].title, "feat-x");
-    assert!(items[1].current);
-    assert!(items.last().unwrap().path.is_none(), "Choose folder… last");
+    assert!(items[0].path.is_none(), "Choose folder… first");
+    assert_eq!(items[1].title, "runner", "then the main checkout");
+    assert!(items[1].subtitle.starts_with("main · "));
+    assert_eq!(items[2].title, "feat-x");
+    assert!(items[2].current);
+    assert_eq!(
+        h.read(|view| view.picker.as_ref().unwrap().highlighted),
+        1,
+        "Enter stays on the first folder as the worktrees arrive"
+    );
 
     // Typing filters; the projects only list for a chat outside a project.
     h.visual.simulate_input("feat");
@@ -468,8 +570,8 @@ fn a_mission_opens_its_worktree_and_the_picker_roots_it_at_the_main_checkout() {
     assert!(!h.has("FILES_PICKER"));
 
     h.click("FILES_ROOT_BUTTON");
-    h.wait("the worktrees", |h| h.has("FILES_PICKER_ITEM 1"));
-    h.click("FILES_PICKER_ITEM 0");
+    h.wait("the worktrees", |h| h.has("FILES_PICKER_ITEM 2"));
+    h.click("FILES_PICKER_ITEM 1");
     h.wait("the main checkout", |h| h.has("FILES_ROW .worktrees"));
     assert_same(
         h.read(|view| view.root().map(|root| root.path.clone())),
@@ -873,8 +975,9 @@ fn the_picker_keeps_its_highlight_in_view() {
 
     h.visual.simulate_input("project-2");
     h.settle();
-    assert_eq!(h.read(|view| view.picker.as_ref().unwrap().highlighted), 0);
+    assert_eq!(h.read(|view| view.picker.as_ref().unwrap().highlighted), 1);
     assert!(visible(&mut h, 0), "filtering starts at the top");
+    assert!(visible(&mut h, 1));
 }
 
 #[test]
@@ -1048,10 +1151,8 @@ fn every_click_opens_a_tab_that_stays_and_an_open_file_switches_to_it() {
     for name in ["a.txt", "old.txt", ".gitignore"] {
         h.click(format!("FILE_TAB_CLOSE {name}"));
     }
-    assert!(
-        !h.has("FILE_VIEWER"),
-        "closing the last tab returns to the tree"
-    );
+    h.wait("the empty view", |h| h.has("FILE_NO_FILE"));
+    assert!(!h.has("FILE_CODE"));
     assert!(h.has("FILES_ROW a.txt"));
 }
 
@@ -1405,14 +1506,26 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel.layout(Some(&subject), 288., 440., 240., 6., cx)
+                host.panel
+                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
             })
             .unwrap()
     };
+    let elsewhere = h
+        .host
+        .read_with(&h.visual, |host, cx| {
+            host.panel
+                .layout(Some(&subject), false, 288., 440., 240., 6., cx)
+        })
+        .unwrap();
     assert_eq!(
-        layout(&mut h, 1200.),
+        elsewhere,
         (288., None),
-        "no file, the standard width"
+        "no file and another surface showing, the standard width"
+    );
+    assert!(
+        layout(&mut h, 1200.).0 > 288.,
+        "Files showing a root is wide before a file opens"
     );
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
@@ -1441,7 +1554,8 @@ fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel.layout(Some(&subject), 288., 440., 320., 6., cx)
+                host.panel
+                    .layout(Some(&subject), true, 288., 440., 320., 6., cx)
             })
             .unwrap()
     };
@@ -2387,7 +2501,7 @@ fn a_deleted_rendered_page_keeps_closing_as_its_only_action() {
         "the toggle does nothing"
     );
     h.click("FILE_DELETED_CLOSE");
-    assert!(!h.has("FILE_VIEWER"));
+    assert!(h.tabs().is_empty() && !h.has("FILE_MARKDOWN"));
 }
 
 #[test]
@@ -2697,7 +2811,7 @@ fn markdown_set_to_open_as_source_opens_the_highlighted_source() {
 }
 
 #[test]
-fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file() {
+fn code_is_highlighted_and_a_reload_highlights_the_new_text() {
     let _theme = ThemeGuard::new();
     theme::set_active_variant(ThemeVariant::Carbon);
     let mut h = viewer(chat("in-project"));
@@ -2706,17 +2820,7 @@ fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file(
         "pub struct Client {\n    reader: u32,\n}\n",
     )
     .unwrap();
-    h.set(|settings| settings.files_syntax_highlighting = false);
     h.open("src/client.rs");
-    h.wait("the file", |h| h.has("FILE_CODE"));
-    h.redraw();
-    assert!(!h.highlighted(), "nothing is highlighted while it is off");
-    assert_eq!(
-        h.painted(0),
-        [("pub struct Client {".to_owned(), theme::text())]
-    );
-
-    h.set(|settings| settings.files_syntax_highlighting = true);
     h.wait("the highlights", |h| h.highlighted());
     h.redraw();
     assert!(
@@ -2725,16 +2829,6 @@ fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file(
         h.painted(0)
     );
 
-    h.set(|settings| settings.files_syntax_highlighting = false);
-    h.redraw();
-    assert_eq!(
-        h.painted(0),
-        [("pub struct Client {".to_owned(), theme::text())],
-        "turned off again, the spans it has are not drawn"
-    );
-
-    // A reload while it is off drops the old spans, and turning it on
-    // highlights the new text rather than drawing them over it.
     // FSEvents can miss a write in the instant its stream starts, so write
     // again until the watcher reports it.
     let path = h.repo.join("src/client.rs");
@@ -2746,15 +2840,10 @@ fn highlighting_off_draws_plain_text_and_turning_it_on_highlights_the_open_file(
         }
         h.line(0) == "// note"
     });
-    assert!(!h.highlighted());
-    h.set(|settings| settings.files_syntax_highlighting = true);
-    h.wait("the new highlights", |h| h.highlighted());
-    h.redraw();
-    assert!(
-        h.painted(1).contains(&("fn".into(), color(0xc792ea))),
-        "{:?}",
-        h.painted(1)
-    );
+    h.wait("the new highlights", |h| {
+        h.redraw();
+        h.painted(1).contains(&("fn".into(), color(0xc792ea)))
+    });
 }
 
 #[test]
@@ -2823,7 +2912,8 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel.layout(Some(&subject), 288., 440., 240., 6., cx)
+                host.panel
+                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
             })
             .unwrap()
     };
@@ -3366,11 +3456,187 @@ fn the_tree_beside_an_open_file_sits_on_the_panel_colour_in_both_themes() {
             theme::panel().to_rgb()
         );
     }
-    // Without a file open the tree keeps the panel's own background.
+    // Beside the empty view too, and alone it keeps the panel's background.
     h.click("FILE_TAB_CLOSE a.txt");
     for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
         theme::set_active_variant(variant);
         h.redraw();
-        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", None);
+        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", Some(theme::panel()));
     }
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", None);
+}
+
+#[test]
+fn a_root_opens_on_the_empty_view_and_lists_what_changed() {
+    let mut h = viewer(chat("in-project"));
+    h.wait("the status", |h| h.has("FILE_NO_FILE"));
+    assert!(h.has("FILES_TREE_COLUMN"), "the tree stays beside it");
+
+    std::fs::write(h.repo.join("a.txt"), "changed\n").unwrap();
+    std::fs::write(h.repo.join("src/deep/x.rs"), "fn y() {}\n").unwrap();
+    h.wait("the changes", |h| h.has("FILE_CHANGED src/deep/x.rs"));
+    assert!(h.has("FILE_CHANGED_LIST") && !h.has("FILE_NO_FILE"));
+    h.click("FILE_CHANGED a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.tabs(), ["a.txt"]);
+
+    h.click("FILE_TAB_CLOSE a.txt");
+    assert!(h.has("FILE_CHANGED_LIST"), "closing returns to the list");
+}
+
+#[test]
+fn a_tree_that_does_not_fit_takes_the_panel_until_a_file_opens() {
+    let mut h = viewer(chat("in-project"));
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    assert!(h.has("FILES_ROW a.txt") && !h.has("FILE_VIEWER"));
+    h.click("FILES_ROW a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert!(!h.has("FILES_TREE_COLUMN"));
+}
+
+#[test]
+fn the_layout_gives_a_tree_with_no_room_the_panel_until_a_file_opens() {
+    let mut h = viewer(chat("in-project"));
+    let subject = PanelSubject::Session("in-project".into());
+    let layout = |h: &mut Harness, surface: f32| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.panel.surface.set(surface);
+                host.panel
+                    .layout(Some(&subject), true, 288., 440., 240., 6., cx)
+            })
+            .unwrap()
+    };
+    // 6 + 420 + 288 + 240: the narrowest that holds the file area and the tree.
+    assert!(layout(&mut h, 954.).1.is_some());
+    assert_eq!(layout(&mut h, 953.), (288., None));
+
+    h.open("a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let (width, widened) = layout(&mut h, 953.);
+    assert_eq!(width, 528., "a file open keeps the tree beside it");
+    assert!(widened.unwrap().tree);
+
+    h.click("FILE_TAB_CLOSE a.txt");
+    assert_eq!(layout(&mut h, 953.), (288., None));
+    assert!(layout(&mut h, 954.).1.is_some());
+
+    h.click("FILE_TREE_TOGGLE");
+    assert!(
+        layout(&mut h, 600.).1.is_some(),
+        "with the tree toggled off there is no tree to give the panel"
+    );
+}
+
+#[test]
+fn the_finder_reads_the_new_root_when_the_root_changes() {
+    let mut h = viewer(chat("in-project"));
+    h.click("FILES_SEARCH");
+    h.wait("the index", |h| h.has("FILES_FINDER_ITEM 0"));
+    let other = h.temp.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("only.txt"), "only\n").unwrap();
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.set_root(Some(other.clone()), cx)
+    });
+    h.wait("the new root's files", |h| {
+        h.read(|view| {
+            view.finder
+                .as_ref()
+                .is_some_and(|finder| finder.path_at(0) == Some("only.txt"))
+        })
+    });
+    assert_eq!(
+        h.read(|view| view.finder.as_ref().unwrap().matches.len()),
+        1
+    );
+    h.visual.simulate_keystrokes("enter");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.tabs(), ["only.txt"]);
+}
+
+#[test]
+fn the_finder_opens_centred_and_finds_a_file_by_name() {
+    let mut h = viewer(chat("in-project"));
+    h.visual.simulate_resize(size(px(900.), px(900.)));
+    h.settle();
+    h.click("FILES_SEARCH");
+    h.wait("the index", |h| h.has("FILES_FINDER_ITEM 0"));
+    let view = h.visual.debug_bounds("FILES_FINDER").unwrap();
+    let tree = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
+    assert!(
+        view.left() < tree.left() && view.right() > tree.left(),
+        "over the whole view, not only the tree: {view:?} {tree:?}"
+    );
+    assert_eq!(view.size.width, px(520.));
+    assert_eq!(
+        view.center().x,
+        h.read(|view| view.view_bounds.get().center().x)
+    );
+
+    h.visual.simulate_input("x.r");
+    h.settle();
+    assert_eq!(
+        h.read(|view| view.finder.as_ref().unwrap().matches.len()),
+        1
+    );
+    h.visual.simulate_keystrokes("enter");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.tabs(), ["src/deep/x.rs"]);
+    assert!(!h.has("FILES_FINDER"));
+}
+
+#[test]
+fn the_finder_skips_ignored_files_says_when_nothing_matches_and_esc_restores_focus() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("debug.log"), "x").unwrap();
+    h.click("FILES_ROW a.txt");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    let before = h.visual.update(|window, cx| window.focused(cx));
+    assert!(before.is_some());
+
+    let view = h.view();
+    h.visual
+        .update(|window, cx| view.update(cx, |view, cx| view.toggle_finder(window, cx)));
+    h.wait("the index", |h| h.has("FILES_FINDER_ITEM 0"));
+    h.visual.simulate_input("debug.log");
+    h.settle();
+    assert!(h.has("FILES_FINDER_EMPTY"), "git ignores it");
+    h.visual.simulate_keystrokes("enter");
+    h.settle();
+    assert!(h.has("FILES_FINDER"), "nothing to open");
+
+    h.visual.simulate_keystrokes("escape");
+    h.settle();
+    assert!(!h.has("FILES_FINDER"));
+    let after = h.visual.update(|window, cx| window.focused(cx));
+    assert!(before == after, "focus returns to where it was");
+}
+
+#[test]
+fn the_arrows_choose_the_match_enter_opens() {
+    let mut h = viewer(chat("in-project"));
+    h.click("FILES_SEARCH");
+    h.wait("the index", |h| h.has("FILES_FINDER_ITEM 0"));
+    h.visual.simulate_input(".txt");
+    h.settle();
+    h.visual.simulate_keystrokes("down");
+    h.settle();
+    h.visual.simulate_keystrokes("enter");
+    h.wait("the file", |h| h.has("FILE_CODE"));
+    assert_eq!(h.tabs(), ["old.txt"], "a.txt ranks first, being shorter");
 }

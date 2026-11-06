@@ -179,6 +179,18 @@ impl NativeRoot {
         }
     }
 
+    /// ⇧⌘O: opens the panel on Files, as a link does, and its finder.
+    pub(crate) fn search_files_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.active_focused_session_id() else {
+            return;
+        };
+        let Some(view) = self.link_files_view(&session, cx) else {
+            return;
+        };
+        self.show_link_preview(cx);
+        view.update(cx, |view, cx| view.toggle_finder(window, cx));
+    }
+
     /// A link opened in the preview: the panel opens Files, or switches to it.
     fn show_link_preview(&mut self, cx: &mut Context<Self>) {
         if side_panel_surface(self.active_tab_is_terminal(cx)) == PanelSurface::Chat {
@@ -203,8 +215,12 @@ impl NativeRoot {
         let subject = detail
             .filter(|_| settings.files_view)
             .map(|detail| PanelSubject::Session(detail.session_id.clone()));
+        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
+        let files_shown = side_panel::shown(surface, settings, &self.chat_surfaces.open)
+            == Some(PanelViewId::Files);
         self.chat_files.layout(
             subject.as_ref(),
+            files_shown,
             settings.chat_panel_width,
             settings.file_viewer_width,
             settings.file_tree_width,
@@ -296,7 +312,7 @@ impl NativeRoot {
                     surface,
                     &settings,
                     &self.chat_surfaces.open,
-                    Some((&self.chat_surfaces, window)),
+                    (&self.chat_surfaces, window),
                     handler.clone(),
                     IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip(crate::i18n::text("ui.collapse_side_panel"))

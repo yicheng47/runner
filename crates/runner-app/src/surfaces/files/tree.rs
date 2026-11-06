@@ -122,6 +122,15 @@ impl FileTree {
         &self.rows
     }
 
+    /// The files the status letters mark, in git's order.
+    pub(crate) fn changed_files(&self) -> Vec<(String, Letter)> {
+        self.status
+            .iter()
+            .flat_map(|status| &status.entries)
+            .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
+            .collect()
+    }
+
     pub(crate) fn status(&self) -> Option<&GitStatus> {
         self.status.as_ref()
     }

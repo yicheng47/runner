@@ -349,6 +349,7 @@ impl NativeRoot {
             })
             .on_action(cx.listener(Self::toggle_sidebar))
             .on_action(cx.listener(Self::open_command_palette))
+            .on_action(cx.listener(Self::search_files))
             .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::navigate_previous_page))
             .on_action(cx.listener(Self::navigate_next_page))

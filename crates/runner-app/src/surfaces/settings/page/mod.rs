@@ -284,7 +284,6 @@ enum SettingsSelection {
     FileIcons,
     FilesFont,
     MarkdownOpenAs,
-    NewChatPanel,
 }
 
 pub(crate) struct SettingsState {
@@ -313,7 +312,6 @@ pub(crate) struct SettingsState {
     file_icons: Entity<StyledSelect>,
     files_font: Entity<StyledSelect>,
     markdown_open_as: Entity<StyledSelect>,
-    new_chat_panel: Entity<StyledSelect>,
     pub(crate) language: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
@@ -489,14 +487,6 @@ impl SettingsState {
             SettingsSelection::MarkdownOpenAs,
             cx,
         );
-        let new_chat_panel = settings_select(
-            &root,
-            "settings-new-chat-panel",
-            settings.new_chat_panel.key(),
-            new_chat_panel_options(),
-            SettingsSelection::NewChatPanel,
-            cx,
-        );
         let language = settings_select(
             &root,
             "settings-language",
@@ -578,7 +568,6 @@ impl SettingsState {
             file_icons,
             files_font,
             markdown_open_as,
-            new_chat_panel,
             language,
             quit_behavior,
             agents: None,
@@ -725,8 +714,7 @@ fn settings_select(
         | SettingsSelection::TerminalScrollback
         | SettingsSelection::QuitBehavior
         | SettingsSelection::FilesFont
-        | SettingsSelection::MarkdownOpenAs
-        | SettingsSelection::NewChatPanel => None,
+        | SettingsSelection::MarkdownOpenAs => None,
         #[cfg(target_os = "macos")]
         SettingsSelection::OptionAsMeta => None,
     };
@@ -1042,8 +1030,6 @@ impl NativeRoot {
             ),
             SettingsSelection::MarkdownOpenAs => crate::app_settings::MarkdownOpenAs::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.markdown_open_as, value)),
-            SettingsSelection::NewChatPanel => crate::app_settings::NewChatPanel::parse(value)
-                .is_some_and(|value| update_if_changed(&mut settings.new_chat_panel, value)),
         });
         if !changed {
             if matches!(selection, SettingsSelection::Language) {
@@ -1085,10 +1071,6 @@ impl NativeRoot {
         self.settings_page
             .markdown_open_as
             .update(cx, |select, cx| select.set_value(markdown, cx));
-        let opens = self.settings(cx).new_chat_panel.key();
-        self.settings_page
-            .new_chat_panel
-            .update(cx, |select, cx| select.set_value(opens, cx));
         if self.settings_page.files_font.read(cx).value() != font {
             self.sync_files_font_options(cx);
         }
@@ -1335,10 +1317,10 @@ mod tests {
         let overrides = keymap::KeymapOverrides::new();
         let rows = shortcut_rows("", &overrides);
         let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
-        assert_eq!(titles.len(), 29);
+        assert_eq!(titles.len(), 30);
         assert_eq!(titles[0], "New window");
         assert_eq!(
-            titles[26..],
+            titles[27..],
             ["Copy selection", "Paste", "Toggle fullscreen"]
         );
         let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];
@@ -1363,7 +1345,7 @@ mod tests {
         );
         assert_eq!(ShortcutRow::TabSelection.binding_label(&overrides), "⌘1–⌘9");
         assert_eq!(
-            rows[26..]
+            rows[27..]
                 .iter()
                 .map(|row| row.binding_label(&overrides))
                 .collect::<Vec<_>>(),
@@ -1402,6 +1384,7 @@ mod tests {
                         "new-terminal",
                         "new-mission",
                         "command-palette",
+                        "search-files",
                         "toggle-sidebar",
                         "open-settings",
                         "page-previous",

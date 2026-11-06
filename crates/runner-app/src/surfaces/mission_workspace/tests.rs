@@ -4671,6 +4671,28 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
         "the closed Files tab opens"
     );
 
+    // ⇧⌘O opens the collapsed rail on Files, with its finder.
+    store.update(&mut visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.mission_rail_open = false;
+                true
+            },
+            false,
+            cx,
+        )
+    });
+    visual.run_until_parked();
+    workspace.update_in(&mut visual, |workspace, window, cx| {
+        workspace.search_files(window, cx)
+    });
+    wait(&mut visual, &|visual| {
+        visual.debug_bounds("FILES_FINDER_ITEM 0").is_some()
+    });
+    assert!(store.read_with(&visual, |store, _| store.settings.mission_rail_open));
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
     // Files off, or the panel off: the editor.
     for off in [
         (|settings: &mut crate::app_settings::AppSettings| settings.files_view = false)
