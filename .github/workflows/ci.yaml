@@ -4,7 +4,6 @@ on:
   pull_request:
     branches:
       - main
-      - feat/634-file-preview
   push:
     branches:
       - main

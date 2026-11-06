@@ -4,7 +4,7 @@ Implementation record for [feature 634](../../features/634-file-preview.md) ([#6
 
 ## Status (2026-11-06)
 
-The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. m10, the fixes from the review of the whole umbrella, merged the same day, and m11 fixes what the second such review found. The umbrella holds one commit per mission on top of `main`, and what remains is the gate before landing in [plan.md](plan.md).
+The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. m10, the fixes from the review of the whole umbrella, and m11, the fixes from its second review, merged the same day. The third review of the whole umbrella found nothing to fix, Jason's live test of it passed, and the umbrella lands on `main` through [#1157](https://github.com/yicheng47/runner/pull/1157) after the updater change, #1206.
 
 The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, which already holds the spec. Eleven missions merge into it, and it reaches `main` as one pull request, the draft [#1157](https://github.com/yicheng47/runner/pull/1157), once the gate in the plan passes.
 
@@ -20,7 +20,7 @@ The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, w
 | m8 — side panel surfaces with a + menu | 4 | `feat/634-m8-panel-surfaces` | m7 | [#1199](https://github.com/yicheng47/runner/pull/1199) | Merged 2026-11-06; qa passed its six live checks on macOS in the dark theme on the second attempt |
 | m9 — fixes from Jason's live run | 4 | `feat/634-m9-fixes` | m8 | [#1200](https://github.com/yicheng47/runner/pull/1200) | Merged 2026-11-06; Jason ran the live checks on macOS in the dark theme and passed the core change |
 | m10 — fixes from the umbrella's review | 4 | `feat/634-m10-review-fixes` | m9 | [#1202](https://github.com/yicheng47/runner/pull/1202) | Merged 2026-11-06 |
-| m11 — fixes from the umbrella's second review | 4 | `feat/634-m11-review2-fixes` | m10 | [#1205](https://github.com/yicheng47/runner/pull/1205) | In review |
+| m11 — fixes from the umbrella's second review | 4 | `feat/634-m11-review2-fixes` | m10 | [#1205](https://github.com/yicheng47/runner/pull/1205) | Merged 2026-11-06; its live checks passed on macOS in the dark theme |
 
 ## Decisions that bind
 
