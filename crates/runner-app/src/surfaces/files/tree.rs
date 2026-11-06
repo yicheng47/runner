@@ -3,6 +3,7 @@
 //! keyboard moves.
 
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use runner_core::protocol::files::{DirEntry, EntryKind, FileStatus, GitStatus};
@@ -69,6 +70,8 @@ pub(crate) struct FileTree {
     listings: HashMap<String, Vec<DirEntry>>,
     expanded: BTreeSet<String>,
     status: Option<GitStatus>,
+    /// The files the status letters mark, in git's order.
+    changed: Rc<Vec<(String, Letter)>>,
     letters: HashMap<String, Letter>,
     dots: BTreeSet<String>,
     cwd: Option<String>,
@@ -122,13 +125,8 @@ impl FileTree {
         &self.rows
     }
 
-    /// The files the status letters mark, in git's order.
-    pub(crate) fn changed_files(&self) -> Vec<(String, Letter)> {
-        self.status
-            .iter()
-            .flat_map(|status| &status.entries)
-            .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
-            .collect()
+    pub(crate) fn changed_files(&self) -> Rc<Vec<(String, Letter)>> {
+        self.changed.clone()
     }
 
     pub(crate) fn status(&self) -> Option<&GitStatus> {
@@ -175,6 +173,14 @@ impl FileTree {
     }
 
     pub(crate) fn set_status(&mut self, status: GitStatus) {
+        self.changed = Rc::new(
+            status
+                .entries
+                .iter()
+                .filter(|entry| entry.is_changed_file())
+                .filter_map(|entry| Some((entry.path.clone(), Letter::from_status(&entry.status)?)))
+                .collect(),
+        );
         self.letters = status
             .entries
             .iter()

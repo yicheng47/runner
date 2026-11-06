@@ -62,6 +62,9 @@ pub(crate) struct CodeView {
     scroll: Point<Pixels>,
     /// The anchor and the head, which moves.
     selection: Option<(Position, Position)>,
+    /// Select All: a copy takes the whole text, with the final line ending
+    /// that no position reaches.
+    selects_all: bool,
     dragging: bool,
     matches: Arc<Vec<FileMatch>>,
     current: Option<usize>,
@@ -103,6 +106,7 @@ impl CodeView {
             focus: cx.focus_handle(),
             scroll: Point::default(),
             selection: None,
+            selects_all: false,
             dragging: false,
             matches: Arc::default(),
             current: None,
@@ -175,9 +179,12 @@ impl CodeView {
     pub(crate) fn set_document(&mut self, document: Arc<Document>, cx: &mut Context<Self>) {
         self.document = document;
         self.highlight(cx);
-        self.selection = self
-            .selection
-            .map(|(anchor, head)| (self.document.clamp(anchor), self.document.clamp(head)));
+        self.selection = if self.selects_all {
+            Some((Position::default(), self.document.end()))
+        } else {
+            self.selection
+                .map(|(anchor, head)| (self.document.clamp(anchor), self.document.clamp(head)))
+        };
         self.matches = Arc::default();
         self.current = None;
         self.reveal = None;
@@ -229,6 +236,7 @@ impl CodeView {
                 .len(),
         };
         self.selection = Some((start, end));
+        self.selects_all = false;
         self.reveal = Some(start);
         self.cited = true;
         cx.notify();
@@ -255,7 +263,16 @@ impl CodeView {
 
     pub(crate) fn selected_text(&self) -> Option<String> {
         let (anchor, head) = self.selection?;
+        if self.selects_all {
+            let text = self.document.text();
+            return (!text.is_empty()).then(|| text.to_owned());
+        }
         (anchor != head).then(|| self.document.text_between(anchor, head))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selection(&self) -> Option<(Position, Position)> {
+        self.selection
     }
 
     /// The advance, the text's left edge and the element's bounds.
@@ -292,6 +309,8 @@ impl CodeView {
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.selection = Some((Position::default(), self.document.end()));
+        self.selects_all = true;
+        self.dragging = false;
         cx.notify();
     }
 
@@ -881,6 +900,7 @@ fn register_mouse(view: Entity<CodeView>, hitbox: Hitbox, metrics: Metrics, wind
                 }
                 return;
             }
+            view.selects_all = false;
             match event.click_count {
                 2 => {
                     let (start, end) = word_at(view.document.line(at.line), at.offset);

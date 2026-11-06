@@ -1,6 +1,5 @@
-//! Settings → Side panel: the Panel page, which shows the panel, offers its
-//! surfaces and picks what a new chat opens, and the Files page, which sets
-//! the tree and the viewer.
+//! Settings → Side panel: the Panel page, which shows the panel and offers its
+//! surfaces, and the Files page, which sets the tree and the viewer.
 
 use super::*;
 

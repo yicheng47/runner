@@ -746,6 +746,25 @@ fn response_frame(id: u64, response: Response) -> std::io::Result<Frame> {
         ),
     }
 }
+/// An event too large for a frame cannot reach the client, which hears that
+/// it missed one, as when it lags, and keeps its connection.
+fn event_frame(event: &wire::Event) -> std::io::Result<Frame> {
+    let frame = Frame::json(wire::EVENT, event)?;
+    match frame.check_size() {
+        Ok(_) => Ok(frame),
+        Err(error) => {
+            let name = event.event.as_ref().map_or("", |event| event.name.as_str());
+            log::warn!("dropping event {name}: {error}");
+            Frame::json(
+                wire::EVENT,
+                &wire::Event {
+                    event: None,
+                    lagged: Some(1),
+                },
+            )
+        }
+    }
+}
 #[allow(clippy::too_many_arguments)]
 async fn connection(
     stream: IpcStream,
@@ -935,7 +954,7 @@ async fn connection(
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => wire::Event { event: None, lagged: Some(count) },
                         Err(_) => break,
                     };
-                    write_frame(&mut write, Frame::json(wire::EVENT, &event)?).await?;
+                    write_frame(&mut write, event_frame(&event)?).await?;
                 }
                 received = incoming.recv() => {
                     let frame = received.context("client reader closed")??;
@@ -1178,6 +1197,27 @@ pub(crate) async fn remote_test_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_oversized_event_tells_the_client_it_missed_one() {
+        let event = |size: usize| wire::Event {
+            event: Some(runner_core::protocol::ClientEvent {
+                name: "files/status".into(),
+                payload: serde_json::Value::String("x".repeat(size)),
+            }),
+            lagged: None,
+        };
+        let frame = event_frame(&event(1024)).unwrap();
+        let decoded: wire::Event = frame.decode().unwrap();
+        assert!(decoded.event.is_some());
+        assert_eq!(decoded.lagged, None);
+
+        let frame = event_frame(&event(wire::MAX_FRAME)).unwrap();
+        frame.encode().unwrap();
+        let decoded: wire::Event = frame.decode().unwrap();
+        assert!(decoded.event.is_none());
+        assert_eq!(decoded.lagged, Some(1));
+    }
 
     #[test]
     fn connection_cleanup_and_desktop_takeback_release_owned_compositions() {

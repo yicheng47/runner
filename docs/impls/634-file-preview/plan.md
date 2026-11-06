@@ -24,6 +24,8 @@ The phases of [feature 634](../../features/634-file-preview.md) in detail: how e
 | m6 — Settings → Side panel | The Panel and Files pages and every option, wired to m2 to m5 | m5 |
 | m7 — file links open in the preview | From Jason's live run: the width rule, ⌘-clicked links in the panel, option H's header, every open keeping a tab, zoom in the viewer | m6 |
 | m8 — side panel surfaces | The header's open surfaces as tabs with a `+` menu and keys, the empty list, Sessions permanent, Settings' Surfaces card | m7 |
+| m9 — fixes from Jason's live run | The code view's scrollbars, tree rows and guides, Files wide with an empty view, the file finder and `files_index` | m8 |
+| m10 — fixes from the umbrella's review | Bounded Markdown nesting and status, ignored open files, rescans, branch refs, closing Files, and the review's notes | m9 |
 
 m1 and m2 touch different crates and run in parallel. m3 to m6 are sequential because each builds on the surface the previous one adds. m5's spike touches nothing else, so it can run as a separate short task earlier if a crew is free, and m5 then starts from its result.
 
@@ -151,6 +153,16 @@ Jason's model after t3code, 2026-11-05; brief [634-m8-panel-surfaces.md](../brie
 
 Checks: the model's tabs, shown surface, open, close and Settings closing tabs for a chat, a mission and a terminal-only tab; the keys and their modifiers; the header, menu and empty list in a real window in both themes and both languages, with focus and keys; a new chat for each Settings value; the Settings card and its select; old settings files loading. Live, by `qa` on macOS in the dark theme: the brief's six checks.
 
+## m9 — fixes from Jason's live run
+
+Jason's run of the umbrella, 2026-11-06, with one coder working uncommitted while he tested and no brief; the [log](impl_log.md) has what it changed and its review.
+
+## m10 — fixes from the umbrella's review
+
+The two reviewers' findings on the whole umbrella, 2026-11-06, every one fixed by decision of Jason's. The [log](impl_log.md) has each finding's outcome and the notes left, with why.
+
+Checks: Markdown nested past the limit in a process of its own on a 512 KiB stack; a status past its limits fitting a frame, an oversized event replaced by a lag; a soft reset in a main checkout, a linked worktree and a reftable repository; a rescan refreshing nested folders; an ignored open file refreshing and showing as deleted; the width after closing Files. Live, by `qa` on macOS in the dark theme: the checks in the pull request.
+
 ## Linux
 
 Every mission builds and passes its tests on both Linux CI jobs. The pieces that differ, and what ships if one proves hard (Jason, 2026-11-04):
@@ -174,7 +186,7 @@ The watcher cannot see a `ReadDirectoryChangesW` buffer overflow: notify 6, whic
 
 ## The gate before landing
 
-1. All six missions merged into the umbrella; the umbrella rebased onto `main`; CI green on every job.
+1. Every mission merged into the umbrella; the umbrella rebased onto `main`; CI green on every job.
 2. The spec's Verification run end to end on the umbrella head by a `qa` mission on macOS, Windows and Linux, with each platform's result recorded in `docs/tests/634-file-preview.md`. A platform that cannot be checked is recorded as a gap and holds the landing until Jason accepts it; a Linux piece on its fallback is recorded with its follow-up issue.
 3. The large-repository smoke on each platform: the Runner repository with `target/` built opens without a visible stall, and a `cargo build` does not churn the status.
 4. Daily use of an umbrella build if Jason chooses it (the README's open question).

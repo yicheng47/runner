@@ -9,9 +9,14 @@ use std::sync::Arc;
 
 use runner_core::protocol::files::{
     FileStatus, GitStatus, IndexBudget, StatusEntry, WorktreeEntry, WorktreeKind,
+    MAX_STATUS_ENTRY_BYTES, MAX_STATUS_IGNORED_BYTES, MAX_STATUS_PATHS,
 };
 
 use crate::error::{Error, Result};
+
+/// The most of `git status`'s output read before stopping git: paths past the
+/// limits are only counted, as the ignored paths come last.
+const MAX_STATUS_READ_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct Git {
@@ -29,6 +34,9 @@ pub struct RepoPaths {
     /// The checkout's own git directory: `<top>/.git`, or
     /// `<main>/.git/worktrees/<name>` for a linked worktree.
     pub git_dir: PathBuf,
+    /// The directory holding the branches, shared by every worktree of the
+    /// repository: `<main>/.git`, the same as `git_dir` in the main checkout.
+    pub common_dir: PathBuf,
     /// The folder below the top, relative and ending in `/`; empty at the top.
     pub prefix: String,
 }
@@ -67,6 +75,9 @@ impl Git {
         command
             .current_dir(dir)
             .env("PATH", &self.path_env)
+            // A folder chosen in the picker may not be the user's own, and
+            // this setting names a program for every status to run.
+            .args(["-c", "core.fsmonitor=false"])
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
@@ -104,6 +115,7 @@ impl Git {
                     "--show-toplevel",
                     "--absolute-git-dir",
                     "--show-prefix",
+                    "--git-common-dir",
                 ],
             )
             .ok()?;
@@ -112,18 +124,27 @@ impl Git {
         let top = lines.next().filter(|line| !line.is_empty())?;
         let git_dir = lines.next().filter(|line| !line.is_empty())?;
         let prefix = lines.next().unwrap_or_default();
+        // Relative to `dir` unless it is elsewhere, as in a linked worktree.
+        let common_dir = lines.next().filter(|line| !line.is_empty())?;
         Some(RepoPaths {
             top: PathBuf::from(top),
             git_dir: PathBuf::from(git_dir),
+            common_dir: dir.join(common_dir),
             prefix: prefix.to_owned(),
         })
     }
 
-    /// The status of the folder `dir`, which is `prefix` below its checkout's top.
+    /// The status of the folder `dir`, which is `prefix` below its checkout's
+    /// top, within the limits of [`StatusBudget::default`].
     pub fn status(&self, dir: &Path, prefix: &str) -> Result<GitStatus> {
-        let stdout = self.run(
-            dir,
-            &[
+        self.status_reading(dir, prefix, MAX_STATUS_READ_BYTES)
+    }
+
+    fn status_reading(&self, dir: &Path, prefix: &str, limit: usize) -> Result<GitStatus> {
+        let fail = |error: std::io::Error| Error::msg(format!("run git: {error}"));
+        let mut child = self
+            .command(dir)
+            .args([
                 "--no-optional-locks",
                 "status",
                 "--porcelain=v2",
@@ -132,9 +153,30 @@ impl Git {
                 "--ignored=matching",
                 "--",
                 ".",
-            ],
-        )?;
-        Ok(parse_status(&stdout, prefix))
+            ])
+            .spawn()
+            .map_err(fail)?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let mut stderr = child.stderr.take().expect("stderr is piped");
+        let errors = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut text);
+            String::from_utf8_lossy(&text).trim().to_owned()
+        });
+        let read = read_status(stdout, prefix, StatusBudget::default(), limit);
+        if !matches!(read, Ok((_, false))) {
+            // git is left mid-write, and ends only when told to.
+            let _ = child.kill();
+        }
+        let exit = child.wait().map_err(fail)?;
+        let errors = errors.join().unwrap_or_default();
+        let (mut status, overflowed) = read.map_err(fail)?;
+        if overflowed {
+            status.truncated = true;
+        } else if !exit.success() {
+            return Err(Error::msg(format!("git status: {errors}")));
+        }
+        Ok(status)
     }
 
     /// Whether `dir` is, or is inside, a folder git ignores, where `ls-files`
@@ -232,29 +274,115 @@ fn file_on_disk(dir: &Path, record: &[u8]) -> Option<String> {
     (!kind.is_dir()).then(|| path.to_owned())
 }
 
-/// Parses `git status --porcelain=v2 -z`. Paths are relative to the
-/// checkout's top; `prefix` is the root's folder below it, and paths outside
-/// that folder are dropped.
-pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
-    let mut fields = bytes.split(|byte| *byte == 0);
+/// Parses `git status` as it comes, up to `limit` bytes of it, and whether
+/// there was more. One byte past the limit is read to tell.
+fn read_status(
+    stdout: impl Read,
+    prefix: &str,
+    budget: StatusBudget,
+    limit: usize,
+) -> std::io::Result<(GitStatus, bool)> {
+    let mut read = 0;
+    let mut overflowed = false;
+    let mut failed = None;
+    let fields = BufReader::new(stdout.take(limit as u64 + 1))
+        .split(0)
+        .map_while(|field| {
+            let field = field.map_err(|error| failed = Some(error)).ok()?;
+            read += field.len() + 1;
+            overflowed = read > limit;
+            (!overflowed).then_some(field)
+        });
+    let status = parse_status_fields(fields, prefix, budget);
+    match failed {
+        Some(error) => Err(error),
+        None => Ok((status, overflowed)),
+    }
+}
+
+/// What a [`GitStatus`] may still list. Past it, paths are only counted.
+pub struct StatusBudget {
+    entries: usize,
+    entry_bytes: usize,
+    ignored: usize,
+    ignored_bytes: usize,
+}
+
+impl Default for StatusBudget {
+    fn default() -> Self {
+        Self::new(
+            MAX_STATUS_PATHS,
+            MAX_STATUS_ENTRY_BYTES,
+            MAX_STATUS_IGNORED_BYTES,
+        )
+    }
+}
+
+impl StatusBudget {
+    pub fn new(paths: usize, entry_bytes: usize, ignored_bytes: usize) -> Self {
+        Self {
+            entries: paths,
+            entry_bytes,
+            ignored: paths,
+            ignored_bytes,
+        }
+    }
+
+    /// Spends `value`'s size in encoded JSON, with a comma, from `bytes`, and
+    /// one path from `paths`; false, spending nothing, when it does not fit.
+    fn take(paths: &mut usize, bytes: &mut usize, value: &impl serde::Serialize) -> bool {
+        let size =
+            serde_json::to_vec(value).map_or(usize::MAX, |json| json.len().saturating_add(1));
+        if *paths == 0 || size > *bytes {
+            return false;
+        }
+        *paths -= 1;
+        *bytes -= size;
+        true
+    }
+}
+
+/// Parses `git status --porcelain=v2 -z`, split at its NULs. Paths are relative
+/// to the checkout's top; `prefix` is the root's folder below it, and paths
+/// outside that folder are dropped. Every field is read whatever `budget`
+/// allows, so the count stays right and the ignored paths, which come last,
+/// are kept when the changes alone run out of it.
+pub fn parse_status_fields(
+    mut fields: impl Iterator<Item = impl AsRef<[u8]>>,
+    prefix: &str,
+    mut budget: StatusBudget,
+) -> GitStatus {
     let mut entries = Vec::new();
+    let mut changed = 0;
     let mut ignored = Vec::new();
     let mut root_ignored = false;
+    let mut entries_full = false;
+    let mut ignored_full = false;
     let relative = |path: &str| path.strip_prefix(prefix).map(str::to_owned);
+    let mut add = |entry: StatusEntry| {
+        changed += usize::from(entry.is_changed_file());
+        entries_full = entries_full
+            || !StatusBudget::take(&mut budget.entries, &mut budget.entry_bytes, &entry);
+        if !entries_full {
+            entries.push(entry);
+        }
+    };
     while let Some(field) = fields.next() {
-        let field = String::from_utf8_lossy(field);
+        let field = String::from_utf8_lossy(field.as_ref()).into_owned();
         let Some((kind, rest)) = field.split_once(' ') else {
             continue;
         };
-        let (xy, path, from) = match kind {
+        let (xy, sub, path, from) = match kind {
             "1" => match rest.splitn(8, ' ').collect::<Vec<_>>()[..] {
-                [xy, _, _, _, _, _, _, path] => (xy, path, None),
+                [xy, sub, _, _, _, _, _, path] => (xy, sub, path, None),
                 _ => continue,
             },
             "2" => {
-                let from = fields.next().map(String::from_utf8_lossy);
+                let from = fields
+                    .next()
+                    .map(|from| String::from_utf8_lossy(from.as_ref()).into_owned());
                 match rest.splitn(9, ' ').collect::<Vec<_>>()[..] {
-                    [xy, _, _, _, _, _, _, _, path] => (xy, path, from),
+                    [xy, sub, _, _, _, _, _, _, path] => (xy, sub, path, from),
                     _ => continue,
                 }
             }
@@ -263,7 +391,7 @@ pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
                     rest.splitn(10, ' ').collect::<Vec<_>>()[..]
                 {
                     if let Some(path) = relative(path) {
-                        entries.push(StatusEntry {
+                        add(StatusEntry {
                             path,
                             status: FileStatus::Unmerged,
                         });
@@ -273,7 +401,7 @@ pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
             }
             "?" => {
                 if let Some(path) = relative(rest) {
-                    entries.push(StatusEntry {
+                    add(StatusEntry {
                         path,
                         status: FileStatus::Untracked,
                     });
@@ -285,16 +413,27 @@ pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
                 // ancestor of the root or the root itself.
                 if !prefix.is_empty() && rest.ends_with('/') && prefix.starts_with(rest) {
                     root_ignored = true;
-                } else {
-                    ignored.extend(relative(rest));
+                } else if let Some(path) = relative(rest) {
+                    ignored_full = ignored_full
+                        || !StatusBudget::take(
+                            &mut budget.ignored,
+                            &mut budget.ignored_bytes,
+                            &path,
+                        );
+                    if !ignored_full {
+                        ignored.push(path);
+                    }
                 }
                 continue;
             }
             _ => continue,
         };
-        let Some(path) = relative(path) else {
+        let Some(mut path) = relative(path) else {
             continue;
         };
+        if sub.starts_with('S') {
+            path.push('/');
+        }
         let mut codes = xy.chars();
         let (x, y) = (codes.next().unwrap_or('.'), codes.next().unwrap_or('.'));
         let status = if y == 'D' {
@@ -302,7 +441,7 @@ pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
         } else if x == 'R' {
             let from = from.unwrap_or_default();
             FileStatus::Renamed {
-                from: relative(&from).unwrap_or_else(|| from.into_owned()),
+                from: relative(&from).unwrap_or(from),
             }
         } else if x == 'A' || x == 'C' {
             FileStatus::Added
@@ -311,11 +450,14 @@ pub fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
         } else {
             FileStatus::Modified
         };
-        entries.push(StatusEntry { path, status });
+        add(StatusEntry { path, status });
     }
     GitStatus {
+        entries,
+        changed,
+        ignored,
         root_ignored,
-        ..GitStatus::new(entries, ignored)
+        truncated: entries_full || ignored_full,
     }
 }
 
@@ -377,6 +519,11 @@ fn short_commit(sha: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_status(bytes: &[u8], prefix: &str) -> GitStatus {
+        let fields = bytes.split(|byte| *byte == 0);
+        parse_status_fields(fields, prefix, StatusBudget::default())
+    }
 
     fn entry(path: &str, status: FileStatus) -> StatusEntry {
         StatusEntry {
@@ -475,6 +622,139 @@ mod tests {
         let status = parse_status(&porcelain(&["! target/", "! src/gen/"]), "src/");
         assert!(!status.root_ignored);
         assert_eq!(status.ignored, ["gen/"]);
+    }
+
+    #[test]
+    fn nested_repositories_and_submodules_are_folders() {
+        let bytes = porcelain(&[
+            &format!("1 .M S..U 160000 160000 160000 {H} {H} vendor/sub"),
+            "? nested/",
+            &format!("1 .M N... 100644 100644 100644 {H} {H} a.rs"),
+        ]);
+        let status = parse_status(&bytes, "");
+        assert_eq!(
+            status.entries,
+            vec![
+                entry("vendor/sub/", FileStatus::Modified),
+                entry("nested/", FileStatus::Untracked),
+                entry("a.rs", FileStatus::Modified),
+            ]
+        );
+        assert_eq!(status.changed, 1);
+    }
+
+    #[test]
+    fn a_status_past_its_limits_lists_what_fits_and_counts_the_rest() {
+        let bytes = porcelain(&[
+            &format!("1 .M N... 100644 100644 100644 {H} {H} a.rs"),
+            "? b.rs",
+            "? c.rs",
+            "! target/",
+            "! z.log",
+        ]);
+        let parse = |budget| parse_status_fields(bytes.split(|byte| *byte == 0), "", budget);
+
+        let status = parse(StatusBudget::new(2, 1024, 1024));
+        assert_eq!(
+            status.entries,
+            vec![
+                entry("a.rs", FileStatus::Modified),
+                entry("b.rs", FileStatus::Untracked),
+            ]
+        );
+        assert_eq!(status.changed, 3);
+        assert_eq!(status.ignored, ["target/", "z.log"], "their own budget");
+        assert!(status.truncated);
+
+        let status = parse(StatusBudget::new(1, 1024, 1024));
+        assert_eq!(status.ignored, ["target/"]);
+        assert!(status.truncated);
+
+        let fits = parse(StatusBudget::new(3, 1024, 1024));
+        assert_eq!(fits.entries.len(), 3);
+        assert!(!parse(StatusBudget::new(9, 1024, 1024)).truncated);
+
+        // The byte budget is the entry's size as JSON, comma included.
+        let one = serde_json::to_vec(&entry("a.rs", FileStatus::Modified))
+            .unwrap()
+            .len()
+            + 1;
+        assert_eq!(parse(StatusBudget::new(9, one, 1024)).entries.len(), 1);
+        assert_eq!(parse(StatusBudget::new(9, one - 1, 1024)).entries.len(), 0);
+    }
+
+    #[test]
+    fn reading_stops_at_the_limit_wherever_it_falls() {
+        // Each record is 6 bytes with its NUL.
+        let bytes = porcelain(&["? a.r", "? b.r", "? c.r"]);
+        let read = |limit| {
+            let (status, overflowed) =
+                read_status(&bytes[..], "", StatusBudget::default(), limit).unwrap();
+            let paths = status.entries.into_iter().map(|entry| entry.path);
+            (paths.collect::<Vec<_>>(), overflowed)
+        };
+        assert_eq!(
+            read(100),
+            (vec!["a.r".into(), "b.r".into(), "c.r".into()], false)
+        );
+        assert_eq!(
+            read(bytes.len()),
+            (vec!["a.r".into(), "b.r".into(), "c.r".into()], false),
+            "output ending exactly at the limit is complete"
+        );
+        assert_eq!(
+            read(bytes.len() - 6),
+            (vec!["a.r".into(), "b.r".into()], true),
+            "the limit on a NUL, with more to come"
+        );
+        assert_eq!(
+            read(bytes.len() - 7),
+            (vec!["a.r".into()], true),
+            "the limit inside a record, which is not half read"
+        );
+        assert_eq!(read(0), (vec![], true));
+    }
+
+    #[test]
+    fn a_status_cut_off_at_the_limit_is_truncated_rather_than_failed() {
+        let fixture = crate::files::fixture::repo();
+        let path = fixture.path();
+        for index in 0..2_000 {
+            std::fs::write(path.join(format!("new-{index}.txt")), "n").unwrap();
+        }
+        let whole = fixture.git.status(path, "").unwrap();
+        assert!(!whole.truncated);
+        assert_eq!(whole.changed, 2_000);
+        for limit in [0, 64, 4_096] {
+            let status = fixture.git.status_reading(path, "", limit).unwrap();
+            assert!(status.truncated, "{limit}");
+            assert!(status.changed < 2_000, "{limit}");
+        }
+    }
+
+    #[test]
+    fn a_status_at_its_limits_fits_a_wire_frame() {
+        // The longest record per entry byte: every byte a control character,
+        // which JSON writes as six.
+        let path = "\u{1}".repeat(4096);
+        let mut bytes = Vec::new();
+        for index in 0..2_000 {
+            bytes.extend_from_slice(format!("? {index}{path}\0").as_bytes());
+        }
+        for index in 0..1_000 {
+            bytes.extend_from_slice(format!("! {index}{path}\0").as_bytes());
+        }
+        let status = parse_status(&bytes, "");
+        assert!(status.truncated);
+        assert_eq!(status.changed, 2_000);
+        let event = runner_core::protocol::files::FilesStatusChanged {
+            root: "/repo".into(),
+            status,
+        };
+        let frame =
+            runner_core::protocol::wire::Frame::json(runner_core::protocol::wire::EVENT, &event)
+                .unwrap();
+        frame.check_size().unwrap();
     }
 
     #[test]

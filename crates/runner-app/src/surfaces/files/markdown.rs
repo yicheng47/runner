@@ -30,6 +30,11 @@ use crate::theme;
 /// The rendered page's side margins and the gap above its first block.
 const MARGIN: f32 = 20.;
 
+/// How many quotes, lists and list items may nest. Parsing, laying out and
+/// dropping a page each recurse once per level, and a file of a few KB can ask
+/// for tens of thousands, which would overflow the stack and end the app.
+const MAX_NESTING: usize = 32;
+
 /// Where a link in the page leads.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LinkTarget {
@@ -374,9 +379,8 @@ impl Page {
     pub(crate) fn parse(text: &str, path: &str) -> Self {
         let options =
             Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
-        let events: Vec<Event> = pulldown_cmark::Parser::new_ext(text, options).collect();
         let mut parser = Parser {
-            events,
+            events: bounded(pulldown_cmark::Parser::new_ext(text, options)),
             at: 0,
             path,
         };
@@ -413,6 +417,52 @@ impl Page {
         }
         found
     }
+}
+
+/// `events` with the quotes, lists and items below [`MAX_NESTING`] taken away:
+/// what they hold still shows, at that depth, with each item on its own line.
+fn bounded<'a>(events: impl Iterator<Item = Event<'a>>) -> Vec<Event<'a>> {
+    let mut depth = 0;
+    let mut bounded = Vec::new();
+    for event in events {
+        match &event {
+            Event::Start(Tag::BlockQuote(_) | Tag::Item) => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    continue;
+                }
+            }
+            // A list only goes where its items can: it draws nothing else.
+            Event::Start(Tag::List(_)) => {
+                depth += 1;
+                if depth >= MAX_NESTING {
+                    continue;
+                }
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                depth -= 1;
+                if depth >= MAX_NESTING {
+                    continue;
+                }
+            }
+            Event::End(TagEnd::Item) => {
+                depth -= 1;
+                if depth >= MAX_NESTING {
+                    bounded.push(Event::HardBreak);
+                    continue;
+                }
+            }
+            Event::End(TagEnd::List(_)) => {
+                depth -= 1;
+                if depth + 1 >= MAX_NESTING {
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        bounded.push(event);
+    }
+    bounded
 }
 
 /// Lays `blocks` out as rows, `indent` lists and `quotes` quotes deep.
@@ -1767,6 +1817,118 @@ pub(crate) fn image_format(path: &str) -> Option<gpui::ImageFormat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn deep_files() -> Vec<String> {
+        const DEEP: usize = 20_000;
+        vec![
+            format!("{} deep", ">".repeat(DEEP)),
+            format!("{}deep", "- ".repeat(DEEP)),
+            format!("{}deep", "1. ".repeat(DEEP)),
+            format!("{}deep", "> - ".repeat(DEEP)),
+        ]
+    }
+
+    /// Run alone in a process by `a_deeply_nested_file_parses_in_a_small_stack`,
+    /// since a stack overflow aborts the process it happens in.
+    #[test]
+    #[ignore = "run by a_deeply_nested_file_parses_in_a_small_stack"]
+    fn deeply_nested_files_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(|| {
+                for file in deep_files() {
+                    let page = Page::parse(&file, "deep.md");
+                    let last = page.rows.last().expect("a row");
+                    assert_eq!(last.text().trim(), "deep", "{}", &file[..8]);
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn a_deeply_nested_file_parses_in_a_small_stack() {
+        let module = module_path!().split_once("::").unwrap().1;
+        let name = format!("{module}::deeply_nested_files_on_a_small_stack");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored", "--nocapture"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn nesting_past_the_limit_flattens_and_shows_everything() {
+        let quotes = format!("{} deep\n", ">".repeat(100));
+        let page = Page::parse(&quotes, "a.md");
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].text(), "deep");
+        assert_eq!(page.rows[0].quotes as usize, MAX_NESTING);
+
+        let mut lists = String::new();
+        for level in 0..40 {
+            lists.push_str(&format!("{}- level {level}\n", "  ".repeat(level)));
+        }
+        lists.push_str(&format!("{}- sibling\n", "  ".repeat(39)));
+        let page = Page::parse(&lists, "a.md");
+        let text: Vec<String> = page.rows.iter().map(|row| row.text()).collect();
+        for level in 0..40 {
+            let found = format!("level {level}");
+            assert!(
+                text.iter().any(|row| row.contains(&found)),
+                "{found} in {text:?}"
+            );
+        }
+        assert!(
+            page.rows
+                .iter()
+                .all(|row| row.indent as usize <= MAX_NESTING),
+            "indent stays bounded"
+        );
+        let last = text.last().unwrap();
+        assert!(
+            last.contains("sibling"),
+            "items past the limit keep their order: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|row| row.contains("level 39sibling")),
+            "and stay apart: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_list_at_the_limit_keeps_its_items_text() {
+        // Quote, list and item nest in turn, so the limit falls on each.
+        for levels in 1..=MAX_NESTING {
+            let file = format!("{}deep", "> - ".repeat(levels));
+            let page = Page::parse(&file, "a.md");
+            assert_eq!(page.rows.last().unwrap().text().trim(), "deep", "{levels}");
+        }
+        for levels in 1..=MAX_NESTING {
+            let file = format!("{}deep", "- ".repeat(levels));
+            let page = Page::parse(&file, "a.md");
+            assert_eq!(page.rows.last().unwrap().text().trim(), "deep", "{levels}");
+        }
+    }
+
+    #[test]
+    fn nesting_up_to_the_limit_is_unchanged() {
+        let quotes = format!("{} kept\n", ">".repeat(MAX_NESTING));
+        assert_eq!(
+            Page::parse(&quotes, "a.md").rows[0].quotes as usize,
+            MAX_NESTING
+        );
+        let page = Page::parse("- a\n  - b\n", "a.md");
+        assert_eq!(page.rows[1].indent, 2);
+        assert_eq!(page.rows[1].marker, Some(Marker::Bullet));
+    }
 
     #[test]
     fn links_open_urls_and_files_inside_the_root_only() {

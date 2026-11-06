@@ -588,7 +588,7 @@ impl MissionWorkspace {
             && !self.settings(cx).mission_rail_open)
             .then(|| {
                 IconButton::new("open-mission-rail", "panel-right-hidden.svg")
-                    .tooltip(crate::i18n::text("ui.open_sessions_panel"))
+                    .tooltip(crate::i18n::text("ui.open_side_panel"))
                     .on_press(move |_, cx| {
                         open_rail_root.update(cx, |this, cx| {
                             this.update_app_settings(cx, true, |settings| {

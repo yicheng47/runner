@@ -4,9 +4,9 @@ Implementation record for [feature 634](../../features/634-file-preview.md) ([#6
 
 ## Status (2026-11-06)
 
-The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. The umbrella holds one commit per mission on top of `main`, and what remains is the gate before landing in [plan.md](plan.md).
+The spec and design are complete: the design was signed off board by board on 2026-11-01 and 2026-11-03 in `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design`, and the spec was narrowed to the file preview on 2026-11-03, with the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141). This plan was written on 2026-11-04 after Jason settled where the work runs, where the chosen root is saved, the umbrella and the platforms. m1, m2 and m3 merged into the umbrella on 2026-11-04, m4, m5, m6 and m7 on 2026-11-05, and m8, the side panel's surfaces with a `+` menu, and m9, the fixes from Jason's live run with the wide Files view and the file finder, on 2026-11-06. m10 fixes what the review of the whole umbrella found. The umbrella holds one commit per mission on top of `main`, and what remains is the gate before landing in [plan.md](plan.md).
 
-The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, which already holds the spec. Nine missions merge into it, and it reaches `main` as one pull request, the draft [#1157](https://github.com/yicheng47/runner/pull/1157), once the gate in the plan passes.
+The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, which already holds the spec. Ten missions merge into it, and it reaches `main` as one pull request, the draft [#1157](https://github.com/yicheng47/runner/pull/1157), once the gate in the plan passes.
 
 | Mission | Phase | Branch | Waits on | Pull request | State |
 | --- | --- | --- | --- | --- | --- |
@@ -19,6 +19,7 @@ The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, w
 | m7 — file links open in the preview | 4 | `feat/634-m7-link-preview` | m6 | [#1198](https://github.com/yicheng47/runner/pull/1198) | Merged 2026-11-05; from Jason's live run, which he also used for its live checks |
 | m8 — side panel surfaces with a + menu | 4 | `feat/634-m8-panel-surfaces` | m7 | [#1199](https://github.com/yicheng47/runner/pull/1199) | Merged 2026-11-06; qa passed its six live checks on macOS in the dark theme on the second attempt |
 | m9 — fixes from Jason's live run | 4 | `feat/634-m9-fixes` | m8 | [#1200](https://github.com/yicheng47/runner/pull/1200) | Merged 2026-11-06; Jason ran the live checks on macOS in the dark theme and passed the core change |
+| m10 — fixes from the umbrella's review | 4 | `feat/634-m10-review-fixes` | m9 | [#1202](https://github.com/yicheng47/runner/pull/1202) | In review |
 
 ## Decisions that bind
 
@@ -51,6 +52,8 @@ The umbrella is `feat/634-file-preview` in `.worktrees/feat-634-file-preview`, w
 - **Files opens wide with an empty view** (Jason, 2026-11-06; board `wNRzb`): once a folder is chosen, Files shows the tree and a file area, which lists the changed files or a quiet prompt. A tree that does not fit takes the panel until a file opens.
 - **The file finder** (Jason, 2026-11-06; board `CGnPc`): ⇧⌘O and a search icon in the tree's header, names only, from anywhere in a chat or mission, centred over the whole view. `files_index` lists the root's files in `runnerd`, so this mission is `core-review`.
 - **Code is always highlighted** (Jason, 2026-11-06): the Syntax highlighting setting is removed, as are the new-chat panel setting and the Settings header preview.
+- **Closing Files gives the width back** (operator, 2026-11-06, Jason may overrule): closing the Files tab, or a surface list reset on re-entering a mission or chat, returns the panel to its normal width and keeps the file tabs, which come back when Files reopens. A file left open still keeps the panel wide while another surface's tab shows.
+- **An open ignored file is read again, not watched** (m10, 2026-11-06): the watcher keeps dropping ignored paths, so that a build stays quiet; the view reads open ignored files every 3 seconds while Files shows, and skips redrawing one whose size and time have not changed. It costs a read of up to 10 MB per such tab per tick, against a new request, per-client state and per-file inotify watches in runnerd.
 - **No CLI surface.** Agents already read files; the new requests are not exposed as `runner` commands.
 
 ## Open

@@ -56,6 +56,14 @@ pub(super) struct OpenFile {
     pub(super) content: Content,
     /// The newest read sent; an older reply arriving late is dropped.
     read: u64,
+    /// Whether that read's reply is still to come.
+    reading: bool,
+    /// The size and time of the text last read, to tell whether it changed.
+    stamp: Option<Stamp>,
+    /// Git has ignored it since it opened, so the watcher says nothing about
+    /// it. This stays: git stops listing an ignored file once it is deleted,
+    /// which is one of the changes to notice.
+    ignored: bool,
     /// A Markdown file's rendered page, drawn instead of its source until
     /// `</>` switches.
     rendered: Option<Entity<MarkdownView>>,
@@ -68,12 +76,20 @@ pub(super) struct OpenFile {
 /// A Markdown file's page and the local images it shows.
 type Rendered = (Arc<Page>, HashMap<String, Arc<gpui::Image>>);
 
+type Stamp = (u64, Option<chrono::DateTime<chrono::Utc>>);
+
 enum Read {
-    Text(Arc<Document>, Option<Rendered>),
+    Text(Arc<Document>, Option<Rendered>, Stamp),
+    /// The text still has the stamp the read was told about.
+    Unchanged,
     Binary(u64),
     TooLarge(u64),
     Missing,
 }
+
+/// How often an open ignored file is read again: the watcher stays quiet about
+/// ignored paths, where a build changes thousands.
+pub(super) const IGNORED_REFRESH: std::time::Duration = std::time::Duration::from_secs(3);
 
 struct Find {
     field: Entity<TextField>,
@@ -319,11 +335,15 @@ impl FilesView {
                 OpenFile {
                     content: Content::Loading,
                     read: 0,
+                    reading: false,
+                    stamp: None,
+                    ignored: false,
                     rendered: None,
                     source,
                     line: None,
                 },
             );
+            self.note_ignored_tabs();
             self.read_file(path.clone(), cx);
         }
         self.tab_shown(cx);
@@ -343,6 +363,9 @@ impl FilesView {
             let moved = tree.reveal(&path);
             self.viewer.reveal = Some(path);
             self.after_move(moved, cx);
+        }
+        if let Some(path) = self.viewer.tabs.active().map(|tab| tab.path.clone()) {
+            self.refresh_ignored(path, cx);
         }
         self.search(cx);
         cx.notify();
@@ -419,7 +442,73 @@ impl FilesView {
         };
     }
 
+    /// Marks the open files the latest status says git ignores.
+    pub(super) fn note_ignored_tabs(&mut self) {
+        let Some(status) = self.tree_ref().and_then(|tree| tree.status()) else {
+            return;
+        };
+        let ignored = self
+            .viewer
+            .files
+            .keys()
+            .filter(|path| status.is_ignored(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        for path in ignored {
+            if let Some(file) = self.viewer.files.get_mut(&path) {
+                file.ignored = true;
+            }
+        }
+    }
+
+    /// Reads `path` again if git has ignored it, unless a read is on its way.
+    fn refresh_ignored(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(file) = self.viewer.files.get(&path) else {
+            return;
+        };
+        if file.ignored && !file.reading {
+            let stamp = file.stamp;
+            self.read_file_since(path, stamp, cx);
+        }
+    }
+
+    /// Keeps the open ignored files current while the view shows.
+    pub(super) fn refresh_ignored_tabs(&self, cx: &mut Context<Self>) -> gpui::Task<()> {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(IGNORED_REFRESH).await;
+            let refreshed = this.update(cx, |this, cx| {
+                let tabs = this.viewer.tabs.tabs();
+                let paths = tabs.iter().map(|tab| tab.path.clone()).collect::<Vec<_>>();
+                for path in paths {
+                    this.refresh_ignored(path, cx);
+                }
+            });
+            if refreshed.is_err() {
+                break;
+            }
+        })
+    }
+
+    /// Resolving the root again drops the replies on their way, so reads
+    /// still waiting for one go out again.
+    pub(super) fn read_again_after_resolve(&mut self, cx: &mut Context<Self>) {
+        let waiting = self
+            .viewer
+            .files
+            .iter()
+            .filter(|(_, file)| file.reading)
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        for path in waiting {
+            self.read_file(path, cx);
+        }
+    }
+
     fn read_file(&mut self, path: String, cx: &mut Context<Self>) {
+        self.read_file_since(path, None, cx);
+    }
+
+    fn read_file_since(&mut self, path: String, since: Option<Stamp>, cx: &mut Context<Self>) {
         let Some(root) = self.root_path().map(PathBuf::from) else {
             return;
         };
@@ -427,6 +516,7 @@ impl FilesView {
         let read = self.viewer.next_read;
         if let Some(file) = self.viewer.files.get_mut(&path) {
             file.read = read;
+            file.reading = true;
         }
         let relative = path.clone();
         let markdown = is_markdown(&path);
@@ -434,7 +524,14 @@ impl FilesView {
             cx,
             move |client| {
                 Ok(match client.files_read(&root, &relative, false)? {
-                    FileContent::Text { bytes, .. } => {
+                    FileContent::Text { size, modified, .. } if since == Some((size, modified)) => {
+                        Read::Unchanged
+                    }
+                    FileContent::Text {
+                        bytes,
+                        size,
+                        modified,
+                    } => {
                         let document = Arc::new(Document::decode(&bytes.0));
                         let rendered = markdown.then(|| {
                             let page = Page::parse(document.text(), &relative);
@@ -448,7 +545,7 @@ impl FilesView {
                                 .collect();
                             (Arc::new(page), images)
                         });
-                        Read::Text(document, rendered)
+                        Read::Text(document, rendered, (size, modified))
                     }
                     FileContent::Binary { size, .. } => Read::Binary(size),
                     FileContent::TooLarge { size } => Read::TooLarge(size),
@@ -479,12 +576,26 @@ impl FilesView {
         if file.read != read {
             return;
         }
+        file.reading = false;
+        let same = match (&result, &file.content) {
+            (Ok(Read::Unchanged), _) | (Ok(Read::Missing), Content::Deleted(_)) => true,
+            (Ok(Read::Binary(new)), Content::Binary { size })
+            | (Ok(Read::TooLarge(new)), Content::TooLarge { size }) => new == size,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        file.stamp = match &result {
+            Ok(Read::Text(_, _, stamp)) => Some(*stamp),
+            _ => None,
+        };
         let previous = std::mem::replace(&mut file.content, Content::Loading);
         let kept = match previous {
             Content::Text(view) | Content::Deleted(Some(view)) => Some(view),
             _ => None,
         };
-        if let Ok(Read::Text(_, Some((page, images)))) = &result {
+        if let Ok(Read::Text(_, Some((page, images)), _)) = &result {
             let (page, images) = (page.clone(), images.clone());
             match &file.rendered {
                 Some(view) => view.update(cx, |view, cx| {
@@ -505,7 +616,7 @@ impl FilesView {
             view.update(cx, |view, cx| view.set_deleted(true, cx));
         }
         file.content = match result {
-            Ok(Read::Text(document, _)) => match kept {
+            Ok(Read::Text(document, ..)) => match kept {
                 Some(view) => {
                     view.update(cx, |view, cx| {
                         view.set_document(document, cx);
@@ -520,6 +631,8 @@ impl FilesView {
                     view
                 })),
             },
+            // Handled above, with the tab left as it is.
+            Ok(Read::Unchanged) => unreachable!(),
             Ok(Read::Binary(size)) => Content::Binary { size },
             Ok(Read::TooLarge(size)) => Content::TooLarge { size },
             Ok(Read::Missing) => {
@@ -1506,6 +1619,11 @@ impl FilesView {
             .tree_ref()
             .map(|tree| tree.changed_files())
             .unwrap_or_default();
+        // More than listed when the status ran past its limits.
+        let total = self
+            .tree_ref()
+            .and_then(|tree| tree.status())
+            .map_or(changed.len(), |status| status.changed.max(changed.len()));
         if changed.is_empty() {
             return self.render_placeholder(
                 "FILE_NO_FILE",
@@ -1516,8 +1634,7 @@ impl FilesView {
             );
         }
         let count = changed.len();
-        let changed = Rc::new(changed);
-        let rows = changed.clone();
+        let rows = changed;
         div()
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILE_CHANGED_LIST".into())
@@ -1542,7 +1659,7 @@ impl FilesView {
                             .text_size(theme::text_ui())
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::text())
-                            .child(crate::i18n::tn("count.changed", count)),
+                            .child(crate::i18n::tn("count.changed", total)),
                     )
                     .child(self.search_button(cx)),
             )
@@ -2195,7 +2312,16 @@ impl FilesView {
     /// A read's reply arriving with `text`, as the daemon would send it.
     pub(crate) fn reply_text(&mut self, path: &str, read: u64, text: &str, cx: &mut Context<Self>) {
         let document = Arc::new(Document::decode(text.as_bytes()));
-        self.apply_read(path.to_owned(), read, Ok(Read::Text(document, None)), cx);
+        self.apply_read(
+            path.to_owned(),
+            read,
+            Ok(Read::Text(document, None, (text.len() as u64, None))),
+            cx,
+        );
+    }
+
+    pub(crate) fn reading(&self, path: &str) -> bool {
+        self.viewer.files.get(path).is_some_and(|file| file.reading)
     }
 
     pub(crate) fn last_search(&self) -> Option<u64> {

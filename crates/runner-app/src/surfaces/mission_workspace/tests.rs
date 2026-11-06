@@ -4671,6 +4671,39 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
         "the closed Files tab opens"
     );
 
+    // A file left open keeps the rail wide behind Sessions; closing Files, or
+    // re-entering the mission, gives the width back and keeps the file's tab.
+    let widened = |visual: &mut gpui::VisualTestContext| {
+        workspace.read_with(visual, |workspace, cx| {
+            workspace.rail_layout(cx).1.is_some()
+        })
+    };
+    assert!(widened(&mut visual));
+    workspace.update(&mut visual, |workspace, _| {
+        workspace.rail_surfaces.open.select(PanelViewId::Sessions)
+    });
+    assert!(widened(&mut visual), "another surface showing");
+    workspace.update(&mut visual, |workspace, _| {
+        workspace.rail_surfaces.open.close(PanelViewId::Files, true)
+    });
+    assert!(!widened(&mut visual), "Files closed");
+    workspace.update(&mut visual, |workspace, _| {
+        workspace.rail_surfaces.open.open(PanelViewId::Files);
+        workspace.rail_surfaces.reset(Default::default());
+    });
+    assert!(!widened(&mut visual), "the surface list reset");
+    assert!(workspace.read_with(&visual, |workspace, cx| {
+        workspace
+            .rail_files
+            .view(&subject)
+            .and_then(|view| view.read(cx).active_tab())
+            == Some("lib.rs".into())
+    }));
+    workspace.update(&mut visual, |workspace, _| {
+        workspace.rail_surfaces.open.open(PanelViewId::Files)
+    });
+    assert!(widened(&mut visual), "Files reopened, with its file");
+
     // ⇧⌘O opens the collapsed rail on Files, with its finder.
     store.update(&mut visual, |store, cx| {
         store.update_settings(

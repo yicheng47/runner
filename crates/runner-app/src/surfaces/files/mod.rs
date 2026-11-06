@@ -32,8 +32,6 @@ use runner_core::protocol::DaemonClient;
 
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 pub(crate) use links::ShowPreview;
-#[allow(unused_imports)]
-pub(crate) use view::FileOpen;
 pub(crate) use view::FilesView;
 
 /// The app's settings; `None` in a test that runs without a store.
@@ -135,6 +133,36 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
     hub
 }
 
+/// Where Files stands among the panel's surfaces. Closing its tab keeps the
+/// view and its file tabs for when it opens again, but gives the width back.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FilesSurface {
+    Shown,
+    /// It has a tab, behind another surface's.
+    Open,
+    Closed,
+}
+
+impl FilesSurface {
+    pub(crate) fn of(
+        surface: side_panel::PanelSurface,
+        settings: &crate::app_settings::AppSettings,
+        open: &side_panel::OpenSurfaces,
+    ) -> Self {
+        let files = side_panel::PanelViewId::Files;
+        if side_panel::shown(surface, settings, open) == Some(files) {
+            Self::Shown
+        } else if side_panel::tabs(surface, settings, open)
+            .iter()
+            .any(|(id, _)| *id == files)
+        {
+            Self::Open
+        } else {
+            Self::Closed
+        }
+    }
+}
+
 /// A side panel's Files views, one per subject, and which one is shown. The
 /// owner calls [`FilesPanel::show`] while it draws the Files view and
 /// [`FilesPanel::hide`] whenever it draws something else or stops drawing,
@@ -205,11 +233,11 @@ impl FilesPanel {
 
     /// Whether the subject's view widens the panel, and if so whether its
     /// tree toggle is on: a root does while Files shows, and an open file
-    /// does beside the panel's other surfaces too.
+    /// does beside the panel's other surfaces too, while Files has its tab.
     pub(crate) fn widening(
         &self,
         subject: &PanelSubject,
-        files_shown: bool,
+        files: FilesSurface,
         cx: &App,
     ) -> Option<bool> {
         self.views
@@ -218,7 +246,11 @@ impl FilesPanel {
             .find(|(shown, _)| shown == subject)
             .and_then(|(_, view)| {
                 let view = view.read(cx);
-                view.widening().filter(|_| files_shown || view.has_tabs())
+                view.widening().filter(|_| match files {
+                    FilesSurface::Shown => true,
+                    FilesSurface::Open => view.has_tabs(),
+                    FilesSurface::Closed => false,
+                })
             })
     }
 
@@ -248,14 +280,14 @@ impl FilesPanel {
     pub(crate) fn layout(
         &self,
         subject: Option<&PanelSubject>,
-        files_shown: bool,
+        files: FilesSurface,
         standard: f32,
         file: f32,
         tree_width: f32,
         gap: f32,
         cx: &App,
     ) -> (f32, Option<Widened>) {
-        let Some(tree) = subject.and_then(|subject| self.widening(subject, files_shown, cx)) else {
+        let Some(tree) = subject.and_then(|subject| self.widening(subject, files, cx)) else {
             return (standard, None);
         };
         let available = self.surface.get() - gap;

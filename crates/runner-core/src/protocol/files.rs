@@ -20,6 +20,13 @@ pub const MAX_INDEX_FILES: usize = 200_000;
 /// The most `files_index` may read and return, in bytes of encoded JSON: half a
 /// wire frame, leaving ample room for the response around the paths.
 pub const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
+/// The most changed files and the most ignored paths a [`GitStatus`] lists.
+pub const MAX_STATUS_PATHS: usize = 200_000;
+/// The most its changed files and its ignored paths may take, in bytes of
+/// encoded JSON: half a wire frame between them, so that a status always fits
+/// in a `files/status` event, with the ignored paths' share kept for them.
+pub const MAX_STATUS_ENTRY_BYTES: usize = 24 * 1024 * 1024;
+pub const MAX_STATUS_IGNORED_BYTES: usize = 8 * 1024 * 1024;
 
 pub const FILES_CHANGED_EVENT: &str = "files/changed";
 pub const FILES_STATUS_EVENT: &str = "files/status";
@@ -120,8 +127,17 @@ pub enum FileStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusEntry {
+    /// A nested repository or a submodule ends in `/`: a folder to its parent
+    /// checkout, which marks it as changed but holds no file of that name.
     pub path: String,
     pub status: FileStatus,
+}
+
+impl StatusEntry {
+    /// Whether the entry is a file on disk: not deleted, and not a folder.
+    pub fn is_changed_file(&self) -> bool {
+        self.status != FileStatus::Deleted && !self.path.ends_with('/')
+    }
 }
 
 /// Every file under a root that git does not ignore, for finding one by name.
@@ -181,7 +197,9 @@ impl IndexBudget {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitStatus {
     pub entries: Vec<StatusEntry>,
-    /// The entries the tree shows: every one but the deleted.
+    /// The changed files the tree shows, listed or not: every entry but the
+    /// deleted and the folders. A lower bound if git's output itself ran past
+    /// what `runnerd` reads, 256 MB.
     pub changed: usize,
     /// Ignored paths as git reports them with `--ignored=matching`: a wholly
     /// ignored folder once, ending in `/`, and ignored files one by one.
@@ -189,19 +207,24 @@ pub struct GitStatus {
     /// The root itself is ignored, or lies inside an ignored folder, so
     /// everything under it is.
     pub root_ignored: bool,
+    /// The checkout reported more than the limits above, so some paths are
+    /// missing.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl GitStatus {
     pub fn new(entries: Vec<StatusEntry>, ignored: Vec<String>) -> Self {
         let changed = entries
             .iter()
-            .filter(|entry| entry.status != FileStatus::Deleted)
+            .filter(|entry| entry.is_changed_file())
             .count();
         Self {
             entries,
             changed,
             ignored,
             root_ignored: false,
+            truncated: false,
         }
     }
 
@@ -289,7 +312,8 @@ pub struct FilesChanged {
     pub root: PathBuf,
     /// Folders whose listing may have changed; `""` is the root.
     pub folders: Vec<String>,
-    /// The changed paths themselves, files or folders.
+    /// The changed paths themselves, files or folders. Empty when the watcher
+    /// cannot say what changed, so anything under the root may have.
     pub paths: Vec<String>,
 }
 
@@ -367,6 +391,32 @@ mod tests {
         assert!(status.is_ignored(""));
         assert!(status.is_ignored("debug/build"));
         assert!(status.rollup().is_empty());
+    }
+
+    #[test]
+    fn a_folder_entry_dots_its_folder_but_is_no_changed_file() {
+        let status = GitStatus::new(
+            vec![
+                entry("nested/", FileStatus::Untracked),
+                entry("vendor/sub/", FileStatus::Modified),
+                entry("a.rs", FileStatus::Modified),
+            ],
+            vec![],
+        );
+        assert_eq!(status.changed, 1);
+        assert_eq!(
+            status.rollup().into_iter().collect::<Vec<_>>(),
+            ["nested", "vendor", "vendor/sub"]
+        );
+    }
+
+    #[test]
+    fn a_status_from_before_truncated_still_reads() {
+        let status: GitStatus = serde_json::from_value(serde_json::json!({
+            "entries": [], "changed": 0, "ignored": [], "root_ignored": false
+        }))
+        .unwrap();
+        assert!(!status.truncated);
     }
 
     #[test]

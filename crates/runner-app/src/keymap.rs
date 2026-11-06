@@ -1087,10 +1087,14 @@ pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
         KeyBinding::new("cmd-f", FindInFile, context),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-c", Copy, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-a", crate::SelectAll, context),
         #[cfg(any(windows, target_os = "linux"))]
         KeyBinding::new("ctrl-f", FindInFile, context),
         #[cfg(any(windows, target_os = "linux"))]
         KeyBinding::new("ctrl-c", Copy, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-a", crate::SelectAll, context),
     ]);
 }
 

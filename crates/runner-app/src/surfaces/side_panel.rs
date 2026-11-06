@@ -435,8 +435,7 @@ fn surface_key(
 
 /// The header (Jason, 2026-11-05, after t3code): the open surfaces as tabs,
 /// the shown one raised with a × where it closes, then `+` for the surface
-/// menu, then `collapse` on the right. Without `menu`, as in Settings'
-/// preview, `+` opens nothing.
+/// menu, then `collapse` on the right.
 pub(crate) fn header_tabs(
     surface: PanelSurface,
     settings: &AppSettings,
