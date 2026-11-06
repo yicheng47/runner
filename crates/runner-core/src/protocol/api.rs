@@ -1,7 +1,7 @@
 use super::mcp::*;
 use super::terminal::*;
 use super::*;
-use super::{agent_skill, command};
+use super::{agent_skill, command, files};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
@@ -186,6 +186,17 @@ macro_rules! daemon_api {
         consume_resume_on_launch(enabled: bool => bool = { enabled }, sizes: HashMap<String, (u16, u16)> => HashMap<String, (u16, u16)> = { sizes }, fallback: (u16, u16) => (u16, u16) = { fallback }) -> AutoResumeReport [false] => |core: &crate::AppCore, enabled: bool, sizes: HashMap<String, (u16, u16)>, fallback: (u16, u16)| { crate::daemon::resume::consume_resume_on_launch(core, enabled, |id| sizes.get(id).copied().or(Some(fallback))) };
         direct_chat_path() -> String [true] => |core: &crate::AppCore| { let snapshot = crate::daemon::discovery_snapshot(core)?; Ok(crate::runtime_status::direct_chat_path(&snapshot.shell_env)) };
         file_link_environment() -> (String, HashMap<String, bool>) [false] => |core: &crate::AppCore| { let snapshot = crate::daemon::discovery_snapshot(core)?; let path = crate::runtime_status::direct_chat_path(&snapshot.shell_env); let found = ["zed", "code", "cursor"].into_iter().map(|command| (command.to_owned(), crate::runtime_status::find_executable(command, &path).is_some())).collect(); Ok((path, found)) };
+
+        files_root(subject: &files::FilesSubject => files::FilesSubject = { subject.clone() }) -> files::FilesRootOutcome [false] => |core: &crate::AppCore, subject: files::FilesSubject| { crate::files::root(core, &subject) };
+        files_set_root(subject: &files::FilesSubject => files::FilesSubject = { subject.clone() }, path: Option<&std::path::Path> => Option<PathBuf> = { path.map(std::path::Path::to_path_buf) }) -> files::FilesRootOutcome [false] => |core: &crate::AppCore, subject: files::FilesSubject, path: Option<PathBuf>| { crate::files::set_root(core, &subject, path.as_deref()) };
+        files_list(root: &std::path::Path => PathBuf = { root.to_path_buf() }, folder: &str => String = { folder.to_owned() }) -> Vec<files::DirEntry> [false] => |core: &crate::AppCore, root: PathBuf, folder: String| { core.files.list(&root, &folder) };
+        files_status(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> files::GitStatus [false] => |core: &crate::AppCore, root: PathBuf| { core.files.status(&root) };
+        files_worktrees(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> Vec<files::WorktreeEntry> [false] => |core: &crate::AppCore, root: PathBuf| { core.files.worktrees(&root) };
+        files_index(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> files::FileIndex [false] => |core: &crate::AppCore, root: PathBuf| { core.files.index(&root) };
+        files_read(root: &std::path::Path => PathBuf = { root.to_path_buf() }, path: &str => String = { path.to_owned() }, want_bytes: bool => Option<bool> = { want_bytes.then_some(true) }) -> files::FileContent [false] => |_core: &crate::AppCore, root: PathBuf, path: String, want_bytes: Option<bool>| { crate::files::read(&root, &path, want_bytes.unwrap_or(false)) };
+        files_watch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.watch(0, root) };
+        files_unwatch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.unwatch(0, &root); Ok(()) };
+        files_recent_folders() -> Vec<PathBuf> [false] => |core: &crate::AppCore| { crate::files::recent_folders(core) };
 
         session_clipboard_file_paths() -> Vec<String> [false] => |_core: &crate::AppCore| { Ok(crate::ops::session::session_clipboard_file_paths()) };
         session_details() -> BTreeMap<String, DirectSessionEntry> [false] =>

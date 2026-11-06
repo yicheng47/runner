@@ -218,8 +218,10 @@ impl From<&AppSettings> for MissionSettingsSnapshot {
     fn from(settings: &AppSettings) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         settings.last_mission_terminal_ids.hash(&mut hasher);
+        settings.info_view.hash(&mut hasher);
+        settings.files_view.hash(&mut hasher);
         Self {
-            rail_open: settings.mission_rail_open,
+            rail_open: settings.mission_rail_shown(),
             rail_width: settings.mission_rail_width.to_bits(),
             fingerprint: hasher.finish(),
         }
@@ -249,6 +251,13 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.sidebar_chats_open.hash(&mut hasher);
         settings.sidebar_collapsed_projects.hash(&mut hasher);
         settings.chat_panel_open.hash(&mut hasher);
+        settings.show_side_panel.hash(&mut hasher);
+        settings.info_view.hash(&mut hasher);
+        settings.files_view.hash(&mut hasher);
+        settings.file_icons.hash(&mut hasher);
+        settings.files_font_family.hash(&mut hasher);
+        settings.files_font_size.hash(&mut hasher);
+        settings.markdown_open_as.hash(&mut hasher);
         settings.chat_panel_width.to_bits().hash(&mut hasher);
         settings.default_crew_id.hash(&mut hasher);
         settings.default_working_dir.hash(&mut hasher);

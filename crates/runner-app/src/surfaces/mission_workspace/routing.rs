@@ -33,6 +33,9 @@ impl NativeRoot {
         if self.route != AppRoute::Chat {
             self.attached.clear();
         }
+        if !matches!(self.route, AppRoute::Chat | AppRoute::ArchivedChat) {
+            self.chat_files.hide(cx);
+        }
         self.report_current_subjects(cx);
         self.record_current_runtime_location();
         if route_changed {
@@ -53,6 +56,7 @@ impl NativeRoot {
                         )
                     });
                     if !still_active {
+                        workspace.rail_files.hide(workspace_cx);
                         workspace.active = false;
                         workspace.attached.clear();
                         workspace_cx.notify();

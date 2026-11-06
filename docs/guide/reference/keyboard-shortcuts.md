@@ -17,6 +17,7 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | New terminal; fill the focused empty pane or create a tab | ⌘T | Ctrl+Shift+T |
 | New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
 | Command palette | ⌘K | Ctrl+Shift+P |
+| Search files by name in the side panel's folder | ⇧⌘O | Ctrl+Shift+O |
 | Toggle sidebar | ⌘S | Ctrl+B |
 | Toggle mission terminal drawer | ⌥F12 | Alt+F12 |
 | Open Settings | ⌘, | Ctrl+, |
@@ -64,6 +65,33 @@ Copy with a selection, paste and zoom work in a terminal in both modes. The sett
 | Close the find bar | Esc | Esc |
 
 Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys inside the find bar are fixed. On Windows and Linux, **Ctrl+F** still reaches the terminal. Esc closes the find bar only while the bar has focus; once the terminal has focus, Esc goes to the program. See [Find in a terminal](../guides/chats-and-windows.md#find-in-a-terminal).
+
+## Side panel surfaces
+
+| Action | Keys |
+| --- | --- |
+| Open Info, or switch to it | I |
+| Open Files, or switch to it | F |
+| Move through the surfaces | ↑ / ↓ |
+| Open the highlighted surface | Return (Enter) |
+| Close the **+** list | Esc |
+
+These keys act only while the **+** list of a side panel, or a panel's **Open a surface** list, has focus; they are fixed. See [Chats, tabs and windows](../guides/chats-and-windows.md).
+
+## Files in the side panel
+
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Open the selected file in the tree | Space or Return | Space or Enter |
+| Next file tab | ⌃Tab | Ctrl+Tab |
+| Previous file tab | ⌃⇧Tab | Ctrl+Shift+Tab |
+| Close the active file tab | ⌘W | Ctrl+Shift+W |
+| Find in the file | ⌘F | Ctrl+F |
+| Copy the selected text | ⌘C | Ctrl+C |
+| Larger or smaller text in the viewer | ⌘+ / ⌘− | Ctrl+= / Ctrl+− |
+| The viewer's text back to the terminal's size | ⌘0 | Ctrl+0 |
+
+These keys act while the side panel's Files view has focus and, except for zoom, are fixed. With focus elsewhere, or no file open, ⌘W (Ctrl+Shift+W) closes the pane as usual. In the file's find bar, Return and ⇧Return step through the matches and Esc closes the bar. The zoom keys change the viewer's text only while the file, its find bar or a rendered page has focus, and follow any rebinding of **Zoom in**, **Zoom out** and **Reset zoom**; in the tree and elsewhere they zoom the app. ⌘-click (Ctrl+click) on a file path in a terminal opens the file in a tab at its line when it is inside the Files view's folder. See [Read a file in the side panel](../guides/chats-and-windows.md#read-a-file-in-the-side-panel).
 
 ## Dialogs
 

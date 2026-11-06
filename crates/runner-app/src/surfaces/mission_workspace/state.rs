@@ -32,7 +32,7 @@ impl MissionWorkspace {
     ) -> Self {
         let settings = &app_store.read(cx).settings;
         let sidebar_collapsed = settings.sidebar_collapsed;
-        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_open);
+        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_shown());
         let root_focus = cx.focus_handle();
         let drawer_focus = cx.focus_handle();
         let drawer_focus_subscriptions = vec![
@@ -269,7 +269,8 @@ impl MissionWorkspace {
             secondary: false,
             duplicate_dismissed: false,
             primary_label: None,
-            rail_view: MissionRailView::default(),
+            rail_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
+            rail_files: Default::default(),
             action_menu,
             menu_actions: Vec::new(),
             menu_pinned: false,
@@ -283,11 +284,7 @@ impl MissionWorkspace {
         }
     }
 
-    pub(super) fn prepare_mission(
-        &mut self,
-        mission_id: String,
-        rail_view: MissionRailView,
-    ) -> u64 {
+    pub(super) fn prepare_mission(&mut self, mission_id: String) -> u64 {
         self.generation += 1;
         self.refresh_generation += 1;
         self.event_resync_generation += 1;
@@ -346,7 +343,7 @@ impl MissionWorkspace {
         self.secondary = false;
         self.duplicate_dismissed = false;
         self.primary_label = None;
-        self.rail_view = rail_view;
+        self.rail_surfaces.reset(Default::default());
         self.rename_modal = None;
         self.session_key_copies.clear();
         self.generation
@@ -354,6 +351,7 @@ impl MissionWorkspace {
 
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
+        self.rail_files.release(cx);
         if self.presentation.release_feed() {
             self.generation += 1;
         }
@@ -806,6 +804,8 @@ impl MissionWorkspace {
         self.store_revisions = revisions;
         if revisions.settings != previous.settings || revisions.locale != previous.locale {
             self.presentation.refresh_settings(&self.app_store, cx);
+            let settings = self.settings(cx).clone();
+            self.rail_surfaces.open.close_off(&settings, true);
             let count = self.feed_list.item_count();
             self.feed_empty_panel_min_height.set(px(0.));
             self.splice_feed_items(0..count, count);

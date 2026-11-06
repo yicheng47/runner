@@ -6,7 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
-- [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
+- [634 — File preview](./634-file-preview.md) — a project tree with git status and a read-only file viewer in the side panel, with a chosen root; the diff and review moved to [#1141](https://github.com/yicheng47/runner/issues/1141) ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 - [1204 — Minimal update flow](./1204-update-experience.md) — a progress-ring sidebar icon and a small Ready popover replacing Sparkle's windows and the update dialog on every platform ([#1204](https://github.com/yicheng47/runner/issues/1204)).
 

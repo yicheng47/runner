@@ -39,6 +39,8 @@ impl NativeRoot {
         }
 
         if revisions.settings != previous.settings {
+            let settings = self.settings(cx).clone();
+            self.chat_surfaces.open.close_off(&settings, false);
             self.sync_role_page_size(cx);
             self.sync_crew_page_size(cx);
             let language = self.settings(cx).language.key();
@@ -50,6 +52,7 @@ impl NativeRoot {
                 .quit_behavior
                 .update(cx, |select, cx| select.set_value(value, cx));
             self.sync_terminal_scrollback_select(cx);
+            self.sync_side_panel_selects(cx);
             #[cfg(target_os = "macos")]
             {
                 let value = self.settings(cx).option_as_meta.key();

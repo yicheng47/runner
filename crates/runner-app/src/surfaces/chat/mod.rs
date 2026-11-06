@@ -491,6 +491,22 @@ impl NativeRoot {
         let layout = self.front_page_layout()?;
         let tab_id = layout.id.clone();
         let focused = layout.focused_session_id().map(str::to_owned);
+        let (session, chat) = self.panel_session_for(focused.as_deref(), cx)?;
+        if chat {
+            self.panel_chat_by_tab.insert(tab_id, session.clone());
+        }
+        Some(session)
+    }
+
+    /// The session the side panel follows once `focused` has focus, and
+    /// whether it is that chat: a chat itself, or for a terminal the tab's
+    /// last focused chat, else its first, else the terminal.
+    pub(crate) fn panel_session_for(
+        &self,
+        focused: Option<&str>,
+        cx: &App,
+    ) -> Option<(String, bool)> {
+        let layout = self.front_page_layout()?;
         let chats = layout
             .session_ids()
             .into_iter()
@@ -501,16 +517,16 @@ impl NativeRoot {
                     .is_some_and(Runtime::is_shell)
             })
             .collect::<Vec<_>>();
-        if let Some(focused) = focused.as_ref().filter(|id| chats.contains(id)) {
-            self.panel_chat_by_tab.insert(tab_id, focused.clone());
-            return Some(focused.clone());
+        if let Some(focused) = focused.filter(|id| chats.iter().any(|chat| chat.as_str() == *id)) {
+            return Some((focused.to_owned(), true));
         }
         self.panel_chat_by_tab
-            .get(&tab_id)
+            .get(&layout.id)
             .filter(|id| chats.contains(id))
             .or_else(|| chats.first())
             .cloned()
-            .or(focused)
+            .or_else(|| focused.map(str::to_owned))
+            .map(|session| (session, false))
     }
 
     pub(crate) fn sync_active_chat_detail(&mut self, cx: &mut Context<Self>) {
@@ -631,6 +647,7 @@ impl NativeRoot {
                                 this.focus_drawer_terminal(&tracked_id, window, cx);
                             } else if this.active_focused_session_id().as_deref()
                                 == Some(tracked_id.as_str())
+                                && !this.chat_surfaces.list_focus().is_focused(window)
                             {
                                 this.focus_active_terminal(window, cx);
                             }

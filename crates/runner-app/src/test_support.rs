@@ -11,7 +11,12 @@ pub(crate) fn core(
     runtime_shell_env: Arc<RwLock<shell_path::LoginShellEnv>>,
     runtime_discovery: Arc<RwLock<shell_path::DiscoveryState>>,
 ) -> AppCore {
+    let events = events::EventChannel::new();
     AppCore {
+        files: Arc::new(runner_daemon::files::FilesService::new(
+            runtime_shell_env.clone(),
+            events.clone(),
+        )),
         remote: Default::default(),
         db,
         app_data_dir,
@@ -27,7 +32,7 @@ pub(crate) fn core(
         mission_roster_locks: Default::default(),
         mission_grid_hint: Arc::new(Mutex::new(None)),
         windows: Arc::new(windows::WindowRegistry::new()),
-        events: events::EventChannel::new(),
+        events,
         session_event_observer: Default::default(),
         reports: Default::default(),
         app_version: "0.0.0-test".into(),

@@ -48,6 +48,7 @@ impl MissionWorkspace {
         let area = area
             .id(id)
             .window_control_area(WindowControlArea::Drag)
+            .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
                 this.titlebar_drag_armed = false;
             }))
@@ -295,7 +296,7 @@ impl MissionWorkspace {
             .absolute()
             .inset_0()
         }));
-        let rail_open = self.settings(cx).mission_rail_open;
+        let rail_open = self.settings(cx).mission_rail_shown();
         let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
             if rail_open { 1. } else { 0. },
             Instant::now(),
@@ -304,16 +305,17 @@ impl MissionWorkspace {
         if rail_animating {
             window.request_animation_frame();
         }
+        let rail_layout = self.rail_layout(cx);
+        let widened = rail_layout.1;
         let rail = self.cached_region(
             "mission-rail",
             gpui::StyleRefinement::default()
-                .w(rems(
-                    self.settings(cx).mission_rail_width * rail_visibility / 16.,
-                ))
+                .w(rems(rail_layout.0 * rail_visibility / 16.))
                 .h_full()
                 .flex_none(),
             move |workspace, window, cx| {
                 workspace.render_mission_rail(
+                    rail_layout,
                     rail_visibility,
                     rail_open || rail_animating,
                     window,
@@ -341,10 +343,9 @@ impl MissionWorkspace {
             })
             .absolute()
             .top_0()
-            .right(px(self.settings(cx).mission_rail_width
-                * rail_visibility
-                * zoom
-                - resize_strip_inset(zoom)))
+            .right(px(
+                rail_layout.0 * rail_visibility * zoom - resize_strip_inset(zoom)
+            ))
             .on_drag(
                 MissionRailResizeDrag,
                 |drag: &MissionRailResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
@@ -358,6 +359,7 @@ impl MissionWorkspace {
             .min_w(px(0.))
             .h_full()
             .flex()
+            .child(self.rail_files.measure(self.settings(cx).app_zoom))
             .child(center)
             .children(
                 (rail_open || rail_animating).then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
@@ -377,9 +379,22 @@ impl MissionWorkspace {
             .on_action(cx.listener(Self::focus_previous_mission_tab))
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
-                |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
+                move |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
+                    // With a file open the drag sizes the file beside the tree.
+                    if let Some(widened) = widened {
+                        let tree = if widened.tree { widened.tree_width } else { 0. };
+                        let width = app_settings::clamp_file_viewer_width(width - tree);
+                        this.update_app_settings(cx, false, |settings| {
+                            if settings.file_viewer_width == width {
+                                return false;
+                            }
+                            settings.file_viewer_width = width;
+                            true
+                        });
+                        return;
+                    }
                     let width = app_settings::clamp_mission_rail_width(width);
                     this.update_app_settings(cx, false, |settings| {
                         if settings.mission_rail_width == width {
@@ -569,20 +584,22 @@ impl MissionWorkspace {
             })
             .into_any_element()
         });
-        let rail_action = (!self.settings(cx).mission_rail_open).then(|| {
-            IconButton::new("open-mission-rail", "panel-right-hidden.svg")
-                .tooltip(crate::i18n::text("ui.open_sessions_panel"))
-                .on_press(move |_, cx| {
-                    open_rail_root.update(cx, |this, cx| {
-                        this.update_app_settings(cx, true, |settings| {
-                            settings.mission_rail_open = true;
-                            true
+        let rail_action = (self.settings(cx).show_side_panel
+            && !self.settings(cx).mission_rail_open)
+            .then(|| {
+                IconButton::new("open-mission-rail", "panel-right-hidden.svg")
+                    .tooltip(crate::i18n::text("ui.open_side_panel"))
+                    .on_press(move |_, cx| {
+                        open_rail_root.update(cx, |this, cx| {
+                            this.update_app_settings(cx, true, |settings| {
+                                settings.mission_rail_open = true;
+                                true
+                            });
+                            cx.notify();
                         });
-                        cx.notify();
-                    });
-                })
-                .into_any_element()
-        });
+                    })
+                    .into_any_element()
+            });
         let row = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
             ChatIcon::mission().render(rems(15. / 16.), theme::accent(), true),
@@ -939,6 +956,7 @@ impl MissionWorkspace {
                             )
                             .scrollable(scrollable)
                             .find(terminal_find.clone())
+                            .file_links(Some(self.file_link_route(cx)))
                             .cached(),
                         )
                         .child(terminal_scrollbar),

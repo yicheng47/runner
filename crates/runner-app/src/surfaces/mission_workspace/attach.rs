@@ -27,7 +27,7 @@ impl MissionWorkspace {
             &mission_id,
             window.is_window_active(),
         );
-        let generation = self.prepare_mission(mission_id.clone(), MissionRailView::Roles);
+        let generation = self.prepare_mission(mission_id.clone());
         self.composer_input.update(cx, |input, input_cx| {
             input.reset("", input_cx);
             input.set_disabled(false, input_cx);
@@ -229,7 +229,7 @@ impl MissionWorkspace {
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let rail_width = if self.settings(cx).mission_rail_open {
+        let rail_width = if self.settings(cx).mission_rail_shown() {
             self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
         } else {
             0.
@@ -280,7 +280,7 @@ impl MissionWorkspace {
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let rail_width = if self.settings(cx).mission_rail_open {
+        let rail_width = if self.settings(cx).mission_rail_shown() {
             self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
         } else {
             0.

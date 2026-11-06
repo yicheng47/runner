@@ -632,6 +632,7 @@ impl NativeRoot {
                     resize_owner,
                     scrollable,
                     find: Some(terminal_find.clone()),
+                    file_links: Some(self.file_link_route(&session_id, cx)),
                 };
                 let surface = surface
                     .render()

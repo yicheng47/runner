@@ -338,7 +338,7 @@ fn role_page_harness(label: &str) -> RolePageHarness {
     });
     let label = label.to_owned();
     let host = cx.add_window(|window, cx| {
-        NativeRoot::new(
+        let mut root = NativeRoot::new(
             label,
             temp.path().join("logs"),
             None,
@@ -346,7 +346,11 @@ fn role_page_harness(label: &str) -> RolePageHarness {
             store.clone(),
             window,
             cx,
-        )
+        );
+        root.chat_surfaces
+            .open
+            .open(crate::surfaces::side_panel::PanelViewId::Info);
+        root
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     RolePageHarness {

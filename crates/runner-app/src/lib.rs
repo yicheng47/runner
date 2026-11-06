@@ -36,6 +36,7 @@ mod assets;
 #[cfg(test)]
 mod catalog_golden;
 mod chat_icon;
+mod file_icons;
 mod file_links;
 mod keymap;
 mod list_controls;
@@ -124,10 +125,12 @@ actions!(
     runner_app_ui,
     [
         AboutRunner,
+        CloseFileTab,
         CloseTab,
         CloseWindow,
         CheckForUpdates,
         CommandPalette,
+        FindInFile,
         FindInTerminal,
         FocusNextPane,
         FocusPreviousPane,
@@ -140,10 +143,12 @@ actions!(
         NavigatePreviousPage,
         NewTab,
         NewTerminal,
+        NextFileTab,
         NewMission,
         ConfirmStartChat,
         NewWindow,
         OpenSettings,
+        PreviousFileTab,
         Quit,
         QuitAndStopSessions,
         SelectTab1,
@@ -158,12 +163,16 @@ actions!(
         ShowAll,
         SplitPaneDown,
         SplitPaneRight,
+        SearchFiles,
         ResumeFocusedSession,
         StopFocusedSession,
         ToggleFullscreen,
         ToggleMaximizePane,
         ToggleTerminalDrawer,
         ToggleSidebar,
+        ZoomFileIn,
+        ZoomFileOut,
+        ZoomFileReset,
         ZoomIn,
         ZoomOut,
         ZoomReset

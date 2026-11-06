@@ -379,6 +379,21 @@ impl NativeRoot {
         self.show_command_palette(window, cx);
     }
 
+    pub(super) fn search_files(
+        &mut self,
+        _: &crate::SearchFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.route {
+            AppRoute::Chat => self.search_files_in_chat(window, cx),
+            AppRoute::Mission(_) => self.mission_workspace.update(cx, |workspace, cx| {
+                workspace.search_files(window, cx);
+            }),
+            _ => cx.propagate(),
+        }
+    }
+
     pub(super) fn open_settings(
         &mut self,
         _: &OpenSettings,

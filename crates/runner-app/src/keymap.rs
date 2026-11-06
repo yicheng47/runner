@@ -6,13 +6,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[cfg(target_os = "macos")]
 use crate::{Hide, HideOthers, Minimize, Quit, QuitAndStopSessions};
 
+use crate::{CloseFileTab, FindInFile, NextFileTab, PreviousFileTab};
 use crate::{
     CloseTab, CloseWindow, CommandPalette, ConfirmStartChat, Copy, FindInTerminal, FocusNextPane,
     FocusPreviousPane, MissionTabNext, MissionTabPrevious, NavigateNextPage, NavigatePreviousPage,
     NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
-    SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6, SelectTab7, SelectTab8,
-    SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession, ToggleFullscreen,
-    ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
+    SearchFiles, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
+    SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
+    ToggleFullscreen, ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,6 +209,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.command-palette.description",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-k", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "search-files",
+                title_key: "keymap.search-files.title",
+                description_key: "keymap.search-files.description",
+                scope: KeymapScope::Global,
+                default: default_combo("shift-cmd-o", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -966,7 +976,7 @@ fn shifted_printable_key(code: &str) -> Option<&'static str> {
     })
 }
 
-fn binding_strings(combo: &KeyCombo) -> Vec<String> {
+pub(crate) fn binding_strings(combo: &KeyCombo) -> Vec<String> {
     let key = if combo
         .code
         .strip_prefix("Key")
@@ -1057,6 +1067,61 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
     }
 }
 
+/// The file viewer's keys, while focus is in a side panel's Files view:
+/// ⌘W there closes the file tab, and with none open falls through to the
+/// pane. A binding without a context counts as matching the deepest one, so
+/// these go after the pane's ⌘W to win the tie, and ⌘W gets a second binding
+/// for the view's text fields.
+pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
+    let context = Some("FileViewer");
+    cx.bind_keys([
+        KeyBinding::new(&platform_default("cmd-w"), CloseFileTab, context),
+        KeyBinding::new(
+            &platform_default("cmd-w"),
+            CloseFileTab,
+            Some("FileViewer > TextInput"),
+        ),
+        KeyBinding::new("ctrl-tab", NextFileTab, context),
+        KeyBinding::new("ctrl-shift-tab", PreviousFileTab, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-f", FindInFile, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-c", Copy, context),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-a", crate::SelectAll, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-f", FindInFile, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-c", Copy, context),
+        #[cfg(any(windows, target_os = "linux"))]
+        KeyBinding::new("ctrl-a", crate::SelectAll, context),
+    ]);
+}
+
+/// Zoom's keys, as bound or rebound, step the file viewer's text while it has
+/// focus instead of the app (Jason, 2026-11-05); from the tree the Files
+/// view hands them on to the app's zoom. Installed after app zoom's
+/// bindings, since the later of two equally deep bindings wins.
+pub(crate) fn install_file_zoom_bindings(cx: &mut App, overrides: &KeymapOverrides) {
+    let combos = |id| {
+        effective_binding(id, overrides)
+            .map(|combo| binding_strings(&combo))
+            .unwrap_or_default()
+    };
+    // The find field is a text input inside the viewer.
+    for context in [Some("FileViewer"), Some("FileViewer > TextInput")] {
+        for binding in combos("zoom-in") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileIn, context)]);
+        }
+        for binding in combos("zoom-out") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileOut, context)]);
+        }
+        for binding in combos("zoom-reset") {
+            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileReset, context)]);
+        }
+    }
+}
+
 pub(crate) fn install_bindings(
     cx: &mut App,
     overrides: &KeymapOverrides,
@@ -1094,6 +1159,7 @@ pub(crate) fn install_bindings(
             cx.bind_keys([KeyBinding::new(&binding, CloseTab, None)]);
         }
     }
+    install_file_viewer_bindings(cx);
     if let Some(combo) = effective_binding("system-close-window", overrides) {
         for binding in binding_strings(&combo) {
             cx.bind_keys([KeyBinding::new(&binding, CloseWindow, None)]);
@@ -1121,6 +1187,7 @@ pub(crate) fn install_bindings(
                 "new-terminal" => KeyBinding::new(&binding, NewTerminal, context),
                 "new-mission" => KeyBinding::new(&binding, NewMission, context),
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
+                "search-files" => KeyBinding::new(&binding, SearchFiles, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
                 "toggle-terminal-drawer" => {
                     KeyBinding::new(&binding, ToggleTerminalDrawer, context)
@@ -1155,6 +1222,8 @@ pub(crate) fn install_bindings(
             cx.bind_keys([key_binding]);
         }
     }
+    // After app zoom's own bindings, which a later binding outranks.
+    install_file_zoom_bindings(cx, overrides);
     install_modal_bindings(cx);
 }
 
@@ -1220,7 +1289,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 34);
+        assert_eq!(entries().len(), 35);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1637,7 +1706,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 31] = [
+        let expected: [ExpectedEntry<'_>; 32] = [
             (
                 "new-window",
                 &[("shift-cmd-n", "n", true, false, false, true)],
@@ -1646,6 +1715,10 @@ mod tests {
             (
                 "command-palette",
                 &[("cmd-k", "k", true, false, false, false)],
+            ),
+            (
+                "search-files",
+                &[("shift-cmd-o", "o", true, false, false, true)],
             ),
             (
                 "toggle-sidebar",
@@ -1796,6 +1869,10 @@ mod tests {
             (
                 "command-palette",
                 key_combo("KeyK", true, false, false, false, None, false),
+            ),
+            (
+                "search-files",
+                key_combo("KeyO", true, false, false, true, None, false),
             ),
             (
                 "toggle-sidebar",
@@ -2146,6 +2223,7 @@ mod tests {
             ("new-mission", "Ctrl+Shift+M"),
             ("new-window", "Ctrl+Shift+N"),
             ("command-palette", "Ctrl+Shift+P"),
+            ("search-files", "Ctrl+Shift+O"),
             ("toggle-sidebar", "Ctrl+B"),
             ("split-pane-right", "Ctrl+Shift+D"),
             ("split-pane-down", "Alt+Shift+D"),
@@ -2205,6 +2283,30 @@ mod tests {
             (None, None) => {}
             _ => panic!("{key} in {stack:?}: expected {action:?}, got {actual:?}"),
         }
+    }
+
+    #[test]
+    fn zoom_keys_and_their_rebinds_step_the_file_text_only_in_the_viewer() {
+        let mut overrides = KeymapOverrides::new();
+        let rebound = combo_for("KeyK", false);
+        overrides.insert("zoom-in".into(), Some(rebound.clone()));
+        let rebound = binding_strings(&rebound)[0].clone();
+        let reset = binding_strings(&entry("zoom-reset").unwrap().default)[0].clone();
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
+            for viewer in [
+                &["Root", "FileViewer"][..],
+                &["Root", "FileViewer", "TextInput"],
+            ] {
+                assert_fires(cx, &rebound, viewer, Some(&crate::ZoomFileIn));
+                assert_fires(cx, &reset, viewer, Some(&crate::ZoomFileReset));
+            }
+            for elsewhere in [TERMINAL, SIDEBAR] {
+                assert_fires(cx, &rebound, elsewhere, Some(&ZoomIn));
+                assert_fires(cx, &reset, elsewhere, Some(&ZoomReset));
+            }
+        });
     }
 
     const TERMINAL: &[&str] = &["Root", "ChatSplit", "Terminal"];

@@ -548,6 +548,24 @@ impl ConnectionWindows {
                 _ => unreachable!(),
             });
         }
+        if let Request::files_watch { root } = request {
+            // Before the owners lock, since typing in any window waits on it.
+            let prepared = self.core.files.prepare_watch(&root);
+            // Under it, so a watch in flight cannot outlive `remove`.
+            let _owners = self.owners.lock().unwrap();
+            if self.closed.is_cancelled() {
+                return None;
+            }
+            return Some(Response::files_watch(
+                prepared
+                    .and_then(|prepared| self.core.files.subscribe(self.id, root, prepared))
+                    .map_err(|error| ClientError::msg(error.to_string())),
+            ));
+        }
+        if let Request::files_unwatch { root } = request {
+            self.core.files.unwatch(self.id, &root);
+            return Some(Response::files_unwatch(Ok(())));
+        }
         if let Request::remote_follow { computer, follow } = request {
             return Some(Response::remote_follow(
                 super::block_on(async {
@@ -683,6 +701,7 @@ impl ConnectionWindows {
     fn remove(&self) {
         self.core.remote.owner_gone(self.id);
         let mut owners = self.owners.lock().unwrap();
+        self.core.files.client_gone(self.id);
         self.core.sessions.clear_connection_compositions(self.id);
         owners.retain(|label, owner| {
             if *owner != self.id {
@@ -726,6 +745,25 @@ fn response_frame(id: u64, response: Response) -> std::io::Result<Frame> {
                 message: format!("response too large from runnerd: {error}"),
             },
         ),
+    }
+}
+/// An event too large for a frame cannot reach the client, which hears that
+/// it missed one, as when it lags, and keeps its connection.
+fn event_frame(event: &wire::Event) -> std::io::Result<Frame> {
+    let frame = Frame::json(wire::EVENT, event)?;
+    match frame.check_size() {
+        Ok(_) => Ok(frame),
+        Err(error) => {
+            let name = event.event.as_ref().map_or("", |event| event.name.as_str());
+            log::warn!("dropping event {name}: {error}");
+            Frame::json(
+                wire::EVENT,
+                &wire::Event {
+                    event: None,
+                    lagged: Some(1),
+                },
+            )
+        }
     }
 }
 #[allow(clippy::too_many_arguments)]
@@ -917,7 +955,7 @@ async fn connection(
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => wire::Event { event: None, lagged: Some(count) },
                         Err(_) => break,
                     };
-                    write_frame(&mut write, Frame::json(wire::EVENT, &event)?).await?;
+                    write_frame(&mut write, event_frame(&event)?).await?;
                 }
                 received = incoming.recv() => {
                     let frame = received.context("client reader closed")??;
@@ -1160,6 +1198,27 @@ pub(crate) async fn remote_test_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_oversized_event_tells_the_client_it_missed_one() {
+        let event = |size: usize| wire::Event {
+            event: Some(runner_core::protocol::ClientEvent {
+                name: "files/status".into(),
+                payload: serde_json::Value::String("x".repeat(size)),
+            }),
+            lagged: None,
+        };
+        let frame = event_frame(&event(1024)).unwrap();
+        let decoded: wire::Event = frame.decode().unwrap();
+        assert!(decoded.event.is_some());
+        assert_eq!(decoded.lagged, None);
+
+        let frame = event_frame(&event(wire::MAX_FRAME)).unwrap();
+        frame.encode().unwrap();
+        let decoded: wire::Event = frame.decode().unwrap();
+        assert!(decoded.event.is_none());
+        assert_eq!(decoded.lagged, Some(1));
+    }
 
     #[test]
     fn connection_cleanup_and_desktop_takeback_release_owned_compositions() {
@@ -1771,6 +1830,100 @@ mod tests {
             }
             response => panic!("unexpected response: {response:?}"),
         }
+    }
+
+    #[test]
+    fn a_disconnect_releases_the_connection_s_file_watches() {
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let connection = |id| ConnectionWindows {
+            core: core.clone(),
+            owners: Arc::new(Mutex::default()),
+            id,
+            closed: CancellationToken::new(),
+        };
+        let (first, second) = (connection(1), connection(2));
+        let watch = |windows: &ConnectionWindows| {
+            windows.dispatch(Request::files_watch {
+                root: root.path().to_path_buf(),
+            })
+        };
+        assert!(matches!(watch(&first), Some(Response::files_watch(Ok(())))));
+        assert!(matches!(
+            watch(&second),
+            Some(Response::files_watch(Ok(())))
+        ));
+        first.closed.cancel();
+        first.remove();
+        assert!(watch(&first).is_none());
+        assert_eq!(core.files.watched_roots(), [root.path().to_path_buf()]);
+        second.closed.cancel();
+        second.remove();
+        assert!(core.files.watched_roots().is_empty());
+    }
+
+    #[test]
+    fn a_watch_preparing_on_a_slow_disk_holds_up_no_other_connection() {
+        use runner_core::protocol::terminal::InputEvent;
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let owners = Arc::new(Mutex::default());
+        let connection = |id| {
+            Arc::new(ConnectionWindows {
+                core: core.clone(),
+                owners: Arc::clone(&owners),
+                id,
+                closed: CancellationToken::new(),
+            })
+        };
+        let (watching, typing) = (connection(1), connection(2));
+        let (entered, release) = core.files.hold_next_watch();
+        let path = root.path().to_path_buf();
+        let worker =
+            std::thread::spawn(move || watching.dispatch(Request::files_watch { root: path }));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            typing.dispatch(Request::terminal_observe_input {
+                session_id: "elsewhere".into(),
+                input: InputEvent::Composing { composing: false },
+            });
+            typing.dispatch(Request::window_register {
+                label: "other".into(),
+            });
+            done_tx.send(()).unwrap();
+        });
+        let passed = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        release.send(()).unwrap();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Some(Response::files_watch(Ok(())))
+        ));
+        assert!(passed, "typing waited on a watch's disk work");
+        assert_eq!(core.files.watched_roots(), [root.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn a_watch_preparing_when_its_connection_closes_never_starts() {
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let windows = Arc::new(ConnectionWindows {
+            core: core.clone(),
+            owners: Arc::new(Mutex::default()),
+            id: 1,
+            closed: CancellationToken::new(),
+        });
+        let (entered, release) = core.files.hold_next_watch();
+        let (queued, path) = (windows.clone(), root.path().to_path_buf());
+        let worker =
+            std::thread::spawn(move || queued.dispatch(Request::files_watch { root: path }));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        windows.closed.cancel();
+        windows.remove();
+        release.send(()).unwrap();
+        assert!(worker.join().unwrap().is_none());
+        assert!(core.files.watched_roots().is_empty());
     }
 
     #[test]
