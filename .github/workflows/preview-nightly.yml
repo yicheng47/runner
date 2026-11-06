@@ -3,8 +3,9 @@ name: Preview nightly on push
 on:
   push:
     # Umbrella branches cut as preview-nightly. nightly.yml's prepare job reads this list too.
+    # no-umbrella-branch is a placeholder that matches nothing while no umbrella is running.
     branches:
-      - feat/634-file-preview
+      - no-umbrella-branch
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
