@@ -59,6 +59,7 @@ enum PaletteDestination {
     NewMission,
     InstallRunnerCommand,
     UninstallRunnerCommand,
+    ShowUpdate,
     Mission(String),
     Chat(String),
     Role(String),
@@ -296,6 +297,31 @@ fn palette_items(
     items
 }
 
+fn update_is_visible(cx: &App) -> bool {
+    cx.try_global::<GlobalUpdater>().is_some_and(|updater| {
+        crate::surfaces::update_ui::visible_update_state(updater.0.read(cx)).is_some()
+    })
+}
+
+/// The keyboard's way to the update popover, since a terminal keeps Tab for itself.
+fn show_update_item() -> PaletteItem {
+    let label = crate::i18n::text("ui.show_runner_update");
+    PaletteItem {
+        kind: PaletteKind::Command,
+        runtime: None,
+        live: false,
+        id: "show-update".into(),
+        label: label.into(),
+        destination: PaletteDestination::ShowUpdate,
+        search_text: format!(
+            "{label} {} update upgrade download install restart",
+            i18n::text_for(i18n::Locale::English, "ui.show_runner_update")
+        )
+        .to_lowercase(),
+        order: usize::MAX,
+    }
+}
+
 fn filtered_palette_items<'a>(items: &'a [PaletteItem], query: &str) -> Vec<&'a PaletteItem> {
     let query = query.trim().to_lowercase();
     let mut filtered = items
@@ -524,6 +550,9 @@ impl CommandPaletteState {
                 store.runner_command_status(),
             )
         };
+        if self.remote_data.is_none() && update_is_visible(cx) {
+            self.items.push(show_update_item());
+        }
         self.query.clear();
         self.active_index = 0;
         self.list_scroll.set_offset(point(px(0.), px(0.)));
@@ -651,6 +680,10 @@ impl CommandPaletteState {
                 }
                 PaletteDestination::UninstallRunnerCommand => {
                     shell.uninstall_runner_command(shell_cx);
+                    true
+                }
+                PaletteDestination::ShowUpdate => {
+                    shell.show_update_from_keyboard(window, shell_cx);
                     true
                 }
                 PaletteDestination::Mission(mission_id) => {

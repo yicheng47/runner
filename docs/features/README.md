@@ -8,6 +8,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 - [634 — File preview and code review](./634-file-preview-and-review.md) — a project tree, read-only file/diff tabs, a base picker and review comments returned to the agent; design before implementation ([#634](https://github.com/yicheng47/runner/issues/634)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
+- [1204 — Minimal update flow](./1204-update-experience.md) — a progress-ring sidebar icon and a small Ready popover replacing Sparkle's windows and the update dialog on every platform ([#1204](https://github.com/yicheng47/runner/issues/1204)).
 
 0.19.0 shipped pane islands ([#1086](https://github.com/yicheng47/runner/issues/1086)), whose spec is retained in the [archive](archive/1086-pane-islands.md), and the launcher ([#1092](https://github.com/yicheng47/runner/issues/1092)), idle-only inbox delivery ([#1046](https://github.com/yicheng47/runner/issues/1046)) and host PIN setup ([#1044](https://github.com/yicheng47/runner/issues/1044)), whose specs are deleted; the [guide](../guide/README.md), the [delivery walkthrough](../tech/mission-message-delivery.md) and their validation records hold the current behavior.
 

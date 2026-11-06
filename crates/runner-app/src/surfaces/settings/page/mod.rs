@@ -82,7 +82,6 @@ pub(crate) enum SettingsPane {
     Skills,
     Mcp,
     Updates,
-    Diagnostics,
     About,
     Archived,
 }
@@ -101,8 +100,7 @@ impl SettingsPane {
             Some("mcp") => Self::Mcp,
             Some("skills") => Self::Skills,
             Some("updates") => Self::Updates,
-            Some("diagnostics") => Self::Diagnostics,
-            Some("about") => Self::About,
+            Some("about") | Some("diagnostics") => Self::About,
             Some("archived") => Self::Archived,
             Some("general") | None | Some(_) => Self::General,
         }
@@ -122,7 +120,6 @@ impl SettingsPane {
             Self::Skills => "skills",
             Self::Mcp => "mcp",
             Self::Updates => "updates",
-            Self::Diagnostics => "diagnostics",
             Self::About => "about",
             Self::Archived => "archived",
         }
@@ -142,7 +139,6 @@ impl SettingsPane {
             Self::Skills => crate::i18n::text("ui.skills"),
             Self::Mcp => "MCP",
             Self::Updates => crate::i18n::text("ui.updates"),
-            Self::Diagnostics => crate::i18n::text("ui.diagnostics"),
             Self::About => crate::i18n::text("ui.about"),
             Self::Archived => crate::i18n::text("ui.archived"),
         }
@@ -172,6 +168,7 @@ impl SettingsPane {
                 "terminal.scrollback",
                 "terminal.copy_on_select",
             ],
+            Self::About => &["ui.application_logs"],
             _ => &[],
         };
         keys.iter().map(|key| crate::i18n::text(key)).collect()
@@ -191,7 +188,6 @@ impl SettingsPane {
             Self::Skills => "file-text.svg",
             Self::Mcp => "plug.svg",
             Self::Updates => "refresh-cw.svg",
-            Self::Diagnostics => "file-text.svg",
             Self::About => "info.svg",
             Self::Archived => "archive.svg",
         }
@@ -216,11 +212,7 @@ const INTEGRATION_PANES: &[SettingsPane] = &[
 
 const CLOUD_PANES: &[SettingsPane] = &[SettingsPane::Account, SettingsPane::Remote];
 
-const SYSTEM_PANES: &[SettingsPane] = &[
-    SettingsPane::Updates,
-    SettingsPane::Diagnostics,
-    SettingsPane::About,
-];
+const SYSTEM_PANES: &[SettingsPane] = &[SettingsPane::Updates, SettingsPane::About];
 
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.app", APP_PANES),
@@ -305,7 +297,6 @@ pub(crate) struct SettingsState {
     skills: Option<Entity<settings::skills::SkillsPane>>,
     mcp: Option<Entity<settings::mcp::McpPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
-    diagnostics: Option<Entity<settings::diagnostics::DiagnosticsPane>>,
     about: Option<Entity<settings::about::AboutPane>>,
     archived: Option<Entity<settings::archived::ArchivedPane>>,
     nav_scroll: ScrollHandle,
@@ -556,7 +547,6 @@ impl SettingsState {
             skills: None,
             mcp: None,
             updates: None,
-            diagnostics: None,
             about: None,
             archived: None,
             nav_scroll,
@@ -815,9 +805,6 @@ impl NativeRoot {
         if self.settings_page.pane != pane {
             self.dismiss_remote_dialog();
         }
-        if self.settings_page.pane == SettingsPane::Updates && pane != SettingsPane::Updates {
-            self.pause_updates_pane(cx);
-        }
         if pane != SettingsPane::Shortcuts && self.settings_page.shortcut_recording.is_some() {
             self.finish_shortcut_recording(window, cx);
         }
@@ -901,24 +888,23 @@ impl NativeRoot {
                 if self.settings_page.updates.is_none() {
                     let app_store = self.app_store.clone();
                     let updater = runner_app::updater::global_updater(cx);
+                    let log_dir = self.log_dir.clone();
+                    let root = cx.weak_entity();
                     self.settings_page.updates = Some(cx.new(|pane_cx| {
-                        settings::updates::UpdatesPane::new(app_store, updater, pane_cx)
+                        settings::updates::UpdatesPane::new(
+                            app_store, updater, log_dir, root, pane_cx,
+                        )
                     }));
                 }
                 if let Some(updates) = self.settings_page.updates.clone() {
                     updates.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
-            SettingsPane::Diagnostics => {
-                if self.settings_page.diagnostics.is_none() {
-                    let log_dir = self.log_dir.clone();
-                    self.settings_page.diagnostics =
-                        Some(cx.new(move |_| settings::diagnostics::DiagnosticsPane::new(log_dir)));
-                }
-            }
             SettingsPane::About => {
                 if self.settings_page.about.is_none() {
-                    self.settings_page.about = Some(cx.new(|_| settings::about::AboutPane::new()));
+                    let log_dir = self.log_dir.clone();
+                    self.settings_page.about =
+                        Some(cx.new(move |_| settings::about::AboutPane::new(log_dir)));
                 }
             }
             SettingsPane::Archived => {
@@ -1221,12 +1207,6 @@ impl NativeRoot {
         }
         if let Some(agents) = self.settings_page.agents.clone() {
             agents.update(cx, |pane, pane_cx| pane.refresh_live_sessions(pane_cx));
-        }
-    }
-
-    pub(crate) fn pause_updates_pane(&self, cx: &mut Context<Self>) {
-        if let Some(updates) = self.settings_page.updates.clone() {
-            updates.update(cx, |pane, _| pane.pause());
         }
     }
 
@@ -2129,7 +2109,7 @@ mod tests {
                 all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
                 ["App", "Integrations", "Cloud", "System"]
             );
-            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
+            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 14);
             assert_eq!(
                 all[0],
                 (
@@ -3016,6 +2996,23 @@ mod localization_tests {
                 "File"
             );
         });
+    }
+
+    #[test]
+    fn diagnostics_left_the_nav_and_a_saved_pane_opens_about() {
+        assert_eq!(
+            SettingsPane::from_route(Some("diagnostics")),
+            SettingsPane::About
+        );
+        assert_eq!(
+            SYSTEM_PANES,
+            [SettingsPane::Updates, SettingsPane::About].as_slice()
+        );
+        assert!(filtered_nav_groups("diagnostics").is_empty());
+        assert_eq!(
+            filtered_nav_groups("application logs"),
+            vec![("System", vec![SettingsPane::About])]
+        );
     }
 
     #[test]

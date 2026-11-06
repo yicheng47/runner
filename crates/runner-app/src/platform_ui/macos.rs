@@ -125,17 +125,6 @@ pub(crate) fn sidebar_section() -> Div {
     div().flex_none()
 }
 
-pub(crate) fn update_hint_tooltip(version: &str) -> String {
-    crate::i18n::tf(
-        "format.runner_is_ready_to_install",
-        &[("version", (version).to_string())],
-    )
-}
-
-pub(crate) fn activate_update_hint(updater: &Entity<Updater>, cx: &mut App) {
-    updater.read(cx).check_for_updates();
-}
-
 pub(crate) fn finish_window_close(_window: &mut Window) -> bool {
     true
 }

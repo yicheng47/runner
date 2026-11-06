@@ -1,6 +1,6 @@
 # 故障排查
 
-先检查失败的智能体或命令，再查看 Runner 设置与诊断。以下步骤会保留已有聊天和任务，帮助你定位问题。
+先检查失败的智能体或命令，再查看 Runner 设置与日志。以下步骤会保留已有聊天和任务，帮助你定位问题。
 
 ## Runner 无法打开
 
@@ -63,12 +63,12 @@ CLI 监控请运行 `runner mission show <mission-id> --json`，并阅读跟随�
 
 在 macOS 的 **关于 Runner（About Runner）** ，或各平台的 **设置 → 关于（Settings → About）** 中查看版本。macOS 关于窗口显示应用图标、版本与构建标识，以及版权。发布构建包含提交标识，本地开发构建显示 `dev`。
 
-打开 **设置 → 诊断 → 打开日志文件夹（Settings → Diagnostics → Open log folder）** 。在 [GitHub issue](https://github.com/yicheng47/runner/issues/new) 中附上 Runner 版本、操作系统、智能体 CLI 及版本、失败步骤与可见错误。去除密钥与私密对话后，仅分享相关日志片段。保留原会话与日志，直到证据已收集；删除应用数据不应是排障第一步。
+打开 **设置 → 关于 → 打开日志文件夹（Settings → About → Open log folder）** （macOS 上为 **在访达中显示日志（Reveal logs in Finder）** ）。在 [GitHub issue](https://github.com/yicheng47/runner/issues/new) 中附上 Runner 版本、操作系统、智能体 CLI 及版本、失败步骤与可见错误。去除密钥与私密对话后，仅分享相关日志片段。保留原会话与日志，直到证据已收集；删除应用数据不应是排障第一步。
 
 ## Linux 本地构建
 
 源码构建、图形依赖、安装包与 WSL 设置见 [main 上的 Linux 开发说明](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md)。通过 SSH 使用 CLI 时，请先运行 `systemctl --user start runnerd`；远程 CLI 调用不会自动启动服务。最小用户服务会解析账号登录 Shell 以发现 PATH。检查 `systemctl --user status runnerd` 与所选 XDG 数据根目录中的日志目录。
 
-Linux 通知权限由桌面管理。Runner 无法查询通用权限状态；请确认桌面通知守护进程与 portal 后端可用。GPUI 支持剪贴板文本，但不支持剪贴板文件路径。应用更新使用 **设置 → 更新（Settings → Updates）** 。系统 deb 安装需要桌面 polkit 认证代理与 `pkexec`。取消授权、包管理器忙碌或依赖错误会显示在 Runner 中；解决原因后重试。 **设置 → 诊断** 显示安装日志。源码构建与非受管理安装不能自我替换；请先安装受管理的包。WSL systemd 服务无法让空闲发行版保持运行。
+Linux 通知权限由桌面管理。Runner 无法查询通用权限状态；请确认桌面通知守护进程与 portal 后端可用。GPUI 支持剪贴板文本，但不支持剪贴板文件路径。应用更新使用 **设置 → 更新（Settings → Updates）** 。系统 deb 安装需要桌面 polkit 认证代理与 `pkexec`。取消授权、包管理器忙碌或依赖错误会显示在 Runner 中；解决原因后重试。 **设置 → 关于** 显示安装日志。源码构建与非受管理安装不能自我替换；请先安装受管理的包。WSL systemd 服务无法让空闲发行版保持运行。
 
 普通 Linux 窗口可拖动边缘或角调整大小。标题栏中间按钮切换最大化与还原；最大化/全屏窗口没有调整边框。新窗口使用桌面报告的逻辑显示边界。若合成器不报告独立工作区，边界可能包含面板/任务栏区域。报告窗口控制问题时，请注明桌面/会话类型，以及最大化、还原或边缘拖动中哪项失败。

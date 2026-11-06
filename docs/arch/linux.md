@@ -127,12 +127,8 @@ Consult the feature record for exact candidate/commands and outcomes. ARM64 nati
 
 ## In-app updates
 
-Linux owns its updater state, scheduling, transport and verification in
-`updater/linux.rs`, installation in `updater/linux/install.rs`, and its update
-settings/dialog in `updates_linux.rs` and `update_dialog_linux.rs`. Windows keeps
-its existing updater and views; macOS retains Sparkle. The application-facing
-updater entry points select the implementation at compile time.
-Stable updates compare semantic versions; nightlies compare UTC build stamps. A nightly build reads `releases/tags/nightly` and a preview nightly reads `releases/tags/preview-nightly`, and each selects only packages labelled with its own channel. The retired remote-nightly channel is not produced or selected. Each architecture/format needs its own signature; unsigned older releases cannot be installed by the updater.
+Linux owns its scheduling, transport and verification in `updater/linux.rs` and installation in `updater/linux/install.rs`, and reports into the `UpdateState` that all platforms share. The sidebar icon, popover and Settings → Updates are shared code; Windows keeps its own engine and macOS retains Sparkle. The application-facing updater entry points select the implementation at compile time.
+A download asked for during a check shows as downloading at once and starts if the check succeeds, because the check can replace the candidate; a failed check reports its error instead, and Cancel holds off an automatic download for that check. Stable updates compare semantic versions; nightlies compare UTC build stamps. A nightly build reads `releases/tags/nightly` and a preview nightly reads `releases/tags/preview-nightly`, and each selects only packages labelled with its own channel. The retired remote-nightly channel is not produced or selected. Each architecture/format needs its own signature; unsigned older releases cannot be installed by the updater.
 
 Before update selection and installation (including the privileged installer), the executable path must name the running `/proc/self/exe` inode and be a regular file. If an external tar installer or APT replaces or removes it, the old process reports an explicit restart requirement before selecting a package or scheduling relaunch. It does not strip Linux's ` (deleted)` suffix or trust a replacement pathname. Restart Runner to resume updates; ordinary updater-managed replacement retains the validated path captured before installation for relaunch.
 

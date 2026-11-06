@@ -87,10 +87,6 @@ impl Render for SidebarResizeDrag {
     }
 }
 
-fn app_update_hint_version(available: Option<&runner_app::updater::UpdateInfo>) -> Option<&str> {
-    available.map(|update| update.version())
-}
-
 pub(crate) fn terminal_style_for(
     settings: &app_settings::AppSettings,
     cx: &App,
@@ -270,27 +266,21 @@ impl NativeRoot {
                     .clone()
                     .map(|dialog| deferred(dialog).with_priority(150)),
             )
-            .map(|root| {
-                // Stays inside the content root so the scrim ends at the Windows title bar.
-                #[cfg(any(windows, target_os = "linux"))]
-                let root = root
-                    .children(self.update_dialog.clone().map(deferred))
-                    .on_action(cx.listener(Self::open_update_dialog));
-                root
-            })
             .map(|root| self.decorate_window(root, window, cx))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_sidebar.update(cx, |sidebar, sidebar_cx| {
                     sidebar.handle_shortcut_modifiers_changed(event.modifiers, window, sidebar_cx);
                 });
             })
-            .capture_key_down(move |event, _, cx| {
+            .capture_key_down(move |event, window, cx| {
                 if event.keystroke.key == "escape" {
                     usage_root.update(cx, |this, cx| {
                         if this.usage_open {
                             this.usage_open = false;
                             cx.stop_propagation();
                             cx.notify();
+                        } else {
+                            this.close_unfocused_update_popover(window, cx);
                         }
                     });
                 }
@@ -1475,7 +1465,14 @@ mod tests {
             div()
                 .w(px(self.width * self.zoom))
                 .child(self.root.update(cx, |root, cx| {
-                    root.render_sidebar_brand(self.available.then(|| "0.99.0".into()), cx)
+                    let update =
+                        self.available
+                            .then(|| runner_app::updater::UpdateState::Available {
+                                info: runner_app::updater::UpdateInfo::new("0.99.0"),
+                                size: 0,
+                                manual_only: false,
+                            });
+                    root.render_sidebar_brand(update, window, cx)
                 }))
         }
     }
@@ -1961,14 +1958,6 @@ mod tests {
             route_after_mission_archived(&open_archived, "mission-1", Some(false), false),
             None
         );
-    }
-
-    #[test]
-    fn app_update_hint_shows_available_version() {
-        let available = runner_app::updater::UpdateInfo::new("0.6.1");
-
-        assert_eq!(app_update_hint_version(None), None);
-        assert_eq!(app_update_hint_version(Some(&available)), Some("0.6.1"));
     }
 }
 

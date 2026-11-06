@@ -115,6 +115,7 @@ pub(crate) fn run() -> Result<()> {
         #[cfg(any(windows, target_os = "linux"))]
         let automatically_download_updates =
             app_store.read(cx).settings.automatically_download_updates;
+        let skipped_update_version = app_store.read(cx).settings.skipped_update_version.clone();
         keymap::install_bindings(cx, &keymap_overrides, terminal_ctrl_keys, false);
         cx.set_global(GlobalAppStore(app_store));
         notifications::install(cx);
@@ -129,6 +130,9 @@ pub(crate) fn run() -> Result<()> {
                 paths.app_data_dir.join("updates"),
                 cx,
             )
+        });
+        updater.update(cx, |updater, _| {
+            updater.set_skipped_version(skipped_update_version)
         });
         cx.set_global(GlobalUpdater(updater.clone()));
         updater.read(cx).start();
@@ -278,7 +282,35 @@ pub(crate) fn run() -> Result<()> {
             platform_ui::show_about_panel();
         });
         cx.on_action(|_: &CheckForUpdates, cx| {
-            global_updater(cx).read(cx).check_for_updates();
+            let active = cx.active_window();
+            cx.defer(move |cx| {
+                let native_window = |cx: &App| {
+                    cx.windows()
+                        .into_iter()
+                        .find_map(|window| window.downcast::<NativeRoot>())
+                };
+                let mut window = active
+                    .and_then(|window| window.downcast::<NativeRoot>())
+                    .or_else(|| native_window(cx));
+                if window.is_none() {
+                    if let Err(error) = open_new_runner_window(None, cx) {
+                        eprintln!("Runner check for updates failed: {error:#}");
+                        return;
+                    }
+                    window = native_window(cx);
+                }
+                let Some(window) = window else {
+                    return;
+                };
+                cx.activate(true);
+                let result = window.update(cx, |root, window, cx| {
+                    window.activate_window();
+                    crate::surfaces::update_ui::check_for_updates_from_menu(root, window, cx);
+                });
+                if let Err(error) = result {
+                    eprintln!("Runner check for updates failed: {error:#}");
+                }
+            });
         });
         cx.set_menus(app_menus());
 

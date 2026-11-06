@@ -590,11 +590,7 @@ fn install_inner(path: &Path, log: &Path) -> Result<PathBuf> {
 }
 
 impl Updater {
-    pub fn is_installing(&self) -> bool {
-        self.native.installing
-    }
-
-    pub fn install_update(&mut self, log_dir: &Path, cx: &mut Context<Self>) {
+    pub(in crate::updater) fn install_update(&mut self, log_dir: &Path, cx: &mut Context<Self>) {
         if self.native.installing || self.native.checking.get() {
             return;
         }
@@ -610,6 +606,9 @@ impl Updater {
         }
         self.native.install_log = Some(log.clone());
         self.native.installing = true;
+        if let Some(info) = self.state.info().cloned() {
+            self.state = UpdateState::Installing { info };
+        }
         cx.spawn(async move |weak, cx| {
             let result = cx
                 .background_executor()

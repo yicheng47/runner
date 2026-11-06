@@ -267,7 +267,13 @@ impl RenderOnce for Button {
             if let Some(on_press) = self.on_press {
                 let click = Rc::clone(&on_press);
                 button = button
-                    .on_click(move |_, window, cx| click(window, cx))
+                    // GPUI also clicks a focused element when Enter or Space is released, which
+                    // would press the button a second time after the key-down below.
+                    .on_click(move |event, window, cx| {
+                        if !event.is_keyboard() {
+                            click(window, cx);
+                        }
+                    })
                     .on_key_down(move |event: &KeyDownEvent, window, cx| {
                         if is_activation_key(event) {
                             cx.stop_propagation();
@@ -345,6 +351,58 @@ mod tests {
         assert_eq!(ButtonSize::Sm.height(true), 26.);
         assert_eq!(ButtonSize::Md.height(false), 32.);
         assert_eq!(ButtonSize::Md.height(true), 34.);
+    }
+
+    struct CountedButton {
+        focus: FocusHandle,
+        presses: Rc<std::cell::Cell<usize>>,
+    }
+
+    impl gpui::Render for CountedButton {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            let presses = self.presses.clone();
+            div().size_full().child(
+                Button::new("counted", "Counted")
+                    .focus_handle(self.focus.clone())
+                    .debug_selector("COUNTED_BUTTON")
+                    .on_press(move |_, _| presses.set(presses.get() + 1)),
+            )
+        }
+    }
+
+    #[test]
+    fn one_whole_key_press_or_click_presses_a_button_that_stays_on_screen_once() {
+        use gpui::VisualTestContext;
+        use gpui::{InputEvent as _, KeyUpEvent, Keystroke, Modifiers, TestAppContext};
+
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut cx = TestAppContext::single();
+        let presses = Rc::new(std::cell::Cell::new(0));
+        let shared = presses.clone();
+        let host = cx.add_window(|window, cx| {
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            CountedButton {
+                focus,
+                presses: shared,
+            }
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+        for (expected, key) in [(1, "enter"), (2, "space"), (3, "enter")] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+            let keystroke = Keystroke::parse(key).unwrap();
+            visual.update(|window, cx| {
+                window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(presses.get(), expected, "{key}");
+        }
+        let bounds = visual.debug_bounds("COUNTED_BUTTON").unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(presses.get(), 4);
     }
 }
 

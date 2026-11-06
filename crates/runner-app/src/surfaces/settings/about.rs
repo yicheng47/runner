@@ -1,22 +1,66 @@
+use std::path::PathBuf;
+
 use gpui::prelude::*;
 use gpui::{div, rems, svg, Context, CursorStyle, KeyDownEvent, Render, Window};
-use runner_app::ui::{PaneHeader, SettingsCard};
+use runner_app::ui::{Button, ButtonSize, PaneHeader, SettingsCard, SettingsRow};
 
 use crate::theme;
 
 pub(super) const DISCORD_URL: &str = "https://discord.gg/6BrfZdHKNf";
 pub(super) const WECHAT_README_URL: &str = "https://github.com/yicheng47/runner#community";
 
-pub(crate) struct AboutPane;
+pub(crate) struct AboutPane {
+    log_dir: PathBuf,
+    error: Option<String>,
+}
 
 impl AboutPane {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(log_dir: PathBuf) -> Self {
+        Self {
+            log_dir,
+            error: None,
+        }
+    }
+
+    fn reveal_logs(&mut self, cx: &mut Context<Self>) {
+        self.error = match std::fs::create_dir_all(&self.log_dir) {
+            Ok(()) => {
+                cx.reveal_path(&self.log_dir);
+                None
+            }
+            Err(error) => Some(crate::i18n::tf(
+                "format.couldn_t_reveal_logs",
+                &[("error", (error).to_string())],
+            )),
+        };
+        cx.notify();
     }
 }
 
 impl Render for AboutPane {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(target_os = "macos")]
+        let logs_label = crate::i18n::text("ui.reveal_logs_in_finder");
+        #[cfg(any(windows, target_os = "linux"))]
+        let logs_label = crate::i18n::text("ui.open_log_folder");
+        let logs_description = crate::i18n::text(
+            "ui.open_the_folder_containing_runner_log_so_you_can_attach_it_to_a_bug_report",
+        )
+        .to_owned();
+        #[cfg(any(windows, target_os = "linux"))]
+        let logs_description = runner_app::updater::global_updater(cx)
+            .read(cx)
+            .install_log_path()
+            .map(|path| {
+                crate::i18n::tf(
+                    "format.installer_log",
+                    &[
+                        ("logs_description", (logs_description).to_string()),
+                        ("path", (path.display()).to_string()),
+                    ],
+                )
+            })
+            .unwrap_or(logs_description);
         div()
             .flex()
             .flex_col()
@@ -28,12 +72,32 @@ impl Render for AboutPane {
             .child(super::app_identity_card(
                 [div()
                     .truncate()
-                    .text_size(theme::text_ui())
+                    .text_size(theme::text_body())
                     .text_color(theme::muted())
                     .child(crate::i18n::text("ui.local_cockpit_for_coding_agents"))
                     .into_any_element()],
                 None,
+                None,
             ))
+            .child(SettingsCard::new([SettingsRow::new(
+                crate::i18n::text("ui.application_logs"),
+                Button::new("about-reveal-logs", logs_label)
+                    .size(ButtonSize::Compact)
+                    .debug_selector("ABOUT_REVEAL_LOGS")
+                    .on_press({
+                        let pane = cx.entity();
+                        move |_, cx| {
+                            pane.update(cx, |pane, pane_cx| pane.reveal_logs(pane_cx));
+                        }
+                    }),
+            )
+            .subtitle(logs_description)
+            .into_any_element()]))
+            .children(
+                self.error.clone().map(|error| {
+                    runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
+                }),
+            )
             .child(SettingsCard::new([
                 link_row(
                     "about-github",

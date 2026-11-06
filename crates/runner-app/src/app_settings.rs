@@ -369,6 +369,7 @@ pub struct AppSettings {
     pub automatically_check_for_updates: bool,
     #[cfg(any(windows, target_os = "linux"))]
     pub automatically_download_updates: bool,
+    pub skipped_update_version: Option<String>,
     pub default_runtime: String,
     pub disabled_agents: BTreeSet<String>,
     pub enabled_agents: BTreeSet<String>,
@@ -427,6 +428,7 @@ impl Default for AppSettings {
             automatically_check_for_updates: true,
             #[cfg(any(windows, target_os = "linux"))]
             automatically_download_updates: true,
+            skipped_update_version: None,
             default_runtime: String::new(),
             disabled_agents: BTreeSet::new(),
             enabled_agents: BTreeSet::new(),
@@ -937,6 +939,19 @@ mod tests {
     }
 
     #[test]
+    fn a_skipped_update_version_survives_a_restart() {
+        let settings = AppSettings {
+            skipped_update_version: Some("0.19.5".into()),
+            ..AppSettings::default()
+        };
+        let saved = serde_json::to_string(&settings).unwrap();
+        let loaded: AppSettings = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.skipped_update_version.as_deref(), Some("0.19.5"));
+        let older: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(older.skipped_update_version, None);
+    }
+
+    #[test]
     fn persisted_settings_use_the_current_contract() {
         let value = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(value["appTheme"], "auto");
@@ -953,6 +968,7 @@ mod tests {
         assert_eq!(value["defaultWorkingDir"], "");
         assert_eq!(value["resumeOnLaunch"], true);
         assert_eq!(value["automaticallyCheckForUpdates"], true);
+        assert!(value["skippedUpdateVersion"].is_null());
         assert_eq!(value["defaultRuntime"], "");
         assert_eq!(value["initializedCommandInstall"], false);
         assert_eq!(value["runnerSkillEnabled"], true);

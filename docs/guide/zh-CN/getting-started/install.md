@@ -49,9 +49,13 @@ runner help
 
 ## 更新
 
-Runner 原位更新，并保留设置、聊天和任务。macOS 使用 Sparkle；Windows 和 Linux 通过 **设置 → 更新（Settings → Updates）** 以及侧边栏 Runner 名称旁的更新图标提供更新。更新会重启运行中的智能体，使其通过新版本恢复已保存的对话。
+Runner 原位更新，并保留设置、聊天和任务。有可用更新时，侧边栏 Runner 名称旁会出现一个图标。点击它即可下载更新，图标上的圆环显示下载进度。更新就绪后，点击图标会打开一个小弹窗，其中有 **重启以更新（Restart to update）** 、 **新功能（What's new）** 和 **稍后（Later）** ；如果下载是你发起的，弹窗会自动打开，并且不会移动键盘焦点。在下载、校验或安装期间，点击图标不会有任何反应，其工具提示会显示进度。如果下载失败或该更新只能手动下载，点击图标会打开 **设置 → 更新（Settings → Updates）** 。该页面在每个阶段都显示相同的状态，并提供 **取消（Cancel）** 、 **重试（Retry）** 、 **跳过此版本（Skip this version）** 和 **查看下载（View downloads）** 。在命令面板中， **显示 Runner 更新（Show Runner update）** 会在更新就绪时打开弹窗，其他情况下打开“设置 → 更新”，它不会开始下载。 **Runner → 检查更新（Check for Updates）** 会打开“设置 → 更新”并开始检查。
 
-Linux 构建使用正式版或 nightly 包标识，稳定版和 nightly 有各自的更新源。Linux 的 **设置 → 更新** 会下载并验证适合当前架构和安装格式的包。 **安装并重启（Install and restart）** 会原子替换受管理的用户 tar 安装，或请求系统授权通过 APT 安装 deb。系统安装需要 polkit（`pkexec`）。若 Runner 运行时外部安装程序或 APT 已替换可执行文件，请先重启 Runner 再检查或安装下一次更新；旧进程会显示重启错误并保持打开。取消授权或安装失败会保持 Runner 打开并显示错误； **设置 → 诊断（Settings → Diagnostics）** 列出安装日志。用户数据会保留。历史未签名版本只提供下载页，不会自动安装。通过 SSH 使用 CLI 前，请运行 `systemctl --user start runnerd` 显式启动 `runnerd`。[Linux 服务生命周期与 WSL 设置](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md#optional-systemd-user-service)介绍了持久运行和关闭行为。
+在 macOS 上，Runner 在后台检查，点击图标或“设置 → 更新”中的 **下载（Download）** 之前不会下载任何内容。在 Windows 和 Linux 上， **自动下载更新（Automatically download updates）** 默认开启；关闭后只通知你。 “设置 → 更新”中的 **跳过此版本（Skip this version）** 会隐藏该版本的图标，直到你下次手动检查。
+
+**重启以更新（Restart to update）** 会关闭 Runner 并以新版本重新打开，不显示安装程序窗口。它会重启运行中的智能体，使其恢复已保存的对话；弹窗和“设置 → 更新”会在你选择前显示有多少智能体正在工作。 **稍后（Later）** 只关闭弹窗，图标会保留到更新安装完成。在 macOS 上，更新就绪时退出 Runner 也可能安装该更新。
+
+Linux 构建使用正式版或 nightly 包标识，稳定版和 nightly 有各自的更新源。Linux 的 **设置 → 更新** 会下载并验证适合当前架构和安装格式的包。 **重启以更新（Restart to update）** 会原子替换受管理的用户 tar 安装，或请求系统授权通过 APT 安装 deb。系统安装需要 polkit（`pkexec`）。若 Runner 运行时外部安装程序或 APT 已替换可执行文件，请先重启 Runner 再检查或安装下一次更新；旧进程会显示重启错误并保持打开。取消授权或安装失败会保持 Runner 打开并显示错误； **设置 → 关于（Settings → About）** 列出安装日志。用户数据会保留。历史未签名版本只提供下载页，不会自动安装。通过 SSH 使用 CLI 前，请运行 `systemctl --user start runnerd` 显式启动 `runnerd`。[Linux 服务生命周期与 WSL 设置](https://github.com/yicheng47/runner/blob/main/docs/arch/linux.md#optional-systemd-user-service)介绍了持久运行和关闭行为。
 
 Preview Nightly 构建是仍在独立分支上开发的功能的测试构建。它们面向 macOS、Windows 和 Linux 发布到单独的 [`preview-nightly` 预发布版本](https://github.com/yicheng47/runner/releases/tag/preview-nightly)，显示为 **Preview Nightly** 加上其短提交号，并且只从该版本更新。所有渠道使用同一应用和数据，因此切换时设置、聊天和任务都会保留。要离开 Preview Nightly，请手动安装 nightly 或稳定版构建；在 Linux 上，在 preview deb 之上安装同一版本的 nightly deb 会被 APT 视为降级。
 
