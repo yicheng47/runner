@@ -1512,7 +1512,7 @@
 "side_panel.font_description" = "代码和 Markdown 代码块。“与终端相同”跟随 设置 → 终端。"
 "side_panel.same_as_terminal" = "与终端相同"
 "side_panel.font_size" = "字号"
-"side_panel.font_size_description" = "更改前跟随终端字号；点击重置后恢复跟随。渲染后的 Markdown 文本随之缩放。"
+"side_panel.font_size_description" = "更改前跟随终端字号。渲染后的 Markdown 文本随之缩放。"
 "side_panel.markdown_open_as" = "Markdown 文件打开为"
 "side_panel.markdown_open_as_description" = "</> 按钮可让标签页在两者之间切换。"
 "side_panel.rendered" = "渲染"

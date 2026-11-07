@@ -2218,13 +2218,12 @@ impl FilesView {
         ))
     }
 
-    /// Zoom's keys in the Files view: with focus in the viewer, its text a
-    /// pixel larger or smaller within the terminal's range, or `None` to
-    /// follow the terminal again; from the tree, its header or the picker,
-    /// the app's own zoom.
+    /// Zoom in and out in the Files view: with focus in the viewer, its text a
+    /// pixel larger or smaller within the terminal's range; from the tree, its
+    /// header or the picker, the app's own zoom.
     pub(super) fn zoom(
         &mut self,
-        step: Option<i16>,
+        step: i16,
         app: Box<dyn gpui::Action>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2236,17 +2235,17 @@ impl FilesView {
         }
     }
 
-    fn zoom_text(&mut self, step: Option<i16>, cx: &mut Context<Self>) {
+    fn zoom_text(&mut self, step: i16, cx: &mut Context<Self>) {
         use crate::app_settings::{TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN};
         crate::app_store::global_app_store(cx).update(cx, |store, cx| {
             store.update_settings(
                 |settings| {
-                    let size = step.map(|step| {
+                    let size = Some(
                         settings
                             .files_font_size()
                             .saturating_add_signed(step)
-                            .clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX)
-                    });
+                            .clamp(TERMINAL_FONT_SIZE_MIN, TERMINAL_FONT_SIZE_MAX),
+                    );
                     let changed = settings.files_font_size != size;
                     settings.files_font_size = size;
                     changed

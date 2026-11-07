@@ -1098,10 +1098,11 @@ pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
     ]);
 }
 
-/// Zoom's keys, as bound or rebound, step the file viewer's text while it has
-/// focus instead of the app (Jason, 2026-11-05); from the tree the Files
-/// view hands them on to the app's zoom. Installed after app zoom's
-/// bindings, since the later of two equally deep bindings wins.
+/// Zoom in and out, as bound or rebound, step the file viewer's text while it
+/// has focus instead of the app (Jason, 2026-11-05); from the tree the Files
+/// view hands them on to the app's zoom. Zoom reset stays the app's everywhere
+/// (Jason, 2026-11-07). Installed after app zoom's bindings, since the later of
+/// two equally deep bindings wins.
 pub(crate) fn install_file_zoom_bindings(cx: &mut App, overrides: &KeymapOverrides) {
     let combos = |id| {
         effective_binding(id, overrides)
@@ -1115,9 +1116,6 @@ pub(crate) fn install_file_zoom_bindings(cx: &mut App, overrides: &KeymapOverrid
         }
         for binding in combos("zoom-out") {
             cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileOut, context)]);
-        }
-        for binding in combos("zoom-reset") {
-            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileReset, context)]);
         }
     }
 }
@@ -2300,7 +2298,7 @@ mod tests {
                 &["Root", "FileViewer", "TextInput"],
             ] {
                 assert_fires(cx, &rebound, viewer, Some(&crate::ZoomFileIn));
-                assert_fires(cx, &reset, viewer, Some(&crate::ZoomFileReset));
+                assert_fires(cx, &reset, viewer, Some(&ZoomReset));
             }
             for elsewhere in [TERMINAL, SIDEBAR] {
                 assert_fires(cx, &rebound, elsewhere, Some(&ZoomIn));
