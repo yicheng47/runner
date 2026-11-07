@@ -108,6 +108,10 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.")))
 }
 
+// One redraw can arrive as several PTY reads. Output following a send waits this long, so that
+// the reads leave as one message.
+const OUTPUT_WINDOW: Duration = Duration::from_millis(5);
+
 #[derive(Default)]
 struct Queue {
     frames: VecDeque<TerminalFrame>,
@@ -116,11 +120,14 @@ struct Queue {
     ended: bool,
 }
 impl Queue {
-    fn push(&mut self, frame: TerminalFrame) -> bool {
-        let bytes = match &frame {
+    fn cost(frame: &TerminalFrame) -> usize {
+        match frame {
             TerminalFrame::Output { bytes, .. } => bytes.len() + 64,
             _ => 64,
-        };
+        }
+    }
+    fn push(&mut self, frame: TerminalFrame) -> bool {
+        let bytes = Self::cost(&frame);
         if matches!(frame, TerminalFrame::Resync) || self.bytes + bytes > MAX_MESSAGE_SIZE {
             self.frames.clear();
             self.bytes = 0;
@@ -132,6 +139,35 @@ impl Queue {
             true
         }
     }
+    fn pop(&mut self) -> Option<TerminalFrame> {
+        let frame = self.frames.pop_front()?;
+        self.bytes -= Self::cost(&frame);
+        Some(frame)
+    }
+    fn merge_output(&mut self, merged: &mut Vec<u8>) {
+        while let Some(TerminalFrame::Output { bytes, .. }) = self.frames.front() {
+            if merged.len() + bytes.len() > TERMINAL_CHUNK_SIZE {
+                break;
+            }
+            merged.extend_from_slice(bytes);
+            self.pop();
+        }
+    }
+    // Waiting only helps output that can still grow. A full merge would push a flood towards
+    // overflow, and a resize or an end behind the output must not be delayed.
+    fn can_hold_output(&self) -> bool {
+        let mut merged = 0;
+        for frame in &self.frames {
+            let TerminalFrame::Output { bytes, .. } = frame else {
+                return false;
+            };
+            merged += bytes.len();
+            if merged >= TERMINAL_CHUNK_SIZE {
+                return false;
+            }
+        }
+        !self.frames.is_empty() && !self.ended
+    }
 }
 struct Stream {
     session: String,
@@ -141,6 +177,7 @@ struct Stream {
     queue: Arc<Mutex<Queue>>,
     snapshot: Option<(TerminalSnapshot, usize)>,
     output: Option<(Vec<u8>, usize)>,
+    last_output: Option<Instant>,
     clipboard: VecDeque<(String, String, usize)>,
     seq: u64,
     initial_size: Option<(u16, u16, TerminalController)>,
@@ -194,6 +231,7 @@ impl Stream {
             initial_size: Some((snapshot.cols, snapshot.rows, snapshot.controller.clone())),
             snapshot: Some((snapshot, 0)),
             output: None,
+            last_output: None,
             clipboard: VecDeque::new(),
             core,
             channel,
@@ -209,6 +247,11 @@ impl Stream {
             }
             TerminalController::Browser { name, .. } => Controller::Browser { name },
         }
+    }
+    fn output_due(&self) -> Option<Instant> {
+        let last = self.last_output?;
+        let hold = self.queue.lock().unwrap().can_hold_output();
+        hold.then_some(last + OUTPUT_WINDOW)
     }
     fn chunk(&mut self) -> Option<HostMessage> {
         if let Some((snapshot, offset)) = &mut self.snapshot {
@@ -260,6 +303,7 @@ impl Stream {
             if let Some((bytes, offset)) = &mut self.output {
                 let end = (*offset + TERMINAL_CHUNK_SIZE).min(bytes.len());
                 self.seq += 1;
+                self.last_output = Some(Instant::now());
                 let message = HostMessage::Output(Output {
                     session: self.session.clone(),
                     seq: self.seq,
@@ -271,13 +315,15 @@ impl Stream {
                 }
                 return Some(message);
             }
+            if self.output_due().is_some_and(|due| due > Instant::now()) {
+                return None;
+            }
             let frame = {
                 let mut queue = self.queue.lock().unwrap();
-                let frame = queue.frames.pop_front()?;
-                queue.bytes -= match &frame {
-                    TerminalFrame::Output { bytes, .. } => bytes.len() + 64,
-                    _ => 64,
-                };
+                let mut frame = queue.pop()?;
+                if let TerminalFrame::Output { bytes, .. } = &mut frame {
+                    queue.merge_output(bytes);
+                }
                 frame
             };
             match frame {
@@ -369,6 +415,7 @@ pub struct Adapter {
     feeds: BTreeMap<String, FeedSubscription>,
     last_feed: Option<String>,
     feed_turn: bool,
+    output_due: Option<Instant>,
     overview_due: Option<Instant>,
     last_overview: Option<Instant>,
     overview_work: Option<tokio::task::JoinHandle<core::Result<OverviewSnapshot>>>,
@@ -413,6 +460,7 @@ impl Adapter {
             feeds: BTreeMap::new(),
             last_feed: None,
             feed_turn: true,
+            output_due: None,
             overview_due: None,
             last_overview: None,
             overview_work: None,
@@ -948,6 +996,7 @@ impl Adapter {
             }
             self.streams.push_back(stream);
         }
+        self.output_due = self.streams.iter().filter_map(Stream::output_due).min();
         self.feed_turn = true;
         self.next_feed().await
     }
@@ -1010,6 +1059,7 @@ impl Adapter {
     }
     pub async fn changed(&mut self) -> Result<(), &'static str> {
         let due = self.overview_due;
+        let output_due = self.output_due;
         let overview_running = self.overview_work.is_some();
         tokio::select! {
             _ = self.ready.notified() => {},
@@ -1103,6 +1153,9 @@ impl Adapter {
                 self.overview_due = None;
                 self.overview_broadcast = true;
                 self.start_overview();
+            }
+            _ = async { match output_due { Some(due) => tokio::time::sleep_until(due).await, None => std::future::pending().await } } => {
+                self.output_due = None;
             }
         }
         Ok(())

@@ -257,6 +257,7 @@ async fn next(adapter: &mut Adapter) -> serde_json::Value {
             adapter.overview_work.is_some()
                 || adapter.request_work.is_some()
                 || adapter.status_work.is_some()
+                || adapter.output_due.is_some()
                 || adapter.overview_due.is_some()
                 || adapter.action_work.is_some()
                 || !adapter.forks.is_empty(),
@@ -1185,6 +1186,323 @@ async fn terminal_chunks_order_fairness_overflow_and_resync_sequence() {
     assert!(fresh["seq"].as_u64().unwrap() > a4["seq"].as_u64().unwrap());
     assert_eq!(*fake.history.lock().unwrap(), [2, 2, 2]);
 }
+// Behaviors of the output merge and window, with time paused: a message that arrives from `sent`
+// went without time passing, and one from `delivered` needed the timed wake in `changed`.
+async fn streaming(fake: &Arc<Fake>, sessions: &[&str]) -> Adapter {
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    for session in sessions {
+        attach(&mut adapter, session).await;
+    }
+    for _ in sessions {
+        assert_eq!(next(&mut adapter).await["type"], "snapshot");
+    }
+    for _ in sessions {
+        assert_eq!(next(&mut adapter).await["type"], "resized");
+    }
+    adapter
+}
+fn stream_queue(adapter: &Adapter, session: &str) -> Arc<Mutex<Queue>> {
+    let stream = adapter.streams.iter().find(|s| s.session == session);
+    stream.unwrap().queue.clone()
+}
+fn push_output(adapter: &Adapter, session: &str, bytes: &[u8]) -> bool {
+    stream_queue(adapter, session)
+        .lock()
+        .unwrap()
+        .push(TerminalFrame::Output {
+            seq: 0,
+            bytes: bytes.to_vec(),
+        })
+}
+fn push_resize(adapter: &Adapter, session: &str) {
+    stream_queue(adapter, session)
+        .lock()
+        .unwrap()
+        .push(TerminalFrame::Resized {
+            seq: 0,
+            cols: 100,
+            rows: 40,
+            controller: TerminalController::Desktop,
+        });
+}
+async fn sent(adapter: &mut Adapter) -> Option<serde_json::Value> {
+    let bytes = adapter.next(true).await.unwrap()?;
+    Some(serde_json::from_slice(&bytes).unwrap())
+}
+async fn delivered(adapter: &mut Adapter) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(1), next(adapter))
+        .await
+        .expect("held output must come due with no further frame or event")
+}
+fn seq(message: &serde_json::Value) -> u64 {
+    message["seq"].as_u64().unwrap()
+}
+fn data(message: &serde_json::Value) -> Vec<u8> {
+    assert_eq!(message["type"], "output");
+    serde_json::from_value::<TerminalBytes>(message["data"].clone())
+        .unwrap()
+        .0
+}
+// A first output, so what is pushed next falls inside its window.
+async fn open_window(adapter: &mut Adapter, session: &str) -> u64 {
+    push_output(adapter, session, b"first");
+    let first = sent(adapter).await.expect("a first output goes at once");
+    assert_eq!(data(&first), b"first");
+    seq(&first)
+}
+
+#[tokio::test(start_paused = true)]
+async fn output_after_a_quiet_period_goes_without_time_passing() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let first = open_window(&mut adapter, "a").await;
+    tokio::time::advance(OUTPUT_WINDOW).await;
+    push_output(&adapter, "a", b"typed");
+    let typed = sent(&mut adapter).await.expect("a quiet window has passed");
+    assert_eq!(data(&typed), b"typed");
+    assert_eq!(seq(&typed), first + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn frames_within_the_window_leave_as_one_output() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let first = open_window(&mut adapter, "a").await;
+    let start = Instant::now();
+    push_output(&adapter, "a", b"one ");
+    assert!(sent(&mut adapter).await.is_none());
+    tokio::time::advance(Duration::from_millis(2)).await;
+    push_output(&adapter, "a", b"two ");
+    push_output(&adapter, "a", b"three");
+    assert!(sent(&mut adapter).await.is_none());
+    let merged = delivered(&mut adapter).await;
+    assert_eq!(data(&merged), b"one two three");
+    assert_eq!(seq(&merged), first + 1);
+    assert!(start.elapsed() >= OUTPUT_WINDOW);
+    assert_eq!(stream_queue(&adapter, "a").lock().unwrap().bytes, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_stops_at_the_chunk_size_and_keeps_the_rest_queued() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let first = open_window(&mut adapter, "a").await;
+    let frames: Vec<Vec<u8>> = (0..4).map(|i| vec![b'a' + i; 10 * 1024]).collect();
+    for frame in &frames {
+        push_output(&adapter, "a", frame);
+    }
+    let full = sent(&mut adapter)
+        .await
+        .expect("what cannot grow does not wait");
+    assert_eq!(data(&full), frames[..3].concat());
+    assert_eq!(seq(&full), first + 1);
+    assert_eq!(
+        stream_queue(&adapter, "a").lock().unwrap().bytes,
+        frames[3].len() + 64
+    );
+    assert!(sent(&mut adapter).await.is_none());
+    let fill = vec![b'z'; TERMINAL_CHUNK_SIZE - frames[3].len()];
+    push_output(&adapter, "a", &fill);
+    let exact = sent(&mut adapter).await.expect("an exact fit is full");
+    assert_eq!(data(&exact), [&frames[3][..], &fill].concat());
+    assert_eq!(seq(&exact), first + 2);
+    assert_eq!(stream_queue(&adapter, "a").lock().unwrap().bytes, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_oversized_frame_splits_without_waiting_between_its_chunks() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let mut seen = open_window(&mut adapter, "a").await;
+    let big: Vec<u8> = (0..TERMINAL_CHUNK_SIZE * 2 + 1)
+        .map(|i| (i % 251) as u8)
+        .collect();
+    push_output(&adapter, "a", &big);
+    push_output(&adapter, "a", b"after");
+    let mut received = Vec::new();
+    for len in [TERMINAL_CHUNK_SIZE, TERMINAL_CHUNK_SIZE, 1] {
+        let piece = sent(&mut adapter).await.expect("a split never waits");
+        assert_eq!(data(&piece).len(), len);
+        assert_eq!(seq(&piece), seen + 1);
+        seen = seq(&piece);
+        received.extend(data(&piece));
+    }
+    assert_eq!(received, big);
+    assert!(sent(&mut adapter).await.is_none());
+    assert_eq!(data(&delivered(&mut adapter).await), b"after");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_resize_ends_the_merge_and_is_not_delayed() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let first = open_window(&mut adapter, "a").await;
+    push_output(&adapter, "a", b"held");
+    assert!(sent(&mut adapter).await.is_none());
+    push_output(&adapter, "a", b" before");
+    push_resize(&adapter, "a");
+    push_output(&adapter, "a", b"after");
+    let before = sent(&mut adapter)
+        .await
+        .expect("output ahead of a resize goes");
+    assert_eq!(data(&before), b"held before");
+    assert_eq!(seq(&before), first + 1);
+    let resized = sent(&mut adapter).await.expect("a resize never waits");
+    assert_eq!(resized["type"], "resized");
+    assert_eq!(seq(&resized), first + 2);
+    assert!(sent(&mut adapter).await.is_none());
+    let after = delivered(&mut adapter).await;
+    assert_eq!(data(&after), b"after");
+    assert_eq!(seq(&after), first + 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_output_is_delivered_by_changed_alone() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    open_window(&mut adapter, "a").await;
+    let start = Instant::now();
+    push_output(&adapter, "a", b"held");
+    assert!(sent(&mut adapter).await.is_none());
+    assert_eq!(adapter.output_due, Some(start + OUTPUT_WINDOW));
+    tokio::time::timeout(Duration::from_secs(1), adapter.changed())
+        .await
+        .expect("the timed wake needs no other cause")
+        .unwrap();
+    assert!(start.elapsed() >= OUTPUT_WINDOW);
+    assert_eq!(adapter.output_due, None);
+    assert_eq!(data(&sent(&mut adapter).await.unwrap()), b"held");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ended_stream_flushes_held_output_then_closes() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    open_window(&mut adapter, "a").await;
+    push_output(&adapter, "a", b"last ");
+    assert!(sent(&mut adapter).await.is_none());
+    push_output(&adapter, "a", b"words");
+    stream_queue(&adapter, "a").lock().unwrap().ended = true;
+    let last = sent(&mut adapter).await.expect("an end does not wait");
+    assert_eq!(data(&last), b"last words");
+    let closed = sent(&mut adapter).await.expect("closed follows the output");
+    assert_eq!(closed["type"], "closed");
+    assert!(adapter.streams.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flood_never_waits_on_the_window_and_only_a_real_overflow_resyncs() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let mut last = open_window(&mut adapter, "a").await;
+    let start = Instant::now();
+    let frame = vec![b'x'; 10 * 1024];
+    let (mut pushed, mut received) = (0, 0);
+    while pushed < MAX_MESSAGE_SIZE * 3 {
+        assert!(
+            push_output(&adapter, "a", &frame),
+            "the flood overflowed the queue"
+        );
+        pushed += frame.len();
+        while let Some(message) = sent(&mut adapter).await {
+            assert_eq!(seq(&message), last + 1);
+            last = seq(&message);
+            received += data(&message).len();
+        }
+    }
+    assert_eq!(start.elapsed(), Duration::ZERO);
+    assert!(pushed - received < TERMINAL_CHUNK_SIZE);
+    let tail = delivered(&mut adapter).await;
+    assert_eq!(seq(&tail), last + 1);
+    last = seq(&tail);
+    assert_eq!(received + data(&tail).len(), pushed);
+    assert_eq!(fake.snapshots.load(Ordering::Relaxed), 1);
+
+    assert!(!push_output(&adapter, "a", &vec![0; MAX_MESSAGE_SIZE + 1]));
+    let snapshot = sent(&mut adapter).await.expect("an overflow does not wait");
+    assert_eq!(snapshot["type"], "snapshot");
+    assert!(seq(&snapshot) > last);
+    assert_eq!(sent(&mut adapter).await.unwrap()["type"], "resized");
+    push_output(&adapter, "a", b"fresh");
+    let fresh = sent(&mut adapter)
+        .await
+        .expect("a new stream has no window");
+    assert_eq!(data(&fresh), b"fresh");
+    assert_eq!(seq(&fresh), seq(&snapshot) + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_held_stream_does_not_hold_back_other_streams_or_feeds() {
+    let fake = Arc::new(Fake::default());
+    fake.feed_enabled.store(true, Ordering::Relaxed);
+    let mut adapter = streaming(&fake, &["a", "b"]).await;
+    open_window(&mut adapter, "a").await;
+    push_output(&adapter, "a", b"held");
+    push_output(&adapter, "b", b"other");
+    let other = sent(&mut adapter).await.expect("b has no window open");
+    assert_eq!(other["session"], "b");
+    assert_eq!(data(&other), b"other");
+    fake.appended.lock().unwrap().push(FeedEntry {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        ts: chrono::Utc::now().to_rfc3339(),
+        from: "coder".into(),
+        to: vec![],
+        content: FeedContent::Message {
+            text: "during a hold".into(),
+        },
+    });
+    adapter.feeds.insert(
+        "m".into(),
+        FeedSubscription {
+            cursor: 0,
+            dirty: true,
+        },
+    );
+    let feed = sent(&mut adapter).await.expect("a feed does not wait");
+    assert_eq!(feed["type"], "feedAppended");
+    assert!(sent(&mut adapter).await.is_none());
+    let held = delivered(&mut adapter).await;
+    assert_eq!(held["session"], "a");
+    assert_eq!(data(&held), b"held");
+}
+
+#[tokio::test(start_paused = true)]
+async fn output_queued_without_credit_merges_when_credit_returns() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    let first = open_window(&mut adapter, "a").await;
+    for frame in [&b"one "[..], b"two ", b"three"] {
+        push_output(&adapter, "a", frame);
+        assert!(adapter.next(false).await.unwrap().is_none());
+        tokio::time::advance(OUTPUT_WINDOW).await;
+    }
+    let merged = sent(&mut adapter).await.expect("the window has passed");
+    assert_eq!(data(&merged), b"one two three");
+    assert_eq!(seq(&merged), first + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_due_window_without_credit_wakes_once_and_does_not_spin() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["a"]).await;
+    open_window(&mut adapter, "a").await;
+    push_output(&adapter, "a", b"held");
+    assert!(sent(&mut adapter).await.is_none());
+    assert!(adapter.next(false).await.unwrap().is_none());
+    tokio::time::timeout(Duration::from_secs(1), adapter.changed())
+        .await
+        .expect("the window comes due once")
+        .unwrap();
+    assert!(adapter.next(false).await.unwrap().is_none());
+    assert!(
+        tokio::time::timeout(OUTPUT_WINDOW * 10, adapter.changed())
+            .await
+            .is_err(),
+        "a wake that cannot send would spin the channel loop"
+    );
+    assert_eq!(data(&sent(&mut adapter).await.unwrap()), b"held");
+}
+
 #[test]
 fn input_classification_and_queue_bound() {
     assert!(
