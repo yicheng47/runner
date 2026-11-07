@@ -18,6 +18,9 @@ pub(crate) fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
         this.close_launcher_page(window, cx);
         return;
     }
+    if this.tab_close_guarded() {
+        return;
+    }
     if this.remote_client.is_active() {
         this.close_remote_front_page(window, cx);
         return;

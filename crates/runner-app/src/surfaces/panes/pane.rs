@@ -494,7 +494,11 @@ impl NativeRoot {
                                     PaneCloseBehavior::LayoutOnly => &["layout"],
                                 })
                                 .then(|| {
+                                    let selector_pane_id = close_pane_id.clone();
                                     div()
+                                        .debug_selector(move || {
+                                            format!("PANE_CLOSE:{selector_pane_id}")
+                                        })
                                         .flex_none()
                                         .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                             cx.stop_propagation()
@@ -513,6 +517,9 @@ impl NativeRoot {
                                                     let pane_id = close_pane_id.clone();
                                                     let session_id = close_session_id.clone();
                                                     close_root.update(cx, |this, cx| {
+                                                        if this.tab_close_guarded() {
+                                                            return;
+                                                        }
                                                         match (close_behavior, session_id) {
                                                             (
                                                                 PaneCloseBehavior::CloseTerminal,

@@ -503,7 +503,7 @@ impl Sidebar {
                     "sidebar drop committed"
                 );
                 if let Some(shell) = self.shell.upgrade() {
-                    shell.update(cx, |shell, _| shell.replace_tab_rows(&nodes));
+                    shell.update(cx, |shell, cx| shell.replace_tab_rows(&nodes, cx));
                 }
                 self.app_store
                     .update(cx, |store, store_cx| store.replace_nodes(nodes, store_cx));

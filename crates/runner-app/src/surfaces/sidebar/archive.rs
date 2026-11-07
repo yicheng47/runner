@@ -290,8 +290,7 @@ impl NativeRoot {
         let refresh_ok = refresh_result.is_ok();
         self.clear_pending_tab_close(&attempted);
         if refresh_ok {
-            self.mark_active_tab_viewed(window, cx);
-            self.focus_active_terminal(window, cx);
+            self.settle_active_tab(window, cx);
         }
         let error = archive_error.or_else(|| {
             refresh_result

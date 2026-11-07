@@ -593,9 +593,12 @@ impl NativeRoot {
                 self.set_route(AppRoute::Launcher, cx);
             }
             let launcher = self.render_launcher(None, true, window, cx);
-            launcher.update(cx, |launcher, cx| launcher.open_step(step, window, cx));
+            launcher.update(cx, |launcher, cx| {
+                launcher.release_page_lock(cx);
+                launcher.open_step(step, window, cx);
+            });
         } else {
-            self.open_launcher_page(scope, step, window, cx);
+            self.open_launcher_page(scope, step, false, window, cx);
         }
     }
 
@@ -623,9 +626,11 @@ impl NativeRoot {
             } => {
                 if let Some(tab) = tab
                     .filter(|tab| self.tabs.tabs().iter().any(|layout| &layout.id == tab))
-                    .or_else(|| self.recently_viewed_tab_id())
+                    .or_else(|| self.recently_viewed_tab_id(cx))
                 {
                     self.tabs.activate(&tab);
+                } else {
+                    self.reset_launcher_page(cx);
                 }
                 self.set_route(AppRoute::Chat, cx);
                 self.sync_active_project_from_active_tab(cx);
@@ -645,21 +650,40 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn recently_viewed_tab_id(&self) -> Option<String> {
+    /// The most recently viewed tab that no other window has open, else the
+    /// first such tab. Showing one that another window has open would give one
+    /// of the two the duplicate-chat placeholder, so that is only for when
+    /// every tab is open elsewhere, and then the most recent wins.
+    pub(crate) fn recently_viewed_tab_id(&self, cx: &App) -> Option<String> {
+        let tabs = self.tabs.tabs();
         let viewed = self.runtime_navigation_index.map_or(0, |index| index + 1);
-        self.runtime_navigation_history
+        let recent = self
+            .runtime_navigation_history
             .iter()
             .take(viewed)
             .rev()
-            .find_map(|location| match location {
-                RuntimeLocation::Chat(session_id) => self
-                    .tabs
-                    .tabs()
-                    .iter()
-                    .find(|tab| tab.contains_session(session_id)),
+            .filter_map(|location| match location {
+                RuntimeLocation::Chat(session_id) => {
+                    tabs.iter().find(|tab| tab.contains_session(session_id))
+                }
                 _ => None,
             })
-            .or_else(|| self.tabs.tabs().first())
+            .chain(tabs);
+        let others = self
+            .core(cx)
+            .window_snapshot()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.label != self.window_label)
+            .collect::<Vec<_>>();
+        let open_elsewhere = |tab: &PaneLayout| {
+            tab.session_ids().into_iter().any(|session| {
+                let subject = runner_core::protocol::window::Subject::DirectChat(session);
+                others.iter().any(|entry| entry.subjects.contains(&subject))
+            })
+        };
+        let free = recent.clone().find(|tab| !open_elsewhere(tab));
+        free.or_else(|| recent.clone().next())
             .map(|tab| tab.id.clone())
     }
 
@@ -1065,7 +1089,7 @@ mod tests {
                             .sidebar_collapsed_projects
                             .insert(projects[0].id.clone());
                     });
-                    root.open_launcher_page(scope.clone(), Step::Start, window, cx);
+                    root.open_launcher_page(scope.clone(), Step::Start, false, window, cx);
                 });
                 harness.act(|root, _, cx| {
                     assert!(!root.settings(cx).sidebar_projects_open);
@@ -1212,7 +1236,7 @@ mod tests {
                         });
                     }
                     root.open_crews(window, cx);
-                    root.open_launcher_page(scope.clone(), Step::Start, window, cx);
+                    root.open_launcher_page(scope.clone(), Step::Start, false, window, cx);
                     if kind == "chat" {
                         root.finish_local_chat_launch(
                             None,
@@ -1674,6 +1698,335 @@ mod remote_tests {
                 assert!(!settings.sidebar_projects_open);
             })
             .unwrap();
+    }
+
+    /// The row, read with the root free, since the sidebar reads it back.
+    fn host_row(
+        window: &gpui::WindowHandle<NativeRoot>,
+        cx: &TestAppContext,
+    ) -> Option<ProjectScope> {
+        window
+            .read_with(cx, |root, cx| {
+                root.front_page_sidebar().read(cx).launcher_row_scope(cx)
+            })
+            .unwrap()
+    }
+
+    fn host_page(
+        window: &gpui::WindowHandle<NativeRoot>,
+        cx: &mut TestAppContext,
+    ) -> (ProjectScope, bool, String, bool) {
+        window
+            .update(cx, |root, window, cx| {
+                let page = launcher(root, window, cx);
+                let page = page.read(cx);
+                let select = page.project.select();
+                (
+                    page.scope(),
+                    select.read(cx).is_disabled(),
+                    page.cwd.read(cx).text().to_owned(),
+                    page.loading,
+                )
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_locked_page_keeps_its_row_while_the_hosts_catalog_loads_and_ends_on_its_project() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let project = ProjectScope::Project("host-project".into());
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+                assert!(launcher(root, window, cx).read(cx).loading);
+            })
+            .unwrap();
+        assert_eq!(host_row(&window, &cx), Some(project.clone()));
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(project.clone()));
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (project.clone(), true, "\\\\nas\\share".to_owned(), false)
+        );
+
+        // ⌘N takes the row to Recents and frees the picker.
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_new_tab_modal(&NewTab, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (ProjectScope::Root, false, String::new(), false)
+        );
+
+        // A project deleted on the host gives a locked page back.
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(host_page(&window, &mut cx).1);
+        let mut gone = overview();
+        gone.projects.clear();
+        fake.set_overview(gone);
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (ProjectScope::Root, false, String::new(), false)
+        );
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+    }
+
+    #[test]
+    fn a_mission_entry_frees_a_locked_host_page_and_keeps_its_project() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let project = ProjectScope::Project("host-project".into());
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(project.clone()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.new_mission_action(&NewMission, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (project, false, "\\\\nas\\share".to_owned(), false)
+        );
+    }
+
+    #[test]
+    fn a_reconnect_keeps_a_locked_page_on_its_row_and_project_until_the_project_is_deleted() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let project = ProjectScope::Project("host-project".into());
+        let path = "\\\\nas\\share".to_owned();
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (project.clone(), true, path.clone(), false)
+        );
+        let before = window
+            .read_with(&cx, |root, cx| root.front_page_client(cx).target)
+            .unwrap();
+
+        // The connection's generation moves on, and the page's launcher with it.
+        for _ in 0..4 {
+            fake.queue_result("catalog", Ok(catalog()));
+        }
+        window
+            .update(&mut cx, |root, _, cx| {
+                let clients = root.app_store.read(cx).remote_clients.clone();
+                clients.update(cx, |clients, _| clients.invalidate_capabilities("host"));
+                root.sync_remote_state(cx);
+                assert_ne!(root.front_page_client(cx).target, before);
+            })
+            .unwrap();
+        assert_eq!(host_row(&window, &cx), Some(project.clone()));
+
+        // Rebuilt, it holds the row and the lock before the host's capabilities
+        // are back, then while its catalog loads.
+        let (scope, locked, _, _) = host_page(&window, &mut cx);
+        assert_eq!((scope, locked), (project.clone(), true));
+        assert_eq!(host_row(&window, &cx), Some(project.clone()));
+        window
+            .read_with(&cx, |root, cx| {
+                let target = root.front_page_client(cx).target;
+                assert!(root
+                    .launchers
+                    .values()
+                    .filter(|launcher| launcher.read(cx).pane.is_none())
+                    .all(|launcher| launcher.read(cx).client.target == target));
+            })
+            .unwrap();
+        let mut saw_catalog_loading = false;
+        while cx.background_executor.tick() {
+            let (scope, locked, _, loading) = host_page(&window, &mut cx);
+            assert_eq!((scope, locked), (project.clone(), true));
+            assert_eq!(host_row(&window, &cx), Some(project.clone()));
+            saw_catalog_loading |= loading;
+        }
+        assert!(saw_catalog_loading);
+
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (project.clone(), true, path, false)
+        );
+        assert_eq!(host_row(&window, &cx), Some(project));
+
+        // A deleted project still gives the page back.
+        let mut gone = overview();
+        gone.projects.clear();
+        fake.set_overview(gone);
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (ProjectScope::Root, false, String::new(), false)
+        );
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+    }
+
+    #[test]
+    fn a_reconnect_does_not_bring_an_old_lock_back_into_a_new_page_or_the_empty_state() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let project = ProjectScope::Project("host-project".into());
+        for _ in 0..4 {
+            fake.queue_result("catalog", Ok(catalog()));
+        }
+        let reconnect = |window: &gpui::WindowHandle<NativeRoot>, cx: &mut TestAppContext| {
+            window
+                .update(cx, |root, _, cx| {
+                    let clients = root.app_store.read(cx).remote_clients.clone();
+                    clients.update(cx, |clients, _| clients.invalidate_capabilities("host"));
+                    root.sync_remote_state(cx);
+                })
+                .unwrap();
+        };
+        // Left under a project, and replaced while another tab shows.
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.select_remote_item(RemoteItem::Tab("first".into()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        reconnect(&window, &mut cx);
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.prune_launchers(cx);
+                root.open_new_tab_modal(&NewTab, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+        let (scope, locked, _, _) = host_page(&window, &mut cx);
+        assert_eq!((scope, locked), (ProjectScope::Root, false));
+
+        // With no tab or mission left, the empty state starts clean too.
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(project.clone(), window, cx);
+                root.select_remote_item(RemoteItem::Tab("first".into()), cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        reconnect(&window, &mut cx);
+        let mut empty = overview();
+        empty.tabs.clear();
+        fake.set_overview(empty);
+        cx.run_until_parked();
+        window
+            .read_with(&cx, |root, _| assert!(root.launcher_is_empty_state()))
+            .unwrap();
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+        let (scope, locked, _, _) = host_page(&window, &mut cx);
+        assert_eq!((scope, locked), (ProjectScope::Root, false));
+    }
+
+    #[test]
+    fn a_catalog_without_the_locked_project_leaves_the_page_in_recents_unlocked() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let mut without = catalog();
+        without["projects"] = serde_json::json!([]);
+        fake.queue_result("catalog", Ok(without));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_sidebar_chat_modal(
+                    ProjectScope::Project("host-project".into()),
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (ProjectScope::Root, false, String::new(), false)
+        );
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+    }
+
+    #[test]
+    fn a_closed_host_tab_lands_on_the_last_viewed_one_and_guards_the_next_close() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let tab = |id: &str| -> runner_core::companion::Tab {
+            serde_json::from_value(serde_json::json!({"id":id,"project":null,"name":id,"pinned":false,"panes":{"session":null},"shells":[]})).unwrap()
+        };
+        let mut three = overview();
+        three.tabs.extend([tab("second"), tab("third")]);
+        fake.set_overview(three.clone());
+        cx.run_until_parked();
+        let select = |cx: &mut TestAppContext, item: &str| {
+            window
+                .update(cx, |root, _, cx| {
+                    root.select_remote_item(RemoteItem::Tab(item.into()), cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+        };
+        select(&mut cx, "third");
+        select(&mut cx, "first");
+        window
+            .update(&mut cx, |root, _, _| {
+                root.remote_client.workspace_mut().unwrap().landed_at = None;
+                assert!(!root.tab_close_guarded());
+            })
+            .unwrap();
+        three.tabs.remove(0);
+        fake.set_overview(three);
+        cx.run_until_parked();
+        window
+            .read_with(&cx, |root, _| {
+                assert!(root.remote_client.active_item() == Some(&RemoteItem::Tab("third".into())));
+                assert!(root.tab_close_guarded());
+            })
+            .unwrap();
+        window
+            .update(&mut cx, |root, window, cx| {
+                crate::surfaces::windowing::close_tab(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(action_trace(&fake, "archive").is_empty());
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.remote_client.workspace_mut().unwrap().landed_at = None;
+                crate::surfaces::windowing::close_tab(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(action_trace(&fake, "archive").len(), 1);
     }
 
     #[test]

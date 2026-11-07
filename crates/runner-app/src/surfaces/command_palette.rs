@@ -657,13 +657,7 @@ impl CommandPaletteState {
                              shell_cx: &mut Context<NativeRoot>| {
             match destination {
                 PaletteDestination::NewChat => {
-                    shell.open_sidebar_chat_modal(
-                        runner_core::protocol::project::ProjectScope::or_root(
-                            shell.active_project_id(shell_cx),
-                        ),
-                        window,
-                        shell_cx,
-                    );
+                    shell.open_new_tab_modal(&crate::NewTab, window, shell_cx);
                     true
                 }
                 PaletteDestination::NewMission => {
@@ -1042,6 +1036,42 @@ mod tests {
             assert_eq!(filtered[0].destination, destination);
             assert_eq!(filtered[0].kind, PaletteKind::Command);
         }
+    }
+
+    #[test]
+    fn palette_new_chat_starts_in_recents_with_no_project() {
+        use crate::surfaces::start_chat::tests::{modal_harness, project_fixture};
+        use crate::surfaces::start_chat::ChatMode;
+        use runner_core::protocol::project::ProjectScope;
+
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let project = projects[0].id.clone();
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.open_sidebar_chat_modal(ProjectScope::Project(project.clone()), window, cx);
+        });
+        let palette = harness.read_root(|root, cx| {
+            assert_eq!(root.launcher_page_project(cx), Some(project.clone()));
+            root.command_palette.clone()
+        });
+        harness.visual.update(|window, cx| {
+            palette.update(cx, |palette, cx| {
+                palette.open(window, cx);
+                palette.query = "New chat".into();
+                assert_eq!(
+                    filtered_palette_items(&palette.items, &palette.query)[0].destination,
+                    PaletteDestination::NewChat
+                );
+                palette.select(0, window, cx);
+            });
+        });
+        harness.visual.run_until_parked();
+        harness.act(|root, _, cx| {
+            assert_eq!(root.route, crate::surfaces::AppRoute::Launcher);
+            assert_eq!(root.launcher_page_project(cx), None);
+            assert_eq!(root.active_project_id(cx), None);
+        });
     }
 
     #[test]
