@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Wraps the development build in a temporary .app so computer use can drive it
+# for README and release screenshots. macOS only.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_NAME="Runner Screenshot Dev"
+BUNDLE_ID="com.wycstudios.runner.screenshot-dev"
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: script/screenshot-app bundle <scratch-dir>
+       script/screenshot-app launch <scratch-dir>
+       script/screenshot-app quit
+USAGE
+    exit 2
+}
+
+[[ "$(uname)" == "Darwin" ]] || { echo "error: macOS only" >&2; exit 1; }
+[[ $# -ge 1 ]] || usage
+
+app_pid() {
+    pgrep -f "/$APP_NAME.app/Contents/MacOS/Runner$" | head -1
+}
+
+case "$1" in
+    bundle)
+        [[ $# -eq 2 ]] || usage
+        bundle="$2/$APP_NAME.app"
+        target="${CARGO_TARGET_DIR:-$ROOT_DIR/target}"
+        app="$target/debug/Runner"
+        cli="$target/debug/runner-agent-cli"
+        [[ -x "$app" && -x "$cli" ]] || { echo "error: build first: cargo build -p runner-cli -p runner-app" >&2; exit 1; }
+        rm -rf "$bundle"
+        mkdir -p "$bundle/Contents/MacOS"
+        cp "$app" "$bundle/Contents/MacOS/Runner"
+        cp "$cli" "$bundle/Contents/MacOS/runner-agent-cli"
+        cat > "$bundle/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Runner</string>
+<key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+<key>CFBundleName</key><string>$APP_NAME</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>
+PLIST
+        cmp "$app" "$bundle/Contents/MacOS/Runner"
+        cmp "$cli" "$bundle/Contents/MacOS/runner-agent-cli"
+        echo "$bundle"
+        ;;
+    launch)
+        [[ $# -eq 2 ]] || usage
+        bundle="$2/$APP_NAME.app"
+        [[ -d "$bundle" ]] || { echo "error: no bundle at $bundle; run bundle first" >&2; exit 1; }
+        [[ -z "$(app_pid)" ]] || { echo "error: $APP_NAME is already running" >&2; exit 1; }
+        # Without the calling agent's variables, which would otherwise reach the daemon and
+        # every chat it starts: CLAUDE_CONFIG_DIR picks the agent's account, and
+        # CLAUDE_CODE_CHILD_SESSION turns off the chat's transcript, so it cannot resume.
+        unset_args=()
+        while IFS= read -r name; do
+            unset_args+=(-u "$name")
+        done < <(env | cut -d= -f1 | grep -E '^(CLAUDE|CODEX|RUNNER_|ANTHROPIC_|NO_COLOR$)')
+        env "${unset_args[@]}" open -n --stdout "$2/app.log" --stderr "$2/app.log" "$bundle"
+        echo "launched $APP_NAME, log $2/app.log"
+        ;;
+    quit)
+        pid="$(app_pid)"
+        [[ -n "$pid" ]] || { echo "$APP_NAME is not running"; exit 0; }
+        kill "$pid"
+        echo "quit $APP_NAME (pid $pid)"
+        ;;
+    *)
+        usage
+        ;;
+esac
