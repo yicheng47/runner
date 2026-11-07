@@ -87,13 +87,6 @@ pub(crate) struct SidebarItemView {
     pub(crate) pinned: bool,
 }
 
-pub(crate) fn sidebar_item_row(
-    id: SharedString,
-    item: &SidebarItemView,
-) -> gpui::Stateful<gpui::Div> {
-    sidebar_item_row_with(id, item, None, true)
-}
-
 /// An item row whose label may carry a second line under its title; `bordered`
 /// as for [`sidebar_row_shell`].
 pub(crate) fn sidebar_item_row_with(

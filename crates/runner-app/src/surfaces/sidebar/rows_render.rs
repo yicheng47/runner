@@ -207,6 +207,7 @@ impl Sidebar {
                 shortcut_index,
                 active,
                 group,
+                None,
                 cx,
             )
         } else {
@@ -373,9 +374,10 @@ impl Sidebar {
         drop_kind: DropKind,
         parent_id: Option<String>,
         visible_ids: Vec<String>,
-        group: Option<String>,
+        group: Option<(String, super::link::MissionShape)>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (group, shape) = group.unzip();
         let active = self.mission_selected(&summary.mission.id, cx);
         let renaming = self.rename.as_ref().is_some_and(|rename| {
             rename
@@ -398,6 +400,7 @@ impl Sidebar {
                 shortcut_index,
                 active,
                 GroupHead::default(),
+                shape,
                 cx,
             )
         } else {
@@ -435,7 +438,7 @@ impl Sidebar {
                 sidebar_row_trailing_slot()
                     .child(self.render_mission_attention(&summary, &node.id, cx))
             };
-            sidebar_item_row(
+            super::elements::sidebar_item_row_with(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
                 &SidebarItemView {
                     title: label.clone(),
@@ -444,7 +447,10 @@ impl Sidebar {
                     selected: active,
                     pinned: node.pinned_position.is_some(),
                 },
+                None,
+                shape.is_none(),
             )
+            .when_some(shape, |row, shape| shape.apply(row))
             .when(self.front_page.is_remote(), |row| {
                 row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())
             })
@@ -543,6 +549,7 @@ impl Sidebar {
                 None,
                 selected,
                 GroupHead::default(),
+                None,
                 cx,
             )
         } else {
@@ -984,6 +991,7 @@ impl Sidebar {
         shortcut_index: Option<u8>,
         shortcut_selected: bool,
         group: GroupHead,
+        shape: Option<super::link::MissionShape>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(rename) = self
@@ -998,10 +1006,12 @@ impl Sidebar {
         let row_id = SharedString::from(format!("sidebar-rename-{id}"));
         let collapsed_head = group.summary.is_some();
         let field = div().min_w(px(0.)).flex_1().child(input);
-        sidebar_row_shell(row_id.clone(), true, false, !group.in_group)
+        let bordered = !group.in_group && shape.is_none();
+        sidebar_row_shell(row_id.clone(), true, false, bordered)
             .when(group.in_group, |row| {
                 super::link::head_shape(row, collapsed_head)
             })
+            .when_some(shape, |row, shape| shape.apply(row))
             .children(disclosure_icon.map(|icon| {
                 svg()
                     .path(icon)

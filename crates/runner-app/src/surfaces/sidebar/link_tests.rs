@@ -2,7 +2,7 @@
 
 use super::link::{
     chat_row_zone, collapsed_summary, most_urgent, picker_entries, ChatChoice, ChatRowZone,
-    LinkGroups, PickerEntry,
+    LinkGroups, MissionShape, PickerEntry,
 };
 use super::link_picker::recency;
 use super::*;
@@ -642,6 +642,16 @@ fn active_lists_chats_and_missions_under_agents_with_the_linked_group() {
         "inside the chat row's box, at least 6 px before its mark: {toggle:?} {head_mark:?}"
     );
     assert!(near(toggle.center().y, head.center().y));
+    assert!(
+        grouped.left() == head.left()
+            && near(grouped.left(), outline.left())
+            && near(grouped.right(), outline.right()),
+        "a linked mission's row spans the group like its chat's: {grouped:?} {head:?} {outline:?}"
+    );
+    assert!(
+        near(flat_mark.left(), flat.left() + px(11.)),
+        "a flat row keeps its padding: {flat_mark:?} {flat:?}"
+    );
 
     // Collapsing here collapses the group in Projects too: one state per group.
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
@@ -1955,6 +1965,207 @@ fn a_group_takes_the_selected_border_while_one_of_its_rows_is_selected_without_m
         Some(outline),
         "nothing moves"
     );
+    assert_eq!(
+        crate::theme_snapshot::recorded_border("LINKED_MISSION_ROW_STYLE"),
+        Some(gpui::transparent_black()),
+        "its row shows the fill and no border of its own"
+    );
+
+    crate::theme_snapshot::clear_border("LINKED_MISSION_ROW_STYLE");
+    f.sidebar.update(&mut f.visual, |sidebar, cx| {
+        sidebar.update_app_settings(cx, true, |settings| {
+            settings.sidebar_active_only = true;
+            true
+        });
+    });
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+    let node = f.node("m1");
+    assert!(f
+        .visual
+        .debug_bounds(leak(format!("SIDEBAR_ROW active-{node}")))
+        .is_some());
+    assert_eq!(
+        crate::theme_snapshot::recorded_border("LINKED_MISSION_ROW_STYLE"),
+        Some(gpui::transparent_black()),
+        "nor in Active"
+    );
+}
+
+#[test]
+fn only_the_last_linked_mission_rounds_into_the_outlines_corners() {
+    let corners = |shape: MissionShape| {
+        let mut row = shape.apply(gpui::div().id("row"));
+        let radii = row.style().corner_radii.clone();
+        [
+            radii.top_left,
+            radii.top_right,
+            radii.bottom_left,
+            radii.bottom_right,
+        ]
+    };
+    let radius = |px: f32| Some(gpui::AbsoluteLength::from(rems(px / 16.)));
+    let square = radius(0.);
+    for shape in [
+        MissionShape::projects(26., false),
+        MissionShape::active(false),
+    ] {
+        assert!(
+            corners(shape) == [square; 4],
+            "a middle row meets the outline square"
+        );
+    }
+    assert!(
+        corners(MissionShape::projects(26., true)) == [square, square, radius(5.), radius(5.)],
+        "Projects' row starts at the outline's inner edge"
+    );
+    assert!(
+        corners(MissionShape::active(true)) == [square, square, radius(6.), radius(6.)],
+        "Active's lies under the outline itself"
+    );
+}
+
+#[test]
+fn a_pointer_drag_from_left_of_a_linked_missions_flag_reorders_it_and_takes_it_out() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let mut f = RootFixture::new(&mut cx, temp.path(), &["chat"]);
+    f.link("m1", "chat");
+    f.link("m2", "chat");
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+    let bounds = |f: &mut RootFixture, selector: String| {
+        f.visual
+            .debug_bounds(leak(selector.clone()))
+            .unwrap_or_else(|| panic!("missing {selector}"))
+    };
+    let mission_row = |f: &mut RootFixture, mission: &str| {
+        bounds(f, format!("SIDEBAR_ROW sidebar-mission-{mission}"))
+    };
+    let tab = f.tab.clone();
+    let outline = bounds(&mut f, format!("LINK_GROUP_OUTLINE {tab}"));
+    let drag = |f: &mut RootFixture, mission: &str, to: gpui::Point<gpui::Pixels>| {
+        let row = mission_row(f, mission);
+        let flag = bounds(f, format!("SIDEBAR_MARK sidebar-mission-{mission}"));
+        let from = gpui::point(outline.left() + px(2.), row.center().y);
+        assert!(from.x < flag.left(), "{row:?} {flag:?}");
+        let none = gpui::Modifiers::default();
+        let left = gpui::MouseButton::Left;
+        f.visual.simulate_mouse_move(from, None, none);
+        f.visual.simulate_mouse_down(from, left, none);
+        let started = gpui::point(from.x, from.y + px(4.));
+        f.visual.simulate_mouse_move(started, Some(left), none);
+        f.visual.simulate_mouse_move(to, Some(left), none);
+        f.visual.simulate_mouse_up(to, left, none);
+        f.visual.run_until_parked();
+        f.visual.update(|window, _| window.refresh());
+        f.visual.run_until_parked();
+    };
+    let m1 = f.node("m1");
+    let order = f.groups().missions(&tab).to_vec();
+    let (top, bottom) = if order[0] == m1 {
+        ("m1", "m2")
+    } else {
+        ("m2", "m1")
+    };
+
+    let below = mission_row(&mut f, bottom);
+    let to = gpui::point(below.center().x, below.bottom() - px(2.));
+    drag(&mut f, top, to);
+    assert_eq!(
+        f.groups().missions(&tab),
+        [order[1].clone(), order[0].clone()],
+        "a drag within the group reorders it"
+    );
+    assert_eq!(f.linked(top).as_deref(), Some("chat"), "and keeps the link");
+
+    let flat = mission_row(&mut f, "m3");
+    let to = gpui::point(flat.center().x, flat.bottom() - px(2.));
+    drag(&mut f, bottom, to);
+    assert_eq!(f.linked(bottom), None, "a drag out of the group unlinks it");
+    assert_eq!(f.linked(top).as_deref(), Some("chat"));
+}
+
+#[test]
+fn a_linked_missions_whole_row_answers_and_renaming_it_keeps_its_place() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let mut f = RootFixture::new(&mut cx, temp.path(), &["chat"]);
+    f.link("m1", "chat");
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+    let bounds = |f: &mut RootFixture, selector: String| {
+        f.visual
+            .debug_bounds(leak(selector.clone()))
+            .unwrap_or_else(|| panic!("missing {selector}"))
+    };
+    let row = bounds(&mut f, "SIDEBAR_ROW sidebar-mission-m1".into());
+    let flag = bounds(&mut f, "SIDEBAR_MARK sidebar-mission-m1".into());
+    let tab = f.tab.clone();
+    let outline = bounds(&mut f, format!("LINK_GROUP_OUTLINE {tab}"));
+    let beside = gpui::point(outline.left() + px(2.), row.center().y);
+    assert!(
+        beside.x < flag.left() && row.contains(&beside),
+        "{row:?} {flag:?}"
+    );
+
+    f.visual
+        .simulate_mouse_move(beside, None, gpui::Modifiers::default());
+    f.visual.run_until_parked();
+    let node = f.node("m1");
+    f.sidebar.read_with(&f.visual, |sidebar, _| {
+        assert_eq!(sidebar.hovered_row.as_deref(), Some(node.as_str()), "hover");
+    });
+    f.visual.simulate_click(beside, gpui::Modifiers::default());
+    f.visual.run_until_parked();
+    f.sidebar.read_with(&f.visual, |sidebar, cx| {
+        assert!(sidebar.mission_selected("m1", cx), "a click opens it");
+    });
+    f.visual
+        .simulate_mouse_down(beside, gpui::MouseButton::Right, gpui::Modifiers::default());
+    f.visual.run_until_parked();
+    f.sidebar.read_with(&f.visual, |sidebar, _| {
+        assert!(
+            sidebar.context_menu.is_some(),
+            "a right-click opens its menu"
+        );
+    });
+    f.visual.update(|window, cx| {
+        f.sidebar
+            .update(cx, |sidebar, cx| sidebar.close_context_menu(window, cx))
+    });
+    f.visual.run_until_parked();
+
+    f.visual.update(|window, cx| {
+        f.sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_sidebar_rename(
+                super::SidebarRenameTarget::Mission {
+                    mission_id: "m1".into(),
+                    original: "Mission".into(),
+                },
+                "Mission".into(),
+                "Mission name".into(),
+                window,
+                cx,
+            )
+        })
+    });
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+    let field = bounds(&mut f, "SIDEBAR_ROW sidebar-rename-m1".into());
+    let mark = bounds(&mut f, "SIDEBAR_MARK sidebar-rename-m1".into());
+    assert_eq!(
+        (field.left(), field.right(), mark.left()),
+        (row.left(), row.right(), flag.left()),
+        "renaming, the row keeps its span and its flag: {field:?} {mark:?} {row:?} {flag:?}"
+    );
+    assert_eq!(
+        crate::theme_snapshot::recorded_border("LINKED_MISSION_ROW_STYLE"),
+        Some(gpui::transparent_black()),
+        "and no border of its own"
+    );
 }
 
 #[test]
@@ -1980,12 +2191,15 @@ fn a_groups_line_starts_at_the_chats_mark_and_its_rows_align_with_flat_rows() {
         bounds(&mut f, "SIDEBAR_ROW sidebar-mission-m1".into()),
         bounds(&mut f, "SIDEBAR_ROW sidebar-mission-m2".into()),
     );
-    let (first, last) = if m1.top() < m2.top() {
-        (m1, m2)
+    let (m1_flag, m2_flag) = (
+        bounds(&mut f, "SIDEBAR_MARK sidebar-mission-m1".into()),
+        bounds(&mut f, "SIDEBAR_MARK sidebar-mission-m2".into()),
+    );
+    let (first, last, first_flag, last_flag) = if m1.top() < m2.top() {
+        (m1, m2, m1_flag, m2_flag)
     } else {
-        (m2, m1)
+        (m2, m1, m2_flag, m1_flag)
     };
-    let flag = |row: gpui::Bounds<gpui::Pixels>| row.left() + px(11.);
 
     // The chat's row moves right to give the chevron room (Jason, 2026-11-03).
     let head_mark = bounds(&mut f, format!("SIDEBAR_MARK sidebar-tab-{tab}"));
@@ -1995,9 +2209,15 @@ fn a_groups_line_starts_at_the_chats_mark_and_its_rows_align_with_flat_rows() {
         near(head_mark.left(), flat_mark.left() + px(9.)),
         "the chat's mark sits right of a flat row's to fit the chevron: {head_mark:?} {flat_mark:?}"
     );
+    for flag in [first_flag, last_flag] {
+        assert!(
+            near(flag.left(), head_mark.left() + px(20.)),
+            "a mission's flag sits 20 px right of the chat's mark: {flag:?} {head_mark:?}"
+        );
+    }
     assert!(
-        near(flag(first), head_mark.left() + px(20.)),
-        "a mission's flag sits 20 px right of the chat's mark"
+        near(flat_mark.left(), flat.left() + px(11.)),
+        "a flat row keeps its padding: {flat_mark:?} {flat:?}"
     );
     for row in [head, first, last] {
         assert!(
@@ -2016,6 +2236,12 @@ fn a_groups_line_starts_at_the_chats_mark_and_its_rows_align_with_flat_rows() {
         near(head.left(), outline.left() + px(1.)) && near(head.right(), outline.right()),
         "the chat row's box spans the group's inner width: {head:?} {outline:?}"
     );
+    for row in [first, last] {
+        assert!(
+            row.left() == head.left() && near(row.right(), outline.right()),
+            "a linked mission's row spans it too: {row:?} {head:?} {outline:?}"
+        );
+    }
     assert!(
         toggle.left() >= head.left() && toggle.right() <= head_mark.left(),
         "the chevron sits inside the chat row's box, before its mark"
@@ -2042,11 +2268,11 @@ fn a_groups_line_starts_at_the_chats_mark_and_its_rows_align_with_flat_rows() {
         "the line runs past the first mission: {line:?} {first:?}"
     );
     assert!(line.top() <= stub.bottom(), "the line continues the stub");
-    for (index, row) in [(0, first), (1, last)] {
+    for (index, row, flag) in [(0, first, first_flag), (1, last, last_flag)] {
         let branch = bounds(&mut f, format!("LINK_BRANCH {tab} {index}"));
         assert!(near(branch.left(), mark - px(0.5)), "{index}: {branch:?}");
         assert!(
-            branch.right() < flag(row),
+            branch.right() < flag.left(),
             "{index}: the branch ends before the flag"
         );
         let y = if index == 1 {
@@ -2117,6 +2343,11 @@ fn a_pinned_groups_chevron_clears_the_pin_and_its_line_follows_the_drawn_mark() 
         assert!(
             near(flag.left(), mark.left() + px(20.)),
             "{mission}: {flag:?} {mark:?}"
+        );
+        let row = bounds(&mut f, format!("SIDEBAR_ROW sidebar-mission-{mission}"));
+        assert!(
+            row.left() == head.left() && near(row.right(), outline.right()),
+            "{mission}: the row still spans the group: {row:?} {head:?} {outline:?}"
         );
     }
     for index in 0..2 {

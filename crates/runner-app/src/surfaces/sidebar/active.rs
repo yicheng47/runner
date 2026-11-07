@@ -399,6 +399,7 @@ impl Sidebar {
                                         self.tab_index_by_node.get(&head_id).copied(),
                                         rename_index == Some(index),
                                         GroupHead::default(),
+                                        None,
                                         cx,
                                     );
                                 }
@@ -425,6 +426,7 @@ impl Sidebar {
                                         in_group: true,
                                         ..GroupHead::default()
                                     },
+                                    None,
                                     cx,
                                 );
                                 let selected = self.tab_selected(&head_id, cx)
@@ -435,9 +437,11 @@ impl Sidebar {
                                 let missions = if collapsed {
                                     Vec::new()
                                 } else {
+                                    let last = missions.len().saturating_sub(1);
                                     missions
                                         .into_iter()
-                                        .map(|(index, row)| {
+                                        .enumerate()
+                                        .map(|(position, (index, row))| {
                                             self.render_active_row(
                                                 row,
                                                 self.tab_index_by_node
@@ -445,6 +449,9 @@ impl Sidebar {
                                                     .copied(),
                                                 rename_index == Some(index),
                                                 GroupHead::default(),
+                                                Some(super::link::MissionShape::active(
+                                                    position == last,
+                                                )),
                                                 cx,
                                             )
                                         })
@@ -499,6 +506,7 @@ impl Sidebar {
         index: Option<u8>,
         renaming: bool,
         group: GroupHead,
+        shape: Option<super::link::MissionShape>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let store = self.app_store.read(cx);
@@ -626,12 +634,14 @@ impl Sidebar {
                 .child(div().min_w(px(0.)).truncate().child(location))
                 .into_any_element(),
         };
-        sidebar_row_shell(row_id.clone(), active || renaming, false, !group.in_group)
+        let bordered = !group.in_group && shape.is_none();
+        sidebar_row_shell(row_id.clone(), active || renaming, false, bordered)
             .gap_2()
             .rounded(rems(6. / 16.))
             .when(group.in_group, |row| {
                 super::link::active_head_shape(row, collapsed_head)
             })
+            .when_some(shape, |row, shape| shape.apply(row))
             .text_size(theme::text_ui())
             .child(super::elements::sidebar_mark(
                 row_id,
