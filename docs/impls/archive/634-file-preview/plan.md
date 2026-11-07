@@ -1,6 +1,6 @@
 # 634 — plan
 
-The phases of [feature 634](../../features/634-file-preview.md) in detail: how each mission lands, what it touches, how it is checked, and the gate before the umbrella reaches `main`. The program's state and its binding decisions are in [README.md](README.md), and the dated log is [impl_log.md](impl_log.md). The spec wins on what a person sees; the design file `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design` wins on how it looks; this plan wins on how it is built and in what order.
+The phases of [feature 634](../../../features/archive/634-file-preview.md) in detail: how each mission lands, what it touches, how it is checked, and the gate before the umbrella reaches `main`. The program's state and its binding decisions are in [README.md](README.md), and the dated log is [impl_log.md](impl_log.md). The spec wins on what a person sees; the design file `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design` wins on how it looks; this plan wins on how it is built and in what order.
 
 ## Shape
 
@@ -128,7 +128,7 @@ Checks: each setting's default and round trip, the font fallback, Font size foll
 
 ## m7 — file links open in the preview
 
-From Jason's live run of the umbrella on 2026-11-05; brief [634-m7-link-preview.md](../briefs/634-m7-link-preview.md). Seven changes in `runner-app` only:
+From Jason's live run of the umbrella on 2026-11-05; brief [634-m7-link-preview.md](https://github.com/yicheng47/runner/blob/523f81843cd3aac1f1a82f3ec97785409b41d171/docs/impls/briefs/634-m7-link-preview.md). Seven changes in `runner-app` only:
 
 1. **The width rule**: `side_panel::widened` narrows the file first, down to the standard width, while a tree that is on keeps its width; the tree hides only when its toggle is off.
 2. **File links open in the side panel**: each terminal's element carries its surface's `FileLinkRoute` (the chat panel for panes and terminal-only tabs, the mission rail for members and the drawer shell). A ⌘-click asks that panel's Files view, made unshown if the panel never showed it, whether the path is inside the root; the check canonicalizes off the UI thread and waits for a root still resolving. Inside, it opens a tab at the line and the owner opens the panel on Files; otherwise `file_links::open_file_link` runs as before. The tooltip waits for the same answer.
@@ -142,7 +142,7 @@ Checks: the width rule for a chat and a mission, routing from a real ⌘-click a
 
 ## m8 — side panel surfaces with a + menu
 
-Jason's model after t3code, 2026-11-05; brief [634-m8-panel-surfaces.md](../briefs/634-m8-panel-surfaces.md); board `cwksG` (A `du8Q4`, B `GfSLO` with the menu `r2y8b`, C `h2gjjR`, D `jdKtZ`). In `runner-app` only, with no runnerd, protocol or storage change beyond one app setting:
+Jason's model after t3code, 2026-11-05; brief [634-m8-panel-surfaces.md](https://github.com/yicheng47/runner/blob/523f81843cd3aac1f1a82f3ec97785409b41d171/docs/impls/briefs/634-m8-panel-surfaces.md); board `cwksG` (A `du8Q4`, B `GfSLO` with the menu `r2y8b`, C `h2gjjR`, D `jdKtZ`). In `runner-app` only, with no runnerd, protocol or storage change beyond one app setting:
 
 1. **The model** (`side_panel.rs`): `OpenSurfaces` holds the opened surfaces in the order they opened and the active one, replacing the single chosen view in `chat_panel_view` and `rail_view` with the same lifetime: the window's chat panel and each mission's rail, saved per mission on remote switches as before. `tabs` puts the permanent tab first (a mission's Sessions, or the only surface on offer) and then the open ones Settings offers; `shown` is the active tab or the first; `None` is the empty list. Opening switches to an open surface instead of adding it again; closing the shown tab shows the one before it, Sessions in a mission. Settings turning a surface off closes its tabs, from each window's settings revision.
 2. **The header** (`header_tabs`): 28 px tabs of icon and name with 8 px sides and 4 px between, the shown one raised and semibold with a × where it closes; then the 24 px `+` where the menu offers anything; a flex gap; collapse. The tabs and `+` stop the titlebar drag; the gap keeps it.
@@ -165,7 +165,7 @@ Checks: Markdown nested past the limit in a process of its own on a 512 KiB stac
 
 ## m11 — fixes from the umbrella's second review
 
-The two reviewers' second pass over the whole umbrella, 2026-11-06, with the decisions in its [brief](../briefs/634-m11-review2-fixes.md). The [log](impl_log.md) has each finding's outcome and the notes left, with why.
+The two reviewers' second pass over the whole umbrella, 2026-11-06, with the decisions in its [brief](https://github.com/yicheng47/runner/blob/523f81843cd3aac1f1a82f3ec97785409b41d171/docs/impls/briefs/634-m11-review2-fixes.md). The [log](impl_log.md) has each finding's outcome and the notes left, with why.
 
 Checks that fail without their fix: another connection's input and window requests going through while a watch prepares at a gate; a many-folder, many-ignored rollup, a status prepared off the UI thread and installed by swapping it in, and one rebuild per listing batch; two views on one root with the hidden one doing nothing until shown; a link too long to resolve refused; a new link to a folder not followed on Linux; callers sharing a running status, and the watcher waiting for a fresh one; a status clearing its own error; a saved root that cannot be examined staying saved; Ctrl+Shift+O reaching the terminal with Files off. Checks that guard what must not change: a watch preparing when its connection closes never starting; a dangling link still reading as missing; a status that panics not stranding those waiting on it.
 

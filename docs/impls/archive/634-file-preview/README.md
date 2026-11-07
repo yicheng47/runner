@@ -1,6 +1,6 @@
 # 634 file preview — program record
 
-Implementation record for [feature 634](../../features/634-file-preview.md) ([#634](https://github.com/yicheng47/runner/issues/634)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind. [plan.md](plan.md) has the phases, each mission's scope, checks and landing, and the gate before the umbrella reaches `main`; [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../briefs/) as `634-m{n}-{slug}.md`, written on each mission's branch when it starts.
+Implementation record for [feature 634](../../../features/archive/634-file-preview.md) ([#634](https://github.com/yicheng47/runner/issues/634)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind. [plan.md](plan.md) has the phases, each mission's scope, checks and landing, and the gate before the umbrella reaches `main`; [impl_log.md](impl_log.md) is the dated log. Briefs went in [`docs/impls/briefs/`](https://github.com/yicheng47/runner/tree/523f81843cd3aac1f1a82f3ec97785409b41d171/docs/impls/briefs) as `634-m{n}-{slug}.md`, written on each mission's branch when it starts.
 
 ## Status (2026-11-06)
 

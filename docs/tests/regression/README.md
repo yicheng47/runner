@@ -10,14 +10,14 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 | --- | --- | ---: | ---: | ---: |
 | Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 53 | 10 | 43 |
 | Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 47 | 5 | 42 |
-| Windows, tabs, panes, sidebar and its Active view, cwd and drawers | [workspace.md](workspace.md) | 49 | 6 | 43 |
+| Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files | [workspace.md](workspace.md) | 55 | 6 | 49 |
 | Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 49 | 5 | 44 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
-| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, installation and updates | [settings.md](settings.md) | 49 | 4 | 45 |
+| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, side panel, installation and updates | [settings.md](settings.md) | 51 | 4 | 47 |
 | Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 14 | 4 | 10 |
 | Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 46 | 6 | 40 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 7 | 0 | 7 |
-| **Total** | | **336** | **44** | **292** |
+| **Total** | | **344** | **44** | **300** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately at `docs/tests/runs/YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same day append a separately identified candidate/attempt block to that file. No run record is needed merely to edit this suite.
 
@@ -67,6 +67,8 @@ Follow the results table with findings (expected/actual, minimal repro, severity
 When a feature's test record is archived in a [release's docs sweep](../../../AGENTS.md#docs-sweep-at-release), add its lasting live checks here, or have the record state why none apply. Trace every promoted case to its record/spec/issue/code, reconcile its expectation with current code, set platform/needs/tier and retain the evidence requirements. Results, temporary investigation recipes and automated-only assertions stay with the run/archive or owning test. Change navigation/counts when adding or retiring rows, check all relative links with a script and review at least two cases per area against origin and current code.
 
 ## Not carried over
+
+The 0.19.5 sweep added `WS-FILES-01` to `WS-FILES-05` from #634's [spec](../../features/archive/634-file-preview.md#verification) and guide, and `SET-PANEL-01` and `SET-PANEL-02` from #634 m6's [record](../archive/634-m6-side-panel-settings-live.md), reconciled with the settings that shipped: the highlighting and single-click preview switches m6 tested were removed before the landing, and #1210 removed Font size's Reset. #1211 retired `WS-CREATE-14`, `WS-CREATE-16` and `MIS-LIFE-03` for `WS-CREATE-17`, `WS-CREATE-18` and `MIS-LIFE-05`, added `WS-CREATE-19` and moved `WS-CREATE-11`'s row to Recents, traced to its checks in the [2026-11-07 run](../runs/2026-11-07-mac.md). #1204's pull request had already added `SET-UPDATE-06`, `SET-UPDATE-07` and `SET-LINUX-04`; its [record](../archive/1204-update-experience.md)'s skipped signed-install, Windows and Linux checks stay open there. #1079, #1127 and #1210 had no records of their own. None of the new cases is a smoke row, and promotion establishes no new test pass.
 
 The 0.19.2 sweep added `TERM-FIND-01` to `TERM-FIND-07` from #897's [record](../archive/897-terminal-find-qa.md), `MIS-MSG-09` from #1125's [record](../archive/1125-confirmed-notice-unsent.md) and `WS-CREATE-14` to `WS-CREATE-16` from #1117's [record](../archive/1117-launcher-new-tab-row-qa.md), whose pull request had already renamed New chat to New tab in the existing rows. #897's native Windows and Linux shortcuts, hover-only tooltips and divider dragging stayed Blocked, and #1125's original stale-row alias was never reproduced live; those gaps stay in the archived records. #984, #1122 and #1132 had no test records of their own, and #1025's record stays in `docs/tests/` while its Windows and Linux confirmations are open. Promotion establishes no new test pass.
 

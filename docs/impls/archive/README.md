@@ -17,6 +17,7 @@ Each program's README is its entry point. Open a plan for its design/sequence or
 | [pi runtime](539-pi-runtime/README.md) | Native prompt, conversation and hook integration, plus its implementation history. |
 | [Role rename](604-role-rename/README.md) | Persisted/wire read compatibility during the runner → role migration. |
 | [Remote control](836-web-remote-control/README.md) | The `nightly-remote` umbrella's phase and mission sequence, the decisions binding every mission, and the dated log through the 0.18.0 landing. |
+| [File preview](634-file-preview/README.md) | The `feat/634-file-preview` umbrella's eleven missions, the decisions binding them (the file service in `runnerd`, the saved root, every platform), and the dated log through the 0.19.5 landing. |
 | [Skills](local-skills/README.md) | Native config ownership and the view-before-control decision; deferred work remains in issues. |
 
 ## Distinct implementation and compatibility records

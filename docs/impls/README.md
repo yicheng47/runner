@@ -6,7 +6,7 @@ A plan is written on its feature's branch and lands in the pull request with the
 
 ## Active
 
-File preview ([#634](https://github.com/yicheng47/runner/issues/634)) is a program of missions on the umbrella branch `feat/634-file-preview`; its [program record](634-file-preview/README.md) holds the state and decisions, and its [plan](634-file-preview/plan.md) the phases. The directory lives on the umbrella and reaches `main` with it.
+No program is active. File preview ([#634](https://github.com/yicheng47/runner/issues/634)) landed from its umbrella branch in [#1157](https://github.com/yicheng47/runner/pull/1157) and shipped in 0.19.5; its [program record](archive/634-file-preview/README.md), [plan](archive/634-file-preview/plan.md) and [log](archive/634-file-preview/impl_log.md) are archived.
 
 The post-0.17 cleanup ([#977](https://github.com/yicheng47/runner/issues/977)) closed on 2026-10-29; its four plans were deleted in the 0.19.0 sweep, with their outcomes in the [maintenance history](archive/maintenance-history.md#977--post-017-cleanup-outcomes) and their validation records in the [test archive](../tests/README.md).
 
