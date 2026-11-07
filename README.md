@@ -89,15 +89,6 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/files_view.png"><img src="assets/files_view.png" alt="A Claude Code chat beside the side panel's Files view: the worktree's tree with its git status and a file open in a tab" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Files beside your agents</h3>
-      <p>The side panel's Files view shows the checkout an agent works in, with its git status, so you can read what changed without leaving Runner: highlighted code, rendered Markdown and a file finder on <code>⇧⌘O</code>. ⌘-click a path in a terminal to open it at that line. Files stay read-only; editing stays with your agent and editor. <a href="./docs/guide/guides/chats-and-windows.md#browse-files-in-the-side-panel">Files guide →</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
       <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="The sidebar footer's host button open, listing this Mac first and the other computers on the same account" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
@@ -122,6 +113,15 @@ Runner brings CLI coding agents together in reusable crews, with real terminals 
     <td width="50%" valign="middle">
       <h3>Split tabs and windows</h3>
       <p>Split a tab as far as the window allows, drag panes to reorder, group tabs into folders, and open more windows with <code>⇧⌘N</code> or <code>Ctrl+Shift+N</code>.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="middle">
+      <a href="assets/files_view.png"><img src="assets/files_view.png" alt="A Claude Code chat beside the side panel's Files view: the worktree's tree with its git status and a file open in a tab" width="100%" /></a>
+    </td>
+    <td width="50%" valign="middle">
+      <h3>Files beside your agents</h3>
+      <p>The side panel's Files view shows the checkout an agent works in, with its git status, so you can read what changed without leaving Runner: highlighted code, rendered Markdown and a file finder on <code>⇧⌘O</code>. ⌘-click a path in a terminal to open it at that line. Files stay read-only; editing stays with your agent and editor. <a href="./docs/guide/guides/chats-and-windows.md#browse-files-in-the-side-panel">Files guide →</a></p>
     </td>
   </tr>
   <tr>

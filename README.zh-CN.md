@@ -89,15 +89,6 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
   </tr>
   <tr>
     <td width="50%" valign="middle">
-      <a href="assets/files_view.png"><img src="assets/files_view.png" alt="Claude Code chat 旁边是侧面板的 Files 视图：worktree 的文件树带着 git 状态，一个文件在标签页中打开" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>在 agent 旁边看文件</h3>
-      <p>侧面板的 Files 视图显示 agent 所在的 checkout 及其 git 状态，不离开 Runner 就能看清改了什么：代码带语法高亮，Markdown 直接渲染，<code>⇧⌘O</code> 按文件名查找。在终端里 ⌘-点击文件路径，会在对应行打开。文件只读，编辑仍交给 agent 和你的编辑器。<a href="./docs/guide/zh-CN/guides/chats-and-windows.md#在侧面板中浏览文件">文件指南 →</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
       <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="侧边栏底部的主机按钮已展开，这台 Mac 排在首位，下面是同一账号下的其他电脑" width="100%" /></a>
     </td>
     <td width="50%" valign="middle">
@@ -122,6 +113,15 @@ Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 
     <td width="50%" valign="middle">
       <h3>分栏与多窗口</h3>
       <p>标签页可以一直分栏到窗口放不下为止，拖动各栏重新排列，把标签页归进文件夹，用 <code>⇧⌘N</code> 或 <code>Ctrl+Shift+N</code> 打开更多窗口。</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="middle">
+      <a href="assets/files_view.png"><img src="assets/files_view.png" alt="Claude Code chat 旁边是侧面板的 Files 视图：worktree 的文件树带着 git 状态，一个文件在标签页中打开" width="100%" /></a>
+    </td>
+    <td width="50%" valign="middle">
+      <h3>在 agent 旁边看文件</h3>
+      <p>侧面板的 Files 视图显示 agent 所在的 checkout 及其 git 状态，不离开 Runner 就能看清改了什么：代码带语法高亮，Markdown 直接渲染，<code>⇧⌘O</code> 按文件名查找。在终端里 ⌘-点击文件路径，会在对应行打开。文件只读，编辑仍交给 agent 和你的编辑器。<a href="./docs/guide/zh-CN/guides/chats-and-windows.md#在侧面板中浏览文件">文件指南 →</a></p>
     </td>
   </tr>
   <tr>
