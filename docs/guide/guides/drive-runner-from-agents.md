@@ -65,11 +65,14 @@ Use `mission show` to find the current handles, roles and pending questions. The
 runner mission show <mission-id> --json
 runner msg post --mission <mission-id> --to coder "Keep the change limited to the parser."
 runner mission answer <mission-id> <question-id> <choice>
+runner mission answer <mission-id> <question-id> <choice> --note "Only after the migration lands."
 runner mission stop <mission-id>
 runner mission archive <mission-id>
 ```
 
 `mission answer` takes a question ID that `mission show` lists as pending, or the ID of the member's `ask_human` event from the feed. Any other ID, including one for a question that has already been answered, is refused with the pending question IDs, so an answer is never dropped silently.
+
+Add `--note <text>`, or `--note-file <path>` (`-` reads stdin), when an answer needs a condition the choices don't carry. The member gets the choice and the note in one inbox message. A blank note is refused. The note goes to the member who asked: the app's mission feed shows only the choice.
 
 Inside a mission, members can use `runner msg post --to reviewer "Ready for review"` and `runner msg read` without supplying a mission ID. Outside a mission, writes need `--mission`. An outside caller without `--as` speaks as the person; do not use `--as` to impersonate another member.
 

@@ -65,11 +65,14 @@ Runner 聊天之外的智能体没有关联，也收不到汇报。它会告诉�
 runner mission show <mission-id> --json
 runner msg post --mission <mission-id> --to coder "Keep the change limited to the parser."
 runner mission answer <mission-id> <question-id> <choice>
+runner mission answer <mission-id> <question-id> <choice> --note "Only after the migration lands."
 runner mission stop <mission-id>
 runner mission archive <mission-id>
 ```
 
 `mission answer` 接受 `mission show` 列出的待回答问题 ID，也接受消息流中该成员 `ask_human` 事件的 ID。其他 ID（包括已回答问题的 ID）会被拒绝，并列出待回答问题的 ID，因此回答不会被静默丢弃。
+
+如果回答需要附带选项无法表达的条件，请添加 `--note <text>` 或 `--note-file <path>`（`-` 表示从标准输入读取）。提问的成员会在同一条收件箱消息中收到选项和备注。空白备注会被拒绝。备注只发送给提问的成员：应用的任务消息流只显示所选选项。
 
 在任务内，成员可以使用 `runner msg post --to reviewer "Ready for review"` 和 `runner msg read`，无需任务 ID。任务外的写操作需要 `--mission`。外部调用者未使用 `--as` 时以操作者身份发言；不要用 `--as` 冒充其他成员。
 

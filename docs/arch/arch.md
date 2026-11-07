@@ -536,7 +536,7 @@ Add records `role_joined` before publishing `roster.json`, then updates the rout
 | `mission_goal` | No runtime side effect; the launch prompt was composed before spawn and this event remains the durable goal record. |
 | `human_said` | Validate and persist resolved recipients in `payload.target` (string, array or null), then append a message from `human` with those recipients; reopen repair preserves the same recipients. |
 | `ask_human` | Append a `human_question` event for the UI. |
-| `human_response` | Append a message from `human` to the original asker, with `payload.question_id`; retain the signal as the card record. |
+| `human_response` | Append a message from `human` to the original asker, with `payload.question_id` and the choice, followed by `payload.note` when it is a non-blank string; retain the signal as the card record. |
 | `session_status` | The feed renders status; readiness comes directly from the session manager. |
 | message (any) | Signal backlogs for the addressed subscribers through `Event::addresses`; the dispatcher sends the unchanged pointer notification. Legacy messages to `human` remain visible in the feed and have no subscriber. |
 | `inbox_read` | Internal — owned by the bus's projection layer to track read watermarks. |
@@ -569,7 +569,8 @@ Add records `role_joined` before publishing `roster.json`, then updates the rout
   "from": "human",
   "payload": {
     "question_id": <human_question.id>,
-    "choice":      "accept"
+    "choice":      "accept",
+    "note":        "Only after the migration lands."   // optional
   }
 }
 ```
@@ -665,7 +666,7 @@ runner mission stop | resume | archive | unarchive | pin | unpin [<mission>]
 runner mission rename <mission> <title> | move [<mission>] (--project <project> | --unfile)
 runner mission feed [<mission>] [--follow] [--since <offset>] [--limit <n>] [--oldest-first]
                     [--types <kind,...> | --all] [--from <handle>]
-runner mission answer <mission> <question_id> <choice>
+runner mission answer <mission> <question_id> <choice> [--note <text> | --note-file <path | ->]
 runner chat start (<role> | --runtime <runtime>) [--model <model>] [--effort <effort>] [--speed inherit|standard|fast] [--project <project> | --cwd <dir>]
 runner session list | show <session> | stop <session> | archive <session> | resume <session> | restart <session>
 

@@ -614,7 +614,7 @@ pub fn write_feed_events(
 
 fn event_text(event: &Value) -> String {
     let payload = event.get("payload").unwrap_or(&Value::Null);
-    for key in ["text", "message", "prompt", "question", "note", "choice"] {
+    for key in ["text", "message", "prompt", "question", "choice", "note"] {
         if let Some(value) = payload.get(key) {
             return cell_width(Some(value), 72);
         }
@@ -1269,6 +1269,23 @@ mod tests {
         assert_eq!(
             render_default(View::Generic, &json!({"nested": {"a": "one\ntwo"}})),
             [r#"nested  {"a":"one\ntwo"}"#]
+        );
+    }
+
+    #[test]
+    fn a_noted_answer_previews_its_choice_in_the_feed() {
+        let feed = json!({
+            "events": [
+                {"event": {"id": "1", "ts": "2026-09-18T10:20:30Z", "kind": "signal", "from": "human", "to": null, "type": "human_response", "payload": {"question_id": "q", "choice": "yes", "note": "Only on Friday"}}}
+            ],
+            "skipped": [], "next_offset": 42
+        });
+        assert_eq!(
+            render_default(View::MissionFeed, &feed),
+            [
+                "10:20:30  human -> all  human_response  yes",
+                "next_offset  42",
+            ]
         );
     }
 

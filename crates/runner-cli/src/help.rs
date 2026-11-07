@@ -109,6 +109,7 @@ EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   runner mission remove-role "$mission" <handle>
   runner mission show "$mission" --json
   runner mission answer "$mission" <question_id_from_mission_show> <choice>
+  # Add --note "<condition>" or --note-file <path|-> when the answer needs a condition.
   # Use a HANDLE from mission show to address a member.
   runner msg post --mission "$mission" --to <handle> "message"
   runner mission stop "$mission"
@@ -133,8 +134,9 @@ REPORTS FROM RUNNER
   from the person. Read the mission with runner mission show <id> and runner mission feed <id>,
   tell the person what happened in a line or two, and pass a pending question to them.
   Act only where the person already said yes, and answer a question with runner mission answer
-  only with their decision. After a compaction or /new, runner mission list --linked-here
-  finds this chat's missions.
+  only with their decision; pass a condition the choices do not carry with --note, so the
+  decision and its condition arrive as one message. After a compaction or /new,
+  runner mission list --linked-here finds this chat's missions.
 
 OUTSIDE RUNNER
   Outside a Runner chat there is no link and no report. Tell the person the mission ID and that
@@ -235,6 +237,8 @@ mod tests {
             "runner mission show <id> and runner mission feed <id>",
             "pass a pending question to them",
             "answer a question with runner mission answer\n  only with their decision",
+            "--note \"<condition>\" or --note-file <path|-> when the answer needs a condition",
+            "pass a condition the choices do not carry with --note",
             "runner mission list --linked-here",
             "Outside a Runner chat there is no link and no report",
         ] {

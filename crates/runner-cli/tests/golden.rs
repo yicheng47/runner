@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -528,6 +528,24 @@ cli_cases! {
         "coder"
     ],
     mission_answer_running => vec!["mission", "answer", "mission-running", EVENTS[1], "yes"],
+    mission_answer_running_note => vec![
+        "mission",
+        "answer",
+        "mission-running",
+        EVENTS[1],
+        "yes",
+        "--note",
+        "Only on Friday"
+    ],
+    mission_answer_running_blank_note => vec![
+        "mission",
+        "answer",
+        "mission-running",
+        EVENTS[1],
+        "yes",
+        "--note",
+        "  "
+    ],
     project_missing => vec!["project", "show", "missing"],
     role_missing => vec!["role", "show", "missing"],
     crew_missing => vec!["crew", "show", "missing"],
@@ -923,6 +941,43 @@ fn assert_help_coverage(visible: &[Vec<String>], cases: &[Case]) {
             args.join(" ")
         );
     }
+}
+
+#[test]
+fn mission_answer_reads_its_note_from_stdin() {
+    let mut fixture = Fixture::new();
+    fixture.start();
+    let mut child = fixture
+        .command(false)
+        .args([
+            "mission",
+            "answer",
+            "mission-running",
+            EVENTS[1],
+            "yes",
+            "--note-file",
+            "-",
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"Only on Friday\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let event: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(event["payload"]["note"], "Only on Friday");
 }
 
 #[test]

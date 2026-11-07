@@ -67,12 +67,20 @@ pub(super) fn append_answer(router: &Router, event: &Event, ask: &PendingAsk) ->
     };
     let prompt: String = ask.prompt.chars().take(80).collect();
     let choice = event.payload["choice"].as_str().unwrap_or_default();
+    let note = event.payload["note"]
+        .as_str()
+        .map(str::trim)
+        .filter(|note| !note.is_empty());
+    let text = match note {
+        Some(note) => format!("Answer to \"{prompt}\": {choice} — {note}"),
+        None => format!("Answer to \"{prompt}\": {choice}"),
+    };
     let mut draft = EventDraft::message(
         router.crew_id.as_deref(),
         &router.mission_id,
         "human",
         Some(asker.clone()),
-        format!("Answer to \"{prompt}\": {choice}"),
+        text,
     );
     draft.payload["question_id"] = event.payload["question_id"].clone();
     draft.payload["source_event"] = event.id.clone().into();
