@@ -27,7 +27,7 @@ pub(crate) use archive::{
 };
 pub(crate) use elements::{
     default_session_label, direct_chat_display_status, project_children, session_label,
-    session_label_live, sidebar_item_row, sidebar_section_header, SidebarItemView,
+    session_label_live, sidebar_section_header, SidebarItemView,
 };
 
 use super::*;

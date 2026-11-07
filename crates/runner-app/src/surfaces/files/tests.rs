@@ -2898,7 +2898,7 @@ fn the_viewer_font_size_follows_the_terminal_until_set() {
     assert_eq!(
         line_height(&mut h),
         Some(expected(11.)),
-        "Reset follows again"
+        "an unset size follows the terminal"
     );
 }
 
@@ -3395,9 +3395,15 @@ fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
         .simulate_keystrokes(&format!("{zoom_out} {zoom_out}"));
     h.settle();
     assert_eq!(size(&mut h), Some(terminal_size - 1));
+    assert!(app_zooms(&mut h).is_empty(), "the app's zoom never moved");
     h.visual.simulate_keystrokes(&reset);
     h.settle();
-    assert_eq!(size(&mut h), None, "reset follows the terminal again");
+    assert_eq!(
+        size(&mut h),
+        Some(terminal_size - 1),
+        "reset leaves the viewer's text alone"
+    );
+    assert_eq!(app_zooms(&mut h), ["reset"], "and resets the app's zoom");
 
     // The range's ends hold.
     h.set(|settings| settings.files_font_size = Some(32));
@@ -3420,6 +3426,14 @@ fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
     h.visual.simulate_keystrokes(&zoom_in);
     h.settle();
     assert_eq!(size(&mut h), Some(terminal_size + 1), "from the find field");
+    h.visual.simulate_keystrokes(&reset);
+    h.settle();
+    assert_eq!(
+        size(&mut h),
+        Some(terminal_size + 1),
+        "reset from the find field"
+    );
+    assert_eq!(app_zooms(&mut h), ["reset", "reset"]);
     h.visual.simulate_keystrokes("escape");
     h.open("README.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
@@ -3433,7 +3447,18 @@ fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
         Some(terminal_size + 2),
         "from a rendered page"
     );
-    assert!(app_zooms(&mut h).is_empty(), "the app's zoom never moved");
+    h.visual.simulate_keystrokes(&reset);
+    h.settle();
+    assert_eq!(
+        size(&mut h),
+        Some(terminal_size + 2),
+        "reset from a rendered page"
+    );
+    assert_eq!(
+        app_zooms(&mut h),
+        ["reset", "reset", "reset"],
+        "the app's zoom moved only for its reset"
+    );
 
     // The tree and a terminal zoom the app.
     h.click("FILES_ROW a.txt");
@@ -3447,7 +3472,7 @@ fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
     h.visual.update(|window, cx| elsewhere.focus(window, cx));
     h.visual.simulate_keystrokes(&format!("{zoom_out} {reset}"));
     h.settle();
-    assert_eq!(app_zooms(&mut h), ["in", "out", "reset"]);
+    assert_eq!(app_zooms(&mut h)[3..], ["in", "out", "reset"]);
     assert_eq!(size(&mut h), Some(terminal_size + 2));
 }
 

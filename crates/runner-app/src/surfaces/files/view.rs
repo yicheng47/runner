@@ -2302,13 +2302,10 @@ impl Render for FilesView {
                 cx.listener(|this, _: &crate::FindInFile, window, cx| this.open_find(window, cx)),
             )
             .on_action(cx.listener(|this, _: &crate::ZoomFileIn, window, cx| {
-                this.zoom(Some(1), Box::new(crate::ZoomIn), window, cx)
+                this.zoom(1, Box::new(crate::ZoomIn), window, cx)
             }))
             .on_action(cx.listener(|this, _: &crate::ZoomFileOut, window, cx| {
-                this.zoom(Some(-1), Box::new(crate::ZoomOut), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::ZoomFileReset, window, cx| {
-                this.zoom(None, Box::new(crate::ZoomReset), window, cx)
+                this.zoom(-1, Box::new(crate::ZoomOut), window, cx)
             }))
             .flex_1()
             .min_h(px(0.))

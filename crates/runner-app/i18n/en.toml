@@ -1512,7 +1512,7 @@
 "side_panel.font_description" = "Code and Markdown code blocks. Same as terminal follows Settings → Terminal."
 "side_panel.same_as_terminal" = "Same as terminal"
 "side_panel.font_size" = "Font size"
-"side_panel.font_size_description" = "Follows Terminal font size until changed; Reset then returns to it. Rendered Markdown text scales with it."
+"side_panel.font_size_description" = "Follows Terminal font size until changed. Rendered Markdown text scales with it."
 "side_panel.markdown_open_as" = "Markdown files open as"
 "side_panel.markdown_open_as_description" = "The </> button switches a tab between the two."
 "side_panel.rendered" = "Rendered"

@@ -757,7 +757,7 @@ impl Sidebar {
             ),
         };
         // The head's box reaches the outline's inner edge; its own padding holds the chevron.
-        let head_box = gpui::div().ml(rems(-(GUTTER - 1.) / 16.)).child(head);
+        let head_box = gpui::div().ml(rems(-ROW_REACH / 16.)).child(head);
         let head_row = gpui::div()
             .relative()
             .child(head_box)
@@ -810,10 +810,17 @@ impl Sidebar {
                 DropKind::Leaf,
                 mission_parent,
                 group_ids.clone(),
-                Some(tab_id.clone()),
+                Some((tab_id.clone(), MissionShape::projects(mark, index == last))),
                 cx,
             );
-            group = group.child(linked_mission(element, &tab_id, index, mark, index == last));
+            group = group.child(linked_mission(
+                element,
+                &tab_id,
+                index,
+                mark,
+                index == last,
+                ROW_REACH,
+            ));
         }
         let line_after = (self.drop_marker.as_deref() == Some(after_marker.as_str()))
             .then(|| super::rows_render::drop_line(self.drop_hint.as_ref(), true));
@@ -955,11 +962,9 @@ pub(super) fn active_link_group(
                 .children((!missions.is_empty()).then(|| head_stub(tab_id, mark)))
                 .child(toggle),
         )
-        .children(
-            missions.into_iter().enumerate().map(|(index, mission)| {
-                linked_mission(mission, tab_id, index, mark, index == last)
-            }),
-        )
+        .children(missions.into_iter().enumerate().map(|(index, mission)| {
+            linked_mission(mission, tab_id, index, mark, index == last, 0.)
+        }))
         .child(group_outline(tab_id, selected))
         .into_any_element()
 }
@@ -987,9 +992,10 @@ const GUTTER: f32 = 6.;
 const CHEVRON_INSET: f32 = 9.;
 /// And at least this far before the chat row's first glyph, pin or mark.
 const CHEVRON_GAP: f32 = 6.;
-/// A group head's own left padding: the shift, a row's usual padding, and the reach
-/// from its rows back to the outline's inner edge.
-const HEAD_PAD: f32 = HEAD_SHIFT + 10. + GUTTER - 1.;
+/// How far a group's rows reach left of the scope's rows, to the outline's inner edge.
+const ROW_REACH: f32 = GUTTER - 1.;
+/// A group head's own left padding: the shift, a row's usual padding, and that reach.
+const HEAD_PAD: f32 = HEAD_SHIFT + 10. + ROW_REACH;
 /// A group head's corners follow the outline's inner edge.
 const HEAD_RADIUS: f32 = 5.;
 
@@ -999,7 +1005,7 @@ pub(super) fn head_shape(
     row: gpui::Stateful<gpui::Div>,
     collapsed: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    shape_head(row, collapsed, HEAD_PAD, HEAD_RADIUS)
+    shape_row(row, true, collapsed, HEAD_PAD, HEAD_RADIUS)
 }
 
 /// The same in Active, whose head row lies under the outline itself.
@@ -1007,22 +1013,64 @@ pub(super) fn active_head_shape(
     row: gpui::Stateful<gpui::Div>,
     collapsed: bool,
 ) -> gpui::Stateful<gpui::Div> {
-    shape_head(row, collapsed, ACTIVE_HEAD_SHIFT + 10., HEAD_RADIUS + 1.)
+    shape_row(
+        row,
+        true,
+        collapsed,
+        ACTIVE_HEAD_SHIFT + 10.,
+        HEAD_RADIUS + 1.,
+    )
 }
 
-fn shape_head(
+/// A linked mission's row, renaming or not: like its head it spans the outline's
+/// inner width with no border of its own, so the indent to its flag is its own padding.
+/// Only the group's last row rounds, into the outline's bottom corners.
+#[derive(Clone, Copy)]
+pub(super) struct MissionShape {
+    pad: f32,
+    radius: f32,
+    last: bool,
+}
+
+impl MissionShape {
+    /// Under a chat whose mark is at `mark`.
+    pub(super) fn projects(mark: f32, last: bool) -> Self {
+        Self {
+            pad: mark + MISSION_INDENT_FROM_MARK + 10. + ROW_REACH,
+            radius: HEAD_RADIUS,
+            last,
+        }
+    }
+
+    /// The same in Active, whose rows lie under the outline itself.
+    pub(super) fn active(last: bool) -> Self {
+        Self {
+            pad: ACTIVE_HEAD_SHIFT + mark_x(false) + MISSION_INDENT_FROM_MARK + 10.,
+            radius: HEAD_RADIUS + 1.,
+            last,
+        }
+    }
+
+    pub(super) fn apply(self, row: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+        #[cfg(test)]
+        let row = crate::theme_snapshot::note_border("LINKED_MISSION_ROW_STYLE", row);
+        shape_row(row, false, self.last, self.pad, self.radius)
+    }
+}
+
+fn shape_row(
     row: gpui::Stateful<gpui::Div>,
-    collapsed: bool,
+    round_top: bool,
+    round_bottom: bool,
     pad: f32,
     radius: f32,
 ) -> gpui::Stateful<gpui::Div> {
-    let radius = rems(radius / 16.);
-    let bottom = if collapsed { radius } else { rems(0.) };
+    let corner = |round: bool| rems(if round { radius / 16. } else { 0. });
     row.pl(rems(pad / 16.))
-        .rounded_tl(radius)
-        .rounded_tr(radius)
-        .rounded_bl(bottom)
-        .rounded_br(bottom)
+        .rounded_tl(corner(round_top))
+        .rounded_tr(corner(round_top))
+        .rounded_bl(corner(round_bottom))
+        .rounded_br(corner(round_bottom))
 }
 /// The chat row moves right to make that room, and its line and missions with it:
 /// the outline's border, the inset, the chevron and the gap, less the 11 px a row's
@@ -1095,15 +1143,16 @@ fn recorded_fill(id: &'static str, element: gpui::Div) -> gpui::Div {
     }
 }
 
-/// One mission in its chat's group: indented so its flag sits 20 px right of the
-/// chat's mark, with the line down past it and a branch ending before its flag.
-/// The last mission's line curves into its branch.
+/// One mission in its chat's group: its row reaches `reach` left to the outline, with
+/// the line down past its flag and a branch ending before it, drawn over the row's
+/// fill. The last mission's line curves into its branch.
 fn linked_mission(
     row: AnyElement,
     tab: &str,
     index: usize,
     mark: f32,
     last: bool,
+    reach: f32,
 ) -> impl IntoElement {
     let left = rems((mark - 0.5) / 16.);
     let branch = rems((MISSION_INDENT_FROM_MARK + 11. - BRANCH_GAP + 0.5) / 16.);
@@ -1115,8 +1164,7 @@ fn linked_mission(
         .border_color(link_color());
     gpui::div()
         .relative()
-        .pl(rems((mark + MISSION_INDENT_FROM_MARK) / 16.))
-        .child(row)
+        .child(gpui::div().ml(rems(-reach / 16.)).child(row))
         .map(|wrapper| {
             if last {
                 let key = key.clone();

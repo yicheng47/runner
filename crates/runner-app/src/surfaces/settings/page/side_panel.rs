@@ -311,7 +311,6 @@ impl NativeRoot {
     pub(super) fn render_files_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = self.settings(cx).clone();
         let size = settings.files_font_size();
-        let follows = settings.files_font_size.is_none();
         let step = |delta: i32, cx: &mut Context<Self>| -> StepHandler {
             let root = cx.entity();
             Rc::new(move |_, cx| {
@@ -322,7 +321,7 @@ impl NativeRoot {
                     let size = (size as i32 + delta)
                         .clamp(TERMINAL_FONT_SIZE_MIN as i32, TERMINAL_FONT_SIZE_MAX as i32)
                         as u16;
-                    this.set_files_font_size(Some(size), cx);
+                    this.set_files_font_size(size, cx);
                 })
             })
         };
@@ -336,6 +335,7 @@ impl NativeRoot {
                 .font_family(theme::UI_MONOSPACE_FONT)
                 .child(
                     div()
+                        .debug_selector(move || format!("SETTINGS_FILES_FONT_SIZE_VALUE {size}"))
                         .text_size(theme::text_ui())
                         .font_weight(FontWeight::MEDIUM)
                         .child(size.to_string()),
@@ -351,30 +351,9 @@ impl NativeRoot {
         )
         .decrement_disabled(size <= TERMINAL_FONT_SIZE_MIN)
         .increment_disabled(size >= TERMINAL_FONT_SIZE_MAX);
-        let reset_root = cx.entity();
         let size_control = div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .debug_selector(|| "SETTINGS_FILES_FONT_SIZE".into())
-                    .child(stepper),
-            )
-            .when(!follows, |control| {
-                control.child(
-                    Button::new(
-                        "settings-files-font-size-reset",
-                        crate::i18n::text("ui.reset"),
-                    )
-                    .size(ButtonSize::Sm)
-                    .variant(ButtonVariant::Ghost)
-                    .debug_selector("SETTINGS_FILES_FONT_SIZE_RESET")
-                    .on_press(move |_, cx| {
-                        reset_root.update(cx, |this, cx| this.set_files_font_size(None, cx))
-                    }),
-                )
-            });
+            .debug_selector(|| "SETTINGS_FILES_FONT_SIZE".into())
+            .child(stepper);
 
         div()
             .flex()
@@ -452,9 +431,9 @@ impl NativeRoot {
         }
     }
 
-    fn set_files_font_size(&mut self, size: Option<u16>, cx: &mut Context<Self>) {
+    fn set_files_font_size(&mut self, size: u16, cx: &mut Context<Self>) {
         if self.update_app_settings(cx, true, |settings| {
-            update_if_changed(&mut settings.files_font_size, size)
+            update_if_changed(&mut settings.files_font_size, Some(size))
         }) {
             cx.notify();
         }
@@ -597,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn the_files_page_sets_every_option_and_the_size_resets_to_follow_the_terminal() {
+    fn the_files_page_sets_every_option_and_the_size_offers_no_reset() {
         let _theme = ThemeGuard::new();
         for locale in [Locale::English, Locale::SimplifiedChinese] {
             with_locale(locale, || {
@@ -621,10 +600,6 @@ mod tests {
                     ] {
                         assert!(page.has(selector), "{selector}");
                     }
-                    assert!(
-                        !page.has("SETTINGS_FILES_FONT_SIZE_RESET"),
-                        "follows the terminal"
-                    );
                     let icons = page.visual.debug_bounds("SETTINGS_FILE_ICONS").unwrap();
                     assert!(
                         icons.size.width >= px(199.),
@@ -642,14 +617,16 @@ mod tests {
 
                     page.host
                         .update(&mut page.visual, |root, _, cx| {
-                            root.set_files_font_size(Some(15), cx)
+                            root.set_files_font_size(15, cx)
                         })
                         .unwrap();
                     page.visual.run_until_parked();
-                    assert!(page.has("SETTINGS_FILES_FONT_SIZE_RESET"));
-                    page.click("SETTINGS_FILES_FONT_SIZE_RESET");
-                    assert_eq!(page.settings().files_font_size, None);
-                    assert!(!page.has("SETTINGS_FILES_FONT_SIZE_RESET"));
+                    assert!(page.has("SETTINGS_FILES_FONT_SIZE_VALUE 15"));
+                    assert_eq!(page.settings().files_font_size, Some(15));
+                    assert!(
+                        !page.has("SETTINGS_FILES_FONT_SIZE_RESET"),
+                        "a changed size has no Reset to return to the terminal's"
+                    );
 
                     for (selection, value) in [
                         (SettingsSelection::FileIcons, "material"),
@@ -720,7 +697,7 @@ mod tests {
             ] {
                 root.apply_settings_selection(selection, value, window, cx);
             }
-            root.set_files_font_size(Some(15), cx);
+            root.set_files_font_size(15, cx);
         })
         .unwrap();
         here_visual.run_until_parked();
@@ -742,14 +719,14 @@ mod tests {
         assert_eq!(values, ["material", "Menlo", "source"]);
         assert!(
             there_visual
-                .debug_bounds("SETTINGS_FILES_FONT_SIZE_RESET")
+                .debug_bounds("SETTINGS_FILES_FONT_SIZE_VALUE 15")
                 .is_some(),
             "the visible page redraws with the size set elsewhere"
         );
 
         // A step there starts from the size set here, not the one it drew.
         here.update(&mut here_visual, |root, _, cx| {
-            root.set_files_font_size(Some(18), cx)
+            root.set_files_font_size(18, cx)
         })
         .unwrap();
         let stepper = there_visual
