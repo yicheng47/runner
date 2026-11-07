@@ -70,6 +70,9 @@ pub(crate) struct RemoteWindow {
     pub(crate) reopen_sessions: HashSet<String>,
     pub(crate) activate_tab: Option<String>,
     pub(crate) activate_mission: Option<String>,
+    /// Tabs in the order they were shown, the most recent last.
+    pub(crate) viewed_tabs: Vec<String>,
+    pub(crate) landed_at: Option<std::time::Instant>,
     pub(crate) form_generation: u64,
     pub(super) terminals: HashMap<String, RemotePane>,
     recovery: HashSet<String>,
@@ -415,6 +418,8 @@ impl RemoteClient {
             reopen_sessions: HashSet::new(),
             activate_tab: None,
             activate_mission: None,
+            viewed_tabs: Vec::new(),
+            landed_at: None,
             form_generation: 0,
             terminals: HashMap::new(),
             recovery: HashSet::new(),

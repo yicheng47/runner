@@ -58,6 +58,9 @@ pub(crate) struct ChatLauncher {
     default_page: bool,
     project: ProjectField,
     initial_project: Option<String>,
+    /// The project whose + opened this page: the row sits under it and the
+    /// picker cannot leave it.
+    page_project: Option<String>,
     cwd: Entity<TextField>,
     changed_directory: bool,
     height: Option<f32>,
@@ -205,19 +208,46 @@ impl ChatLauncher {
         }
     }
 
-    /// A host's field has no choices until its catalog loads, so the project
-    /// asked for still stands while it does.
-    fn page_scope(&self) -> ProjectScope {
-        if self.loading {
-            ProjectScope::or_root(self.initial_project.clone())
-        } else {
-            self.project.scope()
+    /// Points a page at `project`, also when it is already showing. Locked, the
+    /// row sits under the project and the picker stays on it; otherwise the row
+    /// is in Recents and the picker is free. No project starts over from the
+    /// default folder, as a new page does.
+    fn retarget_page(&mut self, project: Option<&str>, locked: bool, cx: &mut Context<Self>) {
+        self.initial_project = project.map(str::to_owned);
+        self.page_project = project.filter(|_| locked).map(str::to_owned);
+        self.project.set_locked(false, cx);
+        if project.is_none() {
+            let directory = self.default_directory(cx);
+            self.cwd.update(cx, |input, cx| input.reset(directory, cx));
+        }
+        let project = project.unwrap_or_default();
+        self.project
+            .select()
+            .update(cx, |select, cx| select.set_value(project, cx));
+        self.choose_project(project, cx);
+        self.project.set_locked(self.page_project.is_some(), cx);
+        self.redraw_page_row(cx);
+    }
+
+    /// Frees a page from a project's +: the row goes to Recents, and the picker
+    /// stays on the project and folder it shows, now editable.
+    fn release_page_lock(&mut self, cx: &mut Context<Self>) {
+        if self.pending.is_none() && self.page_project.take().is_some() {
+            self.project.set_locked(false, cx);
+            self.redraw_page_row(cx);
         }
     }
 
-    /// Redraws the sidebar's row. Deferred because `open_launcher_page` chooses
-    /// a project with the root already borrowed.
-    fn project_scope_changed(&self, cx: &mut Context<Self>) {
+    fn default_directory(&self, cx: &App) -> String {
+        if self.client.is_remote() {
+            return String::new();
+        }
+        local_default_directory(&self.store.read(cx).settings).unwrap_or_default()
+    }
+
+    /// Deferred because `open_launcher_page` retargets a page with the root
+    /// already borrowed.
+    fn redraw_page_row(&self, cx: &mut Context<Self>) {
         let root = self.root.clone();
         cx.defer(move |cx| {
             if let Some(root) = root.upgrade() {
@@ -254,6 +284,8 @@ impl ChatLauncher {
         let locked = pane.is_some() && !default_page;
         let scope = if pane.is_some() {
             root.active_tab_project_id(cx)
+        } else if root.launcher_is_empty_state() {
+            None
         } else {
             root.active_project_id(cx)
         };
@@ -293,11 +325,7 @@ impl ChatLauncher {
                     .iter()
                     .find(|project| Some(&project.id) == scope.as_ref())
                     .map(|project| project.path.clone())
-                    .or_else(|| normalized_value(&root.settings(cx).default_working_dir))
-                    .or_else(|| {
-                        runner_core::app_paths::home_dir()
-                            .map(|path| path.to_string_lossy().into_owned())
-                    })
+                    .or_else(|| local_default_directory(root.settings(cx)))
             };
             (
                 runtimes.into_iter().map(Into::into).collect(),
@@ -374,6 +402,7 @@ impl ChatLauncher {
             default_page,
             project,
             initial_project: scope,
+            page_project: None,
             cwd,
             changed_directory: false,
             height: None,
@@ -438,7 +467,8 @@ impl ChatLauncher {
                             ProjectChoice::host(&catalog),
                             false,
                             this.initial_project.clone(),
-                            this.pane.is_some() && !this.default_page,
+                            (this.pane.is_some() && !this.default_page)
+                                || this.page_project.is_some(),
                             Rc::new(move |id, _, cx| {
                                 let _ = owner.update(cx, |this, cx| this.choose_project(&id, cx));
                             }),
@@ -447,6 +477,9 @@ impl ChatLauncher {
                         this.project
                             .select()
                             .update(cx, |select, cx| select.set_inline_trigger(true, cx));
+                        if this.page_project.is_some() && this.project.chosen().is_none() {
+                            this.retarget_page(None, false, cx);
+                        }
                         if this.cwd.read(cx).text().is_empty() {
                             if let Some(project) = this.project.chosen() {
                                 let path = project.path.clone();
@@ -487,7 +520,6 @@ impl ChatLauncher {
                                     this.changed_directory = true;
                                     let path = this.cwd.read(cx).text().to_owned();
                                     this.project.picked(&path, cx);
-                                    this.project_scope_changed(cx);
                                     cx.notify();
                                 },
                             ));
@@ -496,7 +528,6 @@ impl ChatLauncher {
                     }
                     Err(error) => this.error = Some(error.to_string()),
                 }
-                this.project_scope_changed(cx);
                 cx.notify();
             });
         })
@@ -742,7 +773,6 @@ impl ChatLauncher {
             self.cwd.update(cx, |input, cx| input.reset(path, cx));
         }
         self.changed_directory = false;
-        self.project_scope_changed(cx);
         cx.notify();
     }
 
@@ -773,7 +803,6 @@ impl ChatLauncher {
                             this.project.picked(&path, cx);
                             this.cwd.update(cx, |input, cx| input.reset(path, cx));
                             this.changed_directory = true;
-                            this.project_scope_changed(cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -784,6 +813,12 @@ impl ChatLauncher {
         })
         .detach();
     }
+}
+
+fn local_default_directory(settings: &AppSettings) -> Option<String> {
+    normalized_value(&settings.default_working_dir).or_else(|| {
+        runner_core::app_paths::home_dir().map(|path| path.to_string_lossy().into_owned())
+    })
 }
 
 fn claims_focus(root: &NativeRoot, pane: Option<&PaneKey>) -> bool {
@@ -1267,7 +1302,9 @@ impl NativeRoot {
         self.launchers.retain(|_, entity| {
             let launcher = entity.read(cx);
             if launcher.client.target != target {
-                return false;
+                // A reconnect's new launcher takes the page over when it is built.
+                return launcher.pane.is_none()
+                    && computer_key(&launcher.client.target) == computer_key(&target);
             }
             if launcher.launched_session.as_ref().is_some_and(|session| {
                 active_layout
@@ -1509,6 +1546,11 @@ impl NativeRoot {
                     )
                 });
             let recent_revision = RECENT_REVISION.load(std::sync::atomic::Ordering::Acquire);
+            let project_deleted = launcher
+                .read(cx)
+                .page_project
+                .as_deref()
+                .is_some_and(|project| self.front_page_project_deleted(project, cx));
             launcher.update(cx, |launcher, cx| {
                 if launcher.recent_revision != recent_revision {
                     launcher.reload_recents(cx);
@@ -1526,6 +1568,9 @@ impl NativeRoot {
                     launcher.project.set_choices(projects, cx);
                     launcher.catalog_revisions = catalog_revisions;
                 }
+                if project_deleted {
+                    launcher.retarget_page(None, false, cx);
+                }
                 if launcher.keymap_overrides != overrides {
                     launcher.keymap_overrides = overrides;
                     cx.notify();
@@ -1539,16 +1584,47 @@ impl NativeRoot {
             });
             return launcher;
         }
+        let locked_project = pane
+            .is_none()
+            .then(|| self.take_replaced_page_project(cx))
+            .flatten();
         let root = cx.weak_entity();
         let launcher = cx.new(|cx| ChatLauncher::new(self, pane, default_page, window, cx, root));
+        if locked_project.is_some() {
+            launcher.update(cx, |launcher, cx| {
+                launcher.retarget_page(locked_project.as_deref(), true, cx);
+            });
+        }
         self.launchers.insert(key, launcher.clone());
         launcher
     }
 
+    /// Removes the page launcher a reconnect left behind, whose client is no
+    /// longer valid, and returns the project it was locked to.
+    fn take_replaced_page_project(&mut self, cx: &App) -> Option<String> {
+        let target = self.front_page_client(cx).target;
+        let mut project = None;
+        self.launchers.retain(|_, launcher| {
+            let launcher = launcher.read(cx);
+            let replaced = launcher.pane.is_none()
+                && launcher.client.target != target
+                && computer_key(&launcher.client.target) == computer_key(&target);
+            if replaced {
+                project = launcher.page_project.clone();
+            }
+            !replaced
+        });
+        project
+    }
+
+    /// The launcher page in `scope`. `locked` is a project's +, where the row
+    /// sits under the project and the picker stays on it; every other entry
+    /// draws the row in Recents and leaves the picker free.
     pub(crate) fn open_launcher_page(
         &mut self,
         scope: ProjectScope,
         step: Step,
+        locked: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1570,36 +1646,34 @@ impl NativeRoot {
             self.set_route(AppRoute::Launcher, cx);
         }
         if !visible {
-            let target = self.front_page_client(cx).target;
-            self.launchers.retain(|_, launcher| {
-                let launcher = launcher.read(cx);
-                launcher.client.target != target || launcher.pane.is_some()
-            });
-            self.front_page_sidebar().update(cx, |sidebar, cx| {
-                sidebar.set_active_project(scope.project_id().map(str::to_owned), cx)
-            });
+            self.reset_launcher_page(cx);
         }
+        self.front_page_sidebar().update(cx, |sidebar, cx| {
+            sidebar.set_active_project(scope.project_id().map(str::to_owned), cx)
+        });
         let launcher = self.render_launcher(None, true, window, cx);
         launcher.update(cx, |launcher, cx| {
             if !visible {
                 launcher.origin = Some(origin);
             }
-            launcher.initial_project = scope.project_id().map(str::to_owned);
-            if visible {
-                let project = scope.project_id().unwrap_or_default();
-                launcher.project.select().update(cx, |select, cx| {
-                    select.set_value(project, cx);
-                });
-                launcher.choose_project(project, cx);
-            }
+            launcher.retarget_page(scope.project_id(), locked, cx);
             launcher.open_step(step, window, cx);
         });
         cx.notify();
     }
 
-    /// The project the launcher page starts in, once the page has a launcher.
-    pub(crate) fn launcher_page_scope(&self, cx: &App) -> Option<ProjectScope> {
-        Some(self.page_launcher(cx)?.read(cx).page_scope())
+    /// The project the launcher page's row sits under, Recents when `None`.
+    /// Until a reconnect's new launcher is built, the one it replaces still
+    /// says, so the row does not move in between.
+    pub(crate) fn launcher_page_project(&self, cx: &App) -> Option<String> {
+        let computer = computer_key(&self.front_page_client(cx).target);
+        let launcher = self.page_launcher(cx).or_else(|| {
+            self.launchers.values().find(|launcher| {
+                let launcher = launcher.read(cx);
+                launcher.pane.is_none() && computer_key(&launcher.client.target) == computer
+            })
+        })?;
+        launcher.read(cx).page_project.clone()
     }
 
     fn page_launcher(&self, cx: &App) -> Option<&Entity<ChatLauncher>> {
@@ -1608,9 +1682,38 @@ impl NativeRoot {
             .get(&format!("{target:?}:{:?}", None::<PaneKey>))
     }
 
+    /// Forgets the page launcher, which is cached between visits and could hold
+    /// an older project, lock and origin. The next page starts fresh.
+    pub(crate) fn reset_launcher_page(&mut self, cx: &App) {
+        let computer = computer_key(&self.front_page_client(cx).target);
+        self.launchers.retain(|_, launcher| {
+            let launcher = launcher.read(cx);
+            launcher.pane.is_some() || computer_key(&launcher.client.target) != computer
+        });
+    }
+
+    fn front_page_project_deleted(&self, project: &str, cx: &App) -> bool {
+        match &self.front_page_client(cx).target {
+            FrontPageTarget::Local => !self
+                .app_store
+                .read(cx)
+                .projects
+                .iter()
+                .any(|row| row.id == project),
+            FrontPageTarget::Remote { computer, .. } => self
+                .app_store
+                .read(cx)
+                .remote_clients
+                .read(cx)
+                .overviews
+                .get(computer)
+                .is_some_and(|overview| !overview.projects.iter().any(|row| row.id == project)),
+        }
+    }
+
     /// With no tab or page behind it the launcher is the window's empty state,
-    /// and there is nothing to close it back to. A page with no recorded origin,
-    /// such as the one left after closing the active tab, closes to a tab.
+    /// and there is nothing to close it back to. A page with no recorded origin
+    /// is that state after a tab arrived from another window, and closes to it.
     pub(crate) fn launcher_page_closable(&self, cx: &App) -> bool {
         self.launcher_page_visible()
             && self
@@ -1636,14 +1739,24 @@ impl NativeRoot {
     }
 
     pub(crate) fn launcher_page_visible(&self) -> bool {
+        self.launcher_is_empty_state()
+            || if self.remote_client.is_active() {
+                matches!(
+                    self.remote_client.active_item(),
+                    Some(crate::surfaces::remote_client::RemoteItem::Launcher)
+                )
+            } else {
+                self.route == AppRoute::Launcher
+            }
+    }
+
+    /// The launcher as the window's empty state: nothing was opened, and there
+    /// is no tab to show. It is always Recents with no project.
+    pub(crate) fn launcher_is_empty_state(&self) -> bool {
         if self.remote_client.is_active() {
-            matches!(
-                self.remote_client.active_item(),
-                Some(crate::surfaces::remote_client::RemoteItem::Launcher)
-            ) || (self.remote_client.active_item().is_none() && self.front_page_layout().is_none())
+            self.remote_client.active_item().is_none() && self.front_page_layout().is_none()
         } else {
-            self.route == AppRoute::Launcher
-                || (self.route == AppRoute::Chat && self.tabs.active().is_none())
+            self.route == AppRoute::Chat && self.tabs.active().is_none()
         }
     }
 
@@ -2088,6 +2201,157 @@ mod tests {
         );
     }
 
+    fn row_scope(harness: &ModalHarness) -> Option<ProjectScope> {
+        harness.read_root(|root, cx| root.front_page_sidebar().read(cx).launcher_row_scope(cx))
+    }
+
+    fn assert_row_under(harness: &mut ModalHarness, project: &str) {
+        assert_eq!(
+            row_scope(harness),
+            Some(ProjectScope::Project(project.to_owned()))
+        );
+        let row = harness
+            .bounds("SIDEBAR_LAUNCHER_TAB")
+            .expect("launcher row");
+        let header = harness
+            .bounds(&format!("SIDEBAR_PROJECT:{project}"))
+            .expect("project header");
+        assert!(row.origin.y > header.origin.y);
+        assert!(row.origin.y < header.origin.y + px(48.));
+    }
+
+    fn assert_row_in_recents(harness: &mut ModalHarness) {
+        assert_eq!(row_scope(harness), Some(ProjectScope::Root));
+        let row = harness
+            .bounds("SIDEBAR_LAUNCHER_TAB")
+            .expect("launcher row");
+        let header = harness
+            .bounds("SIDEBAR_SECTION:RECENTS")
+            .expect("Recents header");
+        assert!(row.origin.y > header.origin.y);
+    }
+
+    /// The project the page's picker shows, and whether it is locked there.
+    fn page_picker(harness: &mut ModalHarness) -> (ProjectScope, bool) {
+        let mut picker = None;
+        harness.act(|root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            let launcher = launcher.read(cx);
+            let select = launcher.project.select();
+            let select = select.read(cx);
+            assert_eq!(
+                select.value(),
+                launcher.scope().project_id().unwrap_or_default()
+            );
+            picker = Some((launcher.scope(), select.is_disabled()));
+        });
+        picker.unwrap()
+    }
+
+    fn page_directory(harness: &mut ModalHarness) -> String {
+        let mut directory = String::new();
+        harness.act(|root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            directory = launcher.read(cx).cwd.read(cx).text().to_owned();
+        });
+        directory
+    }
+
+    fn open_tab_in(harness: &mut ModalHarness, project: Option<&str>) -> String {
+        let project = project.map(str::to_owned);
+        let mut tab = String::new();
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let mut layout = PaneLayout::single(None, &[]);
+            layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+            root.front_page_client(cx)
+                .launcher_layout(&layout, project.clone())
+                .unwrap();
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate(&layout.id);
+            root.set_route(AppRoute::Chat, cx);
+            root.sync_active_project_from_active_tab(cx);
+            assert_eq!(root.active_project_id(cx), project);
+            tab = layout.id;
+        });
+        tab
+    }
+
+    fn open_plus(harness: &mut ModalHarness, scope: ProjectScope) {
+        harness.act(move |root, window, cx| {
+            root.front_page_sidebar().update(cx, |sidebar, cx| {
+                sidebar.open_launcher_in(scope, window, cx);
+            });
+        });
+    }
+
+    /// Saved chats or terminals, each in a tab of its own, the last one viewed.
+    fn saved_tabs(harness: &mut ModalHarness, sessions: &[(&str, &str)]) -> Vec<String> {
+        let mut tabs = Vec::new();
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let core = root.app_store.read(cx).test_core.clone();
+            let conn = core.db.get().unwrap();
+            for (position, (session, runtime)) in sessions.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', ?2, ?2)",
+                    [session, runtime],
+                )
+                .unwrap();
+                let layout = PaneLayout::single(Some(session), &[(*session).into()]);
+                tabs.push(
+                    runner_daemon::repo::node::create_tab(
+                        &conn,
+                        None,
+                        session,
+                        position as i64,
+                        &layout.serialize().unwrap(),
+                    )
+                    .unwrap()
+                    .id,
+                );
+            }
+            drop(conn);
+            root.app_store.update(cx, |store, cx| {
+                store.refresh_sessions(cx);
+                store.refresh_nodes(cx).unwrap();
+            });
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate(tabs.last().unwrap());
+            root.set_route(AppRoute::Chat, cx);
+        });
+        tabs
+    }
+
+    /// Another window with `session` on screen.
+    fn open_in_second_window(harness: &mut ModalHarness, session: &str) {
+        let session = session.to_owned();
+        harness.act(move |root, _, cx| {
+            let core = root.core(cx);
+            core.window_register("second").unwrap();
+            core.report_subjects(
+                "second",
+                vec![runner_core::protocol::window::Subject::DirectChat(session)],
+                None,
+            )
+            .unwrap();
+        });
+    }
+
+    fn assert_landed_on(harness: &mut ModalHarness, tab: &str, session: &str) {
+        let (tab, session) = (tab.to_owned(), session.to_owned());
+        harness.act(move |root, window, _| {
+            assert_eq!(root.route, AppRoute::Chat);
+            assert_eq!(root.tabs.active_tab_id(), Some(tab.as_str()));
+            assert!(!root.launcher_page_visible());
+            assert!(root.chat_focus.is_focused(window));
+            assert_eq!(
+                root.runtime_navigation_history.last(),
+                Some(&RuntimeLocation::Chat(session))
+            );
+        });
+    }
+
     #[test]
     fn new_chat_entries_show_a_page_without_saving_a_tab() {
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
@@ -2116,20 +2380,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_page_row_follows_its_project_and_plus_reveals_it() {
-        fn row_scope(harness: &ModalHarness) -> Option<ProjectScope> {
-            harness.read_root(|root, cx| root.front_page_sidebar().read(cx).launcher_row_scope(cx))
-        }
-        fn assert_row_under(harness: &mut ModalHarness, project: &str) {
-            let row = harness
-                .bounds("SIDEBAR_LAUNCHER_TAB")
-                .expect("launcher row");
-            let header = harness
-                .bounds(&format!("SIDEBAR_PROJECT:{project}"))
-                .expect("project header");
-            assert!(row.origin.y > header.origin.y);
-            assert!(row.origin.y < header.origin.y + px(48.));
-        }
+    fn launcher_page_row_stays_where_the_page_opened_and_plus_reveals_it() {
         fn update_settings(
             harness: &mut ModalHarness,
             update: impl FnOnce(&mut AppSettings) -> bool + 'static,
@@ -2143,6 +2394,7 @@ mod tests {
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
         let projects = project_fixture(&mut harness);
         let (alpha, beta) = (projects[0].id.clone(), projects[1].id.clone());
+        let (alpha_path, beta_path) = (projects[0].cwd.clone(), projects[1].cwd.clone());
         harness.act(|root, _, cx| {
             root.start_chat_modal = None;
             let nodes = root.core(cx).node_list().unwrap();
@@ -2156,7 +2408,7 @@ mod tests {
             settings.sidebar_collapsed_projects.insert(collapsed)
         });
 
-        // Opening the page elsewhere leaves a collapsed project collapsed, so
+        // Opening the page under a collapsed project leaves it collapsed, so
         // there is no row and New tab keeps the selection.
         let scope = ProjectScope::Project(beta.clone());
         harness.act(move |root, window, cx| root.open_sidebar_chat_modal(scope, window, cx));
@@ -2164,44 +2416,60 @@ mod tests {
         assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
 
         // + on a collapsed project expands it, so the row is visible.
-        let scope = ProjectScope::Project(beta.clone());
-        harness.act(move |root, window, cx| {
-            root.front_page_sidebar().update(cx, |sidebar, cx| {
-                sidebar.open_launcher_in(scope, window, cx);
-            });
-        });
-        assert_eq!(
-            row_scope(&harness),
-            Some(ProjectScope::Project(beta.clone()))
-        );
+        open_plus(&mut harness, ProjectScope::Project(beta.clone()));
         assert_row_under(&mut harness, &beta);
 
         // + on another project moves the row while the page already shows.
-        let scope = ProjectScope::Project(alpha.clone());
-        harness.act(move |root, window, cx| root.open_sidebar_chat_modal(scope, window, cx));
-        assert_eq!(
-            row_scope(&harness),
-            Some(ProjectScope::Project(alpha.clone()))
-        );
+        open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
         assert_row_under(&mut harness, &alpha);
 
-        // So does the launcher's own project picker.
+        // Neither the locked picker nor a folder in another project moves it.
+        let (chosen, folder) = (beta.clone(), beta_path.clone());
+        harness.act(move |root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| {
+                launcher.choose_project(&chosen, cx);
+                launcher.project.picked(&folder, cx);
+            });
+        });
+        assert_row_under(&mut harness, &alpha);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha.clone()), true)
+        );
+
+        // ⌘N puts it in Recents, where the free picker and folder don't move it.
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        assert_row_in_recents(&mut harness);
         let chosen = beta.clone();
         harness.act(move |root, window, cx| {
             let launcher = root.render_launcher(None, true, window, cx);
-            launcher.update(cx, |launcher, cx| launcher.choose_project(&chosen, cx));
+            launcher.update(cx, |launcher, cx| {
+                let picker = launcher.project.select();
+                picker.update(cx, |select, cx| select.set_value(chosen.clone(), cx));
+                launcher.choose_project(&chosen, cx);
+            });
         });
+        assert_row_in_recents(&mut harness);
         assert_eq!(
-            row_scope(&harness),
-            Some(ProjectScope::Project(beta.clone()))
+            page_picker(&mut harness),
+            (ProjectScope::Project(beta.clone()), false)
         );
-        assert_row_under(&mut harness, &beta);
+        harness.act(move |root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| launcher.project.picked(&alpha_path, cx));
+        });
+        assert_row_in_recents(&mut harness);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha.clone()), false)
+        );
 
-        // No project draws it in Recents.
-        harness
-            .act(|root, window, cx| root.open_sidebar_chat_modal(ProjectScope::Root, window, cx));
-        assert_eq!(row_scope(&harness), Some(ProjectScope::Root));
-        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_some());
+        // + on Recents is the same, from a page locked to a project too.
+        open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+        open_plus(&mut harness, ProjectScope::Root);
+        assert_row_in_recents(&mut harness);
+        assert_eq!(page_picker(&mut harness), (ProjectScope::Root, false));
 
         // With nowhere to draw it, New tab keeps the selection.
         update_settings(&mut harness, |settings| {
@@ -2219,6 +2487,115 @@ mod tests {
         harness.act(|root, window, cx| root.open_roles(window, cx));
         assert_eq!(row_scope(&harness), None);
         assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+    }
+
+    #[test]
+    fn new_tab_entries_start_in_recents_with_no_project_and_mission_entries_keep_the_active_one() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let alpha = projects[0].id.clone();
+        for entry in [
+            "shortcut",
+            "sidebar row",
+            "recents plus",
+            "shortcut on a locked page",
+        ] {
+            open_tab_in(&mut harness, Some(&alpha));
+            let default_directory =
+                harness.read_root(|root, cx| local_default_directory(root.settings(cx)).unwrap());
+            match entry {
+                "shortcut" => {
+                    harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+                }
+                "sidebar row" => {
+                    let row = harness.bounds("SIDEBAR_WORKSPACE_NEW_TAB").unwrap();
+                    harness
+                        .visual
+                        .simulate_click(row.center(), gpui::Modifiers::default());
+                    harness.visual.run_until_parked();
+                }
+                "recents plus" => open_plus(&mut harness, ProjectScope::Root),
+                _ => {
+                    open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+                    assert_row_under(&mut harness, &alpha);
+                    assert_eq!(
+                        page_picker(&mut harness),
+                        (ProjectScope::Project(alpha.clone()), true)
+                    );
+                    assert_eq!(page_directory(&mut harness), projects[0].cwd);
+                    harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+                }
+            }
+            harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Launcher, "{entry}"));
+            assert_row_in_recents(&mut harness);
+            assert_eq!(
+                page_picker(&mut harness),
+                (ProjectScope::Root, false),
+                "{entry}"
+            );
+            assert_eq!(page_directory(&mut harness), default_directory, "{entry}");
+            harness.read_root(|root, cx| assert_eq!(root.active_project_id(cx), None));
+        }
+
+        // ⇧⌘M keeps the project the tab is in, still editable, with the row in
+        // Recents.
+        open_tab_in(&mut harness, Some(&alpha));
+        harness.act(|root, window, cx| root.new_mission_action(&NewMission, window, cx));
+        harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Launcher));
+        assert_row_in_recents(&mut harness);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha.clone()), false)
+        );
+
+        // So do it and a crew start from a page a project's + locked, keeping
+        // the page's folder and where it closes back to.
+        for crew in [None, Some("crew")] {
+            let tab = open_tab_in(&mut harness, Some(&alpha));
+            open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+            assert_row_under(&mut harness, &alpha);
+            let folder = tempfile::tempdir().unwrap();
+            let folder = folder.path().to_string_lossy().into_owned();
+            let changed = folder.clone();
+            harness.act(move |root, window, cx| {
+                let launcher = root.render_launcher(None, true, window, cx);
+                launcher.update(cx, |launcher, cx| {
+                    launcher.project.picked(&changed, cx);
+                    launcher
+                        .cwd
+                        .update(cx, |cwd, cx| cwd.reset(changed.clone(), cx));
+                });
+            });
+            let scope = ProjectScope::Project(alpha.clone());
+            harness.act(move |root, window, cx| {
+                root.open_mission_launcher(crew.map(str::to_owned), scope, window, cx);
+            });
+            assert_row_in_recents(&mut harness);
+            assert_eq!(
+                page_picker(&mut harness),
+                (ProjectScope::Project(alpha.clone()), false)
+            );
+            assert_eq!(page_directory(&mut harness), folder);
+            harness.act(close_tab);
+            harness.read_root(|root, _| {
+                assert_eq!(root.route, AppRoute::Chat);
+                assert_eq!(root.tabs.active_tab_id(), Some(tab.as_str()));
+            });
+        }
+
+        // The page's own Mission row is not an entry: the lock stays.
+        open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+        harness.act(|root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| {
+                launcher.start(Choice::Mission, false, window, cx);
+            });
+        });
+        assert_row_under(&mut harness, &alpha);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha), true)
+        );
     }
 
     #[test]
@@ -2277,93 +2654,316 @@ mod tests {
         // ⌘W from the goal step closes the page too, and returns to a page.
         harness.act(|root, window, cx| {
             root.open_crews(window, cx);
-            root.open_launcher_page(ProjectScope::Root, Step::Goal(None), window, cx);
+            root.open_launcher_page(ProjectScope::Root, Step::Goal(None), false, window, cx);
         });
         harness.act(close_tab);
         harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Crews));
     }
 
     #[test]
-    fn page_left_by_closing_the_active_tab_closes_to_the_last_viewed_tab() {
+    fn closing_the_active_tab_lands_on_the_last_viewed_tab_with_no_launcher_between() {
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
-        let mut tabs = Vec::new();
-        harness.act(|root, _, cx| {
-            root.start_chat_modal = None;
-            let core = root.app_store.read(cx).test_core.clone();
-            let conn = core.db.get().unwrap();
-            for (position, chat) in ["first-chat", "viewed-chat"].into_iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')",
-                    [chat],
-                )
-                .unwrap();
-                let layout = PaneLayout::single(Some(chat), &[chat.into()]);
-                tabs.push(
-                    runner_daemon::repo::node::create_tab(
-                        &conn,
-                        None,
-                        chat,
-                        position as i64,
-                        &layout.serialize().unwrap(),
-                    )
-                    .unwrap()
-                    .id,
-                );
-            }
-            drop(conn);
-            root.app_store.update(cx, |store, cx| {
-                store.refresh_sessions(cx);
-                store.refresh_nodes(cx).unwrap();
-            });
-            root.reload_tabs(cx).unwrap();
-            assert_eq!(root.tabs.tabs()[0].id, tabs[0]);
-            root.tabs.activate(&tabs[1]);
-            root.set_route(AppRoute::Chat, cx);
-        });
+        let tabs = saved_tabs(
+            &mut harness,
+            &[("first-chat", "codex"), ("viewed-chat", "codex")],
+        );
         let close_active_empty_tab = |harness: &mut ModalHarness| {
-            harness.act(|root, window, cx| root.test_open_empty_tab(window, cx));
-            harness.act(close_tab);
-            harness.read_root(|root, _| {
-                assert_eq!(root.route, AppRoute::Chat);
-                assert!(root.tabs.active().is_none());
-                assert_eq!(root.tabs.tabs().len(), 2);
+            harness.act(|root, window, cx| {
+                root.test_open_empty_tab(window, cx);
+                root.tab_landed_at = None;
             });
+            harness.act(close_tab);
+            harness.read_root(|root, _| assert_eq!(root.tabs.tabs().len(), 2));
         };
 
-        // The page the close lands on has a ×, which returns to the last viewed tab.
         close_active_empty_tab(&mut harness);
-        let close = harness.bounds("LAUNCHER_PAGE_CLOSE").expect("close button");
-        harness
-            .visual
-            .simulate_click(close.center(), gpui::Modifiers::default());
-        harness.visual.run_until_parked();
-        harness.read_root(|root, _| {
-            assert_eq!(root.route, AppRoute::Chat);
-            assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
+        assert_landed_on(&mut harness, &tabs[1], "viewed-chat");
+        assert!(harness.bounds("LAUNCHER_PAGE").is_none());
+        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+
+        // The tab in another window is passed over, though this window is the
+        // more recently focused and would keep the chat.
+        open_in_second_window(&mut harness, "viewed-chat");
+        close_active_empty_tab(&mut harness);
+        assert_landed_on(&mut harness, &tabs[0], "first-chat");
+
+        // With every tab open elsewhere, the last viewed wins.
+        harness.act(|root, window, cx| {
+            root.tabs.activate(&tabs[1]);
+            root.ensure_active_tab_attached(window, cx).unwrap();
+            root.settle_active_tab(window, cx);
+            root.core(cx).window_register("third").unwrap();
+            root.core(cx)
+                .report_subjects(
+                    "third",
+                    vec![runner_core::protocol::window::Subject::DirectChat(
+                        "first-chat".into(),
+                    )],
+                    None,
+                )
+                .unwrap();
+        });
+        close_active_empty_tab(&mut harness);
+        assert_landed_on(&mut harness, &tabs[1], "viewed-chat");
+        harness.act(|root, _, cx| {
+            for window in ["second", "third"] {
+                root.core(cx)
+                    .report_subjects(window, Vec::new(), None)
+                    .unwrap();
+            }
         });
 
-        // ⌘N from that page keeps both ×s, and ⌘W returns the same way.
-        close_active_empty_tab(&mut harness);
-        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
-        assert!(harness.bounds("LAUNCHER_PAGE_CLOSE").is_some());
-        assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB_CLOSE").is_some());
-        harness.act(close_tab);
-        harness.read_root(|root, _| {
-            assert_eq!(root.route, AppRoute::Chat);
-            assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
-        });
-
-        // With no tab in the navigation history, it returns to the first tab.
-        close_active_empty_tab(&mut harness);
-        harness.act(|root, _, _| {
+        // With no tab in the navigation history, it lands on the first tab.
+        harness.act(|root, window, cx| {
+            root.test_open_empty_tab(window, cx);
+            root.tab_landed_at = None;
             root.runtime_navigation_history.clear();
             root.runtime_navigation_index = None;
         });
         harness.act(close_tab);
-        harness.read_root(|root, _| {
-            assert_eq!(root.route, AppRoute::Chat);
-            assert_eq!(root.tabs.active_tab_id(), Some(tabs[0].as_str()));
+        assert_landed_on(&mut harness, &tabs[0], "first-chat");
+    }
+
+    #[test]
+    fn archiving_a_mission_on_screen_lands_on_the_last_viewed_tab() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let tabs = saved_tabs(
+            &mut harness,
+            &[("first-chat", "codex"), ("viewed-chat", "codex")],
+        );
+        harness.act(|root, window, cx| {
+            root.set_route(AppRoute::Mission("mission".into()), cx);
+            root.tabs.activate(&tabs[0]);
+            root.leave_archived_mission("mission", Some(false), true, window, cx);
         });
+        assert_landed_on(&mut harness, &tabs[1], "viewed-chat");
+        harness.read_root(|root, _| assert!(root.tab_close_guarded()));
+    }
+
+    #[test]
+    fn with_no_tab_left_the_launcher_is_recents_with_no_project_and_nothing_to_close() {
+        for path in ["empty tab", "mission", "esc"] {
+            let mut harness =
+                modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+            let projects = project_fixture(&mut harness);
+            let alpha = projects[0].id.clone();
+            let tab = open_tab_in(&mut harness, Some(&alpha));
+            // The page launcher is cached between visits, locked to the project.
+            open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+            assert_row_under(&mut harness, &alpha);
+            match path {
+                "empty tab" => {
+                    let tab = tab.clone();
+                    harness.act(move |root, window, cx| {
+                        root.tabs.activate(&tab);
+                        root.set_route(AppRoute::Chat, cx);
+                        root.ensure_active_tab_attached(window, cx).unwrap();
+                    });
+                    harness.act(close_tab);
+                }
+                "mission" => {
+                    let tab = tab.clone();
+                    harness.act(move |root, window, cx| {
+                        root.set_route(AppRoute::Mission("mission".into()), cx);
+                        root.front_page_client(cx)
+                            .archive(runner_core::companion::ActionTarget {
+                                kind: runner_core::companion::ActionKind::Tab,
+                                id: tab,
+                            })
+                            .unwrap();
+                        root.reload_tabs(cx).unwrap();
+                        root.leave_archived_mission("mission", Some(false), true, window, cx);
+                    });
+                }
+                _ => {
+                    let tab = tab.clone();
+                    harness.act(move |root, _, cx| {
+                        root.front_page_client(cx)
+                            .archive(runner_core::companion::ActionTarget {
+                                kind: runner_core::companion::ActionKind::Tab,
+                                id: tab,
+                            })
+                            .unwrap();
+                        root.reload_tabs(cx).unwrap();
+                        assert_eq!(root.route, AppRoute::Launcher);
+                    });
+                    harness.visual.simulate_keystrokes("escape");
+                    harness.visual.run_until_parked();
+                }
+            }
+            harness.read_root(|root, _| {
+                assert_eq!(root.route, AppRoute::Chat, "{path}");
+                assert!(root.tabs.tabs().is_empty(), "{path}");
+                assert!(root.launcher_is_empty_state(), "{path}");
+            });
+            assert_row_in_recents(&mut harness);
+            assert_eq!(
+                page_picker(&mut harness),
+                (ProjectScope::Root, false),
+                "{path}"
+            );
+            assert_ne!(page_directory(&mut harness), projects[0].cwd, "{path}");
+            assert!(harness.bounds("LAUNCHER_PAGE_CLOSE").is_none(), "{path}");
+            assert!(
+                harness.bounds("SIDEBAR_LAUNCHER_TAB_CLOSE").is_none(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_the_last_tab_while_the_page_shows_leaves_the_page_alone() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let alpha = projects[0].id.clone();
+        let tab = open_tab_in(&mut harness, Some(&alpha));
+        open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+        harness.act(|root, _, cx| {
+            root.front_page_client(cx)
+                .archive(runner_core::companion::ActionTarget {
+                    kind: runner_core::companion::ActionKind::Tab,
+                    id: tab,
+                })
+                .unwrap();
+            root.reload_tabs(cx).unwrap();
+            assert_eq!(root.route, AppRoute::Launcher);
+        });
+        assert_row_under(&mut harness, &alpha);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha), true)
+        );
+    }
+
+    #[test]
+    fn a_locked_page_files_under_its_project_retargets_and_falls_back_when_it_is_deleted() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let (alpha, beta) = (projects[0].id.clone(), projects[1].id.clone());
+        let outside = tempfile::tempdir().unwrap();
+        let outside = outside.path().to_string_lossy().into_owned();
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let nodes = root.core(cx).node_list().unwrap();
+            root.app_store.update(cx, |store, cx| {
+                store.nodes = nodes;
+                cx.notify();
+            });
+        });
+
+        // A folder outside the project stays filed under it, and the menu is off.
+        open_plus(&mut harness, ProjectScope::Project(alpha.clone()));
+        let folder = outside.clone();
+        harness.act(move |root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| {
+                launcher.project.picked(&folder, cx);
+                launcher
+                    .cwd
+                    .update(cx, |cwd, cx| cwd.reset(folder.clone(), cx));
+                launcher.changed_directory = true;
+            });
+        });
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha.clone()), true)
+        );
+        assert_eq!(page_directory(&mut harness), outside);
+        let trigger = harness.bounds("STYLED_SELECT_launcher-project").unwrap();
+        harness
+            .visual
+            .simulate_click(trigger.center(), gpui::Modifiers::default());
+        harness.visual.run_until_parked();
+        assert!(harness.bounds("STYLED_SELECT_MENU").is_none());
+
+        // + on another project takes the row, the lock and the folder with it.
+        open_plus(&mut harness, ProjectScope::Project(beta.clone()));
+        assert_row_under(&mut harness, &beta);
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(beta.clone()), true)
+        );
+        assert_eq!(page_directory(&mut harness), projects[1].cwd);
+
+        // A deleted project gives the page back.
+        let deleted = beta.clone();
+        harness.act(move |root, _, cx| {
+            root.app_store.update(cx, |store, cx| {
+                store.projects.retain(|project| project.id != deleted);
+                cx.notify();
+            });
+        });
+        harness.act(|_, _, _| {});
+        assert_row_in_recents(&mut harness);
+        assert_eq!(page_picker(&mut harness), (ProjectScope::Root, false));
+        assert_ne!(page_directory(&mut harness), projects[1].cwd);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_close_right_after_a_landing_leaves_the_terminal_it_landed_on() {
+        use std::time::{Duration, Instant};
+
+        fn close_until_gone(harness: &mut ModalHarness, session: &'static str) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let mut gone = false;
+                harness.act(|root, _, cx| {
+                    root.reload_tabs(cx).unwrap();
+                    gone = root.session_entry(session, cx).is_none()
+                        && !root.stopping_sessions.contains(session);
+                });
+                if gone {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "{session} did not close");
+            }
+        }
+
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let tabs = saved_tabs(
+            &mut harness,
+            &[
+                ("kept-shell", "shell"),
+                ("landing-shell", "shell"),
+                ("closing-shell", "shell"),
+            ],
+        );
+        // The history runs kept, landing, closing.
+        harness.act(|root, window, cx| {
+            for tab in [&tabs[0], &tabs[1], &tabs[2]] {
+                root.tabs.activate(tab);
+                root.ensure_active_tab_attached(window, cx).unwrap();
+                root.settle_active_tab(window, cx);
+            }
+        });
+
+        harness.act(close_tab);
+        close_until_gone(&mut harness, "closing-shell");
+        assert_landed_on(&mut harness, &tabs[1], "landing-shell");
+
+        // ⌘W and the pane's × do nothing inside the guard.
+        harness.act(close_tab);
+        let close = harness.bounds("PANE_CLOSE:p1").expect("pane close");
+        harness
+            .visual
+            .simulate_click(close.center(), gpui::Modifiers::default());
+        harness.visual.run_until_parked();
+        harness.act(|root, _, cx| {
+            root.reload_tabs(cx).unwrap();
+            assert!(root.stopping_sessions.is_empty());
+            assert!(root.session_entry("landing-shell", cx).is_some());
+            assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
+        });
+
+        // A later press closes it, and lands again.
+        harness.act(|root, _, _| {
+            root.tab_landed_at = Some(Instant::now() - TAB_LANDING_CLOSE_GUARD);
+        });
+        harness.act(close_tab);
+        close_until_gone(&mut harness, "landing-shell");
+        assert_landed_on(&mut harness, &tabs[0], "kept-shell");
+        harness.read_root(|root, _| assert!(root.tab_close_guarded()));
     }
 
     #[test]
@@ -2393,6 +2993,11 @@ mod tests {
                     launcher.project.select().read(cx).value(),
                     project.as_deref().unwrap_or_default()
                 );
+                assert_eq!(
+                    launcher.project.select().read(cx).is_disabled(),
+                    project.is_some()
+                );
+                assert_eq!(root.launcher_page_project(cx), project);
                 if let Some(project) = &project {
                     assert_eq!(
                         launcher.cwd.read(cx).text(),
@@ -3029,7 +3634,13 @@ mod tests {
                     long_path.to_string_lossy().into_owned(),
                 )
                 .unwrap();
-            root.open_sidebar_chat_modal(ProjectScope::Project(projects[0].id.clone()), window, cx);
+            root.open_launcher_page(
+                ProjectScope::Project(projects[0].id.clone()),
+                Step::Start,
+                false,
+                window,
+                cx,
+            );
             launcher = Some(root.render_launcher(None, true, window, cx));
         });
         for zoom in [1., 1.3] {

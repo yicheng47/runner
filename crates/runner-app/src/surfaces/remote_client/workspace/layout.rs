@@ -213,6 +213,10 @@ impl RemoteClient {
         self.workspace.as_ref()?.active.as_ref()
     }
 
+    pub(crate) fn landed_at(&self) -> Option<std::time::Instant> {
+        self.workspace.as_ref()?.landed_at
+    }
+
     pub(crate) fn mission_workspace(&self) -> Option<Entity<MissionWorkspace>> {
         self.workspace
             .as_ref()

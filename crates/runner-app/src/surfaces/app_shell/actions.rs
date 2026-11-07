@@ -204,13 +204,14 @@ impl NativeRoot {
         else {
             return;
         };
-        self.tabs.clear_active();
+        self.land_on_recent_tab(cx);
+        if self.remote_client.is_local() && self.tabs.active().is_none() {
+            self.reset_launcher_page(cx);
+        }
         self.set_route(route, cx);
+        self.sync_active_project_from_active_tab(cx);
         match self.ensure_active_tab_attached(window, cx) {
-            Ok(()) => {
-                self.mark_active_tab_viewed(window, cx);
-                self.focus_active_terminal(window, cx);
-            }
+            Ok(()) => self.settle_active_tab(window, cx),
             Err(error) => self.chat_error = Some(error.to_string().into()),
         }
         cx.notify();

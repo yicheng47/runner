@@ -292,6 +292,7 @@ impl NativeRoot {
             terminal_close_confirm: None,
             pending_pane_closes: HashMap::new(),
             pending_tab_close: None,
+            tab_landed_at: None,
             update_popover: crate::surfaces::update_ui::UpdatePopoverState::new(cx),
             quit_dialog: None,
             agent_update: None,

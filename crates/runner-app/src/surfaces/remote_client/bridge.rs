@@ -80,8 +80,12 @@ impl NativeRoot {
 
     pub(crate) fn sync_remote_state(&mut self, cx: &mut Context<Self>) {
         let connection = self.remote_client.connection_marker();
+        let was_empty = self.launcher_is_empty_state();
         if self.remote_client.sync_remote_state(cx) {
             self.clear_remote_transients();
+        }
+        if !was_empty && self.launcher_is_empty_state() {
+            self.reset_launcher_page(cx);
         }
         if self.remote_client.connection_marker() != connection {
             self.maximized_panes.clear();

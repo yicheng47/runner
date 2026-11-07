@@ -66,17 +66,16 @@ pub(crate) fn sidebar_contents(
 }
 
 impl Sidebar {
-    /// Where the launcher page's row is drawn. With nowhere visible to draw it,
-    /// the Active view or a collapsed project, New tab keeps the selection.
+    /// Where the launcher page's row is drawn: where the page opened, whatever
+    /// its picker or folder then do. With nowhere visible to draw it, the Active
+    /// view or a collapsed section, New tab keeps the selection.
     pub(crate) fn launcher_row_scope(&self, cx: &App) -> Option<ProjectScope> {
         let shell = self.shell.upgrade()?;
         let shell = shell.read(cx);
         if !shell.launcher_page_visible() {
             return None;
         }
-        let scope = shell
-            .launcher_page_scope(cx)
-            .unwrap_or_else(|| ProjectScope::or_root(self.active_project_id.clone()));
+        let scope = ProjectScope::or_root(shell.launcher_page_project(cx));
         let settings = self.settings(cx);
         let drawn = !settings.sidebar_active_only
             && match &scope {
@@ -484,13 +483,7 @@ impl Sidebar {
                         workspace_new_tab_row(shortcut, true, active, move |window, cx| {
                             if let Some(shell) = shell.upgrade() {
                                 shell.update(cx, |shell, shell_cx| {
-                                    let scope =
-                                        ProjectScope::or_root(shell.active_project_id(shell_cx));
-                                    if shell.launcher_page_visible() {
-                                        shell.open_new_tab_modal(&NewTab, window, shell_cx);
-                                    } else {
-                                        shell.open_sidebar_chat_modal(scope, window, shell_cx);
-                                    }
+                                    shell.open_new_tab_modal(&NewTab, window, shell_cx);
                                 });
                             }
                         })

@@ -48,7 +48,7 @@ pub(crate) struct ProjectField {
     local: bool,
     chosen: Option<String>,
     committed_directory: String,
-    /// A pane's chat files with its tab.
+    /// A pane's chat files with its tab, and a project's + files with it.
     locked: bool,
     select: Entity<StyledSelect>,
 }
@@ -96,6 +96,12 @@ impl ProjectField {
 
     pub(crate) fn select(&self) -> Entity<StyledSelect> {
         self.select.clone()
+    }
+
+    pub(crate) fn set_locked(&mut self, locked: bool, cx: &mut App) {
+        self.locked = locked;
+        self.select
+            .update(cx, |select, cx| select.set_disabled(locked, cx));
     }
 
     pub(crate) fn scope(&self) -> ProjectScope {
@@ -299,6 +305,27 @@ mod tests {
             field.choose("", directory);
             field.picked(directory, cx);
             assert_eq!(field.scope(), ProjectScope::Project("runner".into()));
+        });
+    }
+
+    #[gpui::test]
+    fn a_locked_field_keeps_its_project_until_it_is_unlocked(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut field = project_field(Some("runner"), false, cx);
+            assert!(!field.select.read(cx).is_disabled());
+            field.set_locked(true, cx);
+            assert!(field.select.read(cx).is_disabled());
+            assert_eq!(field.choose("quill", ""), None);
+            field.picked("/repos/yicheng47/quill/src", cx);
+            assert!(!field.follow("/repos/yicheng47/runner-web", cx));
+            assert_eq!(field.scope(), ProjectScope::Project("runner".into()));
+            field.set_locked(false, cx);
+            assert!(!field.select.read(cx).is_disabled());
+            assert_eq!(
+                field.choose("quill", "").as_deref(),
+                Some("/repos/yicheng47/quill")
+            );
+            assert_eq!(field.scope(), ProjectScope::Project("quill".into()));
         });
     }
 

@@ -467,7 +467,7 @@ impl super::Sidebar {
         {
             Ok(nodes) => {
                 if let (Some(nodes), Some(shell)) = (nodes, self.shell.upgrade()) {
-                    shell.update(cx, |shell, _| shell.replace_tab_rows(&nodes));
+                    shell.update(cx, |shell, cx| shell.replace_tab_rows(&nodes, cx));
                 }
                 self.refresh_store(crate::app_store::StoreRefreshKind::All, cx);
             }

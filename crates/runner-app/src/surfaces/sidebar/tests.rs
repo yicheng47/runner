@@ -313,7 +313,7 @@ fn mission_rename_commits_when_the_field_loses_focus() {
 }
 
 #[test]
-fn sidebar_archive_returns_to_start_only_after_success() {
+fn sidebar_archive_leaves_the_mission_for_the_tab_only_after_success() {
     for (route, archive_id, expected_route) in [
         (
             AppRoute::Mission("mission".into()),
@@ -380,10 +380,9 @@ fn sidebar_archive_returns_to_start_only_after_success() {
         cx.run_until_parked();
         host.update(&mut cx, |root, window, cx| {
             assert_eq!(root.route, expected_route);
-            let expected_tab = (expected_route != AppRoute::Chat).then_some(tab.id.as_str());
-            assert_eq!(root.tabs.active_tab_id(), expected_tab);
+            assert_eq!(root.tabs.active_tab_id(), Some(tab.id.as_str()));
             root.reload_tabs(cx).unwrap();
-            assert_eq!(root.tabs.active_tab_id(), expected_tab);
+            assert_eq!(root.tabs.active_tab_id(), Some(tab.id.as_str()));
             assert_eq!(root.tabs.tabs().len(), 1);
             assert!(root.sidebar.read(cx).archiving_missions.is_empty());
             window.remove_window();

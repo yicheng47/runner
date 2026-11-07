@@ -193,16 +193,32 @@ impl RemoteClient {
         }
         if remote.active.is_none() {
             if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
-                remote.active = overview
-                    .tabs
-                    .first()
-                    .map(|tab| Item::Tab(tab.id.clone()))
+                let viewed = remote
+                    .viewed_tabs
+                    .iter()
+                    .rev()
+                    .find(|tab| remote.layouts.contains_key(*tab))
+                    .map(|tab| Item::Tab(tab.clone()));
+                let left_a_tab = !remote.viewed_tabs.is_empty();
+                remote.active = viewed
+                    .or_else(|| overview.tabs.first().map(|tab| Item::Tab(tab.id.clone())))
                     .or_else(|| {
                         overview
                             .missions
                             .first()
                             .map(|mission| Item::Mission(mission.id.clone()))
                     });
+                if left_a_tab && matches!(remote.active, Some(Item::Tab(_))) {
+                    remote.landed_at = Some(std::time::Instant::now());
+                }
+            }
+        }
+        if let Some(Item::Tab(id)) = &remote.active {
+            if remote.viewed_tabs.last() != Some(id) {
+                remote
+                    .viewed_tabs
+                    .retain(|tab| tab != id && remote.layouts.contains_key(tab));
+                remote.viewed_tabs.push(id.clone());
             }
         }
         remote

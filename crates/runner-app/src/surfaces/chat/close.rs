@@ -219,14 +219,35 @@ impl NativeRoot {
                 if let Err(error) = result {
                     self.chat_error = Some(error.to_string().into());
                 } else {
-                    self.mark_active_tab_viewed(window, cx);
-                    self.focus_active_terminal(window, cx);
-                    self.record_current_runtime_location();
+                    self.settle_active_tab(window, cx);
                 }
                 cx.notify();
             }
             (TabCloseBehavior::ArchiveChat | TabCloseBehavior::CloseTerminal, None) => {}
         }
+    }
+
+    /// What selecting a tab does beyond attaching it, for a close that moved
+    /// the active tab.
+    pub(crate) fn settle_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == AppRoute::Chat {
+            self.remember_active_role(cx);
+            self.sync_active_chat_detail(cx);
+        }
+        self.mark_active_tab_viewed(window, cx);
+        self.focus_active_terminal(window, cx);
+        self.record_current_runtime_location();
+    }
+
+    /// Whether a close comes too soon after a landing to have been aimed at the
+    /// tab it landed on.
+    pub(crate) fn tab_close_guarded(&self) -> bool {
+        let landed = if self.remote_client.is_active() {
+            self.remote_client.landed_at()
+        } else {
+            self.tab_landed_at
+        };
+        landed.is_some_and(|at| at.elapsed() < TAB_LANDING_CLOSE_GUARD)
     }
 
     pub(crate) fn prepare_tab_close(&mut self, session_ids: &[String], _cx: &mut Context<Self>) {
@@ -324,9 +345,7 @@ impl NativeRoot {
                         let refresh = this.reload_tabs(cx).and_then(|_| {
                             if this.route == AppRoute::Chat {
                                 this.ensure_active_tab_attached(window, cx)?;
-                                this.mark_active_tab_viewed(window, cx);
-                                this.focus_active_terminal(window, cx);
-                                this.record_current_runtime_location();
+                                this.settle_active_tab(window, cx);
                             }
                             Ok(())
                         });

@@ -7,36 +7,17 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.create_modal_open() {
-            return;
-        }
-        if self.launcher_page_visible() {
-            if self.remote_client.is_active() {
-                self.select_remote_item(crate::surfaces::remote_client::RemoteItem::Launcher, cx);
-            } else {
-                self.set_route(AppRoute::Launcher, cx);
-            }
-            let launcher = self.render_launcher(None, true, window, cx);
-            launcher.update(cx, |launcher, cx| {
-                launcher.open_step(launcher::Step::Start, window, cx)
-            });
-            return;
-        }
-        self.open_launcher_page(
-            ProjectScope::or_root(self.active_project_id(cx)),
-            launcher::Step::Start,
-            window,
-            cx,
-        );
+        self.open_launcher_page(ProjectScope::Root, launcher::Step::Start, false, window, cx);
     }
 
+    /// A sidebar +: locked to its project, while Recents has none to lock to.
     pub(crate) fn open_sidebar_chat_modal(
         &mut self,
         scope: ProjectScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_launcher_page(scope, launcher::Step::Start, window, cx);
+        self.open_launcher_page(scope, launcher::Step::Start, true, window, cx);
     }
 
     pub(crate) fn open_remote_role_chat(

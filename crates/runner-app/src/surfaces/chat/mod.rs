@@ -801,7 +801,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn exited_terminal_close_lands_on_start_unless_another_pane_session_remains() {
+    fn exited_terminal_close_lands_on_the_other_tab_unless_another_pane_session_remains() {
         use crate::surfaces::start_chat::{tests::modal_harness, ChatMode};
         use std::time::{Duration, Instant};
 
@@ -855,10 +855,16 @@ mod tests {
                             assert_eq!(layout.root.leaves().len(), 1);
                             assert_eq!(layout.focused_session_id(), Some("kept-shell"));
                         } else {
-                            assert!(root.tabs.active().is_none(), "{variant}");
+                            let other = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+                            assert_eq!(root.tabs.active_tab_id(), Some(other), "{variant}");
                             assert_eq!(root.tabs.tabs().len(), 1);
                             root.reload_tabs(cx).unwrap();
-                            assert!(root.tabs.active().is_none(), "{variant}");
+                            assert_eq!(root.tabs.active_tab_id(), Some(other), "{variant}");
+                            assert_eq!(
+                                root.runtime_navigation_history.last(),
+                                Some(&crate::RuntimeLocation::Chat("other-tab-shell".into()))
+                            );
+                            assert!(root.tab_close_guarded());
                         }
                     }
                 });
