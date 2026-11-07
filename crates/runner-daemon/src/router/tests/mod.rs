@@ -1479,6 +1479,106 @@ fn targeted_and_untargeted_human_said_use_the_stream_without_a_lead_fallback() {
     assert!(f.port.0.lock().unwrap().pushes.is_empty());
 }
 
+fn answered(payload: impl FnOnce(&str) -> serde_json::Value, recover: bool) -> String {
+    let f = Fixture::new();
+    f.signal(
+        "worker",
+        "ask_human",
+        serde_json::json!({"prompt":"continue?"}),
+    );
+    let question = f
+        .router
+        .log
+        .read_from(0)
+        .unwrap()
+        .last()
+        .unwrap()
+        .event
+        .id
+        .clone();
+    let payload = payload(&question);
+    if recover {
+        f.router
+            .log
+            .append(EventDraft::signal(
+                None,
+                "mission",
+                "human",
+                SignalType::new("human_response"),
+                payload,
+            ))
+            .unwrap();
+        f.router.reconstruct_from_log().unwrap();
+        f.router.reconstruct_from_log().unwrap();
+    } else {
+        f.signal("human", "human_response", payload);
+    }
+    let mut messages = f
+        .router
+        .log
+        .read_from(0)
+        .unwrap()
+        .into_iter()
+        .filter(|entry| entry.event.kind == EventKind::Message)
+        .collect::<Vec<_>>();
+    assert_eq!(messages.len(), 1);
+    let answer = messages.remove(0).event;
+    assert_eq!(
+        answer.recipients().first().map(String::as_str),
+        Some("worker")
+    );
+    assert_eq!(answer.payload["question_id"], question.as_str());
+    assert_eq!(f.router.pending_ask_count(), 0);
+    answer.payload["text"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn an_answer_with_a_note_delivers_the_choice_and_the_note_in_one_message() {
+    for recover in [false, true] {
+        assert_eq!(
+            answered(
+                |id| serde_json::json!({"question_id":id,"choice":"yes","note":"Only on Friday","delivery":"inbox"}),
+                recover,
+            ),
+            "Answer to \"continue?\": yes — Only on Friday",
+            "recover={recover}"
+        );
+    }
+}
+
+#[test]
+fn an_answer_without_a_usable_note_keeps_todays_text() {
+    let unusable = [
+        None,
+        Some(serde_json::Value::Null),
+        Some(serde_json::json!("")),
+        Some(serde_json::json!(" \n\t ")),
+        Some(serde_json::json!(7)),
+        Some(serde_json::json!(true)),
+        Some(serde_json::json!(["Only on Friday"])),
+        Some(serde_json::json!({"text":"Only on Friday"})),
+    ];
+    for recover in [false, true] {
+        for note in &unusable {
+            let text = answered(
+                |id| {
+                    let mut payload =
+                        serde_json::json!({"question_id":id,"choice":"yes","delivery":"inbox"});
+                    if let Some(note) = note {
+                        payload["note"] = note.clone();
+                    }
+                    payload
+                },
+                recover,
+            );
+            assert_eq!(
+                text, "Answer to \"continue?\": yes",
+                "recover={recover} note={note:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn restart_repairs_the_gap_between_a_person_signal_and_its_message_once() {
     let f = Fixture::new();

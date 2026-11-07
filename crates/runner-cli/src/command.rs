@@ -694,6 +694,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn answer_note_flags_parse_and_conflict() {
+        let answer = ["runner", "mission", "answer", "m", "q", "yes"];
+        let cli = Cli::try_parse_from(answer.into_iter().chain(["--note-file", "-"])).unwrap();
+        assert!(
+            matches!(cli.command, Command::Mission { command: MissionCommand::Answer { ref note_file, .. } } if note_file.as_deref() == Some(Path::new("-")))
+        );
+        let error =
+            Cli::try_parse_from(
+                answer
+                    .into_iter()
+                    .chain(["--note", "text", "--note-file", "-"]),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    async fn answer_with(flags: &[&str]) -> (Result<ToolResponse, CliError>, Vec<(String, Value)>) {
+        let answer = ["runner", "mission", "answer", "01M", "q", "yes"];
+        let cli = Cli::try_parse_from(answer.iter().chain(flags)).unwrap();
+        let client = RecordingClient::default();
+        let result = run_connected(&client, &cli, &BusContext::OffBus, None).await;
+        (result, client.calls.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn answer_notes_are_trimmed_from_either_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("note.txt");
+        std::fs::write(&file, "\n  Only on Friday\n  or Monday\n\n").unwrap();
+        for (flag, value, note) in [
+            ("--note", "  Only on Friday\n", "Only on Friday"),
+            (
+                "--note-file",
+                file.to_str().unwrap(),
+                "Only on Friday\n  or Monday",
+            ),
+        ] {
+            let (result, calls) = answer_with(&[flag, value]).await;
+            assert!(result.is_ok(), "{flag}");
+            assert_eq!(
+                calls.last().unwrap().1["payload"],
+                json!({"question_id": "q", "choice": "yes", "note": note}),
+                "{flag}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_blank_answer_note_is_a_usage_error_before_any_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let blank = temp.path().join("blank.txt");
+        std::fs::write(&blank, " \n\t\n").unwrap();
+        for (flag, value) in [
+            ("--note", ""),
+            ("--note", " \n "),
+            ("--note-file", blank.to_str().unwrap()),
+        ] {
+            let (result, calls) = answer_with(&[flag, value]).await;
+            let error = result.err().unwrap();
+            assert_eq!(error.code, 2, "{flag} {value:?}");
+            assert!(error.message.contains("note is blank"), "{}", error.message);
+            assert!(calls.is_empty(), "{flag} {value:?}: {calls:?}");
+        }
+    }
+
     #[tokio::test]
     async fn follow_prints_each_event_once_across_empty_and_multi_event_drains() {
         let e1 = feed_event("01", 10, "message", "human");
@@ -2024,6 +2090,23 @@ mod tests {
                     "mission_id": MISSION_ID,
                     "signal_type": "human_response",
                     "payload": {"question_id": "question", "choice": "yes"},
+                }),
+            ),
+            (
+                vec![
+                    "mission",
+                    "answer",
+                    "01M",
+                    "question",
+                    "yes",
+                    "--note",
+                    "Only on Friday",
+                ],
+                vec!["mission_list", "mission_signal"],
+                json!({
+                    "mission_id": MISSION_ID,
+                    "signal_type": "human_response",
+                    "payload": {"question_id": "question", "choice": "yes", "note": "Only on Friday"},
                 }),
             ),
             (

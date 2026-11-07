@@ -253,21 +253,34 @@ pub(super) async fn run_mission(
             mission,
             question_id,
             choice,
+            note,
+            note_file,
         } => {
+            let note = answer_note(note.as_deref(), note_file.as_deref())?;
             let mission_id = resolve_mission(client, mission).await?;
+            let mut payload = json!({"question_id": question_id, "choice": choice});
+            insert_string(&mut payload, "note", note.as_deref());
             call(
                 client,
                 "mission_signal",
-                mission_signal_args(
-                    &mission_id,
-                    "human_response",
-                    json!({"question_id": question_id, "choice": choice}),
-                    None,
-                ),
+                mission_signal_args(&mission_id, "human_response", payload, None),
             )
             .await
         }
     }
+}
+
+fn answer_note(inline: Option<&str>, file: Option<&Path>) -> Result<Option<String>, CliError> {
+    let Some(note) = read_text(inline, file, "note")? else {
+        return Ok(None);
+    };
+    let note = note.trim();
+    if note.is_empty() {
+        return Err(CliError::usage(
+            "runner mission answer: the note is blank; give it text or leave out the note flag",
+        ));
+    }
+    Ok(Some(note.to_owned()))
 }
 
 pub(super) async fn mission_lifecycle(

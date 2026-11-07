@@ -418,6 +418,12 @@ pub(super) enum MissionCommand {
         mission: String,
         question_id: String,
         choice: String,
+        /// A condition the choice does not carry, delivered with the answer.
+        #[arg(long, conflicts_with = "note_file")]
+        note: Option<String>,
+        /// Read the note from a file, or from stdin with `-`.
+        #[arg(long, conflicts_with = "note")]
+        note_file: Option<PathBuf>,
     },
 }
 

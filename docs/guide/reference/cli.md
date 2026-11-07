@@ -180,6 +180,7 @@ EXTERNAL OPERATOR FLOW (A DIFFERENT MISSION)
   runner mission remove-role "$mission" <handle>
   runner mission show "$mission" --json
   runner mission answer "$mission" <question_id_from_mission_show> <choice>
+  # Add --note "<condition>" or --note-file <path|-> when the answer needs a condition.
   # Use a HANDLE from mission show to address a member.
   runner msg post --mission "$mission" --to <handle> "message"
   runner mission stop "$mission"
@@ -204,8 +205,9 @@ REPORTS FROM RUNNER
   from the person. Read the mission with runner mission show <id> and runner mission feed <id>,
   tell the person what happened in a line or two, and pass a pending question to them.
   Act only where the person already said yes, and answer a question with runner mission answer
-  only with their decision. After a compaction or /new, runner mission list --linked-here
-  finds this chat's missions.
+  only with their decision; pass a condition the choices do not carry with --note, so the
+  decision and its condition arrive as one message. After a compaction or /new,
+  runner mission list --linked-here finds this chat's missions.
 
 OUTSIDE RUNNER
   Outside a Runner chat there is no link and no report. Tell the person the mission ID and that
@@ -1208,9 +1210,11 @@ Arguments:
   <CHOICE>
 
 Options:
-      --json  Print the tool result as exact JSON
-  -q          Print only result IDs
-  -h, --help  Print help
+      --json                   Print the tool result as exact JSON
+      --note <NOTE>            A condition the choice does not carry, delivered with the answer
+      --note-file <NOTE_FILE>  Read the note from a file, or from stdin with `-`
+  -q                           Print only result IDs
+  -h, --help                   Print help
 ```
 
 ## runner chat
