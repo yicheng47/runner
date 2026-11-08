@@ -20,6 +20,7 @@ impl NativeRoot {
         });
         match result {
             Ok(session_id) => {
+                self.sync_chat_panel(cx);
                 self.chat_surfaces.reset(Default::default());
                 self.reveal_started_scope(
                     &ProjectScope::or_root(self.active_tab_project_id(cx)),

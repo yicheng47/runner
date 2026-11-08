@@ -18,6 +18,28 @@ use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface
 use crate::*;
 
 impl MissionWorkspace {
+    pub(super) fn rail_is_open(&self, cx: &App) -> bool {
+        if self.presentation.is_remote() {
+            self.settings(cx).mission_rail_open
+        } else {
+            self.rail_open
+                .unwrap_or(self.settings(cx).mission_rail_open)
+        }
+    }
+
+    pub(super) fn set_rail_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let toggled = self.rail_is_open(cx) != open;
+        if !self.presentation.is_remote() {
+            self.rail_open = Some(open);
+        }
+        // The store observer also refreshes the mission's terminal size hint.
+        self.update_app_settings(cx, true, |settings| {
+            let changed = settings.mission_rail_open != open;
+            settings.mission_rail_open = open;
+            changed || toggled
+        });
+    }
+
     /// The rail's width, widened while its Files view has a file open.
     pub(super) fn rail_layout(&self, cx: &App) -> (f32, Option<side_panel::Widened>) {
         let settings = self.settings(cx);
@@ -56,11 +78,22 @@ impl MissionWorkspace {
     /// Where a ⌘-clicked file link in a member's or the drawer's terminal
     /// opens: the rail's preview.
     pub(super) fn file_link_route(&self, cx: &Context<Self>) -> FileLinkRoute {
-        FileLinkRoute::new(
-            cx.weak_entity(),
-            Self::link_files_view,
-            Self::show_link_preview,
-        )
+        let mission = self.mission_id.clone();
+        FileLinkRoute::new(cx.weak_entity(), Self::link_files_view, move |this, cx| {
+            if mission == this.mission_id {
+                this.show_link_preview(cx);
+            } else if let Some(id) = mission.as_ref() {
+                let panel = this.rails_by_mission.entry(id.clone()).or_default();
+                panel.surfaces.open(PanelViewId::Files);
+                panel.open = Some(true);
+                this.update_app_settings(cx, true, |settings| {
+                    let changed = !settings.mission_rail_open;
+                    settings.mission_rail_open = true;
+                    changed
+                });
+                cx.notify();
+            }
+        })
     }
 
     /// The rail's Files view while its preview can take a link: the panel
@@ -88,12 +121,7 @@ impl MissionWorkspace {
     /// A link opened in the preview: the rail opens Files, or switches to it.
     fn show_link_preview(&mut self, cx: &mut Context<Self>) {
         self.rail_surfaces.open.open(PanelViewId::Files);
-        if !self.settings(cx).mission_rail_open {
-            self.update_app_settings(cx, true, |settings| {
-                settings.mission_rail_open = true;
-                true
-            });
-        }
+        self.set_rail_open(true, cx);
         cx.notify();
     }
 
@@ -156,10 +184,7 @@ impl MissionWorkspace {
                     .tooltip(crate::i18n::text("ui.collapse_side_panel"))
                     .on_press(move |_, cx| {
                         collapse_root.update(cx, |this, cx| {
-                            this.update_app_settings(cx, true, |settings| {
-                                settings.mission_rail_open = false;
-                                true
-                            });
+                            this.set_rail_open(false, cx);
                             cx.notify();
                         });
                     }),

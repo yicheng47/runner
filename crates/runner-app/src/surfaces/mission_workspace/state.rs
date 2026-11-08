@@ -270,6 +270,9 @@ impl MissionWorkspace {
             duplicate_dismissed: false,
             primary_label: None,
             rail_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
+            rail_open: None,
+            rail_switched: false,
+            rails_by_mission: HashMap::new(),
             rail_files: Default::default(),
             action_menu,
             menu_actions: Vec::new(),
@@ -288,6 +291,26 @@ impl MissionWorkspace {
         self.generation += 1;
         self.refresh_generation += 1;
         self.event_resync_generation += 1;
+        if !self.presentation.is_remote() {
+            if let Some(previous) = self.mission_id.as_ref() {
+                self.rails_by_mission.insert(
+                    previous.clone(),
+                    crate::surfaces::side_panel::SavedPanel {
+                        surfaces: self.rail_surfaces.open.clone(),
+                        open: self.rail_open,
+                    },
+                );
+            }
+            let saved = self
+                .rails_by_mission
+                .remove(&mission_id)
+                .unwrap_or_default();
+            self.rail_surfaces.reset(saved.surfaces);
+            self.rail_open = saved.open;
+            self.rail_switched = true;
+        } else {
+            self.rail_surfaces.reset(Default::default());
+        }
         self.mission_id = Some(mission_id);
         self.attached.clear();
         self.mission_node_id = None;
@@ -343,7 +366,6 @@ impl MissionWorkspace {
         self.secondary = false;
         self.duplicate_dismissed = false;
         self.primary_label = None;
-        self.rail_surfaces.reset(Default::default());
         self.rename_modal = None;
         self.session_key_copies.clear();
         self.generation
@@ -806,6 +828,9 @@ impl MissionWorkspace {
             self.presentation.refresh_settings(&self.app_store, cx);
             let settings = self.settings(cx).clone();
             self.rail_surfaces.open.close_off(&settings, true);
+            for panel in self.rails_by_mission.values_mut() {
+                panel.surfaces.close_off(&settings, true);
+            }
             let count = self.feed_list.item_count();
             self.feed_empty_panel_min_height.set(px(0.));
             self.splice_feed_items(0..count, count);

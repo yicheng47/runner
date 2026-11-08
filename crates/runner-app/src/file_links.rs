@@ -47,14 +47,16 @@ impl FileLinkRoute {
     pub(crate) fn new<T: 'static>(
         owner: WeakEntity<T>,
         view: impl Fn(&mut T, &mut Context<T>) -> Option<Entity<FilesView>> + 'static,
-        show: fn(&mut T, &mut Context<T>),
+        show: impl Fn(&mut T, &mut Context<T>) + 'static,
     ) -> Self {
+        let show = Rc::new(show);
         Self {
             view: Rc::new(move |cx| {
                 let view = owner.update(cx, |this, cx| view(this, cx)).ok().flatten()?;
                 let owner = owner.clone();
+                let show = show.clone();
                 let show: ShowPreview = Rc::new(move |cx| {
-                    let _ = owner.update(cx, show);
+                    let _ = owner.update(cx, |owner, cx| show(owner, cx));
                 });
                 Some((view, show))
             }),

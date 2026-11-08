@@ -221,6 +221,13 @@ impl OpenSurfaces {
     }
 }
 
+/// An inactive tab's panel; an unset open state follows the setting until shown.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SavedPanel {
+    pub(crate) surfaces: OpenSurfaces,
+    pub(crate) open: Option<bool>,
+}
+
 /// The surfaces `surface` offers to open: those Settings turns on, a
 /// mission's Sessions roster aside.
 fn offered(surface: PanelSurface, settings: &AppSettings) -> Vec<&'static PanelView> {

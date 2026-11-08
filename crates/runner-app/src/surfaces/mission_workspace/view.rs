@@ -296,7 +296,14 @@ impl MissionWorkspace {
             .absolute()
             .inset_0()
         }));
-        let rail_open = self.settings(cx).mission_rail_shown();
+        if !self.presentation.is_remote() {
+            let default_open = self.settings(cx).mission_rail_open;
+            self.rail_open.get_or_insert(default_open);
+        }
+        let rail_open = self.settings(cx).show_side_panel && self.rail_is_open(cx);
+        if std::mem::take(&mut self.rail_switched) {
+            self.rail_visibility = SidebarVisibilityTransition::new(rail_open);
+        }
         let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
             if rail_open { 1. } else { 0. },
             Instant::now(),
@@ -584,17 +591,13 @@ impl MissionWorkspace {
             })
             .into_any_element()
         });
-        let rail_action = (self.settings(cx).show_side_panel
-            && !self.settings(cx).mission_rail_open)
-            .then(|| {
+        let rail_action =
+            (self.settings(cx).show_side_panel && !self.rail_is_open(cx)).then(|| {
                 IconButton::new("open-mission-rail", "panel-right-hidden.svg")
                     .tooltip(crate::i18n::text("ui.open_side_panel"))
                     .on_press(move |_, cx| {
                         open_rail_root.update(cx, |this, cx| {
-                            this.update_app_settings(cx, true, |settings| {
-                                settings.mission_rail_open = true;
-                                true
-                            });
+                            this.set_rail_open(true, cx);
                             cx.notify();
                         });
                     })
