@@ -342,6 +342,9 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_panel_prompt_session: Option<String>,
     pub(crate) chat_panel_prompt_expanded: bool,
     pub(crate) chat_surfaces: crate::surfaces::side_panel::PanelSurfaces,
+    pub(crate) chat_panel_tab: Option<String>,
+    pub(crate) chat_panel_open: Option<bool>,
+    pub(crate) chat_panels_by_tab: HashMap<String, crate::surfaces::side_panel::SavedPanel>,
     pub(crate) chat_files: crate::surfaces::files::FilesPanel,
     pub(crate) panel_chat_by_tab: HashMap<String, String>,
     pub(crate) command_palette: Entity<CommandPaletteState>,
@@ -437,6 +440,10 @@ impl NativeRoot {
         let landing =
             closed.is_some_and(|close| self.tabs.active_tab_id() == Some(close.tab_id.as_str()));
         self.tabs.replace_rows(rows);
+        self.chat_panels_by_tab
+            .retain(|id, _| rows.iter().any(|row| &row.id == id));
+        self.panel_chat_by_tab
+            .retain(|id, _| rows.iter().any(|row| &row.id == id));
         if landing {
             self.land_on_recent_tab(cx);
         }

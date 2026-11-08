@@ -6,6 +6,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_chat_panel(cx);
         let Some(detail) = self.archived_chat_detail.as_ref() else {
             return div()
                 .flex_1()
@@ -49,7 +50,8 @@ impl NativeRoot {
             .border_color(theme::border())
             .rounded_tl(rems(11. / 16.))
             .when(
-                !side_panel_open(self.settings(cx), PanelSurface::Chat),
+                !(self.chat_panel_is_open(cx)
+                    && side_panel_available(self.settings(cx), PanelSurface::Chat)),
                 |header| header.rounded_tr(rems(11. / 16.)),
             )
             .children(sidebar_toggle)
@@ -87,7 +89,7 @@ impl NativeRoot {
             )
             .child(div().min_w(px(0.)).flex_1())
             .when(
-                !self.settings(cx).chat_panel_open
+                !self.chat_panel_is_open(cx)
                     && side_panel_available(self.settings(cx), PanelSurface::Chat),
                 |header| {
                     header.child(
@@ -95,10 +97,7 @@ impl NativeRoot {
                             .tooltip(crate::i18n::text("ui.open_side_panel"))
                             .on_press(move |window, cx| {
                                 panel_root.update(cx, |this, cx| {
-                                    this.update_app_settings(cx, true, |settings| {
-                                        settings.chat_panel_open = true;
-                                        true
-                                    });
+                                    this.set_chat_panel_open(true, cx);
                                     this.focus_empty_chat_panel(window, cx);
                                     cx.notify();
                                 });
@@ -148,7 +147,8 @@ impl NativeRoot {
                             ),
                     ),
             );
-        let panel_open = side_panel_open(self.settings(cx), PanelSurface::Chat);
+        let panel_open = self.chat_panel_is_open(cx)
+            && side_panel_available(self.settings(cx), PanelSurface::Chat);
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),
@@ -192,6 +192,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.sync_chat_panel(cx);
         self.prune_launchers(cx);
         if self.remote_client.is_local() {
             self.ensure_active_chat_detail(cx);
@@ -360,7 +361,7 @@ impl NativeRoot {
         let surface = side_panel_surface(terminal_tab);
         let panel_open = self.remote_client.is_local()
             && !show_start
-            && side_panel_open(self.settings(cx), surface);
+            && (self.chat_panel_is_open(cx) && side_panel_available(self.settings(cx), surface));
         let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
             if panel_open { 1. } else { 0. },
             Instant::now(),

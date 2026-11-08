@@ -229,7 +229,7 @@ impl MissionWorkspace {
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let rail_width = if self.settings(cx).mission_rail_shown() {
+        let rail_width = if self.settings(cx).show_side_panel && self.rail_is_open(cx) {
             self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
         } else {
             0.
@@ -280,7 +280,7 @@ impl MissionWorkspace {
         } else {
             self.settings(cx).sidebar_width * self.settings(cx).app_zoom
         };
-        let rail_width = if self.settings(cx).mission_rail_shown() {
+        let rail_width = if self.settings(cx).show_side_panel && self.rail_is_open(cx) {
             self.settings(cx).mission_rail_width * self.settings(cx).app_zoom
         } else {
             0.

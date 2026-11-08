@@ -453,6 +453,9 @@ fn selected_chat_panel_keeps_recorded_values_after_a_shared_role_edit() {
             root.tabs.activate_session("panel-chat");
             root.route = AppRoute::Chat;
             root.sync_active_chat_detail(cx);
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
@@ -2018,6 +2021,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             root.tabs.activate_session("first-panel-chat");
             root.route = AppRoute::Chat;
             root.sync_active_chat_detail(cx);
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
@@ -2052,6 +2058,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         .update(&mut page.visual, |root, _, cx| {
             root.tabs.activate_session("second-panel-chat");
             root.sync_active_chat_detail(cx);
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
@@ -2078,6 +2087,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         page.host
             .update(&mut page.visual, |root, _, cx| {
                 root.sync_active_chat_detail(cx);
+                root.chat_surfaces
+                    .open
+                    .open(crate::surfaces::side_panel::PanelViewId::Info);
                 cx.notify();
             })
             .unwrap();
@@ -2088,6 +2100,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         .update(&mut page.visual, |root, _, cx| {
             root.set_route(AppRoute::Chat, cx);
             root.sync_active_chat_detail(cx);
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
@@ -2103,6 +2118,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             root.tabs.activate_session("runtime-panel-chat");
             root.set_route(AppRoute::Chat, cx);
             root.sync_active_chat_detail(cx);
+            root.chat_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();

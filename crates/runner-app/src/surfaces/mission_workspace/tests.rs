@@ -1649,6 +1649,168 @@ fn rail_header_window(
 }
 
 #[test]
+fn local_missions_keep_separate_rail_surfaces_and_collapse_choices() {
+    use crate::surfaces::side_panel::{self, PanelSurface};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (store, host) = rail_header_window(&mut cx, &temp);
+    let workspace = host
+        .read_with(&cx, |host, _| host.workspace.clone())
+        .unwrap();
+    workspace.update(&mut cx, |workspace, cx| {
+        workspace.prepare_mission("first".into());
+        workspace.rail_surfaces.open.open(PanelViewId::Info);
+        workspace.rail_surfaces.open.open(PanelViewId::Files);
+        workspace.set_rail_open(true, cx);
+        workspace.prepare_mission("second".into());
+        assert_eq!(workspace.rail_surfaces.open, Default::default());
+        assert!(
+            workspace.rail_is_open(cx),
+            "a new mission follows the last choice"
+        );
+        workspace.rail_surfaces.open.open(PanelViewId::Info);
+        workspace.set_rail_open(false, cx);
+        workspace.prepare_mission("first".into());
+        assert!(workspace.rail_is_open(cx));
+        assert_eq!(
+            side_panel::shown(
+                PanelSurface::Mission,
+                workspace.settings(cx),
+                &workspace.rail_surfaces.open
+            ),
+            Some(PanelViewId::Files)
+        );
+        workspace.prepare_mission("second".into());
+        assert!(!workspace.rail_is_open(cx));
+        assert_eq!(
+            side_panel::shown(
+                PanelSurface::Mission,
+                workspace.settings(cx),
+                &workspace.rail_surfaces.open
+            ),
+            Some(PanelViewId::Info)
+        );
+        workspace.prepare_mission("new".into());
+        assert!(!workspace.rail_is_open(cx));
+        assert_eq!(workspace.rail_surfaces.open, Default::default());
+        workspace.prepare_mission("second".into());
+        workspace.rail_surfaces.open.open(PanelViewId::Files);
+    });
+    store.update(&mut cx, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.files_view = false;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    workspace.update(&mut cx, |workspace, cx| {
+        assert_eq!(workspace.rail_surfaces.open.ids().0, &[PanelViewId::Info]);
+        workspace.prepare_mission("first".into());
+        assert_eq!(workspace.rail_surfaces.open.ids().0, &[PanelViewId::Info]);
+        assert!(
+            workspace.rail_is_open(cx),
+            "Settings preserves each mission's collapse choice"
+        );
+    });
+}
+
+#[test]
+fn mission_rail_toggles_notify_even_when_the_default_already_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (store, host) = rail_header_window(&mut cx, &temp);
+    let workspace = host
+        .read_with(&cx, |host, _| host.workspace.clone())
+        .unwrap();
+    workspace.update(&mut cx, |workspace, cx| {
+        workspace.prepare_mission("open".into());
+        workspace.set_rail_open(true, cx);
+        workspace.prepare_mission("collapsed".into());
+        workspace.set_rail_open(false, cx);
+        workspace.prepare_mission("open".into());
+        assert!(!workspace.settings(cx).mission_rail_open);
+        let before = store.read(cx).revisions.settings;
+        workspace.set_rail_open(false, cx);
+        let collapsed = store.read(cx).revisions.settings;
+        assert_ne!(
+            before, collapsed,
+            "the grid hint observer needs the toggle notification"
+        );
+        workspace.set_rail_open(false, cx);
+        assert_eq!(
+            store.read(cx).revisions.settings,
+            collapsed,
+            "a no-op skips the save"
+        );
+
+        workspace.prepare_mission("other".into());
+        workspace.set_rail_open(true, cx);
+        workspace.prepare_mission("collapsed".into());
+        assert!(workspace.settings(cx).mission_rail_open);
+        assert!(!workspace.rail_is_open(cx));
+        let before = store.read(cx).revisions.settings;
+        workspace.set_rail_open(true, cx);
+        let opened = store.read(cx).revisions.settings;
+        assert_ne!(
+            before, opened,
+            "opening a collapsed rail needs the same notification"
+        );
+        workspace.set_rail_open(true, cx);
+        assert_eq!(
+            store.read(cx).revisions.settings,
+            opened,
+            "a repeated open skips the save"
+        );
+    });
+}
+
+#[test]
+fn mission_terminal_estimates_follow_the_shown_missions_rail() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (_store, host) = rail_header_window(&mut cx, &temp);
+    host.update(&mut cx, |host, window, cx| {
+        host.workspace.update(cx, |workspace, cx| {
+            workspace.prepare_mission("collapsed".into());
+            workspace.set_rail_open(false, cx);
+            let collapsed = workspace.estimated_mission_terminal_size(window, cx);
+            let collapsed_drawer = workspace.estimated_mission_drawer_terminal_size(window, cx);
+            workspace.prepare_mission("open".into());
+            workspace.set_rail_open(true, cx);
+            let open = workspace.estimated_mission_terminal_size(window, cx);
+            let open_drawer = workspace.estimated_mission_drawer_terminal_size(window, cx);
+            assert!(open.0 < collapsed.0);
+            assert!(open_drawer.0 < collapsed_drawer.0);
+
+            workspace.prepare_mission("collapsed".into());
+            assert!(workspace.settings(cx).mission_rail_open);
+            assert_eq!(
+                workspace.estimated_mission_terminal_size(window, cx),
+                collapsed
+            );
+            assert_eq!(
+                workspace.estimated_mission_drawer_terminal_size(window, cx),
+                collapsed_drawer
+            );
+            workspace.set_rail_open(false, cx);
+            workspace.prepare_mission("open".into());
+            assert!(!workspace.settings(cx).mission_rail_open);
+            assert_eq!(workspace.estimated_mission_terminal_size(window, cx), open);
+            assert_eq!(
+                workspace.estimated_mission_drawer_terminal_size(window, cx),
+                open_drawer
+            );
+        });
+    })
+    .unwrap();
+}
+
+#[test]
 fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus() {
     use crate::surfaces::side_panel::{PanelContext, PanelSubject};
     use crate::theme_snapshot::{assert_fill_color, assert_text, ThemeGuard};
@@ -4622,6 +4784,10 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     let workspace = host
         .read_with(&visual, |host, _| host.workspace.clone())
         .unwrap();
+    workspace.update(&mut visual, |workspace, cx| {
+        workspace.set_rail_open(false, cx)
+    });
+    assert!(!workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
     let wait = |visual: &mut VisualTestContext, ready: &dyn Fn(&mut VisualTestContext) -> bool| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while !ready(visual) {
@@ -4646,7 +4812,7 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     // The member terminals and the drawer's shell share the rail's route.
     click(&mut visual, outside.clone());
     wait(&mut visual, &|_| launched() == 1);
-    assert!(!store.read_with(&visual, |store, _| store.settings.mission_rail_open));
+    assert!(!workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
 
     click(&mut visual, root.join("lib.rs"));
     let subject = PanelSubject::Mission("test-mission".into());
@@ -4660,7 +4826,7 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
         })
     });
     assert_eq!(launched(), 0);
-    assert!(store.read_with(&visual, |store, _| store.settings.mission_rail_open));
+    assert!(workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
     assert_eq!(
         workspace.read_with(&visual, |workspace, _| workspace.rail_surfaces.open.clone()),
         {
@@ -4705,16 +4871,10 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     assert!(widened(&mut visual), "Files reopened, with its file");
 
     // ⇧⌘O opens the collapsed rail on Files, with its finder.
-    store.update(&mut visual, |store, cx| {
-        store.update_settings(
-            |settings| {
-                settings.mission_rail_open = false;
-                true
-            },
-            false,
-            cx,
-        )
+    workspace.update(&mut visual, |workspace, cx| {
+        workspace.set_rail_open(false, cx)
     });
+    assert!(!workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
     visual.run_until_parked();
     workspace.update_in(&mut visual, |workspace, window, cx| {
         workspace.search_files(window, cx)
@@ -4722,7 +4882,7 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     wait(&mut visual, &|visual| {
         visual.debug_bounds("FILES_FINDER_ITEM 0").is_some()
     });
-    assert!(store.read_with(&visual, |store, _| store.settings.mission_rail_open));
+    assert!(workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
 

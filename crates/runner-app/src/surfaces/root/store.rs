@@ -41,6 +41,9 @@ impl NativeRoot {
         if revisions.settings != previous.settings {
             let settings = self.settings(cx).clone();
             self.chat_surfaces.open.close_off(&settings, false);
+            for panel in self.chat_panels_by_tab.values_mut() {
+                panel.surfaces.close_off(&settings, false);
+            }
             self.sync_role_page_size(cx);
             self.sync_crew_page_size(cx);
             let language = self.settings(cx).language.key();

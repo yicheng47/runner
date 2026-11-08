@@ -3,6 +3,66 @@ use crate::file_links::FileLinkRoute;
 use crate::surfaces::files::FilesView;
 
 impl NativeRoot {
+    pub(crate) fn sync_chat_panel(&mut self, cx: &App) {
+        if !self.remote_client.is_local() {
+            return;
+        }
+        let tab = self.tabs.active_tab_id().map(str::to_owned);
+        if self.chat_panel_tab == tab {
+            return;
+        }
+        if let Some(previous) = self
+            .chat_panel_tab
+            .take()
+            .filter(|id| self.tabs.tabs().iter().any(|tab| &tab.id == id))
+        {
+            self.chat_panels_by_tab.insert(
+                previous,
+                side_panel::SavedPanel {
+                    surfaces: self.chat_surfaces.open.clone(),
+                    open: self.chat_panel_open,
+                },
+            );
+        }
+        let saved = tab
+            .as_ref()
+            .and_then(|id| self.chat_panels_by_tab.remove(id));
+        if let Some(saved) = saved {
+            self.chat_surfaces.reset(saved.surfaces);
+            self.chat_panel_open = saved.open;
+        } else {
+            self.chat_surfaces.reset(Default::default());
+            self.chat_panel_open = None;
+        }
+        self.chat_panel_tab = tab;
+        let open = self
+            .chat_panel_open
+            .unwrap_or(self.settings(cx).chat_panel_open);
+        self.chat_panel_open = Some(open);
+        self.chat_panel_visibility = SidebarVisibilityTransition::new(
+            open && !start_surface_visible(self.tabs.active())
+                && side_panel_available(
+                    self.settings(cx),
+                    side_panel_surface(self.active_tab_is_terminal(cx)),
+                ),
+        );
+    }
+
+    pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
+        self.chat_panel_open
+            .unwrap_or(self.settings(cx).chat_panel_open)
+    }
+
+    pub(crate) fn set_chat_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.sync_chat_panel(cx);
+        self.chat_panel_open = Some(open);
+        self.update_app_settings(cx, true, |settings| {
+            let changed = settings.chat_panel_open != open;
+            settings.chat_panel_open = open;
+            changed
+        });
+    }
+
     pub(super) fn render_island_panel_toggle(
         &self,
         layout: &PaneLayout,
@@ -12,7 +72,7 @@ impl NativeRoot {
         let surface = side_panel_surface(self.active_tab_is_terminal(cx));
         if !self.remote_client.is_local()
             || start_surface_visible(Some(layout))
-            || self.settings(cx).chat_panel_open
+            || self.chat_panel_is_open(cx)
             || !side_panel_available(self.settings(cx), surface)
             || maximized_leaf(&self.maximized_panes, layout)
                 .unwrap_or_else(|| top_right_pane(&layout.root))
@@ -39,10 +99,7 @@ impl NativeRoot {
                         .tooltip(crate::i18n::text("ui.open_side_panel"))
                         .on_press(move |window, cx| {
                             root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.chat_panel_open = true;
-                                    true
-                                });
+                                this.set_chat_panel_open(true, cx);
                                 this.focus_empty_chat_panel(window, cx);
                                 cx.notify();
                             })
@@ -130,11 +187,21 @@ impl NativeRoot {
     /// opens: the panel's preview, beside the chat the panel follows once
     /// that pane has focus, as the click gives it.
     pub(crate) fn file_link_route(&self, session: &str, cx: &Context<Self>) -> FileLinkRoute {
+        let tab = self
+            .tabs
+            .tabs()
+            .iter()
+            .find(|tab| tab.contains_session(session))
+            .map(|tab| tab.id.clone());
         let session = session.to_owned();
         FileLinkRoute::new(
             cx.weak_entity(),
             move |this: &mut Self, cx| this.link_files_view(&session, cx),
-            Self::show_link_preview,
+            move |this, cx| {
+                if let Some(tab) = tab.as_deref() {
+                    this.show_link_preview_in_tab(tab, cx);
+                }
+            },
         )
     }
 
@@ -172,7 +239,8 @@ impl NativeRoot {
         let settings = self.settings(cx);
         if self.remote_client.is_local()
             && self.route == AppRoute::Chat
-            && side_panel_open(settings, surface)
+            && self.chat_panel_is_open(cx)
+            && side_panel_available(settings, surface)
             && side_panel::shown(surface, settings, &self.chat_surfaces.open).is_none()
         {
             self.chat_surfaces.list_focus().focus(window, cx);
@@ -195,15 +263,26 @@ impl NativeRoot {
 
     /// A link opened in the preview: the panel opens Files, or switches to it.
     fn show_link_preview(&mut self, cx: &mut Context<Self>) {
-        if side_panel_surface(self.active_tab_is_terminal(cx)) == PanelSurface::Chat {
+        if let Some(tab) = self.tabs.active_tab_id().map(str::to_owned) {
+            self.show_link_preview_in_tab(&tab, cx);
+        }
+    }
+
+    fn show_link_preview_in_tab(&mut self, tab: &str, cx: &mut Context<Self>) {
+        self.sync_chat_panel(cx);
+        if self.chat_panel_tab.as_deref() == Some(tab) {
             self.chat_surfaces.open.open(PanelViewId::Files);
+            self.chat_panel_open = Some(true);
+        } else {
+            let panel = self.chat_panels_by_tab.entry(tab.into()).or_default();
+            panel.surfaces.open(PanelViewId::Files);
+            panel.open = Some(true);
         }
-        if !self.settings(cx).chat_panel_open {
-            self.update_app_settings(cx, true, |settings| {
-                settings.chat_panel_open = true;
-                true
-            });
-        }
+        self.update_app_settings(cx, true, |settings| {
+            let changed = !settings.chat_panel_open;
+            settings.chat_panel_open = true;
+            changed
+        });
         cx.notify();
     }
 
@@ -318,10 +397,7 @@ impl NativeRoot {
                         .tooltip(crate::i18n::text("ui.collapse_side_panel"))
                         .on_press(move |_, cx| {
                             collapse_root.update(cx, |this, cx| {
-                                this.update_app_settings(cx, true, |settings| {
-                                    settings.chat_panel_open = false;
-                                    true
-                                });
+                                this.set_chat_panel_open(false, cx);
                                 cx.notify();
                             });
                         }),

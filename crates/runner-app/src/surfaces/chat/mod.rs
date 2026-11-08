@@ -530,6 +530,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_active_chat_detail(&mut self, cx: &mut Context<Self>) {
+        self.sync_chat_panel(cx);
         if self.remote_client.is_active() {
             return;
         }
