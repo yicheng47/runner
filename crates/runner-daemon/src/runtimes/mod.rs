@@ -478,6 +478,10 @@ pub trait RuntimeAdapter: Send + Sync {
     fn conversation_exists(&self, _key: &str, _ctx: &ProbeContext<'_>) -> Option<bool> {
         None
     }
+    /// Where `conversation_exists` looks, for logs; `None` when the runtime does not say.
+    fn conversation_folder(&self, _ctx: &ProbeContext<'_>) -> Option<PathBuf> {
+        None
+    }
     /// The conversation a row should resume instead of `missing_key`, when
     /// the runtime can prove which one the row owns.
     fn recover_conversation(

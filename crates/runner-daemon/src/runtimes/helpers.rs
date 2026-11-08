@@ -94,9 +94,19 @@ pub(crate) fn test_home() -> Option<PathBuf> {
     CONVERSATION_HOME.with_borrow(|home| home.clone())
 }
 
-/// Check an agent conversation path using that CLI's project-directory encoder.
+/// `~/<agent_dir>`, under the fake home in tests.
+pub(super) fn agent_home(agent_dir: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    let home = test_home();
+    #[cfg(not(test))]
+    let home = runner_core::app_paths::home_dir();
+    home.map(|home| home.join(agent_dir))
+}
+
+/// Check for a conversation under an agent's config `folder`, using that CLI's
+/// project-directory encoder.
 pub(super) fn conversation_file_exists(
-    agent_dir: &str,
+    folder: Option<&Path>,
     cwd: Option<&str>,
     uuid: &str,
     encode_project_dir: fn(&str) -> String,
@@ -105,37 +115,25 @@ pub(super) fn conversation_file_exists(
     // for the resume flow don't have to fake out the agent project
     // directory. The encoders are exercised directly below.
     #[cfg(test)]
-    {
-        CONVERSATION_HOME.with_borrow(|home| match (home.as_deref(), cwd) {
-            (Some(home), Some(cwd)) => {
-                conversation_file_exists_at(home, agent_dir, cwd, uuid, encode_project_dir)
-            }
-            _ => true,
-        })
+    if test_home().is_none() {
+        return true;
     }
-    #[cfg(not(test))]
-    {
-        let Some(cwd) = cwd else {
-            // No cwd → claude-code falls back to the parent's, which we
-            // can't reproduce here. Be permissive: let `--resume` try and
-            // surface its own error rather than masking it.
-            return true;
-        };
-        let Some(home) = runner_core::app_paths::home_dir() else {
-            return true;
-        };
-        conversation_file_exists_at(&home, agent_dir, cwd, uuid, encode_project_dir)
-    }
+    // No cwd → claude-code falls back to the parent's, which we can't
+    // reproduce here. Be permissive: let `--resume` try and surface its
+    // own error rather than masking it.
+    let (Some(folder), Some(cwd)) = (folder, cwd) else {
+        return true;
+    };
+    conversation_file_exists_at(folder, cwd, uuid, encode_project_dir)
 }
 
 pub(super) fn conversation_file_exists_at(
-    home: &Path,
-    agent_dir: &str,
+    folder: &Path,
     cwd: &str,
     uuid: &str,
     encode_project_dir: fn(&str) -> String,
 ) -> bool {
-    let projects = home.join(agent_dir).join("projects");
+    let projects = folder.join("projects");
     let exists = |cwd: &str| {
         projects
             .join(encode_project_dir(cwd))

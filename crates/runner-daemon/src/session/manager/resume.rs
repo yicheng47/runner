@@ -318,6 +318,22 @@ impl SessionManager {
                 "session {session_id} conversation is unavailable; resume it manually to start fresh"
             )));
         }
+        if let Some(key) = snap
+            .agent_session_key
+            .as_deref()
+            .filter(|_| conversation_missing && !fresh)
+        {
+            let folder = claude_account
+                .as_ref()
+                .map(|account| PathBuf::from(&account.origin_folder))
+                .or_else(|| {
+                    adapter.conversation_folder(&crate::runtimes::ProbeContext {
+                        cwd: resolved_cwd_for_check.as_deref(),
+                        role_env: &recovery_env,
+                    })
+                });
+            super::output::warn_missing_conversation(session_id, key, folder.as_deref());
+        }
         let effective_prior_key = if fresh || (conversation_missing && !missing.reuse_key) {
             None
         } else {
@@ -583,7 +599,7 @@ impl SessionManager {
             &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
-            spec.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            crate::runtimes::claude_code::spawned_config_dir(&spec.env),
         );
         let starts_trusted = crate::runtimes::for_key(&role.runtime).starts_trusted(
             spec.cwd.as_deref(),

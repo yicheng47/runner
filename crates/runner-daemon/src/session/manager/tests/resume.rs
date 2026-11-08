@@ -400,6 +400,354 @@ fn launch_resume_never_falls_back_to_a_fresh_chat_spawn() {
     assert_eq!(status, "stopped");
 }
 
+fn claude_transcript(folder: &Path, cwd: &Path, key: &str) -> PathBuf {
+    folder
+        .join("projects")
+        .join(crate::runtimes::claude_code::claude_code_project_dir(
+            &cwd.to_string_lossy(),
+        ))
+        .join(format!("{key}.jsonl"))
+}
+
+fn write_claude_transcript(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "{}\n").unwrap();
+}
+
+fn config_var(value: Option<&str>) -> Option<(String, String)> {
+    value.map(|value| ("CLAUDE_CONFIG_DIR".to_string(), value.to_string()))
+}
+
+fn base_env(value: Option<&str>) -> BTreeMap<&'static str, std::ffi::OsString> {
+    value
+        .map(|value| ("CLAUDE_CONFIG_DIR", value.into()))
+        .into_iter()
+        .collect()
+}
+
+fn named_env<M: FromIterator<(String, String)>>(entries: &[(&str, &str)]) -> M {
+    entries
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+fn claude_check(
+    root: &Path,
+    cwd: &Path,
+    shell: BTreeMap<String, String>,
+    role_env: HashMap<String, String>,
+    base_value: Option<&str>,
+    transcript_folder: Option<&Path>,
+) -> Option<bool> {
+    let key = uuid::Uuid::new_v4().to_string();
+    let adapter = crate::runtimes::for_key("claude-code");
+    let mgr = manager_with_runtime(
+        crate::shell_path::LoginShellEnv {
+            vars: shell,
+            ..Default::default()
+        },
+        inert_runtime(),
+    );
+    let env = mgr.probe_env(adapter, &role_env);
+    if let Some(folder) = transcript_folder {
+        write_claude_transcript(&claude_transcript(folder, cwd, &key));
+    }
+    crate::golden::with_config_env(base_env(base_value), || {
+        crate::runtimes::with_conversation_home(root, || {
+            super::super::output::conversation_exists(adapter, None, cwd.to_str(), &env, &key)
+        })
+    })
+}
+
+#[test]
+fn claude_check_reads_the_config_folder_the_agent_launches_with() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+    let custom = root.path().join("custom");
+    let other = root.path().join("other");
+    let native = root.path().join(".claude");
+    let relative = cwd.join("relative-config");
+    let (c, o) = (custom.to_str().unwrap(), other.to_str().unwrap());
+    // Case, role value, shell value, base value, transcript folder, found.
+    let cases = [
+        ("role", Some(c), None, None, Some(&custom), true),
+        ("shell", None, Some(c), None, Some(&custom), true),
+        ("base", None, None, Some(c), Some(&custom), true),
+        (
+            "role over shell",
+            Some(c),
+            Some(o),
+            None,
+            Some(&custom),
+            true,
+        ),
+        ("shell loses", Some(o), Some(c), None, Some(&custom), false),
+        (
+            "shell over base",
+            None,
+            Some(c),
+            Some(o),
+            Some(&custom),
+            true,
+        ),
+        (
+            "relative",
+            Some("relative-config"),
+            None,
+            None,
+            Some(&relative),
+            true,
+        ),
+        ("empty", Some(""), None, None, Some(&native), true),
+        ("empty base", None, None, Some(""), Some(&native), true),
+        ("unset", None, None, None, Some(&native), true),
+        (
+            "empty hides base",
+            Some(""),
+            None,
+            Some(c),
+            Some(&custom),
+            false,
+        ),
+        (
+            "custom ignores native",
+            Some(c),
+            None,
+            None,
+            Some(&native),
+            false,
+        ),
+        (
+            "native ignores custom",
+            None,
+            None,
+            None,
+            Some(&custom),
+            false,
+        ),
+        ("custom, in neither", Some(c), None, None, None, false),
+        ("unset, in neither", None, None, None, None, false),
+    ];
+    for (case, role_value, shell_value, base_value, folder, found) in cases {
+        let exists = claude_check(
+            root.path(),
+            &cwd,
+            config_var(shell_value).into_iter().collect(),
+            config_var(role_value).into_iter().collect(),
+            base_value,
+            folder.map(PathBuf::as_path),
+        );
+        assert_eq!(exists, Some(found), "{case}");
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn claude_config_dir_name_is_case_sensitive_off_windows() {
+    use crate::runtimes::claude_code::spawned_config_dir;
+    let env: HashMap<String, String> = named_env(&[("claude_config_dir", "lower")]);
+    assert_eq!(spawned_config_dir(&env), None);
+    let env: HashMap<String, String> = named_env(&[
+        ("claude_config_dir", "lower"),
+        ("CLAUDE_CONFIG_DIR", "upper"),
+    ]);
+    assert_eq!(spawned_config_dir(&env), Some("upper"));
+}
+
+#[cfg(windows)]
+#[test]
+fn claude_check_folds_config_dir_name_case_like_windows() {
+    let root = tempfile::tempdir().unwrap();
+    let cwd = root.path().join("project");
+    std::fs::create_dir(&cwd).unwrap();
+    let custom = root.path().join("custom");
+    let other = root.path().join("other");
+    let native = root.path().join(".claude");
+    let (c, o) = (custom.to_str().unwrap(), other.to_str().unwrap());
+    let check = |role_env: &[(&str, &str)],
+                 shell: &[(&str, &str)],
+                 base_value: Option<&str>,
+                 folder: &Path| {
+        claude_check(
+            root.path(),
+            &cwd,
+            named_env(shell),
+            named_env(role_env),
+            base_value,
+            Some(folder),
+        )
+    };
+    let (upper, mixed, lower) = (
+        "CLAUDE_CONFIG_DIR",
+        "Claude_Config_Dir",
+        "claude_config_dir",
+    );
+    assert_eq!(check(&[(mixed, c)], &[], None, &custom), Some(true));
+    assert_eq!(check(&[(lower, c)], &[], None, &native), Some(false));
+    assert_eq!(check(&[(mixed, "")], &[], Some(c), &custom), Some(false));
+    assert_eq!(check(&[(mixed, "")], &[], Some(c), &native), Some(true));
+    assert_eq!(
+        check(&[(upper, o), (lower, c)], &[], None, &custom),
+        Some(true)
+    );
+    assert_eq!(
+        check(&[(upper, o)], &[(lower, c)], None, &custom),
+        Some(true)
+    );
+    assert_eq!(
+        check(&[(lower, o)], &[(upper, c)], None, &custom),
+        Some(false)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn claude_config_pin_folds_config_dir_name_case_like_windows() {
+    let pin = |role_env: &[(&str, &str)], shell: &[(&str, &str)], base_value: Option<&str>| {
+        let mut configured = role("claude-wrapper", &[]);
+        configured.env = named_env(role_env);
+        let shell = named_env(shell);
+        crate::golden::with_config_env(base_env(base_value), || {
+            crate::claude_accounts::config_pin(&configured, &shell)
+        })
+    };
+    let (upper, mixed, lower) = (
+        "CLAUDE_CONFIG_DIR",
+        "Claude_Config_Dir",
+        "claude_config_dir",
+    );
+    assert_eq!(pin(&[(mixed, "m")], &[], None).as_deref(), Some("m"));
+    assert_eq!(pin(&[(lower, "")], &[], Some("base")), None);
+    assert_eq!(
+        pin(&[(upper, "u"), (lower, "l")], &[], None).as_deref(),
+        Some("l")
+    );
+    assert_eq!(
+        pin(&[(upper, "role")], &[(lower, "shell")], None).as_deref(),
+        Some("shell")
+    );
+}
+
+#[test]
+fn claude_config_pin_follows_the_environment_the_agent_launches_with() {
+    let pin = |role_value: Option<&str>, shell_value: Option<&str>, base_value: Option<&str>| {
+        let mut configured = role("claude-wrapper", &[]);
+        configured.env.extend(config_var(role_value));
+        let shell = config_var(shell_value).into_iter().collect();
+        crate::golden::with_config_env(base_env(base_value), || {
+            crate::claude_accounts::config_pin(&configured, &shell)
+        })
+    };
+    assert_eq!(
+        pin(Some("role"), Some("shell"), Some("base")).as_deref(),
+        Some("role")
+    );
+    assert_eq!(
+        pin(None, Some("shell"), Some("base")).as_deref(),
+        Some("shell")
+    );
+    assert_eq!(pin(None, None, Some("base")).as_deref(), Some("base"));
+    assert_eq!(pin(Some(""), None, Some("base")), None);
+    assert_eq!(pin(None, None, None), None);
+}
+
+#[test]
+fn claude_resume_uses_the_transcript_in_the_launch_config_folder() {
+    assert_claude_resume_uses_config_folder("CLAUDE_CONFIG_DIR");
+}
+
+#[cfg(windows)]
+#[test]
+fn claude_resume_and_trust_honor_a_mixed_case_config_dir_on_windows() {
+    assert_claude_resume_uses_config_folder("Claude_Config_Dir");
+}
+
+fn assert_claude_resume_uses_config_folder(variable: &str) {
+    let pool = pool_with_schema();
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let cwd = root.path().join("project");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&cwd).unwrap();
+    let config = root.path().join("custom");
+    let mut configured = role("claude-wrapper", &[]);
+    configured.runtime = "claude-code".into();
+    configured
+        .env
+        .insert(variable.into(), config.display().to_string());
+    insert_role_row(&pool.get().unwrap(), &configured);
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, fake.clone());
+    let chat = mgr
+        .spawn_direct(
+            &configured,
+            None,
+            None,
+            None,
+            None,
+            cwd.to_str(),
+            None,
+            None,
+            root.path(),
+            pool.clone(),
+            capture(),
+            None,
+        )
+        .unwrap();
+    mgr.kill(&chat.id).unwrap();
+    let saved_key = || {
+        crate::repo::session::get_row(&pool.get().unwrap(), &chat.id)
+            .unwrap()
+            .unwrap()
+            .agent_session_key
+            .unwrap()
+    };
+    let key = saved_key();
+    let transcript = claude_transcript(&config, &cwd, &key);
+    write_claude_transcript(&transcript);
+
+    for on_launch in [true, false] {
+        let resumed = crate::runtimes::with_conversation_home(&home, || {
+            if on_launch {
+                mgr.resume_on_launch(&chat.id, None, None, root.path(), pool.clone(), capture())
+            } else {
+                mgr.resume(&chat.id, None, None, root.path(), pool.clone(), capture())
+            }
+        })
+        .unwrap();
+        assert!(
+            has_arg_pair(&fake.last_spawn_spec().unwrap().args, "--resume", &key),
+            "on_launch={on_launch}"
+        );
+        assert_eq!(saved_key(), key, "on_launch={on_launch}");
+        mgr.kill(&resumed.id).unwrap();
+    }
+    assert!(
+        config.join(".claude.json").is_file(),
+        "trust must be seeded in the launch folder"
+    );
+
+    std::fs::remove_file(&transcript).unwrap();
+    super::super::output::MISSING_CONVERSATION_WARNINGS.take();
+    let resumed = crate::runtimes::with_conversation_home(&home, || {
+        mgr.resume(&chat.id, None, None, root.path(), pool.clone(), capture())
+    })
+    .unwrap();
+    let spec = fake.last_spawn_spec().unwrap();
+    let fresh_key = saved_key();
+    assert_ne!(fresh_key, key);
+    assert!(!spec.args.contains(&"--resume".to_string()));
+    assert!(has_arg_pair(&spec.args, "--session-id", &fresh_key));
+    let warnings = super::super::output::MISSING_CONVERSATION_WARNINGS.take();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    for part in [chat.id.clone(), key, config.display().to_string()] {
+        assert!(warnings[0].contains(&part), "{part} in {}", warnings[0]);
+    }
+    mgr.kill(&resumed.id).unwrap();
+}
+
 #[test]
 fn launch_resume_keeps_missing_cwd_as_a_chat_error() {
     let pool = pool_with_schema();

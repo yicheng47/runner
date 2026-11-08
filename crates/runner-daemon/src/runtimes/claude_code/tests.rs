@@ -74,8 +74,7 @@ fn claude_transcript_lookup_preserves_resume_identity() {
         std::fs::write(project_dir.join(format!("{prior}.jsonl")), "{}\n").unwrap();
         for cwd in cwds {
             let exists = conversation_file_exists_at(
-                home.path(),
-                ".claude",
+                &home.path().join(".claude"),
                 cwd,
                 &prior,
                 claude_code_project_dir,
@@ -87,8 +86,7 @@ fn claude_transcript_lookup_preserves_resume_identity() {
         }
     }
     assert!(!conversation_file_exists_at(
-        home.path(),
-        ".claude",
+        &home.path().join(".claude"),
         cases[0].1[0],
         &uuid::Uuid::new_v4().to_string(),
         claude_code_project_dir,
@@ -153,6 +151,15 @@ fn claude_alias_transcripts_resume_from_canonical_or_literal_project_paths() {
     #[cfg(windows)]
     let canonical = project;
     let prior = uuid::Uuid::new_v4().to_string();
+    let exists = |cwd: &Path| {
+        claude_code_conversation_exists(
+            &ProbeContext {
+                cwd: Some(&cwd.to_string_lossy()),
+                role_env: &HashMap::new(),
+            },
+            &prior,
+        )
+    };
     with_conversation_home(home.path(), || {
         for cwd in [&canonical, &alias] {
             let transcript = home
@@ -163,7 +170,7 @@ fn claude_alias_transcripts_resume_from_canonical_or_literal_project_paths() {
             std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
             std::fs::write(&transcript, "{}\n").unwrap();
             for probe in [&alias, cwd] {
-                let found = claude_code_conversation_exists(Some(&probe.to_string_lossy()), &prior);
+                let found = exists(probe);
                 assert!(
                     found,
                     "stored cwd={cwd:?}; probe={probe:?}; canonical={:?}; transcript={transcript:?}",
@@ -175,10 +182,7 @@ fn claude_alias_transcripts_resume_from_canonical_or_literal_project_paths() {
             }
             std::fs::remove_file(transcript).unwrap();
         }
-        assert!(!claude_code_conversation_exists(
-            Some(&alias.to_string_lossy()),
-            &prior
-        ));
+        assert!(!exists(&alias));
         let plan = resume_plan(Runtime::ClaudeCode.key(), None);
         assert!(!plan.resuming);
         assert_ne!(plan.assigned_key.as_deref(), Some(prior.as_str()));
