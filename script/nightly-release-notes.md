@@ -1,8 +1,8 @@
-Rolling nightly build definitions cover macOS Apple Silicon, Windows x64 and Linux ARM64/x86_64, identified by commit and UTC build stamp. All platforms share this public prerelease; a single-platform cut leaves the other platform's files in place. Nightly installs follow this channel, while production installs use separate stable feeds. Install a stable build by hand to switch back to production.
+Rolling nightly build definitions cover macOS Apple Silicon and Intel, Windows x64 and Linux ARM64/x86_64, identified by commit and UTC build stamp. All platforms share this public prerelease; a single-platform cut leaves the other platform's files in place. Nightly installs follow this channel, while production installs use separate stable feeds. Install a stable build by hand to switch back to production.
 
 ## macOS
 
-Download the newest **Runner-Nightly-…-arm64.dmg** below and drag **Runner.app** into Applications, replacing Runner. The app checks this release's signed Sparkle appcast for nightly updates. The DMG is signed and notarized.
+Download the newest **Runner-Nightly-…-arm64.dmg** for an Apple Silicon Mac or **Runner-Nightly-…-x64.dmg** for an Intel Mac below and drag **Runner.app** into Applications, replacing Runner. The app checks this release's signed Sparkle appcast for its architecture for nightly updates. The DMG is signed and notarized.
 
 If you still have **Runner Nightly.app**, install this build over **Runner.app** by hand, then delete **Runner Nightly.app**. Its old bundle identifier prevents Sparkle from installing the new bundle in place.
 

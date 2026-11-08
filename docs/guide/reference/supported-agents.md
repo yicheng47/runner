@@ -59,7 +59,7 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 
 ## Platform and resume notes
 
-- Runner ships for Apple Silicon macOS and Windows x64. References to Linux above describe a runtime adapter's behavior, not a Linux build of Runner.
+- Runner ships for macOS (Apple Silicon and Intel) and Windows x64. References to Linux above describe a runtime adapter's behavior; the Linux beta's install and validation scope is in [Install Runner](../getting-started/install.md).
 - Windows agents run natively, without WSL. Claude Code and pi's bash tool need Git for Windows. npm-installed agents need Node.js; Copilot's npm installation requires Node.js 22. PowerShell 7 is optional.
 - Antigravity CLI and pi have Windows implementation paths but no completed native Windows smoke check. Cursor, Grok and OpenCode also have Windows validation gaps.
 - Grok chats, missions and stop/resume were checked on macOS; full app-relaunch persistence remains unverified. Switching an already loaded Grok dashboard conversation updates Runner's resume key on the next prompt, not an idle dashboard switch.

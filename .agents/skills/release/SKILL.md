@@ -5,7 +5,7 @@ description: Cut a Runner production release — bump the workspace version, tag
 
 # Release
 
-A production release is a `vX.Y.Z` tag on a `main` commit whose workspace version is exactly `X.Y.Z`. `release.yml` builds the signed, notarized macOS DMG with its one-item Sparkle appcast and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
+A production release is a `vX.Y.Z` tag on a `main` commit whose workspace version is exactly `X.Y.Z`. `release.yml` builds the signed, notarized macOS DMGs for arm64 and x64, each with its own one-item Sparkle appcast (`appcast.xml` and `appcast-x64.xml`), and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
 
 An explicit request to `run` authorizes the bump commit, the push, the tag, and editing the draft's notes; after the user publishes, it also authorizes the sweep's docs commit and push. An explicit `sweep` request authorizes that commit and push on its own. Nothing in this skill publishes the draft, deletes a release, moves an existing tag, or posts to a forum or social media. Record only observed results.
 
@@ -24,7 +24,7 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 3. **Tag.** `git tag -a v<version> -m "Runner <version>" && git push origin v<version>`. The push starts `release.yml`.
 4. **Watch.** Find the run with `gh run list --workflow release.yml --limit 1 --json databaseId,status,headSha` and `gh run watch <id> --exit-status`. All platform build jobs (including both Linux matrix instances) and the publish job must succeed. On failure, `gh run view <id> --log-failed`, report the failing step, and stop; the tag stays, the draft may be partial.
 5. **Notes.** Follow `notes <version>` below and set them on the draft: `gh release edit v<version> --notes-file <file>`. Do not pass `--draft=false`.
-6. **Report.** The draft URL, every platform asset name, and the reminder that publishing is the user's action. A draft's `untagged-…` URL changes each time it is edited, so link the latest one. After the user publishes, confirm `gh release view v<version> --json isDraft` is `false` before anything that assumes the release is live, then verify `gh api repos/yicheng47/runner/releases/latest --jq .tag_name` is `v<version>` and that `releases/latest/download/appcast.xml` names the new DMG.
+6. **Report.** The draft URL, every platform asset name, and the reminder that publishing is the user's action. A draft's `untagged-…` URL changes each time it is edited, so link the latest one. After the user publishes, confirm `gh release view v<version> --json isDraft` is `false` before anything that assumes the release is live, then verify `gh api repos/yicheng47/runner/releases/latest --jq .tag_name` is `v<version>` and that `releases/latest/download/appcast.xml` and `appcast-x64.xml` name the new arm64 and x64 DMGs.
 7. **Post.** Once the release is live, follow `post <version>` below.
 8. **Sweep.** Then follow `sweep <version>` below.
 
@@ -49,12 +49,12 @@ Runner <version> is a <bug-fix | feature> release for macOS, Windows and Linux o
 - ...
 
 ## Download and upgrade
-- **macOS, Apple Silicon:** download `Runner-<version>-arm64.dmg`, or update through Sparkle. The app is signed and notarized.
+- **macOS:** download `Runner-<version>-arm64.dmg` for Apple Silicon or `Runner-<version>-x64.dmg` for Intel, or update through Sparkle. Both apps are signed and notarized.
 - **Windows x64, Windows 10 version 1809 or later:** download `Runner-Setup-<version>.<stamp>-x64.exe`. The installer, app, and CLI sidecars are Authenticode-signed by Open Source Developer Yicheng Wang. You can also update through Settings → Updates → Update, then choose Install and restart. Settings, chats, and missions are retained.
 
 - **Linux ARM64/x86_64:** use `Runner_<version>_linux-<arm64|x64>.tar.gz` or `.deb`; install/update through the same package installer. The opt-in user service is disabled on install, and uninstall retains user data. Each Linux package carries a matching minisign signature verified by the in-app updater.
 
-Windows ARM64 and Intel Macs are not supported. Linux ARM64/x86_64 downloads use tar/deb packages; signed in-app updates support managed tar installations and system-authorized APT installation. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
+Windows ARM64 is not supported. The Intel Mac build is cross-compiled and not yet verified on Intel hardware. Linux ARM64/x86_64 downloads use tar/deb packages; signed in-app updates support managed tar installations and system-authorized APT installation. State the actual build baseline and native validation gaps, and do not claim local artifacts have already been published.
 
 **Full changelog:** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
@@ -72,7 +72,7 @@ Runner <version> 是 macOS、Windows 和 Linux 上基于 <previous> 的<修复�
 ## 下载与升级
 ...
 
-Windows ARM64 和 Intel Mac 暂不支持。Linux ARM64/x86_64 提供 tar/deb 包及对应 minisign 签名，支持应用内验证更新：用户 tar 安装原子替换，deb 包经授权由 APT 安装；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
+Windows ARM64 暂不支持；Intel Mac 版本为交叉编译，尚未在 Intel 硬件上验证。Linux ARM64/x86_64 提供 tar/deb 包及对应 minisign 签名，支持应用内验证更新：用户 tar 安装原子替换，deb 包经授权由 APT 安装；说明实际构建基线与原生验证缺口，不把本地包写成已发布。
 
 **完整变更记录：** https://github.com/yicheng47/runner/compare/v<previous>...v<version>
 
@@ -125,7 +125,7 @@ Reviews and cleans up the docs of everything shipped since the previous sweep in
 
 ## `check <version>`
 
-Read-only. `gh release view v<version> --json isDraft,isPrerelease,assets,body`: report draft state, that the DMG, `appcast.xml`, installer, and `.sig` are all present, and whether the body has the English section and a `<details>` block containing the 中文 section. After publishing, also verify `releases/latest` resolves to the tag and the production appcast's enclosure names the new DMG.
+Read-only. `gh release view v<version> --json isDraft,isPrerelease,assets,body`: report draft state, that both DMGs, `appcast.xml`, `appcast-x64.xml`, installer, and `.sig` are all present, and whether the body has the English section and a `<details>` block containing the 中文 section. After publishing, also verify `releases/latest` resolves to the tag and each production appcast's enclosure names the new DMG of its architecture.
 
 ## Notes
 

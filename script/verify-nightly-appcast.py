@@ -5,8 +5,11 @@ from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
+# Sparkle can only require arm64, so the Intel feed carries no requirement.
+HARDWARE_REQUIREMENTS = {"arm64": "arm64", "x64": None}
 
-def verify(appcast, dmg, version, stamp, channel):
+
+def verify(appcast, dmg, version, stamp, channel, arch):
     sparkle = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
     release_url = f"https://github.com/yicheng47/runner/releases/tag/{channel}"
     items = ET.parse(appcast).findall("./channel/item")
@@ -17,7 +20,7 @@ def verify(appcast, dmg, version, stamp, channel):
     expected = {
         "version": stamp,
         "shortVersionString": version,
-        "hardwareRequirements": "arm64",
+        "hardwareRequirements": HARDWARE_REQUIREMENTS[arch],
         "fullReleaseNotesLink": release_url,
     }
     for field, value in expected.items():

@@ -186,6 +186,72 @@ fn channel_plists_only_differ_in_the_feed_and_short_version() {
 }
 
 #[test]
+fn intel_plists_read_the_intel_feed_of_their_channel() {
+    for (channel, feed) in [
+        (
+            "nightly",
+            "https://github.com/yicheng47/runner/releases/download/nightly/appcast-x64.xml",
+        ),
+        (
+            "preview-nightly",
+            "https://github.com/yicheng47/runner/releases/download/preview-nightly/appcast-x64.xml",
+        ),
+        (
+            "production",
+            "https://github.com/yicheng47/runner/releases/latest/download/appcast-x64.xml",
+        ),
+    ] {
+        let [apple_silicon, intel] = [None, Some("x64")].map(|arch| {
+            let mut args = vec![
+                "--channel",
+                channel,
+                "--stamp",
+                "20260821.1432",
+                "--sha",
+                "abc1234",
+                "--print-plist",
+            ];
+            if let Some(arch) = arch {
+                args.extend(["--arch", arch]);
+            }
+            let output = run(&args);
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap()
+        });
+        assert_eq!(plist_value(&intel, "SUFeedURL"), feed);
+        assert_eq!(
+            intel.replace("/appcast-x64.xml", "/appcast.xml"),
+            apple_silicon,
+            "{channel}"
+        );
+    }
+    let explicit = run(&[
+        "--channel",
+        "nightly",
+        "--arch",
+        "arm64",
+        "--stamp",
+        "20260821.1432",
+        "--sha",
+        "abc1234",
+        "--print-plist",
+    ]);
+    assert!(explicit.status.success());
+    assert_eq!(
+        plist_value(&String::from_utf8(explicit.stdout).unwrap(), "SUFeedURL"),
+        "https://github.com/yicheng47/runner/releases/download/nightly/appcast.xml"
+    );
+    let universal = run(&[
+        "--channel",
+        "nightly",
+        "--arch",
+        "universal",
+        "--print-plist",
+    ]);
+    assert!(!universal.status.success());
+}
+
+#[test]
 fn stamp_uses_two_ordered_signed_32_bit_components() {
     let output = run(&[
         "--channel",

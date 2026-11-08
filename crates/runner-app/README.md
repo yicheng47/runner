@@ -27,4 +27,4 @@ Recorded PTY byte logs in `../runner-terminal/fixtures/*.ndjson` (header line + 
 
 ## Packaging
 
-`script/bundle-mac --channel nightly|preview-nightly|production [--dev]` assembles, signs, and notarizes the universal bundle; CI runs it from `nightly.yml` (dispatch-only, rolling prerelease) and `release.yml` (`v*` tags → draft release). See `docs/arch/arch.md` §14 and the `/nightly` skill.
+`script/bundle-mac --channel nightly|preview-nightly|production [--arch arm64|x64] [--dev]` assembles, signs, and notarizes the arm64 (default) or Intel bundle; CI runs it from `nightly.yml` (dispatch-only, rolling prerelease) and `release.yml` (`v*` tags → draft release). See `docs/arch/arch.md` §14 and the `/nightly` skill.
