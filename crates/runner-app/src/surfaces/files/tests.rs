@@ -4255,11 +4255,39 @@ fn a_hidden_view_does_no_work_for_its_root_and_catches_up_when_shown() {
 
 #[test]
 fn a_status_that_arrives_clears_the_error_of_one_that_failed() {
-    use runner_core::protocol::files::GitStatus;
-    let mut h = harness(Some(chat("in-project")));
+    use runner_core::protocol::files::{FilesStatusChanged, GitStatus, FILES_STATUS_EVENT};
+    let mut h = harness(None);
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+    h.show(Some(chat("in-project")));
     h.wait("the status", |h| h.status_read());
     let view = h.view();
     let root = h.read(|view| view.root().unwrap().path.clone());
+
+    // The watcher reports its first status on its own, after the read above,
+    // and would clear the error below whenever it landed. Wait until it is
+    // sent, then until a status sent after it has reached the view.
+    h.wait("the watcher's first status", |_| {
+        std::iter::from_fn(|| sent.try_recv().ok()).any(|event| {
+            event.name == FILES_STATUS_EVENT
+                && serde_json::from_value::<FilesStatusChanged>(event.payload)
+                    .is_ok_and(|update| update.root == root)
+        })
+    });
+    let marker = GitStatus::new(Vec::new(), vec!["marker".into()]);
+    events.emit(
+        FILES_STATUS_EVENT,
+        &FilesStatusChanged {
+            root: root.clone(),
+            status: marker.clone(),
+        },
+    );
+    h.wait("the status sent after it", |h| {
+        h.read(|view| view.git_status().as_ref() == Some(&marker))
+    });
+
     let deadline = |view: &mut FilesView, cx: &mut Context<FilesView>| {
         view.status_error = Some("runnerd request deadline exceeded".into());
         cx.notify();
