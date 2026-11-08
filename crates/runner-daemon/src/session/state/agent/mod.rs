@@ -28,6 +28,10 @@ pub enum AgentEvent {
     TurnEnded {
         outcome: TurnOutcome,
     },
+    /// Whether the turn that just ended left background work the agent will wake from.
+    BackgroundWork {
+        pending: bool,
+    },
     InteractionOpened {
         reason: WaitReason,
         owners: Vec<String>,
@@ -132,6 +136,7 @@ pub(crate) struct TurnState {
     pub outcome: Option<TurnOutcome>,
     pub interactions: Vec<HumanInteraction>,
     pub detail: Option<WorkDetail>,
+    pub background: bool,
 }
 
 impl TurnState {
@@ -146,6 +151,7 @@ impl TurnState {
             interactions: self.interactions.clone(),
             detail: self.detail,
             program_status: None,
+            background: self.background,
         }
     }
 }
@@ -227,6 +233,13 @@ impl AgentModel {
             };
             return false;
         }
+        // The Stop that reports background work is the turn's last word on it, whatever
+        // the interruption guards below make of the rest of its batch.
+        if let AgentEvent::BackgroundWork { pending } = event {
+            let changed = self.value.background != pending;
+            self.value.background = pending;
+            return changed;
+        }
         if semantics.interruption_ends_invocation
             && self.interrupted_invocation
             && !matches!(event, AgentEvent::TurnStarted)
@@ -256,17 +269,19 @@ impl AgentModel {
             return false;
         }
         match event {
-            AgentEvent::ConversationRecovered => unreachable!(),
+            AgentEvent::ConversationRecovered | AgentEvent::BackgroundWork { .. } => unreachable!(),
             AgentEvent::EditorDraft { .. } => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
                 self.value.activity = Activity::Idle;
                 self.value.outcome = None;
+                self.value.background = false;
             }
             AgentEvent::Ready => self.value.activity = Activity::Ready,
             AgentEvent::TurnStarted => {
                 self.clear_turn(!semantics.preserve_turn_interactions);
                 self.interrupted_invocation = false;
+                self.value.background = false;
                 self.work();
             }
             AgentEvent::Working { detail } => {
@@ -359,6 +374,7 @@ impl AgentModel {
             }
             AgentEvent::SessionEnded => {
                 self.clear_turn(true);
+                self.value.background = false;
                 self.value.activity =
                     if semantics.ended_session_keeps_ready && self.value.outcome.is_some() {
                         Activity::Ready
