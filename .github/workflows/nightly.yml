@@ -77,6 +77,16 @@ jobs:
   build-macos:
     needs: prepare
     if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            appcast: appcast.xml
+          - arch: x64
+            target: x86_64-apple-darwin
+            appcast: appcast-x64.xml
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -99,7 +109,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
-          rustup target add aarch64-apple-darwin
+          rustup target add ${{ matrix.target }}
 
       - name: Remove other Rust toolchains
         shell: bash
@@ -118,7 +128,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ steps.cache-key.outputs.hash }}
+          key: ${{ steps.cache-key.outputs.hash }}-${{ matrix.arch }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -152,7 +162,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
           RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.short_sha }}
-        run: ./script/bundle-mac --channel ${{ inputs.channel }}
+        run: ./script/bundle-mac --channel ${{ inputs.channel }} --arch ${{ matrix.arch }}
 
       - name: Fetch pinned Sparkle tools
         run: |
@@ -171,7 +181,7 @@ jobs:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           appcast_dir=$(mktemp -d "$RUNNER_TEMP/runner-nightly-appcast.XXXXXX")
-          dmg="target/release/${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg"
+          dmg="target/release/${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-${{ matrix.arch }}.dmg"
           release_url="https://github.com/yicheng47/runner/releases/tag/${{ inputs.channel }}"
           cp "$dmg" "$appcast_dir/"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
@@ -181,16 +191,22 @@ jobs:
             --link "$release_url" \
             --maximum-versions 10 \
             "$appcast_dir"
-          grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast_dir/appcast.xml"
+          # generate_appcast names the file after the app's SUFeedURL.
+          appcast="$appcast_dir/${{ matrix.appcast }}"
+          test -s "$appcast"
+          case "${{ matrix.arch }}" in
+            arm64) grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast" ;;
+            x64) if grep -Fq '<sparkle:hardwareRequirements>' "$appcast"; then echo "error: the Intel appcast must not carry a hardware requirement" >&2; exit 1; fi ;;
+          esac
           echo "APPCAST_DIR=$appcast_dir" >> "$GITHUB_ENV"
 
       - name: Upload macOS nightly artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-macos
+          name: nightly-macos-${{ matrix.arch }}
           path: |
-            ${{ env.APPCAST_DIR }}/${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg
-            ${{ env.APPCAST_DIR }}/appcast.xml
+            ${{ env.APPCAST_DIR }}/${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-${{ matrix.arch }}.dmg
+            ${{ env.APPCAST_DIR }}/${{ matrix.appcast }}
           if-no-files-found: error
 
   build-windows:
@@ -373,6 +389,7 @@ jobs:
       NIGHTLY_SHORT_SHA: ${{ needs.prepare.outputs.short_sha }}
       DMG_PREFIX: ${{ needs.prepare.outputs.dmg_prefix }}
       DMG_NAME: ${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-arm64.dmg
+      DMG_X64_NAME: ${{ needs.prepare.outputs.dmg_prefix }}-${{ needs.prepare.outputs.short_sha }}.${{ needs.prepare.outputs.stamp }}-x64.dmg
       SETUP_NAME: Runner-Setup-${{ needs.prepare.outputs.version }}-x64.exe
     steps:
       - name: Check out dispatch commit with history
@@ -385,8 +402,9 @@ jobs:
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         uses: actions/download-artifact@v4
         with:
-          name: nightly-macos
+          pattern: nightly-macos-*
           path: nightly-artifacts/macos
+          merge-multiple: true
 
       - name: Download Windows nightly artifacts
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
@@ -407,7 +425,9 @@ jobs:
         run: |
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
             test -s "nightly-artifacts/macos/$DMG_NAME"
-            python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast.xml "nightly-artifacts/macos/$DMG_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP" "$CHANNEL"
+            test -s "nightly-artifacts/macos/$DMG_X64_NAME"
+            python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast.xml "nightly-artifacts/macos/$DMG_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP" "$CHANNEL" arm64
+            python3 script/verify-nightly-appcast.py nightly-artifacts/macos/appcast-x64.xml "nightly-artifacts/macos/$DMG_X64_NAME" "$NIGHTLY_SHORT_SHA" "$BUILD_STAMP" "$CHANNEL" x64
           fi
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
             test -s "nightly-artifacts/windows/$SETUP_NAME"
@@ -469,6 +489,8 @@ jobs:
         run: |
           gh release upload "$CHANNEL" "nightly-artifacts/macos/$DMG_NAME" --clobber
           gh release upload "$CHANNEL" nightly-artifacts/macos/appcast.xml --clobber
+          gh release upload "$CHANNEL" "nightly-artifacts/macos/$DMG_X64_NAME" --clobber
+          gh release upload "$CHANNEL" nightly-artifacts/macos/appcast-x64.xml --clobber
 
       - name: Publish Windows nightly assets
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'
@@ -488,15 +510,20 @@ jobs:
 
       - name: Verify the public nightly release and downloads before pruning
         run: |
-          gh release view "$CHANNEL" --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg setup "$SETUP_NAME" '
+          gh release view "$CHANNEL" --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg dmg_x64 "$DMG_X64_NAME" --arg setup "$SETUP_NAME" '
             .isPrerelease and (.isDraft | not) and
             ([.assets[].name] |
-              (($platform != "all" and $platform != "both" and $platform != "macos") or (index($dmg) != null and index("appcast.xml") != null)) and
+              (($platform != "all" and $platform != "both" and $platform != "macos") or
+                (index($dmg) != null and index("appcast.xml") != null and index($dmg_x64) != null and index("appcast-x64.xml") != null)) and
               (($platform != "all" and $platform != "both" and $platform != "windows") or (index($setup) != null and index($setup + ".sig") != null)))'
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
-            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$DMG_NAME" >/dev/null
-            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/appcast.xml" --output "$RUNNER_TEMP/public-appcast.xml"
-            cmp nightly-artifacts/macos/appcast.xml "$RUNNER_TEMP/public-appcast.xml"
+            for dmg in "$DMG_NAME" "$DMG_X64_NAME"; do
+              curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$dmg" >/dev/null
+            done
+            for appcast in appcast.xml appcast-x64.xml; do
+              curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$appcast" --output "$RUNNER_TEMP/public-$appcast"
+              cmp "nightly-artifacts/macos/$appcast" "$RUNNER_TEMP/public-$appcast"
+            done
           fi
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
             curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$SETUP_NAME" >/dev/null
@@ -518,23 +545,27 @@ jobs:
             done
           fi
 
-      - name: Prune macOS nightlies to two builds
+      - name: Prune macOS nightlies to two builds per architecture
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'macos'
         run: |
           assets=$(gh release view "$CHANNEL" --json assets --jq '.assets[].name')
-          pattern="^$DMG_PREFIX-"'.*\.([0-9]{8})\.([0-9]{4})-(arm64|universal)\.dmg$'
-          stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
-            if [[ "$name" =~ $pattern ]]; then
-              printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+          for current in "$DMG_NAME" "$DMG_X64_NAME"; do
+            arch=${current%.dmg}
+            arch=${arch##*-}
+            pattern="^$DMG_PREFIX-"'.*\.([0-9]{8})\.([0-9]{4})-'"$arch"'\.dmg$'
+            stale=$(printf '%s\n' "$assets" | while IFS= read -r name; do
+              if [[ "$name" =~ $pattern ]]; then
+                printf '%s.%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$name"
+              fi
+            done | sort -r | sed -n '3,$p' | cut -f2-)
+            if printf '%s\n' "$stale" | grep -Fxq "$current"; then
+              echo "error: refusing to prune the $arch DMG referenced by its appcast" >&2
+              exit 1
             fi
-          done | sort -r | sed -n '3,$p' | cut -f2-)
-          if printf '%s\n' "$stale" | grep -Fxq "$DMG_NAME"; then
-            echo "error: refusing to prune the DMG referenced by the appcast" >&2
-            exit 1
-          fi
-          while IFS= read -r name; do
-            [[ -z "$name" ]] || gh release delete-asset "$CHANNEL" "$name" --yes
-          done <<< "$stale"
+            while IFS= read -r name; do
+              [[ -z "$name" ]] || gh release delete-asset "$CHANNEL" "$name" --yes
+            done <<< "$stale"
+          done
 
       - name: Prune Windows nightlies to two builds
         if: inputs.platform == 'all' || inputs.platform == 'both' || inputs.platform == 'windows'

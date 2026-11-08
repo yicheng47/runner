@@ -64,6 +64,16 @@ jobs:
 
   build-macos:
     needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+            appcast: appcast.xml
+          - arch: x64
+            target: x86_64-apple-darwin
+            appcast: appcast-x64.xml
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -88,7 +98,7 @@ jobs:
       - name: Install Rust toolchain
         run: |
           rustup show active-toolchain
-          rustup target add aarch64-apple-darwin
+          rustup target add ${{ matrix.target }}
 
       - name: Remove other Rust toolchains
         shell: bash
@@ -107,7 +117,7 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ steps.cache-key.outputs.hash }}
+          key: ${{ steps.cache-key.outputs.hash }}-${{ matrix.arch }}
           cache-on-failure: true
 
       - name: Install Metal toolchain
@@ -141,7 +151,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}
           RUNNER_BUILD_SHA: ${{ needs.prepare.outputs.sha }}
-        run: ./script/bundle-mac --channel production
+        run: ./script/bundle-mac --channel production --arch ${{ matrix.arch }}
 
       - name: Fetch pinned Sparkle tools
         run: |
@@ -160,7 +170,7 @@ jobs:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           appcast_dir=$(mktemp -d "$RUNNER_TEMP/runner-release-appcast.XXXXXX")
-          dmg="target/release/Runner-${{ needs.prepare.outputs.version }}-arm64.dmg"
+          dmg="target/release/Runner-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}.dmg"
           release_url="https://github.com/yicheng47/runner/releases/tag/${{ needs.prepare.outputs.release_tag }}"
           cp "$dmg" "$appcast_dir/"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SPARKLE_TOOLS_DIR/generate_appcast" \
@@ -170,9 +180,15 @@ jobs:
             --link "$release_url" \
             --maximum-versions 10 \
             "$appcast_dir"
-          grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast_dir/appcast.xml"
+          # generate_appcast names the file after the app's SUFeedURL.
+          appcast="$appcast_dir/${{ matrix.appcast }}"
+          test -s "$appcast"
+          case "${{ matrix.arch }}" in
+            arm64) grep -Fq '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>' "$appcast" ;;
+            x64) if grep -Fq '<sparkle:hardwareRequirements>' "$appcast"; then echo "error: the Intel appcast must not carry a hardware requirement" >&2; exit 1; fi ;;
+          esac
           echo "DMG=$dmg" >> "$GITHUB_ENV"
-          echo "APPCAST=$appcast_dir/appcast.xml" >> "$GITHUB_ENV"
+          echo "APPCAST=$appcast" >> "$GITHUB_ENV"
 
       - name: Build and sign the v0.6.0 Tauri bridge
         if: needs.prepare.outputs.bridge_mode == 'build'
@@ -223,7 +239,7 @@ jobs:
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-macos
+          name: release-macos-${{ matrix.arch }}
           path: target/release-artifacts/*
           if-no-files-found: error
 

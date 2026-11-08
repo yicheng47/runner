@@ -68,7 +68,7 @@ curl() {
   local source=''
   while (( $# )); do
     case "$1" in
-      https:*/appcast.xml) source=nightly-artifacts/macos/appcast.xml ;;
+      https:*/appcast*.xml) source="nightly-artifacts/macos/${1##*/}" ;;
       https:*/Runner_*_linux-*.sig) source="nightly-artifacts/linux/${1##*/}" ;;
       https:*/*.sig) source="nightly-artifacts/windows/$SETUP_NAME.sig" ;;
       --output) cp "$source" "$2"; return ;;
@@ -143,8 +143,12 @@ class NightlyTests(unittest.TestCase):
         version = f'{channel}.{SHA[:7]}.{STAMP}'
         self.env.update(CHANNEL=channel, RELEASE_TITLE=title, NIGHTLY_VERSION=version, DMG_PREFIX=dmg_prefix,
                         DMG_NAME=f'{dmg_prefix}-{SHA[:7]}.{STAMP}-arm64.dmg',
+                        DMG_X64_NAME=f'{dmg_prefix}-{SHA[:7]}.{STAMP}-x64.dmg',
                         SETUP_NAME=f'Runner-Setup-{version}-x64.exe')
-        (self.mac / self.env['DMG_NAME']).write_bytes(b'nightly dmg fixture')
+        dmgs = {'arm64': self.env['DMG_NAME'], 'x64': self.env['DMG_X64_NAME']}
+        for arch, dmg in dmgs.items():
+            (self.mac / dmg).write_bytes(f'{arch} nightly dmg fixture'.encode())
+        self.mac_assets = [self.env['DMG_NAME'], 'appcast.xml', self.env['DMG_X64_NAME'], 'appcast-x64.xml']
         (self.win / self.env['SETUP_NAME']).write_bytes(b'nightly installer fixture')
         (self.win / (self.env['SETUP_NAME'] + '.sig')).write_bytes(b'installer signature fixture')
         self.linux = self.root / 'nightly-artifacts/linux'
@@ -153,26 +157,31 @@ class NightlyTests(unittest.TestCase):
         self.linux_names += [name + ".sig" for name in self.linux_names]
         for name in self.linux_names:
             (self.linux / name).write_bytes(b'Linux package fixture')
-        self.appcast = self.mac / 'appcast.xml'
-        item = ET.SubElement(ET.SubElement(ET.Element('rss'), 'channel'), 'item')
+        self.appcasts = {'arm64': self.mac / 'appcast.xml', 'x64': self.mac / 'appcast-x64.xml'}
         release_url = f'https://github.com/yicheng47/runner/releases/tag/{channel}'
-        for field, value in [('version', STAMP), ('shortVersionString', SHA[:7]),
-                             ('hardwareRequirements', 'arm64'), ('fullReleaseNotesLink', release_url)]:
-            ET.SubElement(item, SPARKLE + field).text = value
-        ET.SubElement(item, 'link').text = release_url
-        ET.SubElement(item, 'enclosure', {
-            'url': f"https://github.com/yicheng47/runner/releases/download/{channel}/{self.env['DMG_NAME']}",
-            'length': str((self.mac / self.env['DMG_NAME']).stat().st_size),
-            SPARKLE + 'edSignature': base64.b64encode(b'x' * 64).decode(),
-        })
-        self.item = item
-        self.write_appcast()
+        self.items = {}
+        for arch, dmg in dmgs.items():
+            item = ET.SubElement(ET.SubElement(ET.Element('rss'), 'channel'), 'item')
+            fields = [('version', STAMP), ('shortVersionString', SHA[:7])]
+            if arch == 'arm64':
+                fields.append(('hardwareRequirements', 'arm64'))
+            for field, value in fields + [('fullReleaseNotesLink', release_url)]:
+                ET.SubElement(item, SPARKLE + field).text = value
+            ET.SubElement(item, 'link').text = release_url
+            ET.SubElement(item, 'enclosure', {
+                'url': f"https://github.com/yicheng47/runner/releases/download/{channel}/{dmg}",
+                'length': str((self.mac / dmg).stat().st_size),
+                SPARKLE + 'edSignature': base64.b64encode(b'x' * 64).decode(),
+            })
+            self.items[arch] = item
+        self.write_appcasts()
         self.assets([])
 
-    def write_appcast(self):
-        root = ET.Element('rss')
-        ET.SubElement(root, 'channel').append(self.item)
-        ET.ElementTree(root).write(self.appcast)
+    def write_appcasts(self):
+        for arch, item in self.items.items():
+            root = ET.Element('rss')
+            ET.SubElement(root, 'channel').append(item)
+            ET.ElementTree(root).write(self.appcasts[arch])
 
     def assets(self, names):
         Path(self.env['RELEASE_STATE']).write_text(json.dumps({
@@ -239,7 +248,7 @@ class NightlyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             expected = set(self.linux_names)
             if platform == 'all':
-                expected.update([self.env['DMG_NAME'], 'appcast.xml', self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
+                expected.update(self.mac_assets + [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
             self.assertEqual(self.published_assets(), expected)
             self.assertFalse(any('latest' in line for line in self.calls() if line.startswith('gh release upload')))
             for name in self.linux_names:
@@ -268,7 +277,8 @@ class NightlyTests(unittest.TestCase):
         old = [f'Runner_nightly.abc1234.202608{day:02}.0100_linux-{arch}.{ext}'
                for day in [1, 2] for arch in ['x64', 'arm64'] for ext in ['tar.gz', 'deb']]
         old += [name + ".sig" for name in old]
-        foreign = ['unrelated.txt', 'appcast.xml', 'Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner-Setup-nightly.abc1234.20260801.0100-x64.exe']
+        foreign = ['unrelated.txt', 'appcast.xml', 'appcast-x64.xml', 'Runner-Nightly-abc1234.20260801.0100-arm64.dmg',
+                   'Runner-Nightly-abc1234.20260801.0100-x64.dmg', 'Runner-Setup-nightly.abc1234.20260801.0100-x64.exe']
         self.assets(old + foreign)
         result = self.publish()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -357,11 +367,12 @@ class NightlyTests(unittest.TestCase):
         self.use_channel('preview-nightly')
         self.env.update(PLATFORM='all', GITHUB_REF='refs/heads/feat/1-any-umbrella')
         old_stamps = [f'202608{day:02}.0100' for day in range(1, 4)]
-        mac_old = [f'Runner-Preview-Nightly-abc1234.{stamp}-arm64.dmg' for stamp in old_stamps]
+        mac_old = [f'Runner-Preview-Nightly-abc1234.{stamp}-{arch}.dmg' for arch in ['arm64', 'x64'] for stamp in old_stamps]
         win_old = [f'Runner-Setup-preview-nightly.abc1234.{stamp}-x64.exe' for stamp in old_stamps]
         linux_old = [f'Runner_preview-nightly.abc1234.{old_stamps[0]}_linux-{arch}.{ext}'
                      for arch in ['x64', 'arm64'] for ext in ['tar.gz', 'deb']]
-        foreign = ['Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner_nightly.abc1234.20260801.0100_linux-x64.deb']
+        foreign = ['Runner-Nightly-abc1234.20260801.0100-arm64.dmg', 'Runner-Nightly-abc1234.20260801.0100-x64.dmg',
+                   'Runner_nightly.abc1234.20260801.0100_linux-x64.deb']
         self.assets(mac_old + win_old + [name + '.sig' for name in win_old] + linux_old + [name + '.sig' for name in linux_old] + foreign)
         result = self.publish()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -379,7 +390,7 @@ class NightlyTests(unittest.TestCase):
         self.assertTrue(edits and all('--title Runner Preview Nightly' in line for line in edits))
         self.assertTrue((self.root / 'nightly-notes.md').read_text().endswith((ROOT / 'script/preview-nightly-release-notes.md').read_text()))
         deleted = {line.split()[4] for line in calls if 'delete-asset' in line}
-        self.assertEqual(deleted, set(mac_old[:2] + win_old[:2] + [name + '.sig' for name in win_old[:2]]
+        self.assertEqual(deleted, set([name for name in mac_old if old_stamps[2] not in name] + win_old[:2] + [name + '.sig' for name in win_old[:2]]
                                       + linux_old + [name + '.sig' for name in linux_old]))
         self.assertTrue(set(foreign) <= self.published_assets())
         self.assertTrue(set(self.linux_names) <= self.published_assets())
@@ -401,15 +412,30 @@ class NightlyTests(unittest.TestCase):
                 self.assertEqual(build['env']['RUNNER_BUILD_SHA'], '${{ needs.prepare.outputs.short_sha }}')
                 self.assertFalse(any('gh release ' in step.get('run', '') for step in job['steps']))
                 upload = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
+                if name == 'build-windows':
+                    download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('name') == upload['with']['name'])
+                    self.assertEqual(set(download['with']), {'name', 'path'})
+                    self.assertIn('${{ needs.prepare.outputs.version }}', upload['with']['path'])
+                    continue
+                prefix = upload['with']['name'].removesuffix('-${{ matrix.arch }}')
+                download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('pattern') == prefix + '-*')
+                self.assertTrue(download['with']['merge-multiple'])
                 if name == 'build-linux':
-                    download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('pattern') == 'nightly-linux-*')
-                    self.assertTrue(download['with']['merge-multiple'])
                     self.assertEqual(job['container'], 'ubuntu:22.04')
                     continue
-                download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('name') == upload['with']['name'])
-                self.assertEqual(set(download['with']), {'name', 'path'})
-                identity = 'version' if name == 'build-windows' else 'short_sha'
-                self.assertIn('${{ needs.prepare.outputs.' + identity + ' }}', upload['with']['path'])
+                self.assertIn('${{ needs.prepare.outputs.short_sha }}', upload['with']['path'])
+
+    def test_each_macos_architecture_builds_with_its_own_feed(self):
+        job = JOBS['build-macos']
+        self.assertEqual(job['strategy']['matrix']['include'], [
+            {'arch': 'arm64', 'target': 'aarch64-apple-darwin', 'appcast': 'appcast.xml'},
+            {'arch': 'x64', 'target': 'x86_64-apple-darwin', 'appcast': 'appcast-x64.xml'},
+        ])
+        build = next(step for step in job['steps'] if 'RUNNER_BUILD_STAMP' in step.get('env', {}))
+        self.assertIn('--arch ${{ matrix.arch }}', build['run'])
+        upload = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
+        self.assertIn('-${{ matrix.arch }}.dmg', upload['with']['path'])
+        self.assertIn('/${{ matrix.appcast }}', upload['with']['path'])
 
     def test_versions_and_lockfile_agree(self):
         lock = tomllib.loads((ROOT / 'Cargo.lock').read_text())
@@ -437,7 +463,7 @@ class NightlyTests(unittest.TestCase):
                 uploads = [line for line in calls if line.startswith('gh release upload')]
                 expected = []
                 if platform != 'windows':
-                    expected += [self.env['DMG_NAME'], 'appcast.xml']
+                    expected += self.mac_assets
                 if platform != 'macos':
                     expected += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
                 self.assertEqual([Path(line.split()[4]).name for line in uploads], expected)
@@ -498,7 +524,7 @@ class NightlyTests(unittest.TestCase):
         self.assertIn('Incomplete', Path(self.env['GITHUB_STEP_SUMMARY']).read_text())
 
     def test_missing_artifact_and_invalid_feed_block_mutation(self):
-        for filename in [self.mac / self.env['DMG_NAME'], self.appcast,
+        for filename in [self.mac / self.env['DMG_NAME'], self.mac / self.env['DMG_X64_NAME'], *self.appcasts.values(),
                          self.win / self.env['SETUP_NAME'], self.win / (self.env['SETUP_NAME'] + '.sig')]:
             data = filename.read_bytes()
             filename.unlink()
@@ -506,30 +532,42 @@ class NightlyTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(self.calls(), [])
             filename.write_bytes(data)
-        for field, wrong in [('version', '20260901.0100'), ('shortVersionString', '0.8.2'),
-                             ('hardwareRequirements', 'x86_64'), ('fullReleaseNotesLink', 'https://example.com')]:
-            node = self.item.find(SPARKLE + field)
-            previous = node.text
-            node.text = wrong
-            self.write_appcast()
-            self.assertNotEqual(self.publish().returncode, 0, field)
-            node.text = previous
-        self.write_appcast()
-        enclosure = self.item.find('enclosure')
-        for field, wrong in [('url', 'https://github.com/yicheng47/runner/releases/latest/download/Runner.dmg'),
-                             ('length', '999'), (SPARKLE + 'edSignature', '')]:
-            previous = enclosure.get(field)
-            enclosure.set(field, wrong)
-            self.write_appcast()
-            self.assertNotEqual(self.publish().returncode, 0, field)
-            enclosure.set(field, previous)
+        other_dmg = {'arm64': self.env['DMG_X64_NAME'], 'x64': self.env['DMG_NAME']}
+        for arch, item in self.items.items():
+            fields = [('version', '20260901.0100'), ('shortVersionString', '0.8.2'), ('fullReleaseNotesLink', 'https://example.com')]
+            if arch == 'arm64':
+                fields.append(('hardwareRequirements', 'x86_64'))
+            for field, wrong in fields:
+                node = item.find(SPARKLE + field)
+                previous = node.text
+                node.text = wrong
+                self.write_appcasts()
+                self.assertNotEqual(self.publish().returncode, 0, (arch, field))
+                node.text = previous
+            if arch == 'x64':
+                requirement = ET.SubElement(item, SPARKLE + 'hardwareRequirements')
+                requirement.text = 'arm64'
+                self.write_appcasts()
+                self.assertNotEqual(self.publish().returncode, 0, 'Intel feed requiring arm64')
+                item.remove(requirement)
+            self.write_appcasts()
+            enclosure = item.find('enclosure')
+            for field, wrong in [('url', 'https://github.com/yicheng47/runner/releases/latest/download/Runner.dmg'),
+                                 ('url', f"https://github.com/yicheng47/runner/releases/download/nightly/{other_dmg[arch]}"),
+                                 ('length', '999'), (SPARKLE + 'edSignature', '')]:
+                previous = enclosure.get(field)
+                enclosure.set(field, wrong)
+                self.write_appcasts()
+                self.assertNotEqual(self.publish().returncode, 0, (arch, field))
+                enclosure.set(field, previous)
+            self.write_appcasts()
         self.assertEqual(self.calls(), [])
 
     def test_partial_upload_or_public_verification_failure_never_prunes(self):
         for platform in ['both', 'macos', 'windows']:
             selected = []
             if platform != 'windows':
-                selected += [self.env['DMG_NAME'], 'appcast.xml']
+                selected += self.mac_assets
             if platform != 'macos':
                 selected += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
             for variable, value in itertools.product(['FAIL_UPLOAD', 'FAIL_DOWNLOAD'], selected):
@@ -551,7 +589,7 @@ class NightlyTests(unittest.TestCase):
     def test_public_verification_requires_selected_assets_and_public_prerelease_flags(self):
         step = next(step for step in JOBS['publish']['steps'] if step['name'].startswith('Verify the public'))
         selected = {
-            'macos': [self.env['DMG_NAME'], 'appcast.xml'],
+            'macos': self.mac_assets,
             'windows': [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'],
         }
         all_assets = selected['macos'] + selected['windows']
@@ -572,9 +610,11 @@ class NightlyTests(unittest.TestCase):
                 self.assertNotEqual(self.shell(step['run']).returncode, 0)
 
     def test_retention_orders_mixed_versions_by_stamp_and_pairs_signatures(self):
-        mac_old = [f'Runner-Nightly-9.0.0-nightly.202608{day:02}.0100-universal.dmg' for day in range(1, 12)]
+        mac_old = {arch: [f'Runner-Nightly-9.0.0-nightly.202608{day:02}.0100-{arch}.dmg' for day in range(1, 12)]
+                   for arch in ['arm64', 'x64']}
         win_old = [f'Runner-Setup-9.0.0.202608{day:02}.0100-x64.exe' for day in range(1, 12)]
-        existing = ['appcast.xml', 'unrelated.txt'] + list(reversed(mac_old)) + win_old + [name + '.sig' for name in win_old]
+        existing = (['appcast.xml', 'appcast-x64.xml', 'unrelated.txt'] + list(reversed(mac_old['arm64'])) + mac_old['x64']
+                    + win_old + [name + '.sig' for name in win_old])
         for platform in ['both', 'macos', 'windows']:
             with self.subTest(platform=platform):
                 self.env['PLATFORM'] = platform
@@ -587,21 +627,23 @@ class NightlyTests(unittest.TestCase):
                 expected_deleted = []
                 expected_added = []
                 if platform != 'windows':
-                    expected_deleted += mac_old[:-1]
-                    expected_added += [self.env['DMG_NAME']]
+                    expected_deleted += mac_old['arm64'][:-1] + mac_old['x64'][:-1]
+                    expected_added += [self.env['DMG_NAME'], self.env['DMG_X64_NAME']]
                 if platform != 'macos':
                     expected_deleted += win_old[:-1] + [name + '.sig' for name in win_old[:-1]]
                     expected_added += [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig']
                 self.assertEqual(set(deleted), set(expected_deleted))
                 self.assertEqual(self.published_assets(), (set(existing) | set(expected_added)) - set(expected_deleted))
                 first_delete = next(i for i, line in enumerate(calls) if 'delete-asset' in line)
-                self.assertEqual(sum(line.startswith('curl ') for line in calls[:first_delete]), 4 if platform == 'both' else 2)
+                self.assertEqual(sum(line.startswith('curl ') for line in calls[:first_delete]),
+                                 {'both': 6, 'macos': 4, 'windows': 2}[platform])
 
     def test_pruning_refuses_to_remove_current_appcast_target_or_installer(self):
-        for platform in ['macos', 'windows']:
+        for platform in ['macos-arm64', 'macos-x64', 'windows']:
             with self.subTest(platform=platform):
-                if platform == 'macos':
-                    newer = [f'Runner-Nightly-0.8.3-nightly.202609{day:02}.0100-arm64.dmg' for day in range(9, 20)]
+                if platform.startswith('macos-'):
+                    arch = platform.removeprefix('macos-')
+                    newer = [f'Runner-Nightly-0.8.3-nightly.202609{day:02}.0100-{arch}.dmg' for day in range(9, 20)]
                 else:
                     newer = [f'Runner-Setup-nightly.abc1234.202609{day:02}.0100-x64.exe' for day in range(9, 20)]
                     newer += [name + '.sig' for name in newer]

@@ -59,7 +59,7 @@ Claude Code 与 Codex 是主要集成，启动与提醒时序经过专门调整�
 
 ## 平台与恢复说明
 
-- Runner 提供 Apple Silicon macOS 与 Windows x64 构建。上文 Linux 引用描述的是运行时适配器行为，不表示 Runner 的 Linux 构建能力；Linux 测试版安装与验证范围见[安装 Runner](../getting-started/install.md)。
+- Runner 提供 macOS（Apple Silicon 与 Intel）与 Windows x64 构建。上文 Linux 引用描述的是运行时适配器行为，不表示 Runner 的 Linux 构建能力；Linux 测试版安装与验证范围见[安装 Runner](../getting-started/install.md)。
 - Windows 智能体原生运行，无需 WSL。Claude Code 和 pi 的 bash 工具需要 Git for Windows。npm 安装的智能体需要 Node.js；Copilot 的 npm 安装需要 Node.js 22。PowerShell 7 可选。
 - Antigravity CLI 与 pi 有 Windows 实现路径，但没有完成原生 Windows 冒烟检查。Cursor、Grok 和 OpenCode 也存在 Windows 验证缺口。
 - Grok 聊天、任务与停止/恢复已在 macOS 检查；完整应用重启持久化仍未验证。在已加载 Grok 仪表盘切换对话，会在下次提示时更新恢复标识，而非空闲时切换就更新。

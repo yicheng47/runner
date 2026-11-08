@@ -1,8 +1,8 @@
-Rolling preview builds of an in-development umbrella branch for macOS Apple Silicon, Windows x64 and Linux ARM64/x86_64: everything on `main` plus the umbrella's unfinished feature. Each push to the umbrella cuts a new build, identified by commit and UTC build stamp and displayed as **Preview Nightly** with its short commit, for example `Preview Nightly (abc1234)`. Preview installs update from this release only; the regular nightly and production builds keep their own feeds. Every channel uses the same app and data, so settings, chats and missions carry over when you switch. Install a nightly or stable build by hand to switch back.
+Rolling preview builds of an in-development umbrella branch for macOS Apple Silicon and Intel, Windows x64 and Linux ARM64/x86_64: everything on `main` plus the umbrella's unfinished feature. Each push to the umbrella cuts a new build, identified by commit and UTC build stamp and displayed as **Preview Nightly** with its short commit, for example `Preview Nightly (abc1234)`. Preview installs update from this release only; the regular nightly and production builds keep their own feeds. Every channel uses the same app and data, so settings, chats and missions carry over when you switch. Install a nightly or stable build by hand to switch back.
 
 ## macOS
 
-Download the newest **Runner-Preview-Nightly-…-arm64.dmg** below and drag **Runner.app** into Applications, replacing Runner. The app checks this release's signed Sparkle appcast for updates. The DMG is signed and notarized.
+Download the newest **Runner-Preview-Nightly-…-arm64.dmg** for an Apple Silicon Mac or **Runner-Preview-Nightly-…-x64.dmg** for an Intel Mac below and drag **Runner.app** into Applications, replacing Runner. The app checks this release's signed Sparkle appcast for its architecture for updates. The DMG is signed and notarized.
 
 ## Windows
 
