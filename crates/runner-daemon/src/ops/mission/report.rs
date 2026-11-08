@@ -37,6 +37,8 @@ pub(crate) struct Member {
     pub failed: bool,
     /// Mid-turn when runnerd stopped, and no turn since (#1187).
     pub interrupted: bool,
+    /// Ended its turn with background work it will wake from still pending (#1183).
+    pub background: bool,
 }
 
 impl From<&AgentStatus> for Member {
@@ -50,6 +52,7 @@ impl From<&AgentStatus> for Member {
             needs_you: status.observation.needs_you(),
             failed: status.failed_since.is_some(),
             interrupted: status.interrupted_since.is_some(),
+            background: status.observation.background,
         }
     }
 }
@@ -99,7 +102,7 @@ pub(crate) fn derive(input: &PhaseInput, idle_for: Option<Duration>) -> MissionP
             .members
             .iter()
             .filter(live)
-            .any(|m| !m.idle || m.lifecycle != Lifecycle::Running)
+            .any(|m| !m.idle || m.background || m.lifecycle != Lifecycle::Running)
     {
         return MissionPhase::Working;
     }
@@ -1607,6 +1610,71 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(summary[0].phase, Some(MissionPhase::NeedsYou));
+    }
+
+    #[test]
+    fn background_work_holds_the_settle_until_the_woken_turn_ends() {
+        use crate::session::state::agent::AgentEvent;
+        let waiting = Member {
+            idle: true,
+            background: true,
+            ..member(Lifecycle::Running)
+        };
+        assert!(!quiet(&running(vec![waiting])));
+        assert_eq!(
+            derive(&running(vec![waiting]), Some(Duration::MAX)),
+            MissionPhase::Working
+        );
+
+        let f = Fixture::new();
+        let mission = f.mission(Some("chat"), false);
+        let turn = |events| {
+            f.core.sessions.test_agent_event(
+                &format!("{}-member", mission.id),
+                AgentEvent::Batch {
+                    runtime: Runtime::ClaudeCode,
+                    events,
+                },
+            )
+        };
+        let stop = |pending| {
+            vec![
+                AgentEvent::TurnEnded {
+                    outcome: runner_core::protocol::status::TurnOutcome::Completed,
+                },
+                AgentEvent::BackgroundWork { pending },
+            ]
+        };
+        f.at(0);
+        turn(vec![AgentEvent::TurnStarted]);
+        f.at(1);
+        turn(stop(true));
+        f.at(2);
+        for at in [40, 80] {
+            f.at(at);
+            assert_eq!(
+                f.core.reports.phase(&mission.id),
+                Some(MissionPhase::Working)
+            );
+        }
+        assert!(f.pending("chat").is_empty());
+
+        turn(vec![AgentEvent::TurnStarted]);
+        f.at(90);
+        turn(stop(false));
+        f.at(95);
+        f.at(124);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Working)
+        );
+        assert!(f.pending("chat").is_empty());
+        f.at(125);
+        assert_eq!(
+            f.core.reports.phase(&mission.id),
+            Some(MissionPhase::Settled)
+        );
+        assert_eq!(f.pending("chat"), [(mission.id.clone(), ReportKind::State)]);
     }
 
     #[test]

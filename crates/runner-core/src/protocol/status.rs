@@ -59,6 +59,9 @@ pub struct AgentObservation {
     pub detail: Option<WorkDetail>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_status: Option<ProgramStatusEvidence>,
+    /// The agent ended its turn with background work it will wake from still pending (#1183).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// Additive evidence keeps the existing source vocabulary readable by older clients.
@@ -118,6 +121,22 @@ mod tests {
         assert_eq!(wire["source"], "baseline");
         assert_eq!(wire["program_status"]["message"], "Hello");
         wire.as_object_mut().unwrap().remove("program_status");
+        assert_eq!(wire, old);
+    }
+
+    #[test]
+    fn background_work_is_additive() {
+        let old = serde_json::json!({
+            "activity": "ready", "source": "hook", "outcome": "completed",
+            "interactions": [], "detail": null
+        });
+        let mut observation: AgentObservation = serde_json::from_value(old.clone()).unwrap();
+        assert!(!observation.background);
+        assert_eq!(serde_json::to_value(&observation).unwrap(), old);
+        observation.background = true;
+        let mut wire = serde_json::to_value(observation).unwrap();
+        assert_eq!(wire["background"], true);
+        wire.as_object_mut().unwrap().remove("background");
         assert_eq!(wire, old);
     }
 }

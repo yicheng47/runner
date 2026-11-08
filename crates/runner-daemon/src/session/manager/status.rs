@@ -232,6 +232,25 @@ impl SessionManager {
         );
     }
 
+    /// A running session whose agent reports `event`, for tests outside the manager.
+    #[cfg(test)]
+    pub(crate) fn test_agent_event(
+        &self,
+        session_id: &str,
+        event: super::super::state::agent::AgentEvent,
+    ) {
+        let session = self.session_state_or_insert(session_id);
+        let mut session = session.lock().unwrap();
+        session.model.apply(
+            SessionEvent::Agent { event, live: true },
+            super::super::clock::state_now(),
+        );
+        session.model.apply(
+            SessionEvent::TestLifecycle(crate::session::status::Lifecycle::Running),
+            super::super::clock::state_now(),
+        );
+    }
+
     /// A session launch resume is still bringing back, for tests outside the manager.
     #[cfg(test)]
     pub(crate) fn test_resuming(&self, session_id: &str) {

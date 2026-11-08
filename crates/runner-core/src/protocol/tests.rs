@@ -119,7 +119,8 @@ record!(AgentObservation {
     outcome,
     interactions,
     detail,
-    program_status
+    program_status,
+    background
 });
 record!(ProgramStatusEvidence { message });
 record!(AgentStatus {

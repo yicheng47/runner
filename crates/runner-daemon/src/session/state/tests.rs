@@ -1500,3 +1500,37 @@ fn a_failed_second_write_keeps_the_first_deadline() {
     assert!(expire(&mut model, first_due).publication.is_some());
     assert_eq!(model.activity(), IDLE);
 }
+
+#[test]
+fn interruption_guards_neither_drop_nor_strand_background_work() {
+    use agent::AgentEvent as A;
+    let batch = |events| A::Batch {
+        runtime: crate::model::Runtime::Codex,
+        events,
+    };
+    for clear in [A::TurnStarted, A::StartupReady, A::SessionEnded] {
+        let mut model = agent::AgentModel::default();
+        model.reduce(batch(vec![A::TurnStarted]), 1);
+        model.reduce(
+            batch(vec![A::LocalCancel {
+                kind: ESCAPE_INTERRUPT,
+            }]),
+            1,
+        );
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
+        let ended = model
+            .reduce(
+                batch(vec![
+                    A::TurnEnded {
+                        outcome: TurnOutcome::Completed,
+                    },
+                    A::BackgroundWork { pending: true },
+                ]),
+                1,
+            )
+            .unwrap();
+        assert!(ended.background, "the rejected TurnEnded keeps its report");
+        assert!(model.reduce(batch(vec![clear]), 1).is_some());
+        assert!(!model.value.background);
+    }
+}

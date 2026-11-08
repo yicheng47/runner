@@ -44,6 +44,37 @@ struct StatusReport {
     is_interrupt: bool,
     elicitation_id: Option<String>,
     mcp_server_name: Option<String>,
+    background_tasks: Option<serde_json::Value>,
+    session_crons: Option<serde_json::Value>,
+}
+
+/// The `background_tasks` labels Claude Code documents for Stop input; other
+/// values are raw discriminants of types it does not name.
+const BACKGROUND_TASK_TYPES: [&str; 7] = [
+    "shell",
+    "subagent",
+    "monitor",
+    "workflow",
+    "teammate",
+    "cloud session",
+    "MCP task",
+];
+
+/// Whether a Stop leaves work the agent will wake from: a documented background
+/// task or any scheduled wakeup (#1183).
+fn background_pending(
+    tasks: Option<&serde_json::Value>,
+    crons: Option<&serde_json::Value>,
+) -> bool {
+    let tasks = tasks.and_then(serde_json::Value::as_array);
+    let crons = crons.and_then(serde_json::Value::as_array);
+    tasks.is_some_and(|tasks| {
+        tasks.iter().any(|task| {
+            task["type"]
+                .as_str()
+                .is_some_and(|kind| BACKGROUND_TASK_TYPES.contains(&kind))
+        })
+    }) || crons.is_some_and(|crons| !crons.is_empty())
 }
 
 #[cfg(test)]
@@ -270,14 +301,24 @@ impl ClaudeParser {
                 Some("idle_prompt") => AgentEvent::IdlePrompt,
                 _ => return None,
             },
-            "Stop" | "StopFailure" => {
+            "Stop" => {
+                self.clear();
+                return Some(vec![
+                    AgentEvent::TurnEnded {
+                        outcome: TurnOutcome::Completed,
+                    },
+                    AgentEvent::BackgroundWork {
+                        pending: background_pending(
+                            report.background_tasks.as_ref(),
+                            report.session_crons.as_ref(),
+                        ),
+                    },
+                ]);
+            }
+            "StopFailure" => {
                 self.clear();
                 AgentEvent::TurnEnded {
-                    outcome: if report.hook_event_name == "Stop" {
-                        TurnOutcome::Completed
-                    } else {
-                        TurnOutcome::Failed
-                    },
+                    outcome: TurnOutcome::Failed,
                 }
             }
             _ => return None,
@@ -1946,5 +1987,112 @@ mod tests {
         assert!(!path.exists());
         assert!(!path.with_extension("sh").exists());
         assert!(!path.with_extension("sh.tmp").exists());
+    }
+
+    fn background_after(event: &str, fields: serde_json::Value) -> bool {
+        let mut model = ClaudeObservation::default();
+        observe(&mut model, "UserPromptSubmit", serde_json::json!({}));
+        let ended = observe(&mut model, event, fields).unwrap();
+        assert_eq!(ended.activity, Activity::Ready);
+        assert_eq!(ended.background, model.value.background);
+        model.value.background
+    }
+
+    #[test]
+    fn a_stop_reports_background_work_the_agent_will_wake_from() {
+        let shell = serde_json::json!({"id":"task-001","type":"shell","status":"running",
+            "description":"sleep","command":"sleep 90"});
+        let cron = serde_json::json!({"id":"cron-001","schedule":"0 9 * * 1-5",
+            "recurring":true,"prompt":"check the build"});
+        for (fields, pending) in [
+            (
+                serde_json::json!({"background_tasks":[shell],"session_crons":[]}),
+                true,
+            ),
+            (
+                serde_json::json!({"background_tasks":[{"id":"t","type":"local_future","status":"running"}],
+                    "session_crons":[]}),
+                false,
+            ),
+            (
+                serde_json::json!({"background_tasks":[],"session_crons":[cron]}),
+                true,
+            ),
+            (
+                serde_json::json!({"background_tasks":[],"session_crons":[{"id":"once","recurring":false}]}),
+                true,
+            ),
+            (
+                serde_json::json!({"background_tasks":[],"session_crons":[]}),
+                false,
+            ),
+            (serde_json::json!({}), false),
+        ] {
+            assert_eq!(
+                background_after("Stop", fields.clone()),
+                pending,
+                "{fields}"
+            );
+        }
+        for kind in BACKGROUND_TASK_TYPES {
+            assert!(background_after(
+                "Stop",
+                serde_json::json!({"background_tasks":[{"id":"t","type":kind}]})
+            ));
+        }
+        assert!(!background_after(
+            "StopFailure",
+            serde_json::json!({"background_tasks":[shell],"session_crons":[cron]}),
+        ));
+    }
+
+    #[test]
+    fn background_work_lasts_until_the_next_turn_startup_or_exit() {
+        let pending = serde_json::json!({"background_tasks":[{"id":"t","type":"shell"}]});
+        let wait = |model: &mut ClaudeObservation| {
+            observe(model, "UserPromptSubmit", serde_json::json!({}));
+            observe(model, "Stop", pending.clone());
+            assert!(model.value.background);
+        };
+
+        let mut model = ClaudeObservation::default();
+        wait(&mut model);
+        let woken = observe(&mut model, "UserPromptSubmit", serde_json::json!({})).unwrap();
+        assert_eq!(woken.activity, Activity::Working);
+        assert!(!woken.background);
+        let ended = observe(&mut model, "Stop", serde_json::json!({})).unwrap();
+        assert!(!ended.background);
+
+        wait(&mut model);
+        assert!(
+            !observe(&mut model, "SessionStart", serde_json::json!({}))
+                .unwrap()
+                .background
+        );
+
+        let now = crate::session::clock::timestamp_millis();
+        for event in [AgentEvent::SessionEnded, AgentEvent::ConversationRecovered] {
+            wait(&mut model);
+            model.model.reduce(
+                AgentEvent::Batch {
+                    runtime: Runtime::ClaudeCode,
+                    events: vec![event],
+                },
+                now,
+            );
+            assert!(!model.model.value.background);
+        }
+
+        // An interrupted tool leaves the turn Interrupted; its Stop still reports the work.
+        let mut model = ClaudeObservation::default();
+        observe(&mut model, "UserPromptSubmit", serde_json::json!({}));
+        observe(
+            &mut model,
+            "PostToolUseFailure",
+            serde_json::json!({"tool_use_id":"tool","is_interrupt":true}),
+        );
+        observe(&mut model, "Stop", pending.clone());
+        assert_eq!(model.value.outcome, Some(TurnOutcome::Interrupted));
+        assert!(model.value.background);
     }
 }
