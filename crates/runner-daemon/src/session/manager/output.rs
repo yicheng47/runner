@@ -31,6 +31,26 @@ pub(super) fn conversation_exists(
     }
 }
 
+// `log::set_logger` is once per process and a remote test owns it.
+#[cfg(test)]
+thread_local! {
+    pub(super) static MISSING_CONVERSATION_WARNINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A Resume starting fresh otherwise looks like a success in `runnerd.log`.
+pub(super) fn warn_missing_conversation(session_id: &str, key: &str, folder: Option<&Path>) {
+    let folder = folder.map_or_else(
+        || "the runtime's default folder".to_owned(),
+        |folder| folder.display().to_string(),
+    );
+    let message =
+        format!("session {session_id} starts fresh: conversation {key} was not found in {folder}");
+    log::warn!("{message}");
+    #[cfg(test)]
+    MISSING_CONVERSATION_WARNINGS.with_borrow_mut(|warnings| warnings.push(message));
+}
+
 pub(crate) fn classify_local_input(bytes: &[u8]) -> Option<LocalInputClass> {
     if bytes.is_empty() {
         return None;

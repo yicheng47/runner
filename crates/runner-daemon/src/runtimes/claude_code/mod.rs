@@ -34,6 +34,7 @@ const CLAUDE_LAUNCH_GATE_GRACE: Duration = Duration::from_millis(0);
 pub(crate) mod claude_status;
 use super::helpers::*;
 use super::*;
+use std::ffi::OsString;
 
 pub(crate) fn inject_claude_settings(role_args: &[String]) -> bool {
     !role_args
@@ -142,11 +143,71 @@ pub(crate) fn claude_code_project_dir(cwd: &str) -> String {
     format!("{}-{suffix}", &encoded[..MAX_LEN])
 }
 
+const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
+
+/// The `CLAUDE_CONFIG_DIR` in a spawn environment, given its entries lowest
+/// layer first. On Windows `CommandBuilder` folds the case of names and
+/// `spec.env` applies in name order, so among spellings the greatest name wins.
+pub(crate) fn spawned_config_dir<'a>(
+    env: impl IntoIterator<Item = (&'a String, &'a String)>,
+) -> Option<&'a str> {
+    env.into_iter()
+        .filter(|(name, _)| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case(CONFIG_DIR_VAR)
+            } else {
+                *name == CONFIG_DIR_VAR
+            }
+        })
+        .max_by_key(|(name, _)| *name)
+        .map(|(_, value)| value.as_str())
+}
+
+/// The `CLAUDE_CONFIG_DIR` the agent process will see. `spawned` is the value
+/// in the spawn environment, which replaces what the child would inherit; an
+/// empty value counts as unset, even when it hides an inherited one.
+pub(crate) fn agent_config_dir(spawned: Option<&str>) -> Option<OsString> {
+    spawned
+        .map(OsString::from)
+        .or_else(inherited_config_dir)
+        .filter(|dir| !dir.is_empty())
+}
+
+/// The variable in the base environment `portable-pty` gives a child, which on
+/// Windows includes registry values set after `runnerd` started.
+fn inherited_config_dir() -> Option<OsString> {
+    #[cfg(not(test))]
+    let inherited = portable_pty::CommandBuilder::new("claude")
+        .get_env(CONFIG_DIR_VAR)
+        .map(ToOwned::to_owned);
+    // Tests must not depend on the developer's own Claude config folder (#1159).
+    #[cfg(test)]
+    let inherited = crate::golden::injected_config_var(CONFIG_DIR_VAR);
+    inherited
+}
+
+/// The folder Claude keeps this chat's transcripts in.
+fn conversation_folder(ctx: &ProbeContext<'_>) -> Option<PathBuf> {
+    match agent_config_dir(spawned_config_dir(ctx.role_env)) {
+        Some(dir) => Some(match ctx.cwd {
+            Some(cwd) => Path::new(cwd).join(dir),
+            None => dir.into(),
+        }),
+        None => agent_home(".claude"),
+    }
+}
+
 /// True iff claude-code's conversation file for `(cwd, uuid)` exists on
-/// disk. Used by `SessionManager::resume` to skip `--resume <uuid>` when
-/// the agent never persisted a turn.
-pub fn claude_code_conversation_exists(cwd: Option<&str>, uuid: &str) -> bool {
-    conversation_file_exists(".claude", cwd, uuid, claude_code_project_dir)
+/// disk, in the folder the agent launches with. Used by
+/// `SessionManager::resume` to skip `--resume <uuid>` when the agent never
+/// persisted a turn.
+pub fn claude_code_conversation_exists(ctx: &ProbeContext<'_>, uuid: &str) -> bool {
+    conversation_file_exists(
+        conversation_folder(ctx).as_deref(),
+        ctx.cwd,
+        uuid,
+        claude_code_project_dir,
+    )
 }
 
 use runner_core::protocol::runtime_metadata::claude_code::{PERMISSIONS, SKILL_DIRS};
@@ -371,8 +432,14 @@ impl RuntimeAdapter for ClaudeCode {
             resuming: true,
         }))
     }
+    fn probe_uses_shell_env(&self) -> bool {
+        true
+    }
     fn conversation_exists(&self, key: &str, ctx: &ProbeContext<'_>) -> Option<bool> {
-        Some(claude_code_conversation_exists(ctx.cwd, key))
+        Some(claude_code_conversation_exists(ctx, key))
+    }
+    fn conversation_folder(&self, ctx: &ProbeContext<'_>) -> Option<PathBuf> {
+        conversation_folder(ctx)
     }
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();

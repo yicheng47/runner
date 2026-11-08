@@ -184,11 +184,9 @@ impl SessionRuntime for PtyRuntime {
             })
             .map_err(|e| RuntimeError::Msg(format!("openpty: {e}")))?;
 
-        // Build the child command. portable-pty wraps the std
-        // CommandBuilder, so env / cwd / args go through the same APIs
-        // we'd use for std::process::Command — minus the inherited-env
-        // surprises (CommandBuilder clears inherited env unless we
-        // explicitly env_clear()).
+        // `CommandBuilder::new` starts from portable-pty's base environment:
+        // this process's variables and, on Windows, the system and user
+        // variables in the registry. `spec.env` then overrides it by name.
         let mut cmd = CommandBuilder::new(&spec.command);
         cmd.args(&spec.args);
         if let Some(cwd) = &spec.cwd {

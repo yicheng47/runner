@@ -169,6 +169,12 @@ pub(crate) fn config_var_os(name: &str) -> Option<std::ffi::OsString> {
     })
 }
 
+/// Only what a test injected, for a lookup that must never see the developer's
+/// own environment (#1159).
+pub(crate) fn injected_config_var(name: &str) -> Option<std::ffi::OsString> {
+    CONFIG_ENV.with_borrow(|env| env.as_ref()?.get(name).cloned())
+}
+
 pub(crate) fn config_home() -> Option<std::path::PathBuf> {
     crate::runtimes::test_home().or_else(runner_core::app_paths::home_dir)
 }

@@ -723,16 +723,10 @@ fn login_outputs(
 }
 
 pub(crate) fn config_pin(role: &Role, shell: &BTreeMap<String, String>) -> Option<String> {
-    #[cfg(not(test))]
-    let inherited = || std::env::var("CLAUDE_CONFIG_DIR").ok();
-    // Tests must not depend on the developer's own Claude config folder.
-    #[cfg(test)]
-    let inherited = || None;
-    role.env
-        .get("CLAUDE_CONFIG_DIR")
-        .or_else(|| shell.get("CLAUDE_CONFIG_DIR"))
-        .cloned()
-        .or_else(inherited)
+    use crate::runtimes::claude_code::{agent_config_dir, spawned_config_dir};
+    agent_config_dir(spawned_config_dir(shell.iter().chain(&role.env)))?
+        .into_string()
+        .ok()
 }
 
 pub(crate) fn launch_account(

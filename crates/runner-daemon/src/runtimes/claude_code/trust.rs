@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use unicode_normalization::UnicodeNormalization;
 
+use super::agent_config_dir;
 use crate::error::{Error, Result};
 use crate::runtimes::helpers::{
     is_broad_trust_root, resolve_config_write_path, resolve_project_trust_root,
@@ -26,25 +27,12 @@ pub(super) fn seed_project_trust(cwd: &Path, config_dir: Option<&str>) -> Result
     let home = runner_core::app_paths::home_dir()
         .ok_or_else(|| Error::msg("home directory is not available"))?;
 
-    #[cfg(not(test))]
-    let inherited = std::env::var_os("CLAUDE_CONFIG_DIR");
-    #[cfg(test)]
-    let inherited = None;
-    let config_path = config_path(cwd, &home, config_dir, inherited);
+    let config_path = config_path(cwd, &home, agent_config_dir(config_dir));
     seed_project_trust_at(cwd, &config_path, Some(&home))
 }
 
-fn config_path(
-    cwd: &Path,
-    home: &Path,
-    config_dir: Option<&str>,
-    inherited: Option<OsString>,
-) -> PathBuf {
-    let dir = config_dir
-        .map(OsString::from)
-        .or(inherited)
-        .filter(|dir| !dir.is_empty());
-    match dir {
+fn config_path(cwd: &Path, home: &Path, config_dir: Option<OsString>) -> PathBuf {
+    match config_dir {
         Some(dir) => cwd.join(dir).join(".claude.json"),
         None => home.join(".claude.json"),
     }
@@ -177,7 +165,13 @@ mod tests {
             (Some(""), Some(daemon_dir.clone().into_os_string())),
             (None, Some(OsString::new())),
         ] {
-            let path = config_path(&cwd, &home, explicit, inherited);
+            let injected = inherited
+                .map(|value| ("CLAUDE_CONFIG_DIR", value))
+                .into_iter()
+                .collect();
+            let config_dir =
+                crate::golden::with_config_env(injected, || agent_config_dir(explicit));
+            let path = config_path(&cwd, &home, config_dir);
             assert_eq!(path, home.join(".claude.json"));
             seed_project_trust_at(&cwd, &path, Some(&home)).unwrap();
             assert_eq!(

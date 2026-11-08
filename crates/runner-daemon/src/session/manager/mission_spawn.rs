@@ -332,7 +332,7 @@ impl SessionManager {
             &role.runtime,
             spec.cwd.as_deref(),
             role.env.get("COPILOT_HOME").map(String::as_str),
-            spec.env.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+            crate::runtimes::claude_code::spawned_config_dir(&spec.env),
         );
         let capture_root =
             match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
