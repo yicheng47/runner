@@ -33,6 +33,7 @@ struct StatusReport {
     hook_event_name: String,
     notification_type: Option<String>,
     source: Option<String>,
+    trigger: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) transcript_path: Option<PathBuf>,
     pub(crate) prompt_id: Option<String>,
@@ -109,6 +110,11 @@ struct PendingElicitation {
     server: String,
     prompted: bool,
 }
+/// Claude Code fires `PreCompact` before a compaction can fail, be skipped or be blocked, and
+/// then sends no end. Of 64 compactions measured on Claude Code 2.1.3xx the longest took 133 s,
+/// so ten minutes leaves room for API retries before the prior status comes back (#1224).
+const COMPACTION_TIMEOUT_MS: i64 = 10 * 60 * 1000;
+
 #[derive(Clone, Default)]
 struct ClaudeParser {
     session_id: Option<String>,
@@ -116,16 +122,19 @@ struct ClaudeParser {
     transcript_path: Option<PathBuf>,
     tools: std::collections::BTreeMap<String, PendingTool>,
     compacting: bool,
+    compaction_started: Option<i64>,
     elicitations: Vec<PendingElicitation>,
 }
 impl ClaudeParser {
+    /// `None` drops the hook; an empty list admits it without a status change.
     fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
         if report.agent_id.is_some() || report.hook_event_name.starts_with("Subagent") {
             return None;
         }
         if report.hook_event_name == "SessionStart" {
+            // Claude sends `SessionStart(compact)` before `PostCompact` on some paths and after
+            // it on others; either way it continues the conversation the compaction ran in.
             if report.source.as_deref() == Some("compact")
-                && self.compacting
                 && report
                     .session_id
                     .as_ref()
@@ -137,7 +146,7 @@ impl ClaudeParser {
                 if let Some(path) = report.transcript_path {
                     self.transcript_path = Some(path);
                 }
-                return None;
+                return Some(Vec::new());
             }
             self.session_id = report.session_id;
             self.transcript_path = report.transcript_path;
@@ -156,6 +165,8 @@ impl ClaudeParser {
         } else if self.prompt_id.is_some()
             && report.prompt_id.is_some()
             && self.prompt_id != report.prompt_id
+            // `/compact` runs under a prompt id of its own that no UserPromptSubmit announces.
+            && !matches!(report.hook_event_name.as_str(), "PreCompact" | "PostCompact")
         {
             return None;
         }
@@ -328,10 +339,11 @@ impl ClaudeParser {
     fn clear(&mut self) {
         self.tools.clear();
         self.compacting = false;
+        self.compaction_started = None;
         self.elicitations.clear();
     }
-    fn accept(&mut self, events: &[AgentEvent], feedback: AdapterFeedback) {
-        self.compacting = feedback.compacting;
+    fn accept(&mut self, events: &[AgentEvent], feedback: AdapterFeedback, now: i64) {
+        self.note_compaction(feedback.compacting, events, now);
         if !feedback.accepted {
             return;
         }
@@ -369,6 +381,37 @@ impl ClaudeParser {
                 _ => {}
             }
         }
+    }
+    fn note_compaction(&mut self, compacting: bool, events: &[AgentEvent], now: i64) {
+        self.compacting = compacting;
+        if !compacting {
+            self.compaction_started = None;
+        } else if self.compaction_started.is_none()
+            || events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::CompactionStarted))
+        {
+            self.compaction_started = Some(now);
+        }
+    }
+    fn compaction_expired(&self, now: i64) -> bool {
+        self.compaction_started
+            .is_some_and(|started| now - started >= COMPACTION_TIMEOUT_MS)
+    }
+    /// The boundary of a finished compaction, or the output of a `/compact` that did not
+    /// compact, made after the current compaction's `PreCompact` was admitted. Claude waits
+    /// for that admission before continuing, so earlier records belong to earlier attempts.
+    fn ends_compaction(&self, entry: &serde_json::Value) -> bool {
+        let Some(started) = self.compaction_started else {
+            return false;
+        };
+        (entry["subtype"] == "compact_boundary"
+            || (entry["subtype"] == "local_command"
+                && entry.pointer("/commandRun/command") == Some(&"compact".into())))
+            && entry["timestamp"]
+                .as_str()
+                .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                .is_some_and(|time| time.timestamp_millis() >= started)
     }
     fn record(&mut self, entry: &serde_json::Value) -> Option<Vec<AgentEvent>> {
         let session = self.session_id.as_deref()?;
@@ -416,6 +459,8 @@ impl ClaudeParser {
             }
         } else if entry["type"] == "system" && entry["subtype"] == "turn_duration" {
             events.push(AgentEvent::RejectionSettled);
+        } else if entry["type"] == "system" && self.ends_compaction(entry) {
+            events.push(AgentEvent::CompactionEnded);
         }
         (!events.is_empty()).then_some(events)
     }
@@ -423,6 +468,7 @@ impl ClaudeParser {
 
 pub(crate) struct ClaudeStatusWatcher {
     feed: HookFeed,
+    session: String,
     parser: ClaudeParser,
     transcript: Option<crate::session::hook_feed::TranscriptTail>,
     read_transcript: bool,
@@ -430,6 +476,7 @@ pub(crate) struct ClaudeStatusWatcher {
 impl ClaudeStatusWatcher {
     pub(crate) fn from_receiver(receiver: crate::session::hook_queue::HookReceiver) -> Self {
         Self {
+            session: receiver.session().to_owned(),
             feed: HookFeed::from_receiver(receiver),
             parser: Default::default(),
             transcript: None,
@@ -442,7 +489,9 @@ impl ClaudeStatusWatcher {
         mut emit: impl FnMut(AgentEvent) -> AdapterFeedback,
         mut session_start: impl FnMut(String),
     ) -> Result<()> {
-        self.feed.drain(|report| {
+        let now = crate::session::clock::timestamp_millis();
+        let session = &self.session;
+        self.feed.drain_admitted(|report, admitted_at| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
                 if report.hook_event_name == "SessionStart" && report.agent_id.is_none() {
                     if let Some(id) = report
@@ -453,13 +502,34 @@ impl ClaudeStatusWatcher {
                         session_start(id.to_owned());
                     }
                 }
-                if let Some(events) = self.parser.hook(report) {
-                    let feedback = emit(AgentEvent::Batch {
-                        runtime: Runtime::ClaudeCode,
-                        events: events.clone(),
-                    });
-                    self.parser.accept(&events, feedback);
-                    self.read_transcript = feedback.read_transcript;
+                let hook = report.hook_event_name.clone();
+                let kind: String = [
+                    ("source", &report.source),
+                    ("trigger", &report.trigger),
+                    ("type", &report.notification_type),
+                ]
+                .into_iter()
+                .filter_map(|(name, value)| {
+                    value.as_ref().map(|value| format!(" {name}={value:?}"))
+                })
+                .collect();
+                match self.parser.hook(report) {
+                    None => log::debug!("session {session}: dropped Claude hook {hook}{kind}"),
+                    Some(events) if events.is_empty() => {
+                        log::info!("session {session}: Claude hook {hook}{kind} -> no change")
+                    }
+                    Some(events) => {
+                        let feedback = emit(AgentEvent::Batch {
+                            runtime: Runtime::ClaudeCode,
+                            events: events.clone(),
+                        });
+                        log::info!(
+                            "session {session}: Claude hook {hook}{kind} -> {}",
+                            describe(feedback)
+                        );
+                        self.parser.accept(&events, feedback, admitted_at);
+                        self.read_transcript = feedback.read_transcript || feedback.compacting;
+                    }
                 }
             }
         })?;
@@ -468,13 +538,27 @@ impl ClaudeStatusWatcher {
                 runtime: Runtime::ClaudeCode,
                 events: vec![AgentEvent::LocalCancel { kind: cancel }],
             });
-            self.parser.compacting = feedback.compacting;
-            self.read_transcript = feedback.read_transcript;
+            self.parser.note_compaction(feedback.compacting, &[], now);
+            self.read_transcript = feedback.read_transcript || feedback.compacting;
         }
-        self.drain_transcript(&mut emit);
+        self.drain_transcript(now, &mut emit);
+        if self.parser.compaction_expired(now) {
+            log::warn!(
+                "session {}: Claude compaction sent no end within {} minutes; restoring the status it interrupted",
+                self.session,
+                COMPACTION_TIMEOUT_MS / 60_000
+            );
+            let events = vec![AgentEvent::CompactionEnded];
+            let feedback = emit(AgentEvent::Batch {
+                runtime: Runtime::ClaudeCode,
+                events: events.clone(),
+            });
+            self.parser.accept(&events, feedback, now);
+            self.read_transcript = feedback.read_transcript || feedback.compacting;
+        }
         Ok(())
     }
-    fn drain_transcript(&mut self, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
+    fn drain_transcript(&mut self, now: i64, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
         if !self.read_transcript {
             return;
         }
@@ -501,13 +585,37 @@ impl ClaudeStatusWatcher {
                         runtime: Runtime::ClaudeCode,
                         events: events.clone(),
                     });
-                    self.parser.accept(&events, feedback);
-                    self.read_transcript = feedback.read_transcript;
+                    if events
+                        .iter()
+                        .any(|event| matches!(event, AgentEvent::CompactionEnded))
+                    {
+                        log::info!(
+                            "session {}: Claude transcript ended compaction -> {}",
+                            self.session,
+                            describe(feedback)
+                        );
+                    }
+                    self.parser.accept(&events, feedback, now);
+                    self.read_transcript = feedback.read_transcript || feedback.compacting;
                 }
             }
             tail.pending.clear();
         }
     }
+}
+
+fn describe(feedback: AdapterFeedback) -> String {
+    if !feedback.accepted {
+        return "ignored".into();
+    }
+    let mut status = format!("{:?}", feedback.activity);
+    if let Some(detail) = feedback.detail {
+        status.push_str(&format!(" ({detail:?})"));
+    }
+    if let Some(outcome) = feedback.outcome {
+        status.push_str(&format!(", {outcome:?}"));
+    }
+    status
 }
 impl crate::session::hook_feed::HookWatcher for ClaudeStatusWatcher {
     fn drain_events(
@@ -551,20 +659,21 @@ impl ClaudeObservation {
             },
             now,
         );
-        self.parser.accept(&events, feedback);
+        self.parser.accept(&events, feedback, now);
         self.value = self.model.value.clone();
         reduced
     }
     fn observe_transcript(&mut self, record: &serde_json::Value) -> Option<AgentObservation> {
         let events = self.parser.record(record)?;
+        let now = crate::session::clock::timestamp_millis();
         let (reduced, feedback) = self.model.reduce_with_feedback(
             AgentEvent::Transcript {
                 runtime: Runtime::ClaudeCode,
                 events: events.clone(),
             },
-            crate::session::clock::timestamp_millis(),
+            now,
         );
-        self.parser.accept(&events, feedback);
+        self.parser.accept(&events, feedback, now);
         self.value = self.model.value.clone();
         reduced
     }
@@ -1181,6 +1290,355 @@ mod tests {
         assert_eq!(automatic_done.activity, Activity::Working);
         assert_eq!(automatic_done.outcome, None);
         assert_eq!(automatic_done.detail, Some(WorkDetail::UsingTools));
+    }
+
+    #[test]
+    fn compact_session_start_never_resets_in_either_order() {
+        for compact_first in [true, false] {
+            for in_turn in [false, true] {
+                let case = format!("compact_first={compact_first} in_turn={in_turn}");
+                let mut model = ClaudeObservation::default();
+                observe(
+                    &mut model,
+                    "SessionStart",
+                    serde_json::json!({"session_id":"main","source":"startup"}),
+                );
+                observe(
+                    &mut model,
+                    "UserPromptSubmit",
+                    serde_json::json!({"prompt_id":"turn"}),
+                );
+                if !in_turn {
+                    observe(&mut model, "Stop", serde_json::json!({"prompt_id":"turn"}));
+                }
+                // A `/compact` gets a prompt id of its own; an automatic one keeps the turn's.
+                let prompt = if in_turn { "turn" } else { "compact" };
+                let compacting = observe(
+                    &mut model,
+                    "PreCompact",
+                    serde_json::json!({"prompt_id":prompt,"trigger": if in_turn { "auto" } else { "manual" }}),
+                )
+                .unwrap();
+                assert_eq!(compacting.activity, Activity::Working, "{case}");
+                assert_eq!(
+                    compacting.detail,
+                    Some(WorkDetail::CompactingContext),
+                    "{case}"
+                );
+                let compact = |model: &mut ClaudeObservation| {
+                    assert!(
+                        observe(
+                            model,
+                            "SessionStart",
+                            serde_json::json!({"session_id":"main","source":"compact","prompt_id":prompt,"transcript_path":"/compacted.jsonl"}),
+                        )
+                        .is_none(),
+                        "{case}"
+                    );
+                };
+                if compact_first {
+                    compact(&mut model);
+                }
+                observe(
+                    &mut model,
+                    "PostCompact",
+                    serde_json::json!({"prompt_id":prompt}),
+                );
+                if !compact_first {
+                    compact(&mut model);
+                }
+                assert_eq!(
+                    model.transcript_path.as_deref(),
+                    Some(std::path::Path::new("/compacted.jsonl")),
+                    "{case}"
+                );
+                if in_turn {
+                    assert_eq!(model.value.activity, Activity::Working, "{case}");
+                    assert_eq!(model.value.outcome, None, "{case}");
+                    assert_eq!(model.value.detail, None, "{case}");
+                    observe(&mut model, "Stop", serde_json::json!({}));
+                }
+                assert_eq!(model.value.activity, Activity::Ready, "{case}");
+                assert_eq!(model.value.outcome, Some(TurnOutcome::Completed), "{case}");
+                assert_eq!(model.value.detail, None, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_conversation_still_resets_after_a_compaction() {
+        for source in ["startup", "resume", "clear"] {
+            let mut model = ClaudeObservation::default();
+            observe(
+                &mut model,
+                "SessionStart",
+                serde_json::json!({"session_id":"main","source":"startup"}),
+            );
+            observe(
+                &mut model,
+                "UserPromptSubmit",
+                serde_json::json!({"prompt_id":"turn"}),
+            );
+            observe(&mut model, "Stop", serde_json::json!({}));
+            observe(&mut model, "PreCompact", serde_json::json!({}));
+            let started = observe(
+                &mut model,
+                "SessionStart",
+                serde_json::json!({"session_id":"next","source":source}),
+            )
+            .unwrap();
+            assert_eq!(started.activity, Activity::Idle, "{source}");
+            assert_eq!(started.outcome, None, "{source}");
+            assert_eq!(started.detail, None, "{source}");
+            assert_eq!(model.session_id.as_deref(), Some("next"), "{source}");
+        }
+    }
+
+    #[test]
+    fn a_compaction_without_an_end_inside_a_turn_settles_on_stop() {
+        let mut model = ClaudeObservation::default();
+        observe(
+            &mut model,
+            "SessionStart",
+            serde_json::json!({"session_id":"main","source":"startup"}),
+        );
+        observe(
+            &mut model,
+            "UserPromptSubmit",
+            serde_json::json!({"prompt_id":"turn"}),
+        );
+        let compacting = observe(
+            &mut model,
+            "PreCompact",
+            serde_json::json!({"trigger":"auto"}),
+        )
+        .unwrap();
+        assert_eq!(compacting.detail, Some(WorkDetail::CompactingContext));
+        let stopped = observe(&mut model, "Stop", serde_json::json!({})).unwrap();
+        assert_eq!(stopped.activity, Activity::Ready);
+        assert_eq!(stopped.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(stopped.detail, None);
+        assert!(model.compaction_started.is_none());
+    }
+
+    const START: i64 = 1_767_225_600_000;
+
+    fn at<T>(millis: i64, run: impl FnOnce() -> T) -> T {
+        crate::session::clock::at(std::time::Instant::now(), millis, run)
+    }
+
+    fn drain_at(watcher: &mut TestWatcher, millis: i64) -> AgentObservation {
+        at(millis, || watcher.drain_status(|_, _| {}).unwrap());
+        watcher.observation.value.published()
+    }
+
+    /// Admits a hook from the `main` conversation as if Claude fired it at `millis`.
+    fn admit_at(watcher: &TestWatcher, millis: i64, event: &str, mut fields: serde_json::Value) {
+        fields["session_id"] = "main".into();
+        at(millis, || watcher.hooks.admit_event(event, fields).unwrap());
+    }
+
+    fn record_at(millis: i64, subtype: &str) -> serde_json::Value {
+        serde_json::json!({"type":"system","subtype":subtype,"sessionId":"main",
+            "timestamp":chrono::DateTime::from_timestamp_millis(millis).unwrap().to_rfc3339()})
+    }
+
+    fn failed_compact(millis: i64) -> serde_json::Value {
+        let mut record = record_at(millis, "local_command");
+        record["commandRun"] = serde_json::json!({"command":"compact","args":""});
+        record["content"] =
+            "<local-command-stdout>Not enough messages to compact.</local-command-stdout>".into();
+        record
+    }
+
+    fn boundary(millis: i64) -> serde_json::Value {
+        let mut record = record_at(millis, "compact_boundary");
+        record["compactMetadata"] = serde_json::json!({"trigger":"manual"});
+        record
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Prior {
+        Resumed,
+        Completed,
+        InTurn,
+    }
+
+    impl Prior {
+        const ALL: [Self; 3] = [Self::Resumed, Self::Completed, Self::InTurn];
+
+        /// A watcher left in this status a minute before `START`.
+        fn watcher(self, transcript: Option<&std::path::Path>) -> TestWatcher {
+            let mut watcher = TestWatcher::new("current".into());
+            let before = START - 60_000;
+            let mut start = serde_json::json!({"source": match self {
+                Self::Resumed => "resume",
+                _ => "startup",
+            }});
+            if let Some(path) = transcript {
+                start["transcript_path"] = serde_json::json!(path);
+            }
+            admit_at(&watcher, before, "SessionStart", start);
+            if !matches!(self, Self::Resumed) {
+                admit_at(
+                    &watcher,
+                    before,
+                    "UserPromptSubmit",
+                    serde_json::json!({"prompt_id":"turn"}),
+                );
+            }
+            match self {
+                Self::Resumed => {}
+                Self::Completed => admit_at(&watcher, before, "Stop", serde_json::json!({})),
+                Self::InTurn => admit_at(
+                    &watcher,
+                    before,
+                    "PreToolUse",
+                    serde_json::json!({"tool_use_id":"tool","tool_name":"Bash"}),
+                ),
+            }
+            drain_at(&mut watcher, before);
+            watcher
+        }
+
+        fn restored(self) -> (Activity, Option<TurnOutcome>, Option<WorkDetail>) {
+            match self {
+                Self::Resumed => (Activity::Ready, None, None),
+                Self::Completed => (Activity::Ready, Some(TurnOutcome::Completed), None),
+                Self::InTurn => (Activity::Working, None, Some(WorkDetail::UsingTools)),
+            }
+        }
+
+        /// Late `PostCompact` and `SessionStart(compact)` change nothing, and an unfinished
+        /// turn still completes on its `Stop`.
+        fn finish(self, watcher: &mut TestWatcher, millis: i64) {
+            let restored = watcher.observation.value.published();
+            let (activity, outcome, detail) = self.restored();
+            assert_eq!(restored.activity, activity, "{self:?}");
+            assert_eq!(restored.outcome, outcome, "{self:?}");
+            assert_eq!(restored.detail, detail, "{self:?}");
+            assert!(watcher.observation.parser.compaction_started.is_none());
+            admit_at(watcher, millis, "PostCompact", serde_json::json!({}));
+            admit_at(
+                watcher,
+                millis,
+                "SessionStart",
+                serde_json::json!({"source":"compact"}),
+            );
+            assert_eq!(drain_at(watcher, millis), restored, "{self:?}");
+            assert_eq!(
+                drain_at(watcher, millis + 2 * COMPACTION_TIMEOUT_MS),
+                restored,
+                "{self:?}"
+            );
+            if matches!(self, Self::InTurn) {
+                admit_at(watcher, millis + 1, "Stop", serde_json::json!({}));
+                let stopped = drain_at(watcher, millis + 1);
+                assert_eq!(stopped.activity, Activity::Ready);
+                assert_eq!(stopped.outcome, Some(TurnOutcome::Completed));
+                assert_eq!(stopped.detail, None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_compaction_without_an_end_restores_its_prior_status_after_the_timeout() {
+        for prior in Prior::ALL {
+            let mut watcher = prior.watcher(None);
+            admit_at(
+                &watcher,
+                START,
+                "PreCompact",
+                serde_json::json!({"trigger":"auto"}),
+            );
+            let compacting = drain_at(&mut watcher, START + 10);
+            assert_eq!(compacting.activity, Activity::Working, "{prior:?}");
+            assert_eq!(compacting.detail, Some(WorkDetail::CompactingContext));
+            assert_eq!(
+                drain_at(&mut watcher, START + COMPACTION_TIMEOUT_MS - 1),
+                compacting,
+                "{prior:?}"
+            );
+            drain_at(&mut watcher, START + COMPACTION_TIMEOUT_MS);
+            prior.finish(&mut watcher, START + COMPACTION_TIMEOUT_MS + 1_000);
+        }
+    }
+
+    #[test]
+    fn a_compaction_end_in_the_transcript_restores_the_prior_status() {
+        let ends: [fn(i64) -> serde_json::Value; 2] = [failed_compact, boundary];
+        for prior in Prior::ALL {
+            for end in ends {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("transcript.jsonl");
+                let mut transcript = File::create(&path).unwrap();
+                let mut watcher = prior.watcher(Some(&path));
+                // An earlier compaction's record, replayed when the tail opens, and another
+                // command's output both leave this compaction running.
+                writeln!(transcript, "{}", end(START - 30_000)).unwrap();
+                let mut other_command = failed_compact(START + 10);
+                other_command["commandRun"]["command"] = "cost".into();
+                writeln!(transcript, "{other_command}").unwrap();
+                admit_at(
+                    &watcher,
+                    START,
+                    "PreCompact",
+                    serde_json::json!({"trigger":"manual"}),
+                );
+                let compacting = drain_at(&mut watcher, START + 20);
+                assert_eq!(compacting.activity, Activity::Working, "{prior:?}");
+                assert_eq!(compacting.detail, Some(WorkDetail::CompactingContext));
+
+                writeln!(transcript, "{}", end(START + 30)).unwrap();
+                drain_at(&mut watcher, START + 40);
+                prior.finish(&mut watcher, START + 50);
+            }
+        }
+    }
+
+    #[test]
+    fn an_earlier_compactions_unread_boundary_does_not_end_the_next_one() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("transcript.jsonl");
+        let mut transcript = File::create(&path).unwrap();
+        let mut watcher = Prior::Completed.watcher(Some(&path));
+        admit_at(
+            &watcher,
+            START,
+            "PreCompact",
+            serde_json::json!({"trigger":"manual"}),
+        );
+        admit_at(
+            &watcher,
+            START + 3_000,
+            "SessionStart",
+            serde_json::json!({"source":"compact"}),
+        );
+        admit_at(
+            &watcher,
+            START + 3_100,
+            "PostCompact",
+            serde_json::json!({"trigger":"manual"}),
+        );
+        let compacted = drain_at(&mut watcher, START + 3_200);
+        assert_eq!(compacted.activity, Activity::Ready);
+        assert_eq!(compacted.outcome, Some(TurnOutcome::Completed));
+        // Claude writes the boundary after PostCompact, so nothing reads it yet.
+        writeln!(transcript, "{}", boundary(START + 3_150)).unwrap();
+
+        admit_at(
+            &watcher,
+            START + 8_000,
+            "PreCompact",
+            serde_json::json!({"trigger":"manual"}),
+        );
+        let compacting = drain_at(&mut watcher, START + 8_050);
+        assert_eq!(compacting.activity, Activity::Working);
+        assert_eq!(compacting.detail, Some(WorkDetail::CompactingContext));
+
+        writeln!(transcript, "{}", boundary(START + 9_000)).unwrap();
+        drain_at(&mut watcher, START + 9_050);
+        Prior::Completed.finish(&mut watcher, START + 9_100);
     }
 
     #[test]

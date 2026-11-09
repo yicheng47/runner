@@ -64,9 +64,13 @@ impl HookFeed {
     }
 
     pub(crate) fn drain(&mut self, mut observe: impl FnMut(Value)) -> Result<()> {
-        self.0.drain(|mut report| {
+        self.drain_admitted(|report, _| observe(report))
+    }
+
+    pub(crate) fn drain_admitted(&mut self, mut observe: impl FnMut(Value, i64)) -> Result<()> {
+        self.0.drain_admitted(|mut report, admitted_at| {
             report.payload["hook_event_name"] = Value::String(report.event);
-            observe(report.payload);
+            observe(report.payload, admitted_at);
         })
     }
 }

@@ -265,6 +265,7 @@ impl RuntimeAdapter for ClaudeCode {
             interaction_prefix: Some("claude"),
             batch_feedback: true,
             compaction: CompactionPolicy::ResumeUnfinishedTurn,
+            compaction_requires_start: true,
             permission_prompt: PermissionPromptPolicy::VisibleCandidates,
             elicitation_uses_requests: true,
             idle_clears_compaction: true,
