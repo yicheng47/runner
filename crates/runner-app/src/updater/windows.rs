@@ -125,9 +125,7 @@ impl NativeUpdater {
                             updater.native.checking.set(false);
                             return false;
                         }
-                        if matches!(updater.state, UpdateState::UpToDate { .. }) {
-                            updater.state = UpdateState::UpToDate { checking: true };
-                        }
+                        updater.state.begin_check();
                         cx.notify();
                         true
                     })
@@ -1448,6 +1446,11 @@ mod tests {
                 let checked_at = updater.last_check_at();
                 updater.finish_windows_check(Err(anyhow::anyhow!("offline")), cx);
                 assert_eq!(updater.last_check_at(), checked_at);
+                assert!(updater.state().info().is_some());
+                updater.state.begin_check();
+                assert_eq!(*updater.state(), UpdateState::UpToDate { checking: true });
+                updater.finish_windows_check(Err(anyhow::anyhow!("offline")), cx);
+                assert!(matches!(updater.state(), UpdateState::Failed { step: UpdateStep::Check, .. }));
                 assert!(updater.state().info().is_some());
                 for step in [UpdateStep::Download, UpdateStep::Verify] {
                     updater.state = UpdateState::Downloading { info: candidate().info, received: 8, total: 16 };

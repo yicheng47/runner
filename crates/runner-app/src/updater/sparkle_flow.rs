@@ -1,10 +1,15 @@
 //! Sparkle's flow without Sparkle: which state each callback leads to, and who answers each
 //! reply block, so both can be tested without a signed bundle.
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use super::{UpdateInfo, UpdateState, UpdateStep};
 
 pub(super) const RUNNER_UPDATE_ERROR_DOMAIN: &str = "com.wycstudios.runner.updater";
 const SPARKLE_ERROR_DOMAIN: &str = "SUSparkleErrorDomain";
+const SU_NO_UPDATE_ERROR: isize = 1001;
 const SU_INSTALLATION_CANCELED_ERROR: isize = 4007;
 
 const SPU_UPDATE_CHECK_UPDATES_IN_BACKGROUND: isize = 1;
@@ -23,6 +28,20 @@ pub(super) fn event_for_abort(error_domain: &str, error_code: isize) -> Option<S
     let canceled =
         error_domain == SPARKLE_ERROR_DOMAIN && error_code == SU_INSTALLATION_CANCELED_ERROR;
     (error_domain != RUNNER_UPDATE_ERROR_DOMAIN && !canceled).then_some(SparkleEvent::Aborted)
+}
+
+/// Sparkle aborts for an up-to-date check too, which is no failure.
+pub(super) fn abort_is_failure(error_domain: &str, error_code: isize) -> bool {
+    let no_update = error_domain == SPARKLE_ERROR_DOMAIN && error_code == SU_NO_UPDATE_ERROR;
+    event_for_abort(error_domain, error_code).is_some() && !no_update
+}
+
+/// One error for the log, its URLs cut to the host: a release asset's redirect is signed.
+pub(super) fn error_log_entry(domain: &str, code: isize, description: &str) -> String {
+    static URL: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(https?://[^/?#\s"'<>“”]+)\S*"#).expect("the URL pattern is valid")
+    });
+    format!("{domain} {code}: {}", URL.replace_all(description, "$1/…"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,11 +114,7 @@ pub(super) fn apply_event(
                 *state = UpdateState::UpToDate { checking: false };
             }
         }
-        SparkleEvent::CheckStarted => {
-            if matches!(state, UpdateState::UpToDate { .. }) {
-                *state = UpdateState::UpToDate { checking: true };
-            }
-        }
+        SparkleEvent::CheckStarted => state.begin_check(),
         SparkleEvent::DownloadRequested => {
             if let Some(update) = found.as_ref().filter(|update| !update.manual_only) {
                 *state = UpdateState::Downloading {
@@ -474,6 +489,129 @@ mod tests {
                 message: "offline".into(),
                 info: None,
             }
+        );
+    }
+
+    #[test]
+    fn retrying_a_failed_check_shows_the_check_until_it_ends() {
+        let error = || SparkleEvent::Error("Gateway Timeout".into());
+        let (mut state, mut found) = (up_to_date(), None);
+        apply_event(&mut state, &mut found, error());
+        let failed = state.clone();
+
+        assert!(apply_event(
+            &mut state,
+            &mut found,
+            SparkleEvent::CheckStarted
+        ));
+        assert_eq!(state, UpdateState::UpToDate { checking: true });
+        assert!(apply_event(&mut state, &mut found, error()));
+        assert_eq!(state, failed);
+    }
+
+    #[test]
+    fn a_retried_check_settles_on_what_it_finds() {
+        let newer = update("0.6.1");
+        for (result, settled) in [
+            (SparkleEvent::NotFound, up_to_date()),
+            (SparkleEvent::Found(newer.clone()), newer.available()),
+        ] {
+            let (mut state, mut found) = (up_to_date(), None);
+            apply_event(
+                &mut state,
+                &mut found,
+                SparkleEvent::Error("offline".into()),
+            );
+            apply_event(&mut state, &mut found, SparkleEvent::CheckStarted);
+            assert!(apply_event(&mut state, &mut found, result));
+            assert_eq!(state, settled);
+        }
+    }
+
+    #[test]
+    fn a_retained_update_survives_a_retry_that_ends_without_a_result() {
+        let newer = update("0.6.1");
+        let (mut state, mut found) = (up_to_date(), None);
+        apply_event(&mut state, &mut found, SparkleEvent::Found(newer.clone()));
+        apply_event(
+            &mut state,
+            &mut found,
+            SparkleEvent::Error("offline".into()),
+        );
+        apply_event(&mut state, &mut found, SparkleEvent::Aborted);
+        apply_event(&mut state, &mut found, SparkleEvent::Dismissed);
+        assert!(matches!(
+            state,
+            UpdateState::Failed {
+                step: UpdateStep::Check,
+                info: Some(_),
+                ..
+            }
+        ));
+
+        apply_event(&mut state, &mut found, SparkleEvent::CheckStarted);
+        assert_eq!(state, UpdateState::UpToDate { checking: true });
+        apply_event(&mut state, &mut found, SparkleEvent::Dismissed);
+        assert_eq!(state, newer.available());
+        assert_eq!(found, Some(newer));
+    }
+
+    #[test]
+    fn a_check_leaves_a_failed_download_verify_or_install_on_screen() {
+        for step in [
+            UpdateStep::Download,
+            UpdateStep::Verify,
+            UpdateStep::Install,
+        ] {
+            let mut state = UpdateState::Failed {
+                step,
+                message: "offline".into(),
+                info: None,
+            };
+            let failed = state.clone();
+            assert!(!apply_event(
+                &mut state,
+                &mut None,
+                SparkleEvent::CheckStarted
+            ));
+            assert_eq!(state, failed);
+        }
+    }
+
+    #[test]
+    fn only_real_failures_are_logged() {
+        assert!(abort_is_failure(SPARKLE_ERROR_DOMAIN, 2001));
+        assert!(abort_is_failure("NSURLErrorDomain", 1001));
+        assert!(!abort_is_failure(SPARKLE_ERROR_DOMAIN, SU_NO_UPDATE_ERROR));
+        assert!(!abort_is_failure(
+            SPARKLE_ERROR_DOMAIN,
+            SU_INSTALLATION_CANCELED_ERROR
+        ));
+        assert!(!abort_is_failure(RUNNER_UPDATE_ERROR_DOMAIN, 1));
+    }
+
+    #[test]
+    fn a_logged_error_keeps_its_host_and_drops_a_signed_url() {
+        let entry = error_log_entry(
+            SPARKLE_ERROR_DOMAIN,
+            2001,
+            "A network error occurred while downloading https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sig=SECRET&se=1. Gateway Timeout (504)",
+        );
+        assert_eq!(
+            entry,
+            "SUSparkleErrorDomain 2001: A network error occurred while downloading https://release-assets.githubusercontent.com/… Gateway Timeout (504)"
+        );
+        assert_eq!(
+            error_log_entry(
+                "NSURLErrorDomain",
+                -1011,
+                "Could not load “https://objects.githubusercontent.com/a?sig='SECRET'”."
+            ),
+            "NSURLErrorDomain -1011: Could not load “https://objects.githubusercontent.com/…"
+        );
+        assert_eq!(
+            error_log_entry("NSURLErrorDomain", -1001, "The request timed out."),
+            "NSURLErrorDomain -1001: The request timed out."
         );
     }
 

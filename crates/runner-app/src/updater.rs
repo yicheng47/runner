@@ -102,6 +102,20 @@ pub enum UpdateState {
 }
 
 impl UpdateState {
+    /// Shows a check under way, unless an update further along than a check is on screen.
+    fn begin_check(&mut self) {
+        if matches!(
+            self,
+            Self::UpToDate { .. }
+                | Self::Failed {
+                    step: UpdateStep::Check,
+                    ..
+                }
+        ) {
+            *self = Self::UpToDate { checking: true };
+        }
+    }
+
     pub fn info(&self) -> Option<&UpdateInfo> {
         match self {
             Self::UpToDate { .. } => None,
@@ -187,6 +201,12 @@ fn parse_dev_preview(value: &str) -> Option<UpdateState> {
             step: UpdateStep::Download,
             message: "The network connection was lost.".into(),
             info: Some(info),
+        },
+        "failed-check" => UpdateState::Failed {
+            step: UpdateStep::Check,
+            message: "An error occurred in retrieving update information. Please try again later."
+                .into(),
+            info: None,
         },
         "uptodate" => UpdateState::UpToDate { checking: false },
         _ => return None,
@@ -379,9 +399,7 @@ impl Updater {
         let Some(initial) = self.preview.as_ref().map(|preview| preview.initial.clone()) else {
             return;
         };
-        if matches!(initial, UpdateState::UpToDate { .. }) {
-            self.state = UpdateState::UpToDate { checking: true };
-        }
+        self.state.begin_check();
         let task = cx.spawn(async move |updater, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(800))
@@ -644,6 +662,14 @@ mod tests {
                 ..
             })
         ));
+        assert!(matches!(
+            parse_dev_preview("0.19.5:failed-check"),
+            Some(UpdateState::Failed {
+                step: UpdateStep::Check,
+                info: None,
+                ..
+            })
+        ));
         assert_eq!(
             parse_dev_preview("0.19.5:uptodate"),
             Some(UpdateState::UpToDate { checking: false })
@@ -699,6 +725,37 @@ mod tests {
             UpdateState::Installing { .. }
         ));
         assert!(!crate::lifecycle::update_quit_pending());
+    }
+
+    #[cfg(not(any(
+        windows,
+        target_os = "linux",
+        all(target_os = "macos", feature = "updater")
+    )))]
+    #[test]
+    fn preview_retry_of_a_failed_check_shows_the_check_and_returns_to_the_error() {
+        let mut cx = gpui::TestAppContext::single();
+        let failed = parse_dev_preview("0.19.5:failed-check").unwrap();
+        let updater = cx.new(|cx| {
+            let mut updater = Updater::new(false, cx);
+            updater.set_preview_for_test(failed.clone(), cx);
+            updater
+        });
+        for _ in 0..2 {
+            updater.update(&mut cx, |updater, cx| {
+                updater.request_retry(Path::new(""), cx)
+            });
+            assert_eq!(
+                updater.read_with(&cx, |updater, _| updater.state().clone()),
+                UpdateState::UpToDate { checking: true }
+            );
+            cx.executor().advance_clock(Duration::from_secs(1));
+            cx.run_until_parked();
+            assert_eq!(
+                updater.read_with(&cx, |updater, _| updater.state().clone()),
+                failed
+            );
+        }
     }
 
     #[cfg(not(any(
