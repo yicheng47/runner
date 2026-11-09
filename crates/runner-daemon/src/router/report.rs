@@ -62,12 +62,13 @@ struct Attempt {
 }
 
 /// A report whose attempt ended without confirmation, so its line may still be
-/// in the composer; `seen` once the probe has found it there.
+/// in the composer; `seen` once the probe has found it there, `tracked` once the input tracker has.
 struct Unsent {
     seq: u64,
     snapshot: DeliverySnapshot,
     probe: InputProbe,
     seen: bool,
+    tracked: bool,
 }
 
 #[derive(Default)]
@@ -246,6 +247,7 @@ impl ReportDispatcher {
                         before.generation == current.generation
                             && current.turn_started != before.turn_started
                     });
+            let prompted = turn_started && current.as_ref().is_some_and(|current| current.prompted);
             let present = state == ProbeState::Present || unsent;
             if unchanged && present && !turn_started && !attempt.second_enter {
                 let retried = attempt.snapshot.as_ref().is_some_and(|snapshot| {
@@ -258,7 +260,9 @@ impl ReportDispatcher {
                     return;
                 }
             }
-            let outcome = if !unchanged {
+            let outcome = if prompted {
+                "Confirmed"
+            } else if !unchanged {
                 "Unverified"
             } else if turn_started || (state == ProbeState::Cleared && !unsent) {
                 "Confirmed"
@@ -267,9 +271,11 @@ impl ReportDispatcher {
             } else {
                 "Unverified"
             };
+            let held = current.as_ref().is_some_and(|current| current.held);
             log::info!(
-                "report attempt outcome={outcome} session={chat_id} mission={}",
-                attempt.mission
+                "report attempt outcome={outcome} session={chat_id} mission={} turn={turn_started} prompted={prompted} input_moved={} probe={state:?} unsent={unsent} held={held}",
+                attempt.mission,
+                !unchanged
             );
             if outcome == "Confirmed" {
                 if let Some(snapshot) = &attempt.snapshot {
@@ -288,6 +294,7 @@ impl ReportDispatcher {
                         snapshot,
                         probe: attempt.probe,
                         seen: false,
+                        tracked: unsent || current.as_ref().is_some_and(|current| current.held),
                     });
                     chat.input_cleared = false;
                     chat.pause_check = Some(now + CONFIRM_WINDOW);
@@ -303,11 +310,21 @@ impl ReportDispatcher {
                 .map(|current| unsent.probe.state(&current.rows))
                 .unwrap_or(ProbeState::Unknown);
             let tracked = current.as_ref().is_some_and(|current| current.unsent);
+            let started = current.as_ref().is_some_and(|current| {
+                current.generation == unsent.snapshot.generation
+                    && current.turn_started != unsent.snapshot.turn_started
+            });
             if state == ProbeState::Present {
                 unsent.seen = true;
                 chat.input_cleared = false;
             }
-            let gone = (state == ProbeState::Cleared && !tracked)
+            unsent.tracked |= tracked || current.as_ref().is_some_and(|current| current.held);
+            // The agent reported this line as its prompt, or a turn has started and the tracker
+            // has let go of the line it held: a row that still reads like it is the transcript's
+            // copy (#1225).
+            let prompted = current.as_ref().is_some_and(|current| current.prompted);
+            let gone = (started && (prompted || (unsent.tracked && !tracked)))
+                || (state == ProbeState::Cleared && !tracked)
                 || (state == ProbeState::Unknown
                     && unsent.seen
                     && chat.input_cleared
@@ -322,12 +339,10 @@ impl ReportDispatcher {
             }
             chat.pause_check = None;
             if gone {
-                // The person sent the line themselves: the chat has the report.
-                if current.as_ref().is_some_and(|current| {
-                    current.generation == unsent.snapshot.generation
-                        && current.turn_started != unsent.snapshot.turn_started
-                }) {
-                    log::info!("report sent by hand session={chat_id}");
+                // The line was submitted after its attempt, by its Enter or by hand: the chat has
+                // the report.
+                if started {
+                    log::info!("report delivered after its attempt session={chat_id}");
                     chat.queue.retain(|pending| pending.seq != unsent.seq);
                 }
                 chat.retry = None;
@@ -351,14 +366,14 @@ impl ReportDispatcher {
                 _ => return,
             }
             // A fresh native fork can report its turn after the window: with no input
-            // since, a turn started in the same session is the line's own. The evidence
-            // stays while a retry is only deferred.
+            // since, or with the line reported as its prompt, a turn started in the same session
+            // is the line's own. The evidence stays while a retry is only deferred.
             match chat.late.as_ref() {
                 Some((seq, _)) if *seq != pending.seq => chat.late = None,
                 Some((_, before))
                     if port.delivery_snapshot(chat_id).is_some_and(|current| {
                         current.generation == before.generation
-                            && current.input_revision == before.input_revision
+                            && (current.input_revision == before.input_revision || current.prompted)
                             && current.turn_started != before.turn_started
                     }) =>
                 {
@@ -448,14 +463,18 @@ impl ReportDispatcher {
         *held = hold;
     }
 
-    /// A tracker-only unsent hold that no unconfirmed attempt of ours left behind is re-checked
-    /// against the composer before it holds the chat, as the inbox dispatcher does.
+    /// A tracker-only unsent or draft hold that no unconfirmed attempt of ours left behind is
+    /// re-checked against the composer before it holds the chat, as the inbox dispatcher does.
     fn readiness(port: &dyn StdinInjector, chat_id: &str, own_unsent: bool) -> DeliveryReadiness {
         let readiness = port.report_readiness(chat_id);
-        if readiness != DeliveryReadiness::Unsent || own_unsent {
+        if !matches!(
+            readiness,
+            DeliveryReadiness::Unsent | DeliveryReadiness::Drafting
+        ) || own_unsent
+        {
             return readiness;
         }
-        port.recheck_unsent(chat_id);
+        port.recheck_composer(chat_id);
         port.report_readiness(chat_id)
     }
 }

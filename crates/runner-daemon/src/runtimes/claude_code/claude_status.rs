@@ -37,6 +37,7 @@ struct StatusReport {
     pub(crate) session_id: Option<String>,
     pub(crate) transcript_path: Option<PathBuf>,
     pub(crate) prompt_id: Option<String>,
+    prompt: Option<String>,
     agent_id: Option<String>,
     tool_use_id: Option<String>,
     tool_name: Option<String>,
@@ -173,6 +174,11 @@ impl ClaudeParser {
         if let Some(path) = report.transcript_path {
             self.transcript_path = Some(path);
         }
+        let prompt = if report.hook_event_name == "UserPromptSubmit" {
+            report.prompt
+        } else {
+            None
+        };
         let event = match report.hook_event_name.as_str() {
             "UserPromptSubmit" => {
                 self.clear();
@@ -334,7 +340,10 @@ impl ClaudeParser {
             }
             _ => return None,
         };
-        Some(vec![event])
+        Some(match prompt {
+            Some(prompt) => vec![AgentEvent::PromptSubmitted { prompt }, event],
+            None => vec![event],
+        })
     }
     fn clear(&mut self) {
         self.tools.clear();
@@ -792,6 +801,29 @@ mod tests {
             serde_json::from_value::<StatusReport>(fields).unwrap(),
             crate::session::clock::timestamp_millis(),
         )
+    }
+
+    #[test]
+    fn a_submitted_prompt_is_reported_beside_its_turn_start() {
+        let report = |fields| serde_json::from_value::<StatusReport>(fields).unwrap();
+        let mut parser = ClaudeParser::default();
+        let events = parser
+            .hook(report(serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "[runner] line",
+            })))
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::PromptSubmitted { prompt }, AgentEvent::TurnStarted]
+                if prompt == "[runner] line"
+        ));
+        let events = parser
+            .hook(report(
+                serde_json::json!({"hook_event_name": "UserPromptSubmit"}),
+            ))
+            .unwrap();
+        assert!(matches!(events.as_slice(), [AgentEvent::TurnStarted]));
     }
 
     #[test]

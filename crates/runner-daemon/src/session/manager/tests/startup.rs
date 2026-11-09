@@ -521,6 +521,69 @@ fn a_synthetic_busy_publication_cannot_confirm_an_attempt() {
 }
 
 #[test]
+fn only_a_turn_reporting_the_typed_line_as_its_prompt_marks_it_delivered() {
+    let fixture = StartupFixture::new();
+    let _output = fixture.launch("claude-code", false, Instant::now());
+    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    let prompted = || {
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .prompted
+    };
+    let turn = |prompt: &str| {
+        fixture.manager.publish_agent_event(
+            "session",
+            AgentEvent::Batch {
+                runtime: Runtime::ClaudeCode,
+                events: vec![
+                    AgentEvent::PromptSubmitted {
+                        prompt: prompt.into(),
+                    },
+                    AgentEvent::TurnStarted,
+                ],
+            },
+            &Capture::default(),
+        );
+    };
+    let end = || {
+        fixture.event(
+            Runtime::ClaudeCode,
+            AgentEvent::TurnEnded {
+                outcome: crate::session::status::TurnOutcome::Completed,
+            },
+        );
+    };
+    let typed = |line: &[u8]| {
+        let DeliveryReservation::Ready(token) =
+            fixture.manager.reserve_delivery("session").unwrap()
+        else {
+            panic!("the session is not ready");
+        };
+        assert!(fixture
+            .manager
+            .inject_reserved("session", token, line)
+            .unwrap());
+        fixture.manager.finish_delivery("session", token);
+    };
+
+    typed(b"[runner] line");
+    assert!(!prompted());
+    turn("a scheduled wakeup");
+    assert!(!prompted(), "another prompt");
+    end();
+    fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted);
+    assert!(!prompted(), "a turn with no reported prompt");
+    end();
+    turn("[runner] line\n");
+    assert!(prompted());
+    end();
+    typed(b"[runner] next");
+    assert!(!prompted(), "the next line starts unproven");
+}
+
+#[test]
 fn approval_response_and_release_are_readiness_events_not_composer_clear_evidence() {
     #[derive(Default)]
     struct Events(Mutex<Vec<crate::router::SessionDeliveryEvent>>);

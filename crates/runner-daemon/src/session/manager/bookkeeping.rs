@@ -232,8 +232,13 @@ impl SessionManager {
                     .unwrap_or(0),
             ),
             turn_started: session.turn_started,
+            prompted: session.delivery_prompted,
             runtime: session.delivery_runtime.clone(),
             unsent: session.model.unsent_notice(),
+            held: session
+                .terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.delivery_held()),
         })
     }
 
@@ -292,7 +297,7 @@ impl SessionManager {
         terminal.publish_input(observation);
     }
 
-    pub fn recheck_unsent(&self, session_id: &str) {
+    pub fn recheck_composer(&self, session_id: &str) {
         let Some(session) = self.session_state(session_id) else {
             return;
         };

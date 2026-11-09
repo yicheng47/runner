@@ -616,7 +616,7 @@ impl SessionManager {
         };
         let gate = session.lock().unwrap().delivery_gate.clone();
         let delivery = gate.state.lock().unwrap();
-        let session = session.lock().unwrap();
+        let mut session = session.lock().unwrap();
         if !delivery.in_flight
             || delivery.generation != token
             || session.model.status().observation.needs_you()
@@ -630,6 +630,10 @@ impl SessionManager {
         else {
             return Ok(false);
         };
+        if bytes != b"\r" {
+            session.delivery_line = std::str::from_utf8(bytes).ok().map(str::to_owned);
+            session.delivery_prompted = false;
+        }
         let terminal = session.terminal.clone();
         drop(session);
         if let Some(terminal) = terminal {

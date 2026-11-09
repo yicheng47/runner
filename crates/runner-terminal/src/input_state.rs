@@ -90,6 +90,11 @@ pub struct InputTracker {
     input_revision: u64,
     delivery_revision: Option<u64>,
     delivery_text: String,
+    /// The router's latest line has been held here as its own since it was typed.
+    delivery_held: bool,
+    /// When text was last typed or pasted since the last Enter, so an empty editor before its
+    /// echo releases nothing.
+    content_at: Option<Instant>,
 }
 
 impl InputTracker {
@@ -107,6 +112,8 @@ impl InputTracker {
             input_revision: 0,
             delivery_revision: None,
             delivery_text: String::new(),
+            delivery_held: false,
+            content_at: None,
         }
     }
 
@@ -133,7 +140,11 @@ impl InputTracker {
         now: Instant,
         term: &Term<T>,
     ) -> Option<InputObservation> {
-        self.input_revision = self.input_revision.wrapping_add(1);
+        // The app ends a composition before every typed key and whenever the IME unmarks, as on
+        // a focus change; ending one that never started changes nothing a delivery holds (#1225).
+        if !matches!(event, InputEvent::Composing { composing: false } if !self.composing) {
+            self.input_revision = self.input_revision.wrapping_add(1);
+        }
         self.expire_probe(now);
         match event {
             InputEvent::Composing { composing } => self.composing = *composing,
@@ -176,6 +187,7 @@ impl InputTracker {
 
     pub fn track_delivery_input<T>(&mut self, text: &str, now: Instant, term: &Term<T>) {
         self.expire_probe(now);
+        self.delivery_held = false;
         if matches!(self.state, TrackerState::Idle) {
             self.delivery_revision = Some(self.input_revision);
             self.delivery_text = text.to_owned();
@@ -209,6 +221,18 @@ impl InputTracker {
 
     pub fn track_delivery_submit<T>(&mut self, now: Instant, term: &Term<T>) {
         self.submit(now, term, SubmitOrigin::Delivery);
+        self.delivery_held |= self.delivery_owned();
+    }
+
+    /// The router's latest line was held here as its own after its Enter, even if it has since
+    /// been let go of, which tells a line that left the composer from one never located (#1225).
+    pub fn delivery_held(&self) -> bool {
+        self.delivery_held
+    }
+
+    fn content_pending(&self, now: Instant) -> bool {
+        self.content_at
+            .is_some_and(|at| now.saturating_duration_since(at) <= ECHO_WINDOW)
     }
 
     /// The router saw its notice submitted, so a row that still repeats it is history. Input
@@ -226,20 +250,24 @@ impl InputTracker {
 
     /// With no router attempt pending, keep the notice only where the input cursor still
     /// sits on it or on the rows it wrapped onto, or once a person has used the terminal since.
+    /// A notice or draft is dropped wherever the input cursor sits at an empty composer instead.
     pub fn recheck_delivery<T>(
         &mut self,
         now: Instant,
         term: &Term<T>,
     ) -> Option<InputObservation> {
-        let live = match &self.state {
-            TrackerState::Drafting(composer) | TrackerState::Submitted(composer) => {
+        let (live, editor_empty) = match &self.state {
+            TrackerState::Drafting(composer) | TrackerState::Submitted(composer) => (
                 composer.visible
                     && self.unsent_notice(term)
-                    && cursor_in_notice(term, composer, &self.delivery_text)
-            }
-            _ => false,
+                    && cursor_in_notice(term, composer, &self.delivery_text),
+                composer.visible && cursor_at_empty_composer(term, composer),
+            ),
+            _ => (false, false),
         };
-        if self.delivery_owned() && self.delivery_revision == Some(self.input_revision) && !live {
+        if (self.delivery_owned() && self.delivery_revision == Some(self.input_revision) && !live)
+            || (editor_empty && !self.composing && !self.content_pending(now))
+        {
             self.state = TrackerState::Idle;
             self.delivery_revision = None;
         }
@@ -333,18 +361,22 @@ impl InputTracker {
                 } else if now.duration_since(probe.started) <= ECHO_WINDOW {
                     TrackerState::Reprobing { probe, composer }
                 } else {
-                    self.observe_composer(term, composer, true)
+                    self.observe_composer(now, term, composer, true)
                 }
             }
-            TrackerState::Drafting(composer) => self.observe_composer(term, composer, false),
-            TrackerState::Submitted(composer) => self.observe_composer(term, composer, true),
+            TrackerState::Drafting(composer) => self.observe_composer(now, term, composer, false),
+            TrackerState::Submitted(composer) => self.observe_composer(now, term, composer, true),
         };
-        // Submitted text can remain in history with the same prefix as the live composer.
-        if matches!(
-            &self.state,
-            TrackerState::Submitted(composer) | TrackerState::Drafting(composer)
-                if composer.submitted_form.is_some() && cursor_at_empty_composer(term, composer)
-        ) {
+        self.delivery_held |= self.delivery_owned();
+        // Submitted text can remain in history with the same prefix as the live composer; text
+        // typed since the Enter may not have reached that composer yet.
+        if !self.content_pending(now)
+            && matches!(
+                &self.state,
+                TrackerState::Submitted(composer) | TrackerState::Drafting(composer)
+                    if composer.submitted_form.is_some() && cursor_at_empty_composer(term, composer)
+            )
+        {
             self.state = TrackerState::Idle;
         }
         self.emit_if_changed(now, "composer changed")
@@ -368,6 +400,7 @@ impl InputTracker {
         if text.is_empty() {
             return;
         }
+        self.content_at = Some(now);
         let state = std::mem::replace(&mut self.state, TrackerState::Idle);
         self.state = match state {
             TrackerState::Idle => TrackerState::Probing(new_probe(text, pasted, now, term)),
@@ -405,6 +438,7 @@ impl InputTracker {
     }
 
     fn submit<T>(&mut self, _now: Instant, term: &Term<T>, origin: SubmitOrigin) {
+        self.content_at = None;
         if origin == SubmitOrigin::Native && !self.delivery_owned() {
             self.delivery_revision = None;
         }
@@ -437,6 +471,7 @@ impl InputTracker {
 
     fn observe_composer<T>(
         &self,
+        now: Instant,
         term: &Term<T>,
         mut composer: Composer,
         submitted: bool,
@@ -500,9 +535,12 @@ impl InputTracker {
             if current == *submitted_form {
                 return TrackerState::Drafting(composer);
             }
+            // The person's input reaches the editor under the cursor: while that one is empty and
+            // nothing typed awaits its echo, the changed row is transcript, not their draft (#1225).
             if self
                 .delivery_revision
                 .is_some_and(|revision| revision != self.input_revision)
+                && (self.content_pending(now) || !cursor_at_empty_composer(term, &composer))
             {
                 composer.submitted_form = None;
                 composer.last_form = current;
@@ -1976,6 +2014,255 @@ mod tests {
             );
             assert_eq!(tracker.unsent_notice(&term), unsent, "{case}");
         }
+    }
+
+    const LINKED: &str = "[runner] Mission m1 is now linked to this chat.";
+
+    /// #1225: the router's line is submitted, and Claude Code redraws it as a transcript row at
+    /// the composer's row while the turn runs, with the input cursor parked below the frame.
+    fn linked_line_in_transcript() -> (
+        Instant,
+        Term<alacritty_terminal::event::VoidListener>,
+        InputTracker,
+    ) {
+        let start = Instant::now();
+        let mut term = new_term(60, 10);
+        feed(
+            &mut term,
+            "\x1b[1;1H✻ Welcome\x1b[3;1H❯ \x1b[3;3H".as_bytes(),
+        );
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.track_delivery_input(LINKED, start, &term);
+        feed(&mut term, format!("\x1b[3;1H\x1b[K❯ {LINKED}").as_bytes());
+        tracker.observe_output(start + Duration::from_millis(1), &term);
+        tracker.track_delivery_submit(start + Duration::from_millis(80), &term);
+        feed(
+            &mut term,
+            format!("\x1b[3;1H\x1b[K❯ {LINKED}\x1b[5;1H✻ Contemplating…\x1b[7;1H❯ \x1b[10;1H")
+                .as_bytes(),
+        );
+        tracker.observe_output(start + Duration::from_millis(89), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Unsent);
+        (start, term, tracker)
+    }
+
+    /// The turn ends and the transcript is redrawn: the tracked row now holds an earlier prompt,
+    /// and the input cursor rests at the empty composer.
+    const TURN_END: &str = "\x1b[2J\x1b[1;1H⏺ Started.\x1b[3;1H❯ start the mission\x1b[4;1H⏺ Mission started.\x1b[5;1H❯ [runner] Mission m1 is now linked to this chat.\x1b[6;1H⏺ Linked.\x1b[8;1H❯ \x1b[8;3H";
+
+    #[test]
+    fn an_ended_composition_does_not_hold_a_submitted_line_as_unsent() {
+        let (start, mut term, mut tracker) = linked_line_in_transcript();
+        let revision = tracker.reset_guard();
+        tracker.observe_input(
+            &InputEvent::Composing { composing: false },
+            start + Duration::from_millis(300),
+            &term,
+        );
+        assert_eq!(tracker.reset_guard(), revision, "no composition to end");
+        assert_eq!(
+            tracker
+                .confirm_delivery(revision, start + Duration::from_millis(1580))
+                .map(|observation| observation.state),
+            Some(InputState::Idle),
+            "the router saw the turn start"
+        );
+        feed(&mut term, TURN_END.as_bytes());
+        tracker.observe_output(start + Duration::from_secs(14), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+
+        // A composition that did start still counts as input.
+        tracker.observe_input(&InputEvent::Composing { composing: true }, start, &term);
+        let composing = tracker.reset_guard();
+        assert_ne!(composing, revision);
+        tracker.observe_input(&InputEvent::Composing { composing: false }, start, &term);
+        assert_ne!(tracker.reset_guard(), composing);
+    }
+
+    #[test]
+    fn a_key_during_the_turn_cannot_make_the_transcript_a_draft() {
+        let (start, mut term, mut tracker) = linked_line_in_transcript();
+        let revision = tracker.reset_guard();
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Navigate,
+            },
+            start + Duration::from_millis(300),
+            &term,
+        );
+        assert!(tracker
+            .confirm_delivery(revision, start + Duration::from_millis(1580))
+            .is_none());
+        feed(&mut term, TURN_END.as_bytes());
+        tracker.observe_output(start + Duration::from_secs(14), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+        assert!(!tracker.unsent_notice(&term));
+    }
+
+    #[test]
+    fn a_recheck_drops_a_draft_the_empty_editor_does_not_show() {
+        let (start, mut term, mut tracker) = linked_line_in_transcript();
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Navigate,
+            },
+            start + Duration::from_millis(300),
+            &term,
+        );
+        // The turn-end frame arrives before Claude Code returns the cursor to its composer.
+        feed(&mut term, TURN_END.as_bytes());
+        feed(&mut term, b"\x1b[10;1H");
+        tracker.observe_output(start + Duration::from_secs(14), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+        tracker.recheck_delivery(start + Duration::from_secs(15), &term);
+        assert_eq!(
+            tracker.current_reported_state().state,
+            InputState::Drafting,
+            "no editor under the cursor yet"
+        );
+        feed(&mut term, b"\x1b[8;3H");
+        tracker.recheck_delivery(start + Duration::from_secs(16), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+    }
+
+    fn typed_before_echo(pasted: bool) -> InputEvent {
+        if pasted {
+            InputEvent::Paste {
+                text: "draft".into(),
+            }
+        } else {
+            InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn a_recheck_keeps_text_typed_before_its_echo() {
+        for pasted in [false, true] {
+            let (start, mut term, mut tracker) = linked_line_in_transcript();
+            tracker.observe_input(
+                &InputEvent::Key {
+                    kind: InputKind::Navigate,
+                },
+                start + Duration::from_millis(300),
+                &term,
+            );
+            feed(&mut term, TURN_END.as_bytes());
+            feed(&mut term, b"\x1b[10;1H");
+            tracker.observe_output(start + Duration::from_secs(14), &term);
+            feed(&mut term, b"\x1b[8;3H");
+            let typed = start + Duration::from_secs(15);
+            tracker.observe_input(&typed_before_echo(pasted), typed, &term);
+            tracker.recheck_delivery(typed + Duration::from_millis(10), &term);
+            assert_eq!(
+                tracker.current_reported_state().state,
+                InputState::Drafting,
+                "pasted={pasted}: the echo is still on its way"
+            );
+            feed(&mut term, "\x1b[8;1H\x1b[K❯ draft".as_bytes());
+            tracker.observe_output(typed + Duration::from_millis(30), &term);
+            tracker.recheck_delivery(typed + Duration::from_secs(5), &term);
+            assert_eq!(
+                tracker.current_reported_state().state,
+                InputState::Drafting,
+                "pasted={pasted}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_typed_before_its_echo_is_not_lost_to_a_frame_with_an_empty_editor() {
+        // The frame either keeps the transcript row at the tracked row or ends the turn.
+        for (changed_row, frame, echo) in [
+            (false, "\x1b[7;3H", "\x1b[7;1H\x1b[K❯ draft"),
+            (true, TURN_END, "\x1b[8;1H\x1b[K❯ draft"),
+        ] {
+            for pasted in [false, true] {
+                let (start, mut term, mut tracker) = linked_line_in_transcript();
+                tracker.observe_input(
+                    &InputEvent::Key {
+                        kind: InputKind::Navigate,
+                    },
+                    start + Duration::from_millis(300),
+                    &term,
+                );
+                let typed = start + Duration::from_secs(14);
+                tracker.observe_input(&typed_before_echo(pasted), typed, &term);
+                feed(&mut term, frame.as_bytes());
+                tracker.observe_output(typed + Duration::from_millis(10), &term);
+                feed(&mut term, echo.as_bytes());
+                tracker.observe_output(typed + Duration::from_millis(30), &term);
+                tracker.recheck_delivery(typed + Duration::from_secs(5), &term);
+                assert_ne!(
+                    tracker.current_reported_state().state,
+                    InputState::Idle,
+                    "changed_row={changed_row} pasted={pasted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tracker_remembers_holding_a_line_it_let_go_of_until_the_next_one() {
+        let start = Instant::now();
+        let mut term = new_term(60, 10);
+        feed(&mut term, "\x1b[3;1H❯ \x1b[3;3H".as_bytes());
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.track_delivery_input(LINKED, start, &term);
+        feed(&mut term, format!("\x1b[3;1H\x1b[K❯ {LINKED}").as_bytes());
+        tracker.observe_output(start + Duration::from_millis(1), &term);
+        assert!(!tracker.delivery_held(), "not submitted yet");
+        tracker.track_delivery_submit(start + Duration::from_millis(80), &term);
+        // The first frame after Enter already shows the empty composer below the transcript row.
+        feed(
+            &mut term,
+            format!("\x1b[3;1H\x1b[K❯ {LINKED}\x1b[5;1H❯ \x1b[5;3H").as_bytes(),
+        );
+        tracker.observe_output(start + Duration::from_millis(89), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+        assert!(tracker.delivery_held());
+
+        // A line whose echo was never located is not one the tracker held.
+        tracker.track_delivery_input("[inbox] task", start + Duration::from_secs(5), &term);
+        assert!(!tracker.delivery_held());
+        tracker.track_delivery_submit(start + Duration::from_secs(5), &term);
+        tracker.observe_output(start + Duration::from_secs(6), &term);
+        assert!(!tracker.delivery_held());
+    }
+
+    #[test]
+    fn a_recheck_keeps_a_real_draft_before_and_after_a_turn_end() {
+        let start = Instant::now();
+        let mut term = new_term(60, 10);
+        feed(&mut term, "\x1b[1;1H⏺ Done.\x1b[3;1H❯ \x1b[3;3H".as_bytes());
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "half a thought".into(),
+                },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, "\x1b[3;1H\x1b[K❯ half a thought".as_bytes());
+        tracker.observe_output(start + Duration::from_millis(5), &term);
+        tracker.recheck_delivery(start + Duration::from_secs(5), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+        // A turn end redraws the transcript above the draft and returns the cursor to it.
+        feed(
+            &mut term,
+            "\x1b[1;1H⏺ Done again.\x1b[K\x1b[3;1H\x1b[K❯ half a thought\x1b[3;17H".as_bytes(),
+        );
+        tracker.observe_output(start + Duration::from_secs(10), &term);
+        tracker.recheck_delivery(start + Duration::from_secs(11), &term);
+        assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
     }
 
     #[test]
