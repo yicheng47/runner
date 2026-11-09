@@ -12,6 +12,9 @@ pub struct AdapterFeedback {
     pub(crate) accepted: bool,
     pub(crate) read_transcript: bool,
     pub(crate) compacting: bool,
+    pub(crate) activity: Activity,
+    pub(crate) detail: Option<WorkDetail>,
+    pub(crate) outcome: Option<TurnOutcome>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,6 +220,9 @@ impl AgentModel {
                 || self.value.needs_you()
                 || self.cancelled_tool_result,
             compacting: self.compacting,
+            activity: self.value.activity,
+            detail: self.value.detail,
+            outcome: self.value.outcome,
         }
     }
 

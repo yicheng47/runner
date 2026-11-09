@@ -33,6 +33,7 @@ struct Queued {
     report: HookReport,
     bytes: usize,
     ready: Arc<AtomicBool>,
+    admitted_at: i64,
 }
 
 pub struct Admission {
@@ -182,6 +183,7 @@ impl HookRoutes {
             report,
             bytes,
             ready: ready.clone(),
+            admitted_at: super::clock::timestamp_millis(),
         });
         Ok(Admission { ready })
     }
@@ -201,7 +203,20 @@ impl HookReceiver {
         self.queue.state.lock().unwrap().closed
     }
 
+    pub(crate) fn session(&self) -> &str {
+        &self.queue.session
+    }
+
     pub fn drain(&mut self, mut observe: impl FnMut(HookReport)) -> Result<()> {
+        self.drain_admitted(|report, _| observe(report))
+    }
+
+    /// Each report with the wall time it was admitted: after the agent fired its hook and
+    /// before the hook returned to it.
+    pub(crate) fn drain_admitted(
+        &mut self,
+        mut observe: impl FnMut(HookReport, i64),
+    ) -> Result<()> {
         loop {
             let next = {
                 let mut state = self.queue.state.lock().unwrap();
@@ -217,10 +232,11 @@ impl HookReceiver {
                 }
                 let next = state.reports.pop_front().unwrap();
                 state.bytes -= next.bytes;
-                next.report
+                (next.report, next.admitted_at)
             };
+            let (next, admitted_at) = next;
             if next.generation == self.queue.generation && next.runtime == self.queue.runtime {
-                observe(next);
+                observe(next, admitted_at);
             }
         }
     }
