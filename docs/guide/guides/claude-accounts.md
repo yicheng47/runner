@@ -34,8 +34,10 @@ Choose **Stop using Personal’s settings** in the account’s **⋯** menu to d
 
 **Settings → Skills** and **Settings → MCP** edit the main account’s configuration. **Make main** moves those panes, model discovery and update-channel lookup to the selected account. The promoted account’s managed links are removed and other linked accounts follow the new owner. Its own files become the shared configuration; Runner does not copy the previous owner’s files. If Runner cannot finish because a folder is inaccessible, the previous main stays selected. Restore access and choose **Retry** in Accounts. Accounts involved in that change wait to launch until it finishes; the pending change survives restarting Runner.
 
-## Rename, make main or remove
+## Rename, make main, sign out or remove
 
-An account’s **⋯** menu offers **Rename**, **Make main**, **Reveal in Finder** (**Show in Explorer** on Windows) and **Remove**. Renaming leaves its folder unchanged. Main identifies the owner of shared configuration; changing main never changes an account’s sign-in target.
+An account’s **⋯** menu offers **Rename**, **Make main**, **Reveal in Finder** (**Show in Explorer** on Windows), **Sign out** and **Remove**. Renaming leaves its folder unchanged. Main identifies the owner of shared configuration; changing main never changes an account’s sign-in target.
 
-Menu labels stay on one line; long account names are shortened to fit. The main account, active account and original native account cannot be removed; hover the disabled Remove item for the reason. Removing another account forgets it in Runner and preserves its folder, files and sign-in on disk. Switch away from an active account before removing it.
+**Sign out** appears for signed-in accounts and always asks for confirmation. Claude Code removes the account’s sign-in; its folder, settings and conversation history stay. **Log in** signs it in again. Signing out keeps main, active and sharing selections unchanged. An active account stays **Active**, and new Claude Code chats start signed out until you log in or switch accounts. Signing out the original native account also signs out `claude` in your terminal and other apps using `~/.claude`. Running chats and mission sessions keep their sign-in until Claude Code asks them to log in again; the confirmation shows their count.
+
+Menu labels stay on one line; long account names are shortened to fit. The main account, active account and original native account cannot be removed; hover the disabled Remove item for the reason. Removing another account is immediate and only forgets it in Runner, preserving its folder, files and sign-in on disk. Sign out first to remove its sign-in too. Switch away from an active account before removing it.

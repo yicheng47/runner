@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -84,11 +84,15 @@ impl LoginJob {
     }
 
     fn finished(&self) -> Result<bool> {
+        Ok(self.exit_status()?.is_some())
+    }
+
+    fn exit_status(&self) -> Result<Option<ExitStatus>> {
         let mut process = self.process.lock().unwrap();
         if process.cancelled {
             return Err(Error::msg("sign-in cancelled"));
         }
-        Ok(process.child.as_mut().unwrap().0.try_wait()?.is_some())
+        Ok(process.child.as_mut().unwrap().0.try_wait()?)
     }
 
     fn stop(&self) {
@@ -308,6 +312,31 @@ pub fn action(core: &AppCore, action: ClaudeAccountAction) -> Result<ClaudeAccou
             core.events.emit("claude_accounts/changed", &());
             return snapshot(core);
         }
+        ClaudeAccountAction::SignOut { id } => {
+            let _mutation = core.claude_accounts.mutations.lock().unwrap();
+            if !core.claude_accounts.authenticate {
+                return Err(Error::msg("authentication is disabled in this test core"));
+            }
+            let account = load(&core.db)?
+                .accounts
+                .into_iter()
+                .find(|account| &account.id == id)
+                .ok_or_else(|| Error::msg("account not found"))?;
+            if let Some(child) = core.claude_accounts.jobs.lock().unwrap().entries.remove(id) {
+                child.stop();
+            }
+            let result = sign_out(core, &account, Duration::from_secs(15));
+            let status = auth_status(core, &account);
+            core.claude_accounts
+                .statuses
+                .lock()
+                .unwrap()
+                .insert(id.clone(), status);
+            core.events.emit("claude_accounts/changed", &());
+            core.usage.request_account_refresh(core.clone());
+            result?;
+            return snapshot(core);
+        }
         _ => {}
     }
     let _mutation = core.claude_accounts.mutations.lock().unwrap();
@@ -411,6 +440,89 @@ fn command(core: &AppCore, account: &ClaudeAccount) -> Result<Command> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     Ok(command)
+}
+
+fn sign_out(core: &AppCore, account: &ClaudeAccount, timeout: Duration) -> Result<()> {
+    let mut command = command(core, account)?;
+    command.args(["auth", "logout"]).stdout(Stdio::null());
+    let job = LoginJob::default();
+    job.spawn(command)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match job.exit_status() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(Error::msg("Claude Code sign-out failed"))
+                }
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result => {
+                job.stop();
+                result?;
+                return Err(Error::msg("Claude Code sign-out timed out"));
+            }
+        }
+    }
+}
+
+pub fn running_sessions(core: &AppCore, id: &str) -> Result<usize> {
+    let accounts = snapshot(core)?;
+    if !accounts.accounts.iter().any(|account| account.id == id) {
+        return Err(Error::msg("account not found"));
+    }
+    count_running_sessions(
+        &*core.db.get()?,
+        &accounts,
+        id,
+        &core.sessions.live_session_ids(),
+    )
+}
+
+fn count_running_sessions(
+    conn: &rusqlite::Connection,
+    accounts: &ClaudeAccounts,
+    id: &str,
+    live_ids: &[String],
+) -> Result<usize> {
+    let mut count = 0;
+    for session_id in live_ids {
+        if crate::repo::session::effective_runtime(conn, session_id)?.as_deref()
+            != Some("claude-code")
+        {
+            continue;
+        }
+        let Some(session) = crate::repo::session::get_row(conn, session_id)? else {
+            continue;
+        };
+        let definition = session.launch_definition.as_ref();
+        let pin = definition.and_then(|definition| {
+            definition
+                .env
+                .get("CLAUDE_CONFIG_DIR")
+                .map(|folder| ClaudeSessionAccount {
+                    account_id: None,
+                    folder: folder.clone(),
+                    native: false,
+                    pinned: true,
+                    origin_folder: folder.clone(),
+                    permission_mode: "default".into(),
+                })
+        });
+        let recorded = definition
+            .and_then(|definition| definition.claude_account.as_ref())
+            .or(pin.as_ref());
+        if accounts
+            .session_account(recorded)
+            .is_some_and(|account| account.id == id)
+        {
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 fn parse_status(bytes: &[u8]) -> ClaudeAuthStatus {
@@ -526,6 +638,13 @@ fn refresh_statuses_inner(core: &AppCore) {
             {
                 continue;
             }
+            let previous = core
+                .claude_accounts
+                .statuses
+                .lock()
+                .unwrap()
+                .get(&account.id)
+                .cloned();
             let status = auth_status(core, &account);
             let _mutation = core.claude_accounts.mutations.lock().unwrap();
             if !load(&core.db).is_ok_and(|state| {
@@ -537,7 +656,17 @@ fn refresh_statuses_inner(core: &AppCore) {
                 continue;
             }
             let jobs = core.claude_accounts.jobs.lock().unwrap();
-            if !jobs.closed && !jobs.entries.contains_key(&account.id) {
+            // A probe begun before sign-out must not restore the old sign-in.
+            if !jobs.closed
+                && !jobs.entries.contains_key(&account.id)
+                && core
+                    .claude_accounts
+                    .statuses
+                    .lock()
+                    .unwrap()
+                    .get(&account.id)
+                    == previous.as_ref()
+            {
                 let status = ready_status(&account, status);
                 core.claude_accounts
                     .statuses
@@ -921,6 +1050,309 @@ exec sleep 60
             assert!(Instant::now() < deadline, "timed out: {description}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    fn sign_out_core(temp: &Path) -> AppCore {
+        let core = slow_login_core(temp);
+        *core.claude_accounts.refreshing.lock().unwrap() = true;
+        std::fs::create_dir(temp.join(".claude")).unwrap();
+        std::fs::write(temp.join("slow-claude"), format!(r#"#!/bin/sh
+root='{}'
+folder=${{CLAUDE_CONFIG_DIR-"$root/.claude"}}
+case "$2" in
+status)
+    if [ -f "$folder/hold-status" ] && mkdir "$folder/probe-once" 2>/dev/null; then
+        touch "$folder/stale-started"
+        while [ ! -f "$folder/release-status" ]; do sleep 0.01; done
+        printf '%s\n' '{{"loggedIn":true}}'
+        exit 0
+    fi
+    if [ -f "$folder/signed-in" ]; then
+        printf '%s\n' '{{"loggedIn":true,"email":"qa@example.test"}}'
+    else
+        printf '%s\n' '{{"loggedIn":false}}'
+        exit 1
+    fi ;;
+login)
+    printf '%s' "$$" > "$folder/login-started"
+    exec sleep 60 ;;
+logout)
+    printf '%s\n' "${{CLAUDE_CONFIG_DIR-unset}}" "$*" "$PATH" > "$root/logout-call"
+    if [ -f "$folder/login-started" ] && kill -0 "$(cat "$folder/login-started")" 2>/dev/null; then exit 9; fi
+    if [ -f "$folder/fail" ]; then exit 7; fi
+    if [ -f "$folder/hang" ]; then exec sleep 60; fi
+    rm -f "$folder/signed-in" ;;
+*) exit 8 ;;
+esac
+"#, temp.display())).unwrap();
+        core
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_out_uses_account_environment_refreshes_status_and_preserves_configuration() {
+        for native in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let core = sign_out_core(temp.path());
+            let mut state = initial(temp.path());
+            let account = if native {
+                state.accounts[0].clone()
+            } else {
+                ClaudeAccount {
+                    id: "work".into(),
+                    name: "Work".into(),
+                    folder: temp
+                        .path()
+                        .join("work folder")
+                        .to_string_lossy()
+                        .into_owned(),
+                    native: false,
+                }
+            };
+            if !native {
+                std::fs::create_dir(&account.folder).unwrap();
+                state.accounts.push(account.clone());
+            }
+            state.active_id = account.id.clone();
+            state.main_id = account.id.clone();
+            let saved = serde_json::to_string(&state).unwrap();
+            db::app_state_set(&core.db.get().unwrap(), KEY, &saved).unwrap();
+            for file in ["signed-in", "settings.json", "history.jsonl"] {
+                std::fs::write(Path::new(&account.folder).join(file), "keep").unwrap();
+            }
+            core.runtime_shell_env
+                .write()
+                .unwrap()
+                .vars
+                .insert("CLAUDE_CONFIG_DIR".into(), "/must-not-use".into());
+            core.claude_accounts.statuses.lock().unwrap().insert(
+                account.id.clone(),
+                ClaudeAuthStatus {
+                    logged_in: true,
+                    email: Some("qa@example.test".into()),
+                    ..Default::default()
+                },
+            );
+            let mut events = core.events.subscribe();
+            let response = action(
+                &core,
+                ClaudeAccountAction::SignOut {
+                    id: account.id.clone(),
+                },
+            )
+            .unwrap();
+            assert!(!response.statuses[&account.id].logged_in);
+            assert!(response.statuses[&account.id].email.is_none());
+            assert_eq!(response.active_id, account.id);
+            assert_eq!(response.main_id, account.id);
+            assert_eq!(
+                serde_json::to_string(&load(&core.db).unwrap()).unwrap(),
+                saved
+            );
+            assert_eq!(events.try_recv().unwrap().name, "claude_accounts/changed");
+            let call = std::fs::read_to_string(temp.path().join("logout-call")).unwrap();
+            let lines = call.lines().collect::<Vec<_>>();
+            assert_eq!(lines[0], if native { "unset" } else { &account.folder });
+            assert_eq!(lines[1], "auth logout");
+            assert_eq!(
+                lines[2],
+                crate::runtime_status::direct_chat_path(&core.runtime_shell_env.read().unwrap())
+            );
+            for file in ["settings.json", "history.jsonl"] {
+                assert_eq!(
+                    std::fs::read_to_string(Path::new(&account.folder).join(file)).unwrap(),
+                    "keep"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_out_stops_pending_login_before_logging_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = sign_out_core(temp.path());
+        let folder = temp.path().join("work");
+        std::fs::create_dir(&folder).unwrap();
+        let added = action(
+            &core,
+            ClaudeAccountAction::Add {
+                name: "Work".into(),
+                folder: Some(folder.to_string_lossy().into_owned()),
+                use_main_settings: false,
+            },
+        )
+        .unwrap();
+        let id = added.accounts.last().unwrap().id.clone();
+        action(&core, ClaudeAccountAction::Login { id: id.clone() }).unwrap();
+        let job = core.claude_accounts.jobs.lock().unwrap().entries[&id].clone();
+        wait_for("login starts", || folder.join("login-started").is_file());
+        let response = action(&core, ClaudeAccountAction::SignOut { id: id.clone() }).unwrap();
+        assert!(!response.statuses[&id].signing_in);
+        assert!(!response.statuses[&id].logged_in);
+        assert!(!core
+            .claude_accounts
+            .jobs
+            .lock()
+            .unwrap()
+            .entries
+            .contains_key(&id));
+        assert!(job.process.lock().unwrap().cancelled);
+        wait_for("cancelled login worker exits", || {
+            Arc::strong_count(&job) == 1
+        });
+        assert!(!snapshot(&core).unwrap().statuses[&id].logged_in);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_out_is_not_overwritten_by_an_in_flight_status_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = sign_out_core(temp.path());
+        let folder = temp.path().join(".claude");
+        std::fs::write(folder.join("signed-in"), "").unwrap();
+        std::fs::write(folder.join("hold-status"), "").unwrap();
+        core.claude_accounts.statuses.lock().unwrap().insert(
+            "native".into(),
+            ClaudeAuthStatus {
+                logged_in: true,
+                ..Default::default()
+            },
+        );
+        let refresh_core = core.clone();
+        let refresh = std::thread::spawn(move || refresh_statuses_inner(&refresh_core));
+        wait_for("old status probe starts", || {
+            folder.join("stale-started").exists()
+        });
+        action(
+            &core,
+            ClaudeAccountAction::SignOut {
+                id: "native".into(),
+            },
+        )
+        .unwrap();
+        std::fs::write(folder.join("release-status"), "").unwrap();
+        refresh.join().unwrap();
+        assert!(!snapshot(&core).unwrap().statuses["native"].logged_in);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_sign_out_still_refreshes_and_emits_and_timeout_is_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = sign_out_core(temp.path());
+        let account = snapshot(&core).unwrap().accounts[0].clone();
+        let folder = Path::new(&account.folder);
+        std::fs::write(folder.join("signed-in"), "").unwrap();
+        std::fs::write(folder.join("fail"), "").unwrap();
+        let mut events = core.events.subscribe();
+        let error = action(
+            &core,
+            ClaudeAccountAction::SignOut {
+                id: account.id.clone(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Claude Code sign-out failed");
+        assert!(snapshot(&core).unwrap().statuses[&account.id].logged_in);
+        assert_eq!(events.try_recv().unwrap().name, "claude_accounts/changed");
+        std::fs::remove_file(folder.join("fail")).unwrap();
+        std::fs::write(folder.join("hang"), "").unwrap();
+        let start = Instant::now();
+        assert_eq!(
+            sign_out(&core, &account, Duration::from_millis(100))
+                .unwrap_err()
+                .to_string(),
+            "Claude Code sign-out timed out"
+        );
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(folder.join("signed-in").exists());
+    }
+
+    #[test]
+    fn running_count_resolves_chat_mission_legacy_and_pinned_accounts() {
+        use crate::model::{LaunchDefinition, SessionStatus};
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(temp.path().to_owned());
+        let mut accounts = snapshot(&core).unwrap();
+        let native_folder = accounts.accounts[0].folder.clone();
+        accounts.accounts.push(ClaudeAccount {
+            id: "work".into(),
+            name: "Work".into(),
+            folder: "/tmp/qa-work".into(),
+            native: false,
+        });
+        let work = ClaudeSessionAccount {
+            account_id: Some("old-work-id".into()),
+            folder: "/tmp/qa-work".into(),
+            native: false,
+            pinned: false,
+            origin_folder: "/tmp/history".into(),
+            permission_mode: "default".into(),
+        };
+        let conn = core.db.get().unwrap();
+        conn.execute("INSERT INTO missions (id, title, status, started_at) VALUES ('mission', 'QA', 'running', '2026-11-09T00:00:00Z')", []).unwrap();
+        let mut live_ids = Vec::new();
+        for (id, runtime, mission, recorded, pin, live) in [
+            ("chat", "claude-code", None, Some(work.clone()), None, true),
+            (
+                "slot",
+                "claude-code",
+                Some("mission"),
+                Some(work),
+                None,
+                true,
+            ),
+            ("legacy", "claude-code", None, None, None, true),
+            (
+                "native-pin",
+                "claude-code",
+                None,
+                None,
+                Some(native_folder.as_str()),
+                true,
+            ),
+            (
+                "work-pin",
+                "claude-code",
+                None,
+                None,
+                Some("/tmp/qa-work"),
+                true,
+            ),
+            ("codex", "codex", None, None, None, true),
+            ("stopped", "claude-code", None, None, None, false),
+        ] {
+            let mut row = crate::test_support::test_session_row(id, SessionStatus::Running);
+            row.agent_runtime = Some(runtime.into());
+            row.mission_id = mission.map(str::to_owned);
+            row.launch_definition = Some(LaunchDefinition {
+                claude_account: recorded,
+                command: "stub".into(),
+                args: Vec::new(),
+                env: pin
+                    .map(|folder| ("CLAUDE_CONFIG_DIR".into(), folder.into()))
+                    .into_iter()
+                    .collect(),
+                model: None,
+                effort: None,
+                codex_speed: None,
+                system_prompt: None,
+            });
+            crate::test_support::insert_session_row(&conn, &row).unwrap();
+            if live {
+                live_ids.push(id.to_owned());
+            }
+        }
+        assert_eq!(
+            count_running_sessions(&conn, &accounts, "work", &live_ids).unwrap(),
+            3
+        );
+        assert_eq!(
+            count_running_sessions(&conn, &accounts, "native", &live_ids).unwrap(),
+            1
+        );
     }
 
     #[cfg(unix)]
