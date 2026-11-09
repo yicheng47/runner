@@ -9,6 +9,10 @@ use std::{
 };
 use tokio_tungstenite::tungstenite::Message;
 
+const PING_INTERVAL: Duration = Duration::from_secs(5);
+const PING_TIMEOUT: Duration = Duration::from_secs(10);
+const LATENCY_SAMPLES: usize = 3;
+
 pub(super) enum Command {
     Request(c::ClientMessage, oneshot::Sender<Result<serde_json::Value>>),
     Input(u64, String, Vec<u8>),
@@ -75,6 +79,67 @@ fn input_error(client: &Client, computer: &str, session: &str, message: &str) {
         &serde_json::json!({
             "session_id":remote::terminal_address(computer, session), "message":message,
         }),
+    );
+}
+/// Round-trip timing for one open route. Each connection builds its own, so a reconnect starts
+/// with no samples and a pong from an earlier route matches nothing.
+struct Latency {
+    next_ping: Instant,
+    pings: VecDeque<(u64, Instant)>,
+    samples: VecDeque<u64>,
+}
+impl Latency {
+    fn new(now: Instant) -> Self {
+        Self {
+            next_ping: now,
+            pings: VecDeque::new(),
+            samples: VecDeque::new(),
+        }
+    }
+    fn deadline(&self) -> Instant {
+        self.pings.front().map_or(self.next_ping, |(_, sent)| {
+            self.next_ping.min(*sent + PING_TIMEOUT)
+        })
+    }
+    fn ping_due(&self, now: Instant) -> bool {
+        now >= self.next_ping
+    }
+    fn sent(&mut self, id: u64, now: Instant) {
+        self.pings.push_back((id, now));
+        self.next_ping = now + PING_INTERVAL;
+    }
+    /// Counts each ping unanswered for the whole timeout as one sample of that length.
+    fn expire(&mut self, now: Instant) -> Option<u64> {
+        let mut median = None;
+        while self
+            .pings
+            .front()
+            .is_some_and(|(_, sent)| now >= *sent + PING_TIMEOUT)
+        {
+            self.pings.pop_front();
+            median = Some(self.sample(PING_TIMEOUT.as_millis() as u64));
+        }
+        median
+    }
+    fn pong(&mut self, id: u64, now: Instant) -> Option<u64> {
+        let index = self.pings.iter().position(|(ping, _)| *ping == id)?;
+        let (_, sent) = self.pings.remove(index)?;
+        Some(self.sample(now.duration_since(sent).as_millis() as u64))
+    }
+    fn sample(&mut self, ms: u64) -> u64 {
+        if self.samples.len() == LATENCY_SAMPLES {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(ms);
+        let mut sorted: Vec<_> = self.samples.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted[(sorted.len() - 1) / 2]
+    }
+}
+fn latency(client: &Client, computer: &str, ms: u64) {
+    client.0.events.emit(
+        "remote/latency",
+        &serde_json::json!({"computer": computer, "ms": ms}),
     );
 }
 /// Reassembles the pieces of each terminal's OSC 52 writes, per target, on one route.
@@ -360,6 +425,7 @@ pub(super) struct Session {
     outgoing: VecDeque<Vec<u8>>,
     queued: usize,
     pending: HashMap<u64, Pending>,
+    latency: Latency,
 }
 impl Session {
     pub(super) fn queue(&mut self, message: c::ClientMessage) -> Result<()> {
@@ -493,6 +559,7 @@ async fn run(
                 continue;
             }
         };
+        let answers_ping = welcome.features.iter().any(|feature| feature == "ping");
         *handle.features.lock().unwrap() = welcome.features;
         handle.generation.fetch_add(1, Ordering::AcqRel);
         handle.ready.store(true, Ordering::Release);
@@ -506,6 +573,7 @@ async fn run(
             outgoing: VecDeque::new(),
             queued: 0,
             pending: HashMap::new(),
+            latency: Latency::new(Instant::now()),
         };
         if terminals.reattach(&mut session, &handle).is_err() {
             break;
@@ -533,6 +601,16 @@ async fn run(
                     _ = tokio::time::sleep_until(last_use + Duration::from_secs(60)), if followers.is_empty() && feeds.is_empty() && terminals.is_empty() && session.pending.is_empty() => { handle.cancel.cancel(); return Ok(()); }
                     _ = tokio::time::sleep_until(deadline), if !session.pending.is_empty() => {
                         if session.pending.values().any(|p| p.deadline <= Instant::now()) { return Err("Remote request timed out".into()); }
+                    }
+                    _ = tokio::time::sleep_until(session.latency.deadline()), if answers_ping => {
+                        let now = Instant::now();
+                        if let Some(ms) = session.latency.expire(now) { latency(&client, &computer.id, ms); }
+                        if session.latency.ping_due(now) {
+                            let id = handle.next_id();
+                            // A ping that cannot be queued goes unanswered like a lost one: it lowers the reading and never fails the route.
+                            let _ = session.queue(c::ClientMessage::Ping(c::PingRequest { id }));
+                            session.latency.sent(id, now);
+                        }
                     }
                     command = commands.recv() => {
                         last_use = Instant::now();
@@ -574,6 +652,9 @@ async fn run(
                                 c::HostMessage::Status(status) => { if !followers.is_empty() { client.0.events.emit("remote/session-status", &serde_json::json!({"computer":computer.id,"status":status})); } }
                                 c::HostMessage::Clipboard(push) => {
                                     if let Some(push) = clipboards.receive(push) { clipboard(&client, &computer.id, push); }
+                                }
+                                c::HostMessage::Pong(pong) => {
+                                    if let Some(ms) = session.latency.pong(pong.id, Instant::now()) { latency(&client, &computer.id, ms); }
                                 }
                                 message => terminals.message(message, &handle)?,
                             }
@@ -669,6 +750,63 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latency_reports_the_median_of_the_last_three_samples() {
+        let start = Instant::now();
+        let mut latency = Latency::new(start);
+        let mut round_trip = |id, ms| {
+            latency.sent(id, start);
+            latency.pong(id, start + Duration::from_millis(ms)).unwrap()
+        };
+        assert_eq!(round_trip(1, 40), 40);
+        assert_eq!(round_trip(2, 90), 40);
+        assert_eq!(round_trip(3, 60), 60);
+        assert_eq!(round_trip(4, 500), 90);
+        assert_eq!(round_trip(5, 70), 70);
+    }
+
+    #[test]
+    fn a_ping_unanswered_for_ten_seconds_counts_once_as_ten_seconds() {
+        let start = Instant::now();
+        let mut latency = Latency::new(start);
+        latency.sent(1, start);
+        assert_eq!(latency.pong(1, start + Duration::from_millis(20)), Some(20));
+        latency.sent(2, start);
+        assert_eq!(latency.deadline(), start + PING_INTERVAL);
+        assert_eq!(latency.expire(start + Duration::from_millis(9_999)), None);
+        assert_eq!(latency.expire(start + PING_TIMEOUT), Some(20));
+        assert_eq!(latency.expire(start + PING_TIMEOUT), None);
+        assert_eq!(latency.pong(2, start + Duration::from_secs(11)), None);
+
+        latency.sent(3, start);
+        assert_eq!(latency.expire(start + PING_TIMEOUT), Some(10_000));
+    }
+
+    #[test]
+    fn pings_keep_their_interval_when_the_host_stops_answering() {
+        let start = Instant::now();
+        let mut latency = Latency::new(start);
+        assert!(latency.ping_due(start));
+        latency.sent(1, start);
+        assert!(!latency.ping_due(start + Duration::from_millis(4_999)));
+        assert!(latency.ping_due(start + PING_INTERVAL));
+        latency.sent(2, start + PING_INTERVAL);
+        assert_eq!(latency.deadline(), start + PING_TIMEOUT);
+        assert_eq!(latency.expire(start + PING_TIMEOUT), Some(10_000));
+        assert!(latency.ping_due(start + PING_TIMEOUT));
+    }
+
+    #[test]
+    fn a_pong_matching_no_ping_of_this_route_is_not_a_sample() {
+        let start = Instant::now();
+        let mut latency = Latency::new(start);
+        assert_eq!(latency.pong(7, start + Duration::from_secs(1)), None);
+        latency.sent(8, start);
+        assert_eq!(latency.pong(7, start + Duration::from_secs(1)), None);
+        assert!(latency.samples.is_empty());
+        assert_eq!(latency.pings.len(), 1);
+    }
 
     #[test]
     fn clipboard_pieces_reassemble_only_in_order_and_within_the_cap() {

@@ -1,0 +1,29 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "agents": [
+      {
+        "name": "claude-code",
+        "value": {
+          "windows": [
+            {
+              "name": "Week",
+              "usedPercent": 41.0,
+              "resetsAt": "2026-11-13T00:00:00Z"
+            }
+          ],
+          "updatedAt": "2026-11-09T06:00:00Z"
+        },
+        "error": null
+      },
+      {
+        "name": "codex",
+        "value": null,
+        "error": "codexNoAnswer"
+      }
+    ],
+    "refreshing": false,
+    "activeClaudeAccount": "Work"
+  }
+}

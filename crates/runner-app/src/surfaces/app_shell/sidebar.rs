@@ -263,20 +263,24 @@ impl NativeRoot {
         let zoom = self.settings(cx).app_zoom;
         let update = crate::surfaces::update_ui::visible_update_state(global_updater(cx).read(cx));
         let brand = self.render_sidebar_brand(update, window, cx);
-        let enabled = self.settings(cx).model_runtimes();
-        let visible_usage_runtimes = visible_usage_runtimes(&self.usage_installed, &enabled);
+        let (snapshot, visible_usage_runtimes, dimmed) = self.sidebar_usage(cx);
         let show_usage = !visible_usage_runtimes.is_empty() && !self.front_page_sidebar_collapsed();
+        if !show_usage {
+            self.usage_open = false;
+        }
+        self.remote_client.sync_usage_popover(self.usage_open, cx);
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
-            let snapshot = self.app_store.read(cx).usage.clone();
             let trigger = sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom)
+                .when(dimmed, |usage| usage.opacity(0.45))
                 .occlude()
                 .cursor_pointer()
                 .hover(|button| button.bg(theme::chrome_hover()))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.usage_open = !this.usage_open;
-                    if this.usage_open {
+                    this.remote_client.sync_usage_popover(this.usage_open, cx);
+                    if this.usage_open && this.remote_client.is_local() {
                         let core = this.core(cx).clone();
                         let _ = core.usage_refresh(RefreshReason::Open);
                         let _ = this.core(cx).runtime_check_updates(false);

@@ -26,6 +26,7 @@ const CLIENT_FIXTURES: &[&str] = &[
     "layout_split",
     "start_chat_role",
     "catalog",
+    "usage",
     "folders",
     "start_chat",
     "start_shell",
@@ -59,6 +60,7 @@ const CLIENT_FIXTURES: &[&str] = &[
     "take_control",
     "viewport",
     "detach",
+    "ping",
     "v1_without_later_fields",
     "unknown_request",
     "unknown_control",
@@ -68,6 +70,7 @@ const HOST_FIXTURES: &[&str] = &[
     "result_crew",
     "welcome",
     "result_catalog",
+    "result_usage",
     "result_folders",
     "result_session",
     "result_mission",
@@ -105,6 +108,7 @@ const HOST_FIXTURES: &[&str] = &[
     "closed_stopped",
     "closed_archived",
     "closed_unknown",
+    "pong",
     "unknown_status",
     "unknown_reason",
     "unknown_push",
@@ -1067,5 +1071,57 @@ fn retired_set_lead_request_is_unknown_but_retains_its_id() {
     assert_eq!(
         serde_json::to_value(request.response()).unwrap()["code"],
         "unknownRequest"
+    );
+}
+
+#[test]
+fn usage_result_has_a_sanitized_wire_type() {
+    let usage: Usage = serde_json::from_value(fixture("result_usage")["result"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(usage).unwrap(),
+        fixture("result_usage")["result"]
+    );
+}
+
+#[test]
+fn an_unknown_usage_error_preserves_the_reply_and_other_agents() {
+    let mut result = fixture("result_usage")["result"].clone();
+    result["agents"][1]["error"] = json!("futureReason");
+    let usage: Usage = serde_json::from_value(result.clone()).unwrap();
+    assert_eq!(
+        usage.agents[0].value.as_ref().unwrap().windows[0].used_percent,
+        41.
+    );
+    let reason = usage.agents[1].error.as_ref().unwrap();
+    assert_eq!(
+        reason,
+        &UsageUnavailableReason::Unrecognized("futureReason".into())
+    );
+    assert_eq!(reason.effective(), UsageUnavailableReason::InvalidResponse);
+    assert_eq!(serde_json::to_value(usage).unwrap(), result);
+}
+
+#[test]
+fn usage_conversions_preserve_values_and_known_errors() {
+    let usage: Usage = serde_json::from_value(fixture("result_usage")["result"].clone()).unwrap();
+    let value = usage.agents[0].value.clone().unwrap();
+    let internal: crate::protocol::usage::AgentUsage = value.clone().into();
+    assert_eq!(UsageValue::from(internal), value);
+    for reason in [
+        UsageUnavailableReason::SignIn,
+        UsageUnavailableReason::KeychainDenied,
+        UsageUnavailableReason::KeychainUnavailable,
+        UsageUnavailableReason::ClaudeUnreachable,
+        UsageUnavailableReason::CodexNoAnswer,
+        UsageUnavailableReason::InvalidResponse,
+    ] {
+        let internal: crate::protocol::usage::UnavailableReason = reason.clone().into();
+        assert_eq!(UsageUnavailableReason::from(internal), reason);
+    }
+    assert_eq!(
+        crate::protocol::usage::UnavailableReason::from(UsageUnavailableReason::Unrecognized(
+            "futureReason".into()
+        )),
+        crate::protocol::usage::UnavailableReason::InvalidResponse
     );
 }

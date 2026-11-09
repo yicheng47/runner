@@ -39,6 +39,7 @@ pub(crate) struct RemoteWindow {
     pub(crate) sidebar_collapsed: bool,
     pub(crate) sidebar_width: f32,
     _follow: Option<model::Follow>,
+    _usage: super::usage::UsageWatch,
     pub(crate) active: Option<Item>,
     pub(crate) layouts: HashMap<String, PaneLayout>,
     pub(crate) overview_revision: u64,
@@ -304,6 +305,7 @@ impl RemoteClient {
         let epoch = self.ui.epoch;
         let clients = state(&self.app_store, cx);
         let follow = clients.read(cx).follow(computer.id.clone());
+        let usage = clients.read(cx).watch_usage(computer.id.clone(), false);
         let (wake, mut wakes) = futures::channel::mpsc::unbounded();
         cx.spawn(async move |weak, cx| {
             while let Some(id) = wakes.next().await {
@@ -378,6 +380,7 @@ impl RemoteClient {
             front_page,
             computer,
             _follow: Some(follow),
+            _usage: usage,
             active: selection.active,
             layouts: selection.layouts,
             overview_revision: 0,

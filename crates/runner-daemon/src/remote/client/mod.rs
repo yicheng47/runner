@@ -323,6 +323,7 @@ impl Client {
                 | c::ClientMessage::TakeControl(_)
                 | c::ClientMessage::Viewport(_)
                 | c::ClientMessage::Detach(_)
+                | c::ClientMessage::Ping(_)
         ) {
             return Err("Use the terminal client path for terminal requests; the channel manages its handshake.".into());
         }

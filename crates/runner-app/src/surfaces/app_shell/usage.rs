@@ -443,6 +443,32 @@ pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 }
 
 impl NativeRoot {
+    pub(crate) fn sidebar_usage(&self, cx: &App) -> (UsageSnapshot, Vec<Runtime>, bool) {
+        let remote = self.remote_client.is_active();
+        let remote_usage = self.remote_client.remote_usage(cx);
+        if remote {
+            remote_usage.map_or_else(
+                || (UsageSnapshot::default(), Vec::new(), false),
+                |(usage, connection, _)| {
+                    let snapshot = crate::surfaces::remote_client::usage_snapshot(&usage);
+                    let agents: Vec<_> = snapshot.runtimes.keys().copied().collect();
+                    let visible = visible_usage_runtimes(&agents, &agents);
+                    (
+                        snapshot,
+                        visible,
+                        connection != crate::surfaces::remote_client::model::Connection::Connected,
+                    )
+                },
+            )
+        } else {
+            (
+                self.app_store.read(cx).usage.clone(),
+                visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes()),
+                false,
+            )
+        }
+    }
+
     pub(super) fn render_claude_usage_picker(
         &mut self,
         cx: &mut Context<Self>,
@@ -549,7 +575,16 @@ impl NativeRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let snapshot = self.app_store.read(cx).usage.clone();
+        let remote = self.remote_client.remote_usage(cx);
+        let readonly = self.remote_client.is_active();
+        let snapshot = if readonly {
+            remote
+                .as_ref()
+                .map(|(usage, _, _)| crate::surfaces::remote_client::usage_snapshot(usage))
+                .unwrap_or_default()
+        } else {
+            self.app_store.read(cx).usage.clone()
+        };
         let now = chrono::Utc::now();
         let updated = snapshot
             .runtimes
@@ -574,6 +609,7 @@ impl NativeRoot {
         };
         let refresh = div()
             .id("refresh-usage")
+            .debug_selector(|| "USAGE_REFRESH".into())
             .size(px(24.))
             .flex()
             .items_center()
@@ -641,31 +677,52 @@ impl NativeRoot {
                         .bg(theme::accent())
                 })),
         );
-        let mut account_picker = self.render_claude_usage_picker(cx);
-        let sections: Vec<AnyElement> =
-            usage_popover_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
-                .into_iter()
-                .map(|runtime| {
-                    if runtime == Runtime::ClaudeCode && account_picker.is_some() {
-                        usage_section_with_account(
-                            runtime,
-                            snapshot.get(runtime),
-                            snapshot.error(runtime),
-                            snapshot.refreshing,
-                            now,
-                            account_picker.take(),
-                        )
-                    } else {
-                        usage_section(
-                            runtime,
-                            snapshot.get(runtime),
-                            snapshot.error(runtime),
-                            snapshot.refreshing,
-                            now,
-                        )
-                    }
+        let mut account_picker = if readonly {
+            remote
+                .as_ref()
+                .and_then(|(usage, _, _)| usage.active_claude_account.as_ref())
+                .map(|name| {
+                    div()
+                        .debug_selector(|| "USAGE_REMOTE_ACCOUNT".into())
+                        .max_w(rems(120. / 16.))
+                        .truncate()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::muted())
+                        .child(name.clone())
+                        .into_any_element()
                 })
-                .collect();
+        } else {
+            self.render_claude_usage_picker(cx)
+        };
+        let runtimes = if readonly {
+            let agents: Vec<_> = snapshot.runtimes.keys().copied().collect();
+            usage_popover_runtimes(&agents, &agents)
+        } else {
+            usage_popover_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+        };
+        let sections: Vec<AnyElement> = runtimes
+            .into_iter()
+            .map(|runtime| {
+                if runtime == Runtime::ClaudeCode && account_picker.is_some() {
+                    usage_section_with_account(
+                        runtime,
+                        snapshot.get(runtime),
+                        snapshot.error(runtime),
+                        snapshot.refreshing,
+                        now,
+                        account_picker.take(),
+                    )
+                } else {
+                    usage_section(
+                        runtime,
+                        snapshot.get(runtime),
+                        snapshot.error(runtime),
+                        snapshot.refreshing,
+                        now,
+                    )
+                }
+            })
+            .collect();
         let header = div()
             .w_full()
             .flex()
@@ -673,19 +730,28 @@ impl NativeRoot {
             .gap_2()
             .child(
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_size(theme::text_lead())
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(crate::i18n::text("ui.usage")),
+                    .child(remote.as_ref().map_or_else(
+                        || crate::i18n::text("ui.usage").to_owned(),
+                        |(_, _, name)| {
+                            crate::i18n::tf("client.usage_on", &[("computer", name.clone())])
+                        },
+                    )),
             )
             .child(div().flex_1())
             .child(
                 div()
+                    .flex_none()
                     .text_size(theme::text_meta())
                     .text_color(theme::muted())
                     .child(age),
             )
-            .child(refresh)
-            .child(agent_settings)
+            .when(!readonly, |header| {
+                header.child(refresh).child(agent_settings)
+            })
             .into_any_element();
         usage_popover_panel(window.bounds().size.height - px(16.), header, sections)
     }

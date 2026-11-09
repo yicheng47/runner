@@ -124,6 +124,17 @@ impl Fixture {
         Self::with_store(Arc::new(MemoryStore::default())).await
     }
     async fn with_store(store: Arc<dyn SecretStore>) -> Self {
+        Self::with_host(store, crate::companion::FEATURES).await
+    }
+    async fn without_ping() -> Self {
+        let features: Vec<_> = crate::companion::FEATURES
+            .iter()
+            .copied()
+            .filter(|feature| *feature != "ping")
+            .collect();
+        Self::with_host(Arc::new(MemoryStore::default()), &features).await
+    }
+    async fn with_host(store: Arc<dyn SecretStore>, features: &[&'static str]) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut identity = Identity::generate().unwrap();
         identity.pin = Some(Secret("012345".into()));
@@ -201,6 +212,7 @@ impl Fixture {
         };
         let writes = Arc::new(TrustWrites::default());
         let mut channels = Channels::new(writes.clone(), companion);
+        channels.features = features.to_vec();
         let path = root.path().to_path_buf();
         let stop = cancel.clone();
         tokio::spawn(async move {
@@ -1827,7 +1839,8 @@ async fn ipc_fixture(
 #[tokio::test]
 async fn queued_input_rejections_and_teardown_reach_the_scoped_ipc_error_event() {
     for failure in ["bytes", "generation", "teardown"] {
-        let fixture = Fixture::new().await;
+        // Teardown blocks the writer on the overview's write, which a ping must not reach first.
+        let fixture = Fixture::without_ping().await;
         fixture.pair().await;
         let (_root, _server, ipc) = ipc_fixture(&fixture).await;
         let mut events = ipc.subscribe();
@@ -2189,3 +2202,96 @@ async fn ipc_slow_resync_keeps_the_final_snapshot_after_the_host_terminal_closes
 
 #[path = "action_tests.rs"]
 mod action_tests;
+
+#[tokio::test]
+async fn an_open_route_reports_the_round_trip_of_its_pings_and_stays_connected() {
+    let fixture = Fixture::new().await;
+    let mut events = fixture.client.0.events.subscribe();
+    fixture.pair().await;
+    loop {
+        let event = events.recv().await.unwrap();
+        if event.name == "remote/latency" {
+            assert_eq!(event.payload["computer"], "2");
+            assert!(event.payload["ms"].as_u64().unwrap() < 10_000);
+            break;
+        }
+    }
+    fixture.client.overview("2".into()).await.unwrap();
+    let routes = fixture.client.0.routes.lock().await;
+    assert!(routes
+        .values()
+        .all(|route| route.ready.load(Ordering::Acquire)));
+}
+
+#[tokio::test]
+async fn a_host_that_does_not_list_ping_is_sent_none_and_reports_no_latency() {
+    let fixture = Fixture::without_ping().await;
+    let mut events = fixture.client.0.events.subscribe();
+    fixture.pair().await;
+    // The first ping leaves within a timer tick of connecting, and its pong would come before
+    // the reply to an overview sent after that tick.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    fixture.client.overview("2".into()).await.unwrap();
+    let mut connected = false;
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(event.name, "remote/latency");
+        connected |= event.name == "remote/connection" && event.payload["state"] == "connected";
+    }
+    assert!(connected);
+    let routes = fixture.client.0.routes.lock().await;
+    assert!(routes
+        .values()
+        .all(|route| route.ready.load(Ordering::Acquire)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn latency_stops_with_the_route_and_starts_again_once_it_returns() {
+    let fixture = Fixture::new().await;
+    let mut events = fixture.client.0.events.subscribe();
+    fixture.pair().await;
+    fixture.client.follow("2".into(), 1, true).await.unwrap();
+    loop {
+        if events.recv().await.unwrap().name == "remote/latency" {
+            break;
+        }
+    }
+    fixture.drop_route().await;
+    loop {
+        let event = events.recv().await.unwrap();
+        if event.name == "remote/connection" && event.payload["state"] == "reconnecting" {
+            break;
+        }
+    }
+    tokio::time::advance(Duration::from_secs(2)).await;
+    loop {
+        let event = events.recv().await.unwrap();
+        assert_ne!(
+            event.name, "remote/latency",
+            "no sample may survive the route"
+        );
+        if event.name == "remote/connection" && event.payload["state"] == "connected" {
+            break;
+        }
+    }
+    loop {
+        if events.recv().await.unwrap().name == "remote/latency" {
+            break;
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn pings_do_not_keep_an_idle_route_open() {
+    let fixture = Fixture::new().await;
+    let mut events = fixture.client.0.events.subscribe();
+    fixture.pair().await;
+    let mut pongs = 0;
+    loop {
+        let event = events.recv().await.unwrap();
+        pongs += u32::from(event.name == "remote/latency");
+        if event.name == "remote/connection" && event.payload["state"] == "disconnected" {
+            break;
+        }
+    }
+    assert!(pongs > 1, "the idle route should have been pinged");
+}
