@@ -1,0 +1,44 @@
+# #1150 — Claude account sign-out live QA
+
+Verdict: **Passed L1–L6. NO REMAINING MUST-FIX QA ISSUES.** This is the selected macOS feature matrix, not a full regression pass.
+
+Run: 2026-11-09, approximately 14:19–14:35 UTC, by the `qa` slot of mission `01M708N9E87QH2MTJREG9KYHX9`. Candidate: `9c0f3b8c8dfe0b257b2540f7587718c2b6ef0bd5` on `feat/1150-claude-account-sign-out`, in `/Volumes/samsung/repos/yicheng47/runner/.worktrees/feat-1150-claude-account-sign-out`. The tree was clean at build start and remained at that SHA throughout validation; this record is the only QA-owned addition.
+
+Environment: macOS 26.6.2 (25G83), Apple arm64, development namespace `com.wycstudios.runner-dev`, Claude Code version response `2.1.319`. The development CLI independently reported `/Users/jason/Library/Application Support/com.wycstudios.runner-dev/runnerd.sock` and mode `outside a mission`; see `/tmp/1150-qa/status-candidate.json`.
+
+## Candidate and isolation
+
+Acquired `script/qa-lock acquire --timeout 540` before building or launching. An earlier 540-second attempt timed out while another mission held the lock; no live check ran during that wait. Jason then reported the lock released, and this run acquired it successfully.
+
+Built and launched with `make run`, omitting inherited `CLAUDE*`, `CODEX*`, `RUNNER_*`, `ANTHROPIC_*` and `NO_COLOR` variables from that child environment. Stopped only the bare development app this run started, bundled with `script/screenshot-app bundle /tmp/1150-qa`, and launched `/tmp/1150-qa/Runner Screenshot Dev.app` through `script/screenshot-app launch /tmp/1150-qa`. The copied app and source binary both have SHA-256 `93882c42d10df4592854cf64e14630c363a1f3a200cfa9305e21c7a9244b93e6`; the CLI copy also passed the bundler's byte comparison. Native computer use was bound to this wrapper. No rebuild occurred during live validation. Build output and hashes are in `/tmp/1150-qa/make-run.log` and `/tmp/1150-qa/binary-hashes.txt`.
+
+Before the launch, read the original runtime and account state through the daemon's structured client protocol; `runner call` does not expose these account/runtime operations as registered socket tools. Baselines are `/tmp/1150-qa/runtime-before.json` and `/tmp/1150-qa/accounts-before.json`. Claude Code originally had no executable override, used the detected `/Users/jason/.local/bin/claude`, had native main account `native`, and active account `01M5CRKK92A6KE138M3DZYJD24`. Both original accounts used their own settings.
+
+Every tested login, logout and session invocation used `/tmp/1150-qa/claude-stub`. Its auth state consists only of SHA-256-named marker files in `/tmp/1150-qa/state`; it never reads or changes real credentials. The override was independently verified immediately before the native Sign out confirmation. Only the new `/tmp/1150-qa/account-a` folder and synthetic native marker were signed out. No real `claude auth logout` ran. Restoring the original executable afterwards confirmed both original sign-ins still report signed in.
+
+The only added account was `QA1150-A`, renamed to `QA1150-A-renamed`, ID `01M70B802BQCZED529PD2FCXF9`. It was initially linked to Personal's settings, then unlinked through its menu. Make main was tested only after the sharing map was empty, then the original main was restored before continuing. The test account and native account were made active for their respective checks; the original active account was restored during cleanup.
+
+## Selected checks
+
+The brief selects L1–L6 because the diff adds a conditional menu action and confirmation, changes signed-out row state, counts live sessions, and updates the Remove note. The only added case was the handoff's mission-slot variant of L3, using the same account and stub. Automated suites were not rerun by QA.
+
+All screenshot filenames below are under `/tmp/1150-qa/evidence/`. Screenshots are unmodified captures; the QA viewing helper made separate smaller previews. Baseline and cleanup screenshots can contain existing account details and remain local.
+
+| Check | Result | Observed behavior and evidence |
+|---|---|---|
+| L1 — Menu and dispatch | Passed | Signed-in linked and unlinked menus show Sign out under the separator, directly above Remove. It is absent when signed out and while Signing in. Rename, Reveal in Finder, Stop using Personal's settings, Make main and Remove dispatched to their named actions. Native/main/active protection still disables Remove while allowing Sign out. Evidence: `l1-linked-menu-open.png`, `l1-unlinked-signed-in-menu.png`, `l1-signed-out-menu.png`, `l1-signing-in-menu.png`, `l1-renamed.png`, `l1-reveal-finder.png`, `l1-stop-sharing-result.png`, `l1-made-main.png`, `l5-native-active-menu.png`. |
+| L2 — Confirmation, logout and login recovery | Passed | Exact title/body contain the renamed account, `qa@example.test` and `/tmp/1150-qa/account-a`. Cancel preserved sign-in. Confirm invoked `auth logout` for that folder, then showed Not signed in, Log in and no email/plan line. The usage dropdown excluded the account. Log in restored its signed-in row and dropdown entry. Evidence: `l2-l3-zero-l4-active-confirmation.png`, `l2-cancel-preserves-sign-in.png`, `l2-l4-signed-out-active-row.png`, `l2-usage-dropdown-excludes-signed-out.png`, `l2-login-restored-row.png`, `l2-usage-dropdown-after-login.png`; `/tmp/1150-qa/calls.log`. |
+| L3 — Running sessions | Passed | No running line at zero; exact singular line with one running stub chat; exact plural line with that chat plus one mission slot. The independent daemon count was 2. Both sessions remained running after account sign-out. Evidence: `l2-l3-zero-l4-active-confirmation.png`, `l3-one-running-session.png`, `l3-chat-plus-mission-slot.png`; `/tmp/1150-qa/running-count-two.json`, `/tmp/1150-qa/session-after-signout.json`, `/tmp/1150-qa/mission-after-signout.json`. |
+| L4 — Active account | Passed | The raised warning callout states that new chats start signed out until login or account switch. After sign-out, the row retained Active and showed Log in. Evidence: `l2-l3-zero-l4-active-confirmation.png`, `l2-l4-signed-out-active-row.png`. |
+| L5 — Native account | Passed | The row and body show `~/.claude`. The native warning names terminal/other-app impact. Making native active showed both warning callouts together. The stub log records `native`, `auth logout` and `claude_config_dir_present: false`; its row then showed Not signed in with main and Active retained. Evidence: `l5-native-active-confirmation.png`, `l5-native-signed-out.png`; `/tmp/1150-qa/runtime-before-native.json`, `/tmp/1150-qa/calls.log`. |
+| L6 — Remove | Passed | Remove on the non-main, non-active test account removed the row immediately without a dialog or an extra logout. The test folder and synthetic signed-in marker remained. The footer matches the spec's new wording. Evidence: `l6-remove-menu.png`, `l6-removed-immediately-footer.png`; `/tmp/1150-qa/accounts-after-remove.json`, `/tmp/1150-qa/calls.log`. |
+
+Failed: none. Blocked: none at completion. Skipped: Windows native UI is outside the brief's macOS-only live matrix; macOS and Windows CI remain the coder's validation responsibility. The instantaneous stub logout did not provide a sustained busy-state screenshot; busy behavior remains covered by the app tests reported in the review handoff.
+
+## Cleanup
+
+Stopped and archived direct chat `01M70BD9KTM0Y54312QC1WT3JA` and test mission `01M70BEF343E8QA5AWEK4FSEH9`, including its stub slot session `01M70BERZ6EJM15EADN346CMYD`. The mission has an archive timestamp and zero live sessions; the direct chat is stopped with an archive timestamp. The temporary role `qa1150-stub` is retained, with no crew created. Its runtime was Claude Code, model haiku, effort low, and its actual executable was the sleeping stub. No real agent prompt was sent.
+
+Removed only the test account through the UI. Restored the original main, active account, sharing map and executable override; `/tmp/1150-qa/cleanup-verification.json` independently confirms exact equality of the original account rows, active ID, main ID and sharing map, a null executable override, and both original accounts still signed in. Evidence: `cleanup-executable-reset.png`, `cleanup-original-active-restored.png`. Existing chats and missions were neither edited nor archived.
+
+Quit this run's wrapper with `script/screenshot-app quit`, stopped the development daemon with the absolute development CLI, confirmed both processes exited, and unregistered the wrapper from LaunchServices. Released the QA lock; the other waiting mission acquired it immediately afterwards. No UI action was taken after release. Scratch folders, the wrapper, stub, synthetic markers, snapshots and screenshot evidence remain under `/tmp/1150-qa/` for review. No implementation code, commits, pushes or PR state were changed by QA.

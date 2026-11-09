@@ -21,6 +21,8 @@ pub(crate) fn account_error(error: &str) -> String {
         }
         "sign in before using this account" => "accounts.error_sign_in",
         "Claude Code is not installed" => "accounts.error_install",
+        "Claude Code sign-out failed" => "accounts.error_sign_out",
+        "Claude Code sign-out timed out" => "accounts.error_sign_out_timeout",
         "main account change is incomplete; retry Make main in Settings" => {
             "accounts.finish_main_change"
         }
@@ -31,6 +33,77 @@ pub(crate) fn account_error(error: &str) -> String {
 
 type RevealFolder = Rc<dyn Fn(&std::path::Path, &mut gpui::App)>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccountMenuAction {
+    MakeMain,
+    StopSharing,
+    Rename,
+    Reveal,
+    SignOut,
+    Remove,
+}
+
+fn can_sign_out(account: &ClaudeAccount, accounts: &ClaudeAccounts) -> bool {
+    accounts
+        .statuses
+        .get(&account.id)
+        .is_some_and(|status| status.logged_in && !status.signing_in && !status.error)
+}
+
+fn account_folder(account: &ClaudeAccount) -> String {
+    if account.native {
+        "~/.claude".into()
+    } else {
+        account.folder.clone()
+    }
+}
+
+struct SignOutCopy {
+    title: String,
+    body: String,
+    notes: Vec<String>,
+    running: Option<String>,
+}
+
+impl SignOutCopy {
+    fn new(account: &ClaudeAccount, accounts: &ClaudeAccounts, count: usize) -> Self {
+        let parameters = [
+            ("account", account.name.clone()),
+            ("folder", account_folder(account)),
+        ];
+        let email = accounts
+            .statuses
+            .get(&account.id)
+            .and_then(|status| status.email.as_ref());
+        let body = if let Some(email) = email {
+            crate::i18n::tf(
+                "accounts.sign_out_body_email",
+                &[
+                    parameters[0].clone(),
+                    parameters[1].clone(),
+                    ("email", email.clone()),
+                ],
+            )
+        } else {
+            crate::i18n::tf("accounts.sign_out_body", &parameters)
+        };
+        let mut notes = Vec::new();
+        if account.id == accounts.active_id {
+            notes.push(crate::i18n::tf("accounts.sign_out_active", &parameters));
+        }
+        if account.native {
+            notes.push(crate::i18n::tf("accounts.sign_out_native", &parameters));
+        }
+        Self {
+            title: crate::i18n::tf("accounts.sign_out_title", &parameters),
+            body,
+            notes,
+            running: (count > 0)
+                .then(|| crate::i18n::tnf("accounts.sign_out_running", count, &parameters)),
+        }
+    }
+}
+
 pub(crate) struct AccountsSection {
     store: Entity<AppStore>,
     name: Entity<TextField>,
@@ -38,7 +111,8 @@ pub(crate) struct AccountsSection {
     adding: bool,
     use_main_settings: bool,
     share_confirmation: Option<String>,
-    overlay: Entity<AccountSharingOverlay>,
+    sign_out_confirmation: Option<(String, usize)>,
+    overlay: Entity<AccountConfirmationOverlay>,
     renaming: Option<String>,
     saving: bool,
     error: Option<String>,
@@ -84,10 +158,11 @@ impl AccountsSection {
             }),
         ];
         let pane = cx.entity();
-        let overlay = cx.new(|overlay_cx| AccountSharingOverlay::new(pane, overlay_cx));
+        let overlay = cx.new(|overlay_cx| AccountConfirmationOverlay::new(pane, overlay_cx));
         Self {
             use_main_settings: true,
             share_confirmation: None,
+            sign_out_confirmation: None,
             overlay,
             store,
             name,
@@ -132,11 +207,15 @@ impl AccountsSection {
                             store.refresh(crate::app_store::StoreRefreshKind::Activity, cx);
                         });
                         this.share_confirmation = None;
+                        this.sign_out_confirmation = None;
                         this.adding = false;
                         this.renaming = None;
                         this.error = None;
                     }
-                    Err(error) => this.error = Some(account_error(&error)),
+                    Err(error) => {
+                        this.sign_out_confirmation = None;
+                        this.error = Some(account_error(&error));
+                    }
                 }
                 cx.notify();
             });
@@ -165,7 +244,10 @@ impl AccountsSection {
         .detach();
     }
 
-    fn menu_items(account: &ClaudeAccount, accounts: &ClaudeAccounts) -> Vec<MenuItem> {
+    fn menu_entries(
+        account: &ClaudeAccount,
+        accounts: &ClaudeAccounts,
+    ) -> Vec<(MenuItem, AccountMenuAction)> {
         let changing_main = accounts.pending_main_id.is_some();
         let protected = account.native
             || account.id == accounts.main_id
@@ -173,7 +255,7 @@ impl AccountsSection {
             || changing_main;
         let remove = MenuItem::new(crate::i18n::message("ui.remove"))
             .icon("trash.svg")
-            .separator_before(true)
+            .separator_before(!can_sign_out(account, accounts))
             .destructive(true)
             .disabled(protected);
         let remove = if protected {
@@ -186,39 +268,98 @@ impl AccountsSection {
             remove
         };
         let mut items = vec![
-            MenuItem::new(crate::i18n::message("accounts.make_main"))
-                .icon("star.svg")
-                .disabled(
-                    account.id == accounts.main_id
-                        || accounts
-                            .pending_main_id
-                            .as_ref()
-                            .is_some_and(|id| id != &account.id),
-                ),
-            MenuItem::new(crate::i18n::message("ui.rename")).icon("pencil.svg"),
-            MenuItem::new(crate::i18n::message(if cfg!(windows) {
-                "ui.reveal_in_explorer"
-            } else {
-                "ui.reveal_in_finder"
-            }))
-            .icon("folder.svg"),
-            remove,
+            (
+                MenuItem::new(crate::i18n::message("accounts.make_main"))
+                    .icon("star.svg")
+                    .disabled(
+                        account.id == accounts.main_id
+                            || accounts
+                                .pending_main_id
+                                .as_ref()
+                                .is_some_and(|id| id != &account.id),
+                    ),
+                AccountMenuAction::MakeMain,
+            ),
+            (
+                MenuItem::new(crate::i18n::message("ui.rename")).icon("pencil.svg"),
+                AccountMenuAction::Rename,
+            ),
+            (
+                MenuItem::new(crate::i18n::message(if cfg!(windows) {
+                    "ui.reveal_in_explorer"
+                } else {
+                    "ui.reveal_in_finder"
+                }))
+                .icon("folder.svg"),
+                AccountMenuAction::Reveal,
+            ),
         ];
         if accounts.sharing.contains_key(&account.id) {
             items.insert(
                 1,
-                MenuItem::new(crate::i18n::tf(
-                    "accounts.stop_sharing",
-                    &[("main", main_name(accounts))],
-                ))
-                .icon("link.svg")
-                .disabled(changing_main),
+                (
+                    MenuItem::new(crate::i18n::tf(
+                        "accounts.stop_sharing",
+                        &[("main", main_name(accounts))],
+                    ))
+                    .icon("link.svg")
+                    .disabled(changing_main),
+                    AccountMenuAction::StopSharing,
+                ),
             );
         }
+        if can_sign_out(account, accounts) {
+            items.push((
+                MenuItem::new(crate::i18n::message("accounts.sign_out"))
+                    .icon("log-out.svg")
+                    .separator_before(true),
+                AccountMenuAction::SignOut,
+            ));
+        }
+        items.push((remove, AccountMenuAction::Remove));
         items
     }
 
-    pub(crate) fn confirm_overlay(&self) -> Entity<AccountSharingOverlay> {
+    #[cfg(test)]
+    fn menu_items(account: &ClaudeAccount, accounts: &ClaudeAccounts) -> Vec<MenuItem> {
+        Self::menu_entries(account, accounts)
+            .into_iter()
+            .map(|(item, _)| item)
+            .collect()
+    }
+
+    fn confirm_sign_out(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        self.saving = true;
+        let client = self.store.read(cx).client.clone();
+        let request_id = id.clone();
+        let task = cx.background_spawn(async move {
+            client
+                .claude_account_running_sessions(&request_id)
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.saving = false;
+                match result {
+                    Ok(count) => {
+                        this.sign_out_confirmation = Some((id, count));
+                        this.share_confirmation = None;
+                        this.error = None;
+                    }
+                    Err(error) => this.error = Some(account_error(&error)),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub(crate) fn confirm_overlay(&self) -> Entity<AccountConfirmationOverlay> {
         self.overlay.clone()
     }
 
@@ -228,60 +369,56 @@ impl AccountsSection {
         accounts: &ClaudeAccounts,
         cx: &mut Context<Self>,
     ) -> Entity<PopoverMenu> {
-        let items = Self::menu_items(account, accounts);
-        let linked = accounts.sharing.contains_key(&account.id);
+        let (items, actions): (Vec<_>, Vec<_>) =
+            Self::menu_entries(account, accounts).into_iter().unzip();
         let owner = cx.weak_entity();
         let account = account.clone();
         let id = account.id.clone();
         let handler: runner_app::ui::menu::MenuHandler = Rc::new(
             move |index: usize, window: &mut Window, cx: &mut gpui::App| {
-                let _ = owner.update(cx, |this, cx| {
-                    if linked && index == 1 {
-                        this.perform(
-                            ClaudeAccountAction::StopSharing {
-                                id: account.id.clone(),
-                            },
-                            cx,
-                        );
-                        return;
+                let _ = owner.update(cx, |this, cx| match actions.get(index) {
+                    Some(AccountMenuAction::StopSharing) => this.perform(
+                        ClaudeAccountAction::StopSharing {
+                            id: account.id.clone(),
+                        },
+                        cx,
+                    ),
+                    Some(AccountMenuAction::MakeMain) => this.perform(
+                        ClaudeAccountAction::MakeMain {
+                            id: account.id.clone(),
+                        },
+                        cx,
+                    ),
+                    Some(AccountMenuAction::Rename) => {
+                        this.renaming = Some(account.id.clone());
+                        this.adding = false;
+                        let name = this
+                            .store
+                            .read(cx)
+                            .claude_accounts
+                            .accounts
+                            .iter()
+                            .find(|current| current.id == account.id)
+                            .map(|account| account.name.clone())
+                            .unwrap_or_else(|| account.name.clone());
+                        this.name.update(cx, |field, cx| field.set_text(name, cx));
+                        this.name.read(cx).focus_handle().focus(window, cx);
+                        cx.notify();
                     }
-                    let index = if linked && index > 1 {
-                        index - 1
-                    } else {
-                        index
-                    };
-                    match index {
-                        0 => this.perform(
-                            ClaudeAccountAction::MakeMain {
-                                id: account.id.clone(),
-                            },
-                            cx,
-                        ),
-                        1 => {
-                            this.renaming = Some(account.id.clone());
-                            this.adding = false;
-                            let name = this
-                                .store
-                                .read(cx)
-                                .claude_accounts
-                                .accounts
-                                .iter()
-                                .find(|current| current.id == account.id)
-                                .map(|account| account.name.clone())
-                                .unwrap_or_else(|| account.name.clone());
-                            this.name.update(cx, |field, cx| field.set_text(name, cx));
-                            this.name.read(cx).focus_handle().focus(window, cx);
-                            cx.notify();
-                        }
-                        2 => (this.reveal_folder)(&PathBuf::from(&account.folder), cx),
-                        3 => this.perform(
-                            ClaudeAccountAction::Remove {
-                                id: account.id.clone(),
-                            },
-                            cx,
-                        ),
-                        _ => {}
+                    Some(AccountMenuAction::Reveal) => {
+                        (this.reveal_folder)(&PathBuf::from(&account.folder), cx)
                     }
+                    Some(AccountMenuAction::SignOut) => {
+                        this.confirm_sign_out(account.id.clone(), cx);
+                        this.name.read(cx).focus_handle().focus(window, cx);
+                    }
+                    Some(AccountMenuAction::Remove) => this.perform(
+                        ClaudeAccountAction::Remove {
+                            id: account.id.clone(),
+                        },
+                        cx,
+                    ),
+                    _ => {}
                 });
             },
         );
@@ -378,7 +515,7 @@ impl AccountsSection {
                                     ))
                             })),
                     )
-                    .children((!identity.is_empty()).then(|| {
+                    .children((signed_in && !identity.is_empty()).then(|| {
                         div()
                             .text_size(theme::text_ui())
                             .text_color(theme::muted())
@@ -392,7 +529,7 @@ impl AccountsSection {
                             .items_center()
                             .gap_2()
                             .flex_wrap()
-                            .child(account.folder.clone())
+                            .child(account_folder(account))
                             .children(
                                 (sharing.is_none() && account.id != accounts.main_id).then(|| {
                                     div().child(crate::i18n::text("accounts.own_settings"))
@@ -814,12 +951,12 @@ fn main_name(accounts: &ClaudeAccounts) -> String {
         .unwrap_or_default()
 }
 
-pub(crate) struct AccountSharingOverlay {
+pub(crate) struct AccountConfirmationOverlay {
     pane: WeakEntity<AccountsSection>,
     _subscription: Subscription,
 }
 
-impl AccountSharingOverlay {
+impl AccountConfirmationOverlay {
     fn new(pane: Entity<AccountsSection>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe(&pane, |_, _, cx| cx.notify());
         Self {
@@ -829,12 +966,74 @@ impl AccountSharingOverlay {
     }
 }
 
-impl Render for AccountSharingOverlay {
+impl Render for AccountConfirmationOverlay {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(pane) = self.pane.upgrade() else {
             return div().into_any_element();
         };
         let state = pane.read(cx);
+        if let Some((id, count)) = state.sign_out_confirmation.clone() {
+            let accounts = &state.store.read(cx).claude_accounts;
+            let Some(account) = accounts.accounts.iter().find(|account| account.id == id) else {
+                return div().into_any_element();
+            };
+            let copy = SignOutCopy::new(account, accounts, count);
+            let cancel = pane.clone();
+            let mut dialog = ConfirmDialog::new(
+                copy.title,
+                copy.body,
+                crate::i18n::text("accounts.sign_out"),
+                crate::i18n::text("accounts.signing_out"),
+                state.saving,
+                Rc::new(move |_, cx| {
+                    pane.update(cx, |this, cx| {
+                        this.perform(ClaudeAccountAction::SignOut { id: id.clone() }, cx);
+                    });
+                }),
+                Rc::new(move |_, cx| {
+                    cancel.update(cx, |this, cx| {
+                        this.sign_out_confirmation = None;
+                        cx.notify();
+                    });
+                }),
+            )
+            .icon("log-out.svg")
+            .focus_handle(state.name.read(cx).focus_handle());
+            if !copy.notes.is_empty() {
+                dialog = dialog.note(div().flex().flex_col().gap_2().children(
+                    copy.notes.into_iter().map(|note| {
+                        div()
+                            .w(rems(376. / 16.))
+                            .flex()
+                            .gap_2()
+                            .px(rems(10. / 16.))
+                            .py_2()
+                            .rounded(rems(6. / 16.))
+                            .bg(theme::raised())
+                            .debug_selector(|| "CLAUDE_SIGN_OUT_NOTE".into())
+                            .child(
+                                svg()
+                                    .path("triangle-alert.svg")
+                                    .size(rems(14. / 16.))
+                                    .flex_none()
+                                    .text_color(theme::warning()),
+                            )
+                            .child(
+                                div()
+                                    .w(rems(334. / 16.))
+                                    .whitespace_normal()
+                                    .text_size(theme::text_ui())
+                                    .text_color(theme::text())
+                                    .child(note),
+                            )
+                    }),
+                ));
+            }
+            if let Some(running) = copy.running {
+                dialog = dialog.detail(running);
+            }
+            return dialog.into_any_element();
+        }
         let Some(id) = state.share_confirmation.clone() else {
             return div().into_any_element();
         };
@@ -920,6 +1119,116 @@ mod tests {
         assert!(!AccountsSection::menu_items(&accounts.accounts[2], &accounts)[3].disabled);
         accounts.main_id = "other".into();
         assert!(AccountsSection::menu_items(&accounts.accounts[0], &accounts)[3].disabled);
+    }
+
+    #[test]
+    fn sign_out_menu_tracks_status_and_keeps_each_conditional_action_paired() {
+        use runner_core::protocol::{ClaudeAccountSharing, ClaudeAuthStatus};
+        for linked in [false, true] {
+            for status in [
+                None,
+                Some(ClaudeAuthStatus::default()),
+                Some(ClaudeAuthStatus {
+                    logged_in: true,
+                    ..Default::default()
+                }),
+                Some(ClaudeAuthStatus {
+                    logged_in: true,
+                    signing_in: true,
+                    ..Default::default()
+                }),
+                Some(ClaudeAuthStatus {
+                    logged_in: true,
+                    error: true,
+                    ..Default::default()
+                }),
+            ] {
+                let mut accounts = accounts();
+                for account in accounts.accounts.clone() {
+                    if let Some(status) = status.clone() {
+                        accounts.statuses.insert(account.id.clone(), status);
+                    }
+                    if linked {
+                        accounts
+                            .sharing
+                            .insert(account.id.clone(), ClaudeAccountSharing::default());
+                    }
+                    let entries = AccountsSection::menu_entries(&account, &accounts);
+                    let signed_in = status
+                        .as_ref()
+                        .is_some_and(|s| s.logged_in && !s.signing_in && !s.error);
+                    let mut expected = vec![AccountMenuAction::MakeMain];
+                    if linked {
+                        expected.push(AccountMenuAction::StopSharing);
+                    }
+                    expected.extend([AccountMenuAction::Rename, AccountMenuAction::Reveal]);
+                    if signed_in {
+                        expected.push(AccountMenuAction::SignOut);
+                    }
+                    expected.push(AccountMenuAction::Remove);
+                    assert_eq!(
+                        entries
+                            .iter()
+                            .map(|(_, action)| *action)
+                            .collect::<Vec<_>>(),
+                        expected
+                    );
+                    for (item, action) in &entries {
+                        let key = match action {
+                            AccountMenuAction::MakeMain => "accounts.make_main",
+                            AccountMenuAction::Rename => "ui.rename",
+                            AccountMenuAction::Reveal => {
+                                if cfg!(windows) {
+                                    "ui.reveal_in_explorer"
+                                } else {
+                                    "ui.reveal_in_finder"
+                                }
+                            }
+                            AccountMenuAction::SignOut => "accounts.sign_out",
+                            AccountMenuAction::Remove => "ui.remove",
+                            AccountMenuAction::StopSharing => continue,
+                        };
+                        assert_eq!(item.label, crate::i18n::text(key));
+                        if *action == AccountMenuAction::SignOut {
+                            assert!(!item.disabled);
+                            assert!(!item.destructive);
+                            assert!(item.separator_before);
+                            assert_eq!(item.icon.as_deref(), Some("log-out.svg"));
+                        }
+                    }
+                    assert_eq!(entries.last().unwrap().0.separator_before, !signed_in);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sign_out_confirmation_covers_identity_notes_and_session_plural() {
+        let mut accounts = accounts();
+        accounts.active_id = "native".into();
+        let native = SignOutCopy::new(&accounts.accounts[0], &accounts, 0);
+        assert_eq!(native.title, "Sign out of Personal?");
+        assert!(native.body.contains("from ~/.claude."));
+        assert!(!native.body.contains(" for "));
+        assert_eq!(native.notes.len(), 2);
+        assert!(native.notes[0].contains("is the active account"));
+        assert!(native.notes[1].contains("every other app"));
+        assert!(native.running.is_none());
+        accounts.statuses.insert(
+            "work".into(),
+            runner_core::protocol::ClaudeAuthStatus {
+                email: Some("qa@example.test".into()),
+                ..Default::default()
+            },
+        );
+        let work = SignOutCopy::new(&accounts.accounts[1], &accounts, 1);
+        assert!(work.body.contains("for qa@example.test from /tmp/work."));
+        assert!(work.notes.is_empty());
+        assert_eq!(work.running.unwrap(), "1 running session on Work keeps its sign-in until Claude Code asks it to log in again.");
+        accounts.active_id = "work".into();
+        let work = SignOutCopy::new(&accounts.accounts[1], &accounts, 2);
+        assert_eq!(work.notes.len(), 1);
+        assert_eq!(work.running.unwrap(), "2 running sessions on Work keep their sign-in until Claude Code asks them to log in again.");
     }
 
     #[test]
@@ -1050,8 +1359,13 @@ mod tests {
 
     struct AccountsMenuHost(Entity<AccountsSection>);
     impl Render for AccountsMenuHost {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().w(px(1000.)).h(px(700.)).child(self.0.clone())
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .w(px(1000.))
+                .h(px(700.))
+                .child(self.0.clone())
+                .child(self.0.read(cx).confirm_overlay())
         }
     }
 
@@ -1155,5 +1469,55 @@ mod tests {
         pane.read_with(&visual, |pane, _| {
             assert_eq!(pane.renaming.as_deref(), Some(id.as_str()))
         });
+        for linked in [false, true] {
+            store.update(&mut visual, |store, cx| {
+                store.claude_accounts.statuses.insert(
+                    id.clone(),
+                    runner_core::protocol::ClaudeAuthStatus {
+                        logged_in: true,
+                        ..Default::default()
+                    },
+                );
+                if linked {
+                    store
+                        .claude_accounts
+                        .sharing
+                        .insert(id.clone(), Default::default());
+                }
+                cx.notify();
+            });
+            visual.run_until_parked();
+            select(&mut visual, if linked { 4 } else { 3 });
+            pane.read_with(&visual, |pane, _| {
+                assert_eq!(pane.sign_out_confirmation, Some((id.clone(), 0)));
+                assert!(!pane.saving);
+            });
+            assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+            pane.update(&mut visual, |pane, cx| {
+                pane.saving = true;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_keystrokes("escape");
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            pane.read_with(&visual, |pane, _| {
+                assert!(pane.sign_out_confirmation.is_some())
+            });
+            pane.update(&mut visual, |pane, cx| {
+                pane.saving = false;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.simulate_keystrokes("escape");
+            visual.run_until_parked();
+            pane.read_with(&visual, |pane, _| {
+                assert!(pane.sign_out_confirmation.is_none())
+            });
+            assert!(
+                store.read_with(&visual, |store, _| store.claude_accounts.statuses[&id]
+                    .logged_in)
+            );
+        }
     }
 }

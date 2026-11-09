@@ -105,6 +105,9 @@ pub enum ClaudeAccountAction {
     Login {
         id: String,
     },
+    SignOut {
+        id: String,
+    },
     Cancel {
         id: String,
     },
