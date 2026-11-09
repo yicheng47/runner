@@ -2687,6 +2687,46 @@ fn a_drag_over_a_link_selects_it_and_a_click_opens_it() {
 }
 
 #[test]
+fn a_narrow_table_keeps_each_cell_inside_its_column() {
+    let _theme = ThemeGuard::new();
+    let mut h = viewer(chat("in-project"));
+    h.visual.simulate_resize(size(px(420.), px(700.)));
+    std::fs::write(
+        h.repo.join("WIDE.md"),
+        concat!(
+            "| Name | Meaning |\n| --- | :---: |\n",
+            "| a long description that cannot fit on one line of a narrow column | `an_unbroken_inline_code_value_far_longer_than_its_whole_column_is_wide` |\n",
+            "| [a link whose label also runs far past the width of its column](https://zed.dev) | short |\n",
+        ),
+    )
+    .unwrap();
+    h.open("WIDE.md");
+    h.wait("the table", |h| h.has("FILE_MD_CELL 2-1"));
+    h.settle();
+
+    for (cell, piece) in [
+        ("FILE_MD_CELL 1-0", "FILE_MD_CELL_PIECE 1-0-0"),
+        ("FILE_MD_CELL 1-1", "FILE_MD_CELL_PIECE 1-1-0"),
+        ("FILE_MD_CELL 2-0", "FILE_MD_CELL_PIECE 2-0-0"),
+        ("FILE_MD_CELL 2-1", "FILE_MD_CELL_PIECE 2-1-0"),
+    ] {
+        let cell_bounds = h.visual.debug_bounds(cell).unwrap();
+        let piece_bounds = h.visual.debug_bounds(piece).unwrap();
+        assert!(
+            piece_bounds.left() >= cell_bounds.left()
+                && piece_bounds.right() <= cell_bounds.right(),
+            "{piece} is {piece_bounds:?}, outside {cell_bounds:?}"
+        );
+    }
+    let header = h.visual.debug_bounds("FILE_MD_CELL 0-0").unwrap();
+    let wrapped = h.visual.debug_bounds("FILE_MD_CELL 1-0").unwrap();
+    assert!(
+        wrapped.size.height > header.size.height,
+        "the long row wraps onto more lines than the header: {wrapped:?} against {header:?}"
+    );
+}
+
+#[test]
 fn a_drag_over_a_table_link_or_linked_image_selects_and_a_click_opens() {
     let mut h = viewer(chat("in-project"));
     std::fs::create_dir_all(h.repo.join("docs")).unwrap();
