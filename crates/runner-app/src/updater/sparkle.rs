@@ -14,11 +14,14 @@ use objc2::{
     define_class, extern_class, extern_methods, msg_send, AnyThread, DefinedClass,
     MainThreadMarker, MainThreadOnly,
 };
-use objc2_foundation::{NSBundle, NSDate, NSDictionary, NSError, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    NSBundle, NSDate, NSDictionary, NSError, NSObjectProtocol, NSString, NSUnderlyingErrorKey,
+};
 
 use super::sparkle_flow::{
-    apply_event, event_for_abort, should_proceed, FoundUpdate, SparkleEvent, SparkleFlow,
-    RUNNER_UPDATE_ERROR_DOMAIN, SPU_USER_UPDATE_CHOICE_DISMISS, SPU_USER_UPDATE_CHOICE_INSTALL,
+    abort_is_failure, apply_event, error_log_entry, event_for_abort, should_proceed, FoundUpdate,
+    SparkleEvent, SparkleFlow, RUNNER_UPDATE_ERROR_DOMAIN, SPU_USER_UPDATE_CHOICE_DISMISS,
+    SPU_USER_UPDATE_CHOICE_INSTALL,
 };
 use super::{UpdateInfo, UpdateState, Updater};
 
@@ -164,6 +167,23 @@ fn background_check_declined_error() -> Retained<NSError> {
             code: RUNNER_UPDATE_ERROR_CODE,
             userInfo: &*user_info
         ]
+    }
+}
+
+/// The error and each one under it. `userInfo` is not logged: it holds the failing URLs.
+fn describe_error(error: &NSError) -> String {
+    let entry = error_log_entry(
+        &error.domain().to_string(),
+        error.code(),
+        &error.localizedDescription().to_string(),
+    );
+    let underlying = error
+        .userInfo()
+        .objectForKey(unsafe { NSUnderlyingErrorKey })
+        .and_then(|underlying| underlying.downcast::<NSError>().ok());
+    match underlying {
+        Some(underlying) => format!("{entry}; caused by {}", describe_error(&underlying)),
+        None => entry,
     }
 }
 
@@ -451,7 +471,11 @@ define_class!(
 
         #[unsafe(method(updater:didAbortWithError:))]
         fn did_abort_with_error(&self, _updater: &SPUUpdater, error: &NSError) {
-            if let Some(event) = event_for_abort(&error.domain().to_string(), error.code()) {
+            let domain = error.domain().to_string();
+            if abort_is_failure(&domain, error.code()) {
+                tracing::warn!("Sparkle update failed: {}", describe_error(error));
+            }
+            if let Some(event) = event_for_abort(&domain, error.code()) {
                 self.ivars().send(event);
             }
         }

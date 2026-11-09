@@ -132,9 +132,7 @@ impl NativeUpdater {
                             updater.native.checking.set(false);
                             return false;
                         }
-                        if matches!(updater.state, UpdateState::UpToDate { .. }) {
-                            updater.state = UpdateState::UpToDate { checking: true };
-                        }
+                        updater.state.begin_check();
                         cx.notify();
                         true
                     })
@@ -656,6 +654,19 @@ mod tests {
                 assert!(message.contains("restart Runner"));
                 assert!(updater.native.transfer.is_none());
                 assert_eq!(updater.native.download_after_check, None);
+
+                // A retry shows the check, and failing again still names the update.
+                updater.state.begin_check();
+                assert_eq!(*updater.state(), UpdateState::UpToDate { checking: true });
+                updater.finish_check(Err(anyhow::anyhow!("offline")), cx);
+                assert!(matches!(
+                    updater.state(),
+                    UpdateState::Failed {
+                        step: UpdateStep::Check,
+                        info: Some(_),
+                        ..
+                    }
+                ));
             });
 
             let update_gone = pending_download(cx);
