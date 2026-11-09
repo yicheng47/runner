@@ -39,11 +39,12 @@ struct Attempt {
 }
 
 /// A notice whose attempt ended without confirmation and may still sit in the composer;
-/// `seen` once the probe has found it there.
+/// `seen` once the probe has found it there, `tracked` once the input tracker has.
 struct Unsent {
     snapshot: DeliverySnapshot,
     probe: InputProbe,
     seen: bool,
+    tracked: bool,
 }
 
 struct Hold {
@@ -259,7 +260,11 @@ impl Dispatcher {
                                 && current.turn_started != before.turn_started
                         },
                     );
-                    let outcome = if !unchanged {
+                    let prompted =
+                        turn_started && current.as_ref().is_some_and(|current| current.prompted);
+                    let outcome = if prompted {
+                        "Confirmed"
+                    } else if !unchanged {
                         "Unverified"
                     } else if turn_started || (state == ProbeState::Cleared && !unsent) {
                         "Confirmed"
@@ -338,6 +343,7 @@ impl Dispatcher {
                             snapshot,
                             probe: attempt.probe,
                             seen: false,
+                            tracked: unsent || current.as_ref().is_some_and(|current| current.held),
                         });
                         subscriber.pause_check = Some(now + CONFIRM_WINDOW);
                         subscriber.nudged = false;
@@ -359,12 +365,21 @@ impl Dispatcher {
                     .map(|current| unsent.probe.state(&current.rows))
                     .unwrap_or(ProbeState::Unknown);
                 let tracked = current.as_ref().is_some_and(|current| current.unsent);
+                let started = current.as_ref().is_some_and(|current| {
+                    current.generation == unsent.snapshot.generation
+                        && current.turn_started != unsent.snapshot.turn_started
+                });
                 if state == ProbeState::Present {
                     unsent.seen = true;
                     subscriber.input_cleared = false;
                 }
+                unsent.tracked |= tracked || current.as_ref().is_some_and(|current| current.held);
                 let readiness = router.injector.delivery_readiness(&subscriber.session_id);
-                let gone = (state == ProbeState::Cleared && !tracked)
+                // As for reports, a turn that reported the notice as its prompt, or whose notice
+                // the tracker let go of, took it (#1225).
+                let prompted = current.as_ref().is_some_and(|current| current.prompted);
+                let gone = (started && (prompted || (unsent.tracked && !tracked)))
+                    || (state == ProbeState::Cleared && !tracked)
                     || (state == ProbeState::Unknown
                         && unsent.seen
                         && subscriber.input_cleared
@@ -601,18 +616,20 @@ impl Dispatcher {
         )
     }
 
-    /// An unsent notice that no unconfirmed attempt of ours left behind is re-checked against the
-    /// composer before it holds a member with unread messages.
+    /// An unsent notice or draft that no unconfirmed attempt of ours left behind is re-checked
+    /// against the composer before it holds a member with unread messages.
     fn readiness(router: &Router, subscriber: &Subscriber, unread: usize) -> DeliveryReadiness {
         let readiness = router.injector.delivery_readiness(&subscriber.session_id);
-        if readiness != DeliveryReadiness::Unsent
-            || unread == 0
+        if !matches!(
+            readiness,
+            DeliveryReadiness::Unsent | DeliveryReadiness::Drafting
+        ) || unread == 0
             || subscriber.unsent.is_some()
             || subscriber.attempt.is_some()
         {
             return readiness;
         }
-        router.injector.recheck_unsent(&subscriber.session_id);
+        router.injector.recheck_composer(&subscriber.session_id);
         router.injector.delivery_readiness(&subscriber.session_id)
     }
 

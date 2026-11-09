@@ -202,6 +202,9 @@ struct SessionState {
     pending_spawn: bool,
     delivery_runtime: String,
     turn_started: u64,
+    /// The latest line the router typed, and whether the agent has reported a turn from it.
+    delivery_line: Option<String>,
+    delivery_prompted: bool,
     handle: Option<SessionHandle>,
     model: SessionModel,
     delivery_gate: Arc<DeliveryGate>,

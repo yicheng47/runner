@@ -28,9 +28,15 @@ pub struct DeliverySnapshot {
     pub generation: u64,
     pub input_revision: (u64, u64),
     pub turn_started: u64,
+    /// The agent reported a turn whose prompt is the router's latest typed line: the one proof
+    /// of that line's delivery that no other input or turn can produce (#1225).
+    pub prompted: bool,
     pub runtime: String,
     /// The composer still holds the router's own notice, whatever other gate masks readiness.
     pub unsent: bool,
+    /// The input tracker held the router's latest line as its own after its Enter, even if it
+    /// has let go of it since.
+    pub held: bool,
 }
 
 /// Session-manager port for readiness, reservations and notification attempts.
@@ -56,8 +62,8 @@ pub trait StdinInjector: Send + Sync + 'static {
     /// input reached it after `snapshot`.
     fn confirm_delivery(&self, session_id: &str, snapshot: &DeliverySnapshot);
 
-    /// Re-check an idle session's unsent notice against its composer.
-    fn recheck_unsent(&self, session_id: &str);
+    /// Re-check an idle session's unsent notice or draft against its composer.
+    fn recheck_composer(&self, session_id: &str);
 
     fn register_delivery_listener(
         &self,
@@ -133,8 +139,8 @@ impl StdinInjector for SessionManager {
         SessionManager::confirm_delivery(self, session_id, snapshot)
     }
 
-    fn recheck_unsent(&self, session_id: &str) {
-        SessionManager::recheck_unsent(self, session_id)
+    fn recheck_composer(&self, session_id: &str) {
+        SessionManager::recheck_composer(self, session_id)
     }
 
     fn register_delivery_listener(

@@ -536,10 +536,13 @@ impl SessionManager {
                 _ => {}
             }
             let turn_started = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));
+            let prompted = matches!(&event, SessionEvent::Agent { event, live: true }
+                if session.delivery_line.as_deref().is_some_and(|line| agent_prompted(event, line)));
             let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
             let effects = session.model.apply(event, super::super::clock::state_now());
             if turn_started && effects.agent_feedback.accepted {
                 session.turn_started = session.turn_started.wrapping_add(1);
+                session.delivery_prompted |= prompted;
             }
             let became_idle =
                 !was_idle && session.model.activity() == Some(SessionActivityState::Idle);
@@ -642,6 +645,17 @@ impl SessionManager {
                     .map(|activity| (id, activity))
             })
             .collect()
+    }
+}
+
+fn agent_prompted(event: &super::super::state::agent::AgentEvent, line: &str) -> bool {
+    use super::super::state::agent::AgentEvent;
+    match event {
+        AgentEvent::PromptSubmitted { prompt } => prompt.trim() == line.trim(),
+        AgentEvent::Batch { events, .. } | AgentEvent::Transcript { events, .. } => {
+            events.iter().any(|event| agent_prompted(event, line))
+        }
+        _ => false,
     }
 }
 

@@ -542,6 +542,9 @@ impl TerminalModel {
     pub fn input_reset_guard(&self) -> u64 {
         self.input_tracker.lock().unwrap().reset_guard()
     }
+    pub fn delivery_held(&self) -> bool {
+        self.input_tracker.lock().unwrap().delivery_held()
+    }
     pub fn reset_input_state(&self, guard: u64) {
         let observation = self
             .input_tracker

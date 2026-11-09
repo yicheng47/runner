@@ -24,6 +24,10 @@ pub enum AgentEvent {
         drafting: bool,
     },
     Ready,
+    /// The prompt the turn in the same batch started from, where the runtime reports it.
+    PromptSubmitted {
+        prompt: String,
+    },
     TurnStarted,
     Working {
         detail: Option<WorkDetail>,
@@ -276,7 +280,7 @@ impl AgentModel {
         }
         match event {
             AgentEvent::ConversationRecovered | AgentEvent::BackgroundWork { .. } => unreachable!(),
-            AgentEvent::EditorDraft { .. } => return false,
+            AgentEvent::EditorDraft { .. } | AgentEvent::PromptSubmitted { .. } => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
                 self.value.activity = Activity::Idle;
