@@ -510,6 +510,9 @@ jobs:
 
       - name: Verify the public nightly release and downloads before pruning
         run: |
+          public_curl() {
+            curl --silent --show-error --fail --location --retry 5 --retry-delay 10 "$@"
+          }
           gh release view "$CHANNEL" --json isPrerelease,isDraft,assets | jq -e --arg platform "$PLATFORM" --arg dmg "$DMG_NAME" --arg dmg_x64 "$DMG_X64_NAME" --arg setup "$SETUP_NAME" '
             .isPrerelease and (.isDraft | not) and
             ([.assets[].name] |
@@ -518,16 +521,16 @@ jobs:
               (($platform != "all" and $platform != "both" and $platform != "windows") or (index($setup) != null and index($setup + ".sig") != null)))'
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "macos" ]]; then
             for dmg in "$DMG_NAME" "$DMG_X64_NAME"; do
-              curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$dmg" >/dev/null
+              public_curl --head "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$dmg" >/dev/null
             done
             for appcast in appcast.xml appcast-x64.xml; do
-              curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$appcast" --output "$RUNNER_TEMP/public-$appcast"
+              public_curl "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$appcast" --output "$RUNNER_TEMP/public-$appcast"
               cmp "nightly-artifacts/macos/$appcast" "$RUNNER_TEMP/public-$appcast"
             done
           fi
           if [[ "$PLATFORM" == "all" || "$PLATFORM" == "both" || "$PLATFORM" == "windows" ]]; then
-            curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$SETUP_NAME" >/dev/null
-            curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
+            public_curl --head "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$SETUP_NAME" >/dev/null
+            public_curl "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$SETUP_NAME.sig" --output "$RUNNER_TEMP/public-installer.sig"
             cmp "nightly-artifacts/windows/$SETUP_NAME.sig" "$RUNNER_TEMP/public-installer.sig"
           fi
 
@@ -538,8 +541,8 @@ jobs:
                 name="Runner_${NIGHTLY_VERSION}_linux-$arch.$format"
                 printf '%s\n' "$assets" | grep -Fxq "$name"
                 printf '%s\n' "$assets" | grep -Fxq "$name.sig"
-                curl --silent --show-error --fail --head --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$name" >/dev/null
-                curl --silent --show-error --fail --location "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$name.sig" --output "$RUNNER_TEMP/linux-update.sig"
+                public_curl --head "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$name" >/dev/null
+                public_curl "https://github.com/yicheng47/runner/releases/download/$CHANNEL/$name.sig" --output "$RUNNER_TEMP/linux-update.sig"
                 cmp "nightly-artifacts/linux/$name.sig" "$RUNNER_TEMP/linux-update.sig"
               done
             done

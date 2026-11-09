@@ -609,6 +609,15 @@ class NightlyTests(unittest.TestCase):
                 path.write_text(json.dumps(release))
                 self.assertNotEqual(self.shell(step['run']).returncode, 0)
 
+    def test_public_verification_retries_transient_failures(self):
+        step = next(step for step in JOBS['publish']['steps'] if step['name'].startswith('Verify the public'))
+        self.assets(self.mac_assets + [self.env['SETUP_NAME'], self.env['SETUP_NAME'] + '.sig'])
+        result = self.shell(step['run'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        curls = [line for line in self.calls() if line.startswith('curl ')]
+        self.assertEqual(len(curls), 6)
+        self.assertTrue(all('--retry 5 --retry-delay 10' in line for line in curls), curls)
+
     def test_retention_orders_mixed_versions_by_stamp_and_pairs_signatures(self):
         mac_old = {arch: [f'Runner-Nightly-9.0.0-nightly.202608{day:02}.0100-{arch}.dmg' for day in range(1, 12)]
                    for arch in ['arm64', 'x64']}
