@@ -1692,20 +1692,27 @@ impl Draw<'_> {
                         element.justify_center()
                     })
                     .when(align == Alignment::Right, |element| element.justify_end())
-                    .children(
-                        cell.iter()
-                            .enumerate()
-                            .map(|(piece_index, piece)| match piece {
-                                Piece::Text(text) => {
-                                    let id = format!("md-{}-{column}-{piece_index}", self.index);
-                                    self.inline_plain(text, color, weight, id)
-                                }
-                                Piece::Image(image) => self.image(
-                                    image,
-                                    format!("md-{}-{column}-{piece_index}-image", self.index),
-                                ),
-                            }),
-                    )
+                    .children(cell.iter().enumerate().map(|(piece_index, piece)| {
+                        let body = match piece {
+                            Piece::Text(text) => {
+                                let id = format!("md-{}-{column}-{piece_index}", self.index);
+                                self.inline_plain(text, color, weight, id)
+                            }
+                            Piece::Image(image) => self.image(
+                                image,
+                                format!("md-{}-{column}-{piece_index}-image", self.index),
+                            ),
+                        };
+                        div()
+                            .when(cfg!(test), move |element| {
+                                element.debug_selector(move || {
+                                    format!("FILE_MD_CELL_PIECE {row}-{column}-{piece_index}")
+                                })
+                            })
+                            // GPUI text gives its unwrapped width as its minimum.
+                            .min_w(px(0.))
+                            .child(body)
+                    }))
             }));
         self.whole_row(row, len).into_any_element()
     }
