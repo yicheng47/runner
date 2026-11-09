@@ -2405,6 +2405,14 @@ mod tests {
         let mut visual = VisualTestContext::from_window(window.into(), &cx);
         visual.simulate_resize(gpui::size(px(700.), px(300.)));
         let bounds = visual.debug_bounds("WHEEL_LEFT").unwrap();
+        // The host acknowledges the paint's size push on the frame thread, and
+        // a change of rows drops any selection made before it lands.
+        let rows = window
+            .read_with(&visual, |host, cx| host.left.interaction.read(cx).pane_size)
+            .unwrap()
+            .unwrap()
+            .rows;
+        wait_for_rows(&left_terminal, rows);
         let row = bounds.top() + px(10. + super::row_height(14., 1.4) / 2.);
         let start = point(bounds.left() + px(11.), row);
         let end = point(bounds.left() + px(60.), row);

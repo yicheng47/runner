@@ -205,14 +205,19 @@ impl Relay {
             "welcome"
         );
     }
+    /// Waits for the background saves to finish, then reads the file once:
+    /// polling it held it open, and Windows refuses to replace an open file.
     async fn saved_kind(&self, expected: remote::DeviceKind) {
-        for _ in 0..200 {
-            if Trust::load(self.root.path()).unwrap().devices[0].kind == expected {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("the saved trust never recorded {expected:?}");
+        let idle = self.writes.slots.clone().acquire_many_owned(16);
+        let _idle = tokio::time::timeout(Duration::from_secs(30), idle)
+            .await
+            .expect("a trust save never finished")
+            .unwrap();
+        assert_eq!(
+            Trust::load(self.root.path()).unwrap().devices[0].kind,
+            expected,
+            "the saved trust did not record the kind"
+        );
     }
     fn flush(&mut self, id: u32, browser: &mut Records) {
         while let Some(frame) = browser.next_frame().unwrap() {
