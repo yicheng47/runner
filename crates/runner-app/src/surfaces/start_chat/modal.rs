@@ -7,7 +7,13 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_launcher_page(ProjectScope::Root, launcher::Step::Start, false, window, cx);
+        if self.create_modal_open() || self.launcher_start_pending(cx) {
+            return;
+        }
+        let scope = ProjectScope::or_root(self.new_tab_project_id(cx));
+        self.open_launcher_page(scope, launcher::Step::Start, false, window, cx);
+        self.front_page_sidebar()
+            .update(cx, |sidebar, cx| sidebar.set_active_project(None, cx));
     }
 
     /// A sidebar +: locked to its project, while Recents has none to lock to.

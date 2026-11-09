@@ -381,9 +381,13 @@ impl ChatLauncher {
             }),
             cx,
         );
-        project
-            .select()
-            .update(cx, |select, cx| select.set_inline_trigger(true, cx));
+        project.select().update(cx, |select, cx| {
+            select.set_inline_trigger(true, cx);
+            let owner = entity.downgrade();
+            select.set_on_close(Rc::new(move |window, cx| {
+                let _ = owner.update(cx, |this, cx| this.focus(window, cx));
+            }));
+        });
         let subscription = cx.observe(&query, |this, _, cx| {
             this.selected = 0;
             cx.notify();
@@ -474,9 +478,13 @@ impl ChatLauncher {
                             }),
                             cx,
                         );
-                        this.project
-                            .select()
-                            .update(cx, |select, cx| select.set_inline_trigger(true, cx));
+                        let owner = cx.weak_entity();
+                        this.project.select().update(cx, |select, cx| {
+                            select.set_inline_trigger(true, cx);
+                            select.set_on_close(Rc::new(move |window, cx| {
+                                let _ = owner.update(cx, |this, cx| this.focus(window, cx));
+                            }));
+                        });
                         if this.page_project.is_some() && this.project.chosen().is_none() {
                             this.retarget_page(None, false, cx);
                         }
@@ -1617,6 +1625,38 @@ impl NativeRoot {
         project
     }
 
+    pub(super) fn new_tab_project_id(&self, cx: &App) -> Option<String> {
+        let visible = self.launcher_page_visible();
+        if !visible && self.remote_client.is_local() {
+            return self.active_tab_project_id(cx);
+        }
+        let origin = self
+            .page_launcher(cx)
+            .filter(|_| visible)
+            .and_then(|page| page.read(cx).origin.clone());
+        if self.remote_client.is_active() {
+            let tab = match origin {
+                Some(LauncherOrigin::Remote(Some(
+                    crate::surfaces::remote_client::RemoteItem::Tab(id),
+                ))) => self.remote_client.tab_layout(&id),
+                _ => self.remote_client.layout(),
+            };
+            return tab
+                .or_else(|| self.remote_client.recently_viewed_tab_layout())
+                .and_then(|layout| layout.parent_id.clone());
+        }
+        let tab = match origin {
+            Some(LauncherOrigin::Local { tab, .. }) => tab,
+            _ => None,
+        };
+        let tab = tab
+            .filter(|id| self.tabs.tabs().iter().any(|tab| &tab.id == id))
+            .or_else(|| self.recently_viewed_tab_id(cx))?;
+        let nodes = &self.app_store.read(cx).nodes;
+        let node = nodes.iter().find(|node| node.id == tab)?;
+        crate::surfaces::sidebar::node_project_id(nodes, node)
+    }
+
     /// The launcher page in `scope`. `locked` is a project's +, where the row
     /// sits under the project and the picker stays on it; every other entry
     /// draws the row in Recents and leaves the picker free.
@@ -2379,18 +2419,18 @@ mod tests {
         });
     }
 
+    fn update_settings(
+        harness: &mut ModalHarness,
+        update: impl FnOnce(&mut AppSettings) -> bool + 'static,
+    ) {
+        harness.act(move |root, _, cx| {
+            root.app_store
+                .update(cx, |store, cx| store.update_settings(update, false, cx));
+        });
+    }
+
     #[test]
     fn launcher_page_row_stays_where_the_page_opened_and_plus_reveals_it() {
-        fn update_settings(
-            harness: &mut ModalHarness,
-            update: impl FnOnce(&mut AppSettings) -> bool + 'static,
-        ) {
-            harness.act(move |root, _, cx| {
-                root.app_store
-                    .update(cx, |store, cx| store.update_settings(update, false, cx));
-            });
-        }
-
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
         let projects = project_fixture(&mut harness);
         let (alpha, beta) = (projects[0].id.clone(), projects[1].id.clone());
@@ -2490,7 +2530,7 @@ mod tests {
     }
 
     #[test]
-    fn new_tab_entries_start_in_recents_with_no_project_and_mission_entries_keep_the_active_one() {
+    fn new_tab_entries_use_the_recent_tabs_project_and_mission_entries_keep_the_active_one() {
         let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
         let projects = project_fixture(&mut harness);
         let alpha = projects[0].id.clone();
@@ -2528,12 +2568,21 @@ mod tests {
             }
             harness.read_root(|root, _| assert_eq!(root.route, AppRoute::Launcher, "{entry}"));
             assert_row_in_recents(&mut harness);
+            let project = (entry != "recents plus").then(|| alpha.clone());
             assert_eq!(
                 page_picker(&mut harness),
-                (ProjectScope::Root, false),
+                (ProjectScope::or_root(project.clone()), false),
                 "{entry}"
             );
-            assert_eq!(page_directory(&mut harness), default_directory, "{entry}");
+            assert_eq!(
+                page_directory(&mut harness),
+                if project.is_some() {
+                    projects[0].cwd.clone()
+                } else {
+                    default_directory
+                },
+                "{entry}"
+            );
             harness.read_root(|root, cx| assert_eq!(root.active_project_id(cx), None));
         }
 
@@ -2596,6 +2645,125 @@ mod tests {
             page_picker(&mut harness),
             (ProjectScope::Project(alpha), true)
         );
+    }
+
+    #[test]
+    fn new_tab_uses_the_opening_tab_instead_of_the_pickers_project_and_falls_back_if_gone() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let projects = project_fixture(&mut harness);
+        let alpha = projects[0].id.clone();
+        let beta = projects[1].id.clone();
+        let fallback = open_tab_in(&mut harness, Some(&beta));
+        let opening = open_tab_in(&mut harness, Some(&alpha));
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        let chosen = beta.clone();
+        harness.act(move |root, window, cx| {
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |launcher, cx| launcher.choose_project(&chosen, cx));
+            root.open_new_tab_modal(&NewTab, window, cx);
+        });
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(alpha), false)
+        );
+        assert_eq!(page_directory(&mut harness), projects[0].cwd);
+        harness.act(move |root, window, cx| {
+            root.front_page_client(cx)
+                .archive(runner_core::companion::ActionTarget {
+                    kind: runner_core::companion::ActionKind::Tab,
+                    id: opening,
+                })
+                .unwrap();
+            root.reload_tabs(cx).unwrap();
+            assert_eq!(root.recently_viewed_tab_id(cx), Some(fallback));
+            root.open_new_tab_modal(&NewTab, window, cx);
+        });
+        assert_eq!(
+            page_picker(&mut harness),
+            (ProjectScope::Project(beta), false)
+        );
+        assert_eq!(page_directory(&mut harness), projects[1].cwd);
+
+        open_tab_in(&mut harness, None);
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        assert_eq!(page_picker(&mut harness), (ProjectScope::Root, false));
+        assert_row_in_recents(&mut harness);
+    }
+
+    #[test]
+    fn a_preselected_project_keeps_sidebar_selection_in_recents_when_the_row_is_hidden() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let alpha = project_fixture(&mut harness)[0].id.clone();
+        for active_only in [false, true] {
+            open_tab_in(&mut harness, Some(&alpha));
+            let collapsed = alpha.clone();
+            update_settings(&mut harness, move |settings| {
+                settings.sidebar_chats_open = active_only;
+                settings.sidebar_active_only = active_only;
+                settings.sidebar_collapsed_projects.insert(collapsed);
+                true
+            });
+            harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+            assert_eq!(
+                page_picker(&mut harness),
+                (ProjectScope::Project(alpha.clone()), false)
+            );
+            assert_eq!(row_scope(&harness), None);
+            assert!(harness.bounds("SIDEBAR_LAUNCHER_TAB").is_none());
+            harness.read_root(|root, cx| {
+                assert_eq!(root.active_project_id(cx), None);
+                assert!(root
+                    .settings(cx)
+                    .sidebar_collapsed_projects
+                    .contains(&alpha));
+            });
+        }
+    }
+
+    #[test]
+    fn closing_the_project_picker_returns_focus_to_search_and_arrows_move_launcher_rows() {
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        project_fixture(&mut harness);
+        open_tab_in(&mut harness, None);
+        harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+        for close in ["mouse", "keyboard", "escape"] {
+            let picker = harness.bounds("STYLED_SELECT_launcher-project").unwrap();
+            harness
+                .visual
+                .simulate_click(picker.center(), Default::default());
+            harness.visual.run_until_parked();
+            match close {
+                "mouse" => {
+                    let option = harness.bounds("STYLED_SELECT_OPTION_1").unwrap();
+                    harness
+                        .visual
+                        .simulate_click(option.center(), Default::default());
+                }
+                "keyboard" => harness.visual.simulate_keystrokes("home down enter"),
+                _ => harness.visual.simulate_keystrokes("escape"),
+            }
+            harness.visual.run_until_parked();
+            let mut selected = 0;
+            harness.act(|root, window, cx| {
+                let launcher = root.render_launcher(None, true, window, cx);
+                assert!(
+                    launcher
+                        .read(cx)
+                        .query
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window),
+                    "{close}"
+                );
+                selected = launcher.read(cx).selected;
+            });
+            harness.visual.simulate_keystrokes("down");
+            harness.visual.run_until_parked();
+            harness.act(|root, window, cx| {
+                let launcher = root.render_launcher(None, true, window, cx);
+                assert_ne!(launcher.read(cx).selected, selected, "{close}");
+            });
+        }
     }
 
     #[test]

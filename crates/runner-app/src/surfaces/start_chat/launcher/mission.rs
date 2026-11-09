@@ -1732,6 +1732,155 @@ mod remote_tests {
     }
 
     #[test]
+    fn new_tab_uses_the_hosts_opening_tab_project_and_picker_close_restores_navigation() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (_temp, mut cx, window, fake) = setup(None);
+        let mut data = overview();
+        data.tabs[0].project = Some("host-project".into());
+        let mut recent = data.tabs[0].clone();
+        recent.id = "recent".into();
+        data.tabs.push(recent.clone());
+        fake.set_overview(data);
+        cx.run_until_parked();
+        fake.queue_result("catalog", Ok(catalog()));
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.select_remote_item(RemoteItem::Tab("recent".into()), cx);
+                root.select_remote_item(RemoteItem::Tab("first".into()), cx);
+                root.open_new_tab_modal(&NewTab, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            host_page(&window, &mut cx),
+            (
+                ProjectScope::Project("host-project".into()),
+                false,
+                r"\\nas\share".into(),
+                false
+            )
+        );
+        assert_eq!(host_row(&window, &cx), Some(ProjectScope::Root));
+        window
+            .read_with(&cx, |root, cx| assert_eq!(root.active_project_id(cx), None))
+            .unwrap();
+
+        for item in [RemoteItem::Roles, RemoteItem::Crews] {
+            fake.queue_result("catalog", Ok(catalog()));
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.select_remote_item(item, cx);
+                    root.open_new_tab_modal(&NewTab, window, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            let first = host_page(&window, &mut cx);
+            assert_eq!(
+                first,
+                (
+                    ProjectScope::Project("host-project".into()),
+                    false,
+                    r"\\nas\share".into(),
+                    false
+                )
+            );
+            window
+                .update(&mut cx, |root, window, cx| {
+                    root.open_new_tab_modal(&NewTab, window, cx);
+                })
+                .unwrap();
+            cx.run_until_parked();
+            assert_eq!(host_page(&window, &mut cx), first);
+        }
+
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for close in ["mouse", "keyboard", "escape"] {
+            let picker = visual
+                .debug_bounds("STYLED_SELECT_launcher-project")
+                .unwrap();
+            visual.simulate_click(picker.center(), Default::default());
+            visual.run_until_parked();
+            match close {
+                "mouse" => {
+                    let option = visual.debug_bounds("STYLED_SELECT_OPTION_0").unwrap();
+                    visual.simulate_click(option.center(), Default::default());
+                }
+                "keyboard" => visual.simulate_keystrokes("end enter"),
+                _ => visual.simulate_keystrokes("escape"),
+            }
+            visual.run_until_parked();
+            let selected = window
+                .update(&mut visual, |root, window, cx| {
+                    let page = launcher(root, window, cx);
+                    assert!(
+                        page.read(cx)
+                            .query
+                            .read(cx)
+                            .focus_handle()
+                            .is_focused(window),
+                        "{close}"
+                    );
+                    page.read(cx).selected
+                })
+                .unwrap();
+            visual.simulate_keystrokes("down");
+            visual.run_until_parked();
+            window
+                .update(&mut visual, |root, window, cx| {
+                    assert_ne!(
+                        launcher(root, window, cx).read(cx).selected,
+                        selected,
+                        "{close}"
+                    );
+                })
+                .unwrap();
+        }
+        window
+            .update(&mut visual, |root, window, cx| {
+                launcher(root, window, cx).update(cx, |page, cx| page.choose_project("", cx));
+                root.open_new_tab_modal(&NewTab, window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                assert_eq!(
+                    launcher(root, window, cx).read(cx).scope(),
+                    ProjectScope::Project("host-project".into())
+                );
+                root.select_remote_item(RemoteItem::Tab("first".into()), cx);
+            })
+            .unwrap();
+        let mut no_project = overview();
+        no_project.tabs.push(recent.clone());
+        fake.set_overview(no_project);
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.open_new_tab_modal(&NewTab, window, cx);
+                assert_eq!(
+                    launcher(root, window, cx).read(cx).scope(),
+                    ProjectScope::Root
+                );
+            })
+            .unwrap();
+
+        let mut remaining = overview();
+        remaining.tabs = vec![recent];
+        fake.set_overview(remaining);
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.open_new_tab_modal(&NewTab, window, cx);
+                assert_eq!(
+                    launcher(root, window, cx).read(cx).scope(),
+                    ProjectScope::Project("host-project".into())
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
     fn a_locked_page_keeps_its_row_while_the_hosts_catalog_loads_and_ends_on_its_project() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         let (_temp, mut cx, window, fake) = setup(None);
