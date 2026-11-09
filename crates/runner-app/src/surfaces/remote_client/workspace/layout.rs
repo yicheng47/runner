@@ -231,6 +231,15 @@ impl RemoteClient {
         self.workspace.as_ref()?.layouts.get(id)
     }
 
+    pub(crate) fn recently_viewed_tab_layout(&self) -> Option<&PaneLayout> {
+        let remote = self.workspace.as_ref()?;
+        remote
+            .viewed_tabs
+            .iter()
+            .rev()
+            .find_map(|id| remote.layouts.get(id))
+    }
+
     pub(crate) fn session_pending(&self, id: &str) -> bool {
         self.workspace
             .as_ref()

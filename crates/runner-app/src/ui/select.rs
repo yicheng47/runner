@@ -264,6 +264,7 @@ pub struct StyledSelect {
     menu_scroll: ScrollHandle,
     menu_scrollbar: Entity<Scrollbar>,
     on_change: SelectHandler,
+    on_close: Option<DismissHandler>,
     search: Option<SelectSearch>,
 }
 
@@ -310,6 +311,7 @@ impl StyledSelect {
             menu_scroll,
             menu_scrollbar,
             on_change,
+            on_close: None,
             search: None,
         }
     }
@@ -560,6 +562,19 @@ impl StyledSelect {
         cx.notify();
     }
 
+    /// Runs after the user closes the menu, including choosing an option.
+    pub fn set_on_close(&mut self, on_close: DismissHandler) {
+        self.on_close = Some(on_close);
+    }
+
+    fn restore_focus(&self, window: &mut Window, cx: &mut App) {
+        if let Some(on_close) = &self.on_close {
+            on_close(window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
     fn selected_index(&self) -> usize {
         self.options
             .iter()
@@ -586,6 +601,8 @@ impl StyledSelect {
             if let Some(search) = &self.search {
                 search.input.read(cx).focus_handle().focus(window, cx);
             }
+        } else if let Some(on_close) = &self.on_close {
+            on_close(window, cx);
         }
         cx.notify();
     }
@@ -601,6 +618,9 @@ impl StyledSelect {
         self.state.close();
         self.focus_handle.focus(window, cx);
         (self.on_change)(self.value.clone(), window, cx);
+        if let Some(on_close) = &self.on_close {
+            on_close(window, cx);
+        }
         cx.notify();
     }
 
@@ -655,7 +675,7 @@ impl StyledSelect {
                     }
                 }
             } else if was_open {
-                self.focus_handle.focus(window, cx);
+                self.restore_focus(window, cx);
             }
             cx.notify();
         }
@@ -1013,8 +1033,8 @@ impl Render for StyledSelect {
             let dismiss: DismissHandler = Rc::new(move |window, cx| {
                 dismiss_entity.update(cx, |select, cx| {
                     select.close(cx);
-                    if select.search.is_some() {
-                        select.focus_handle.focus(window, cx);
+                    if select.on_close.is_some() || select.search.is_some() {
+                        select.restore_focus(window, cx);
                     }
                 });
             });
