@@ -22,7 +22,7 @@ $exe = Join-Path $env:ProgramFiles 'Certum/SimplySign Desktop/SimplySignDesktop.
 if (-not (Test-Path -LiteralPath $exe)) {
     $download = Join-Path ([IO.Path]::GetTempPath()) "SimplySignDesktop-$version-64-bit-en.msi"
     Write-Host "Downloading SimplySign Desktop $version..."
-    Invoke-WebRequest "https://files.certum.eu/software/SimplySignDesktop/Windows/$version/SimplySignDesktop-$version-64-bit-en.msi" -OutFile $download
+    & (Join-Path $PSScriptRoot 'download.ps1') -Uri "https://files.certum.eu/software/SimplySignDesktop/Windows/$version/SimplySignDesktop-$version-64-bit-en.msi" -OutFile $download
     if ((Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash -ne $sha256) {
         throw "SimplySign Desktop checksum mismatch: $download"
     }

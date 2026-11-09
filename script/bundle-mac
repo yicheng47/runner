@@ -240,7 +240,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources" "$APP_BUNDLE/Contents/Frameworks" "$SPARKLE_CACHE_DIR"
 
 if [[ ! -f "$SPARKLE_ARCHIVE" ]] || ! printf '%s  %s\n' "$SPARKLE_SHA256" "$SPARKLE_ARCHIVE" | shasum -a 256 -c - >/dev/null 2>&1; then
-    curl --fail --location "$SPARKLE_URL" --output "$SPARKLE_WORK_DIR/Sparkle.tar.xz"
+    curl --fail --location --retry 5 --retry-delay 10 "$SPARKLE_URL" --output "$SPARKLE_WORK_DIR/Sparkle.tar.xz"
     printf '%s  %s\n' "$SPARKLE_SHA256" "$SPARKLE_WORK_DIR/Sparkle.tar.xz" | shasum -a 256 -c -
     install -m 644 "$SPARKLE_WORK_DIR/Sparkle.tar.xz" "$SPARKLE_ARCHIVE"
 fi

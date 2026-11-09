@@ -17,7 +17,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $toolDir 'conpty.dll')) -or
     if (-not (Test-Path -LiteralPath $download)) {
         $package = "$download.partial"
         Write-Host "Downloading ConPTY $version..."
-        Invoke-WebRequest "https://github.com/microsoft/terminal/releases/download/v1.24.10621.0/Microsoft.Windows.Console.ConPTY.$version.nupkg" -OutFile $package
+        & (Join-Path $PSScriptRoot 'download.ps1') -Uri "https://github.com/microsoft/terminal/releases/download/v1.24.10621.0/Microsoft.Windows.Console.ConPTY.$version.nupkg" -OutFile $package
     }
     if ((Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $sha256) {
         throw "ConPTY checksum mismatch: $package"
