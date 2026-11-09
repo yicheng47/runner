@@ -6650,6 +6650,61 @@ fn remote_terminal_pane_shortcut_and_sidebar_close_dispatch_without_confirmation
     }
 }
 
+#[test]
+fn remote_single_chat_tab_shortcut_archives_only_after_confirmation() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let window = add_window(&mut cx, &store, temp.path(), "confirm-chat-tab-close");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    for key in ["escape", "enter"] {
+        window
+            .update(&mut visual, |root, window, cx| {
+                window.activate_window();
+                root.remote_client.workspace.as_mut().unwrap().landed_at = None;
+                let layout = root.front_page_layout().unwrap();
+                assert_eq!(layout.root.leaves().len(), 1);
+                assert_eq!(layout.all_session_ids(), ["s"]);
+                crate::surfaces::windowing::close_tab(root, window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                let Some(TerminalCloseTarget::ArchiveChatPane { session_id, close }) = root
+                    .terminal_close_confirm
+                    .as_ref()
+                    .map(|confirm| &confirm.target)
+                else {
+                    panic!("{key}: the shortcut opens the archive confirmation");
+                };
+                assert_eq!(session_id, "s");
+                assert_eq!(close.tab_id, "remote-tab");
+            })
+            .unwrap();
+        assert_eq!(fake.request_count("archive"), 0, "{key}");
+        visual.simulate_keystrokes(key);
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.terminal_close_confirm.is_none(), "{key}")
+            })
+            .unwrap();
+        assert_eq!(
+            fake.request_count("archive"),
+            usize::from(key == "enter"),
+            "{key}"
+        );
+    }
+    let archives = action_trace(&fake, "archive");
+    assert_eq!(archives[0]["target"]["kind"], "session");
+    assert_eq!(archives[0]["target"]["id"], "s");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn remote_library_pages_keep_the_lower_titlebar_band_draggable() {
