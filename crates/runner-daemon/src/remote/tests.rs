@@ -23,6 +23,7 @@ struct HeartbeatWriter {
     read: tokio::io::DuplexStream,
     entered: Arc<tokio::sync::Notify>,
     fail: bool,
+    _closed: tokio::sync::oneshot::Sender<()>,
 }
 impl tokio::io::AsyncRead for HeartbeatWriter {
     fn poll_read(
@@ -90,11 +91,13 @@ async fn heartbeat_write_failures_release_local_access_removal_commands() {
             let fingerprint = handle.trust().devices[0].fingerprint.clone();
             let entered = Arc::new(tokio::sync::Notify::new());
             let (host, peer) = tokio::io::duplex(1024);
+            let (closed, socket_closed) = tokio::sync::oneshot::channel::<()>();
             let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
                 Box::new(HeartbeatWriter {
                     read: host,
                     entered: entered.clone(),
                     fail,
+                    _closed: closed,
                 }) as Box<dyn transport::Connection>,
                 Role::Client,
                 None,
@@ -119,9 +122,18 @@ async fn heartbeat_write_failures_release_local_access_removal_commands() {
             if !fail {
                 tokio::time::pause();
                 tokio::time::advance(std::time::Duration::from_secs(11)).await;
+                // On the paused clock, so a stalled runner cannot use this up:
+                // the 10s write timeout and the 1s close must both end by it.
+                tokio::time::timeout(std::time::Duration::from_secs(2), socket_closed)
+                    .await
+                    .expect("the wedged socket was not closed")
+                    .unwrap_err();
                 tokio::time::resume();
             }
-            tokio::time::timeout(std::time::Duration::from_secs(3), removal)
+            // The bounds are proven above. This catches a release that never
+            // comes, and allows for Windows CI runners, which have stalled
+            // this process for many seconds.
+            tokio::time::timeout(std::time::Duration::from_secs(30), removal)
                 .await
                 .expect(action)
                 .unwrap()

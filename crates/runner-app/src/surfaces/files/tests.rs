@@ -315,7 +315,10 @@ fn a_chat_in_a_project_opens_its_checkout_with_git_status() {
     std::fs::create_dir_all(h.repo.join("target/debug")).unwrap();
     h.show(None);
     h.show(Some(chat("in-project")));
-    h.wait("the status", |h| h.has("FILES_LETTER a.txt"));
+    // The watcher can report a status or listing taken between these writes.
+    h.wait("the status", |h| {
+        h.has("FILES_LETTER a.txt") && h.has("FILES_LETTER src/new.rs") && h.has("FILES_ROW target")
+    });
 
     assert_eq!(h.read(|view| view.state()), "root");
     let root = h.read(|view| view.root().cloned()).unwrap();
@@ -349,7 +352,11 @@ fn status_letters_selection_and_dimmed_entries_follow_both_themes() {
     std::fs::create_dir_all(h.repo.join("target")).unwrap();
     h.show(None);
     h.show(Some(chat("in-project")));
-    h.wait("the status", |h| h.has("FILES_LETTER a.txt"));
+    h.wait("the status", |h| {
+        h.has("FILES_LETTER a.txt")
+            && h.has("FILES_LETTER src/new.rs")
+            && h.has("FILES_ROW_IGNORED")
+    });
     h.click("FILES_ROW a.txt");
     // The click also opens the file, read in the background: let it land
     // before the tree is drawn for each theme.

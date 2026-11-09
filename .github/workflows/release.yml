@@ -159,7 +159,7 @@ jobs:
           sparkle_sha256=015336b601493e05c237964954bff6191370003d94edefe663724c88840d73cc
           sparkle_archive="$RUNNER_TEMP/Sparkle-$sparkle_version.tar.xz"
           sparkle_dir="$RUNNER_TEMP/Sparkle-$sparkle_version"
-          curl --fail --location "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" --output "$sparkle_archive"
+          curl --fail --location --retry 5 --retry-delay 10 "https://github.com/sparkle-project/Sparkle/releases/download/$sparkle_version/Sparkle-$sparkle_version.tar.xz" --output "$sparkle_archive"
           printf '%s  %s\n' "$sparkle_sha256" "$sparkle_archive" | shasum -a 256 -c -
           mkdir -p "$sparkle_dir"
           tar -xf "$sparkle_archive" -C "$sparkle_dir"
