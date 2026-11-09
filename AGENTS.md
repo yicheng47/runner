@@ -142,7 +142,7 @@ Work stays inside its own worktree. When several are live at once, treat the oth
 
 A crew is a trio, a coder, a reviewer and `qa`, for a change that needs live checks; otherwise it is a duo, a coder and a reviewer. The claude trio and claude duo are the default, and the codex trio and codex duo run when Jason asks for them; see [Issue Investigation And Fixes](#issue-investigation-and-fixes). A duo whose clean review names live checks gets the `qa` role added after it, as [Test Scope](#test-scope) describes. A crew mission ends in an open pull request by default. The crew works on its own branch in its own worktree, commits, pushes, opens the PR against `main`, and drives CI green on both platforms; then it stops. Jason reviews the PR and does the final merge, or explicitly asks the crew to merge after review and CI are clean. Crews do not cut a nightly or release without explicit authorization. A brief's authorization states only what is specific to its mission: the approved crew, whether the crew may commit, push and open a pull request, and any exception to this section's rules. A crew follows these rules without the brief restating them.
 
-An explicit merge request includes GitHub's configured automatic deletion of the merged remote branch; no separate confirmation is needed. Local branch and worktree cleanup still requires explicit authorization; see Post-mission cleanup.
+An explicit merge request includes GitHub's configured automatic deletion of the merged remote branch and the [post-mission cleanup](#post-mission-cleanup); neither needs a separate confirmation (Jason, 2026-11-09).
 
 A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --title <title> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
 
@@ -152,10 +152,10 @@ A mission's pull request is a clean history on top of `main` (or of the umbrella
 
 ### Post-mission cleanup
 
-When Jason asks for the post-mission cleanup, usually together with the merge, it covers two local steps, in this order, once the PR has merged. Neither adds a commit to `main`:
+An agent that merges a pull request runs the post-mission cleanup as part of the merge, without asking again (Jason, 2026-11-09). When Jason merges one directly, the cleanup waits for a request. It covers two local steps, in this order, once `gh pr view` shows the PR merged. Neither adds a commit to `main`. A worktree with uncommitted changes stops the cleanup and is reported instead: never force its removal.
 
-1. **Archive the mission.** Stop it if a session is still live (`runner mission stop <id>`), then `runner mission archive <id>`.
-2. **Remove the worktree and branches.** `git worktree remove .worktrees/<flattened-branch>`, then delete the local branch once `gh pr view` shows the PR merged. GitHub deletes the remote branch on merge; delete it by hand only if it is still there.
+1. **Archive the missions.** For every mission that worked on the branch, including a qa-only or reviewer-only one, stop it if a session is still live (`runner mission stop <id>`), then `runner mission archive <id>`.
+2. **Remove the worktree and branches.** `git worktree remove .worktrees/<flattened-branch>`, then delete the local branch. GitHub deletes the remote branch on merge; delete it by hand only if it is still there.
 
 The mission's brief, test record and spec stay where they are until the next release's docs sweep.
 
