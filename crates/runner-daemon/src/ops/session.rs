@@ -161,10 +161,6 @@ fn count_by_runtime(
     Ok(counts)
 }
 
-pub fn session_resize(state: &AppCore, session_id: &str, cols: u16, rows: u16) -> Result<()> {
-    state.sessions.resize(session_id, cols, rows, &state.db)
-}
-
 /// Paths of files referenced by the platform clipboard, in clipboard order.
 pub fn session_clipboard_file_paths() -> Vec<String> {
     #[cfg(windows)]
@@ -407,15 +403,6 @@ pub fn session_get_with_status(state: &AppCore, session_id: &str) -> Result<serd
         serde_json::to_value(state.sessions.activity_snapshot().remove(session_id))?,
     );
     Ok(row)
-}
-
-/// The PTY geometry the manager last recorded for the session: the fork
-/// size, then every applied or persisted resize. Terminals attach and
-/// create its terminal grid at this size rather than at a layout estimate,
-/// so the replay reflows the way the agent painted it.
-pub fn session_last_size(state: &AppCore, session_id: &str) -> Result<Option<(u16, u16)>> {
-    let conn = state.db.get()?;
-    Ok(repo::session::get_row(&conn, session_id)?.and_then(|row| row.last_cols.zip(row.last_rows)))
 }
 
 fn get_direct(conn: &rusqlite::Connection, session_id: &str) -> Result<Option<DirectSessionEntry>> {
@@ -744,23 +731,6 @@ pub fn session_rename(state: &AppCore, session_id: &str, title: Option<String>) 
     Ok(())
 }
 
-pub fn session_set_live_title(
-    state: &AppCore,
-    session_id: &str,
-    title: Option<&str>,
-    expected_started_at: Option<&str>,
-) -> Result<()> {
-    let conn = state.db.get()?;
-    if repo::session::set_live_title(&conn, session_id, title, expected_started_at)? > 0 {
-        let mission_id = repo::session::get_row(&conn, session_id)?.and_then(|row| row.mission_id);
-        state.events.emit(
-            "session/updated",
-            &serde_json::json!({ "session_id": session_id, "mission_id": mission_id }),
-        );
-    }
-    Ok(())
-}
-
 /// Pin or unpin a direct-chat session in the SESSION sidebar tray.
 /// Pin a session and its tab node together: the whole tab pins (every
 /// member session's `pinned_at` writes through) because the sidebar
@@ -1025,25 +995,6 @@ pub(crate) fn resolve_direct_start_in(
     };
     let (project_id, cwd) = project::resolve_scope(conn, scope, cwd)?;
     Ok((role, project_id, cwd))
-}
-
-/// The socket tool's direct start: without `project_id`, the project is
-/// inferred from the working directory.
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_direct_impl(
-    state: &AppCore,
-    role_id: String,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    project_id: Option<String>,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<StartDirectSessionOutput> {
-    session_start_direct_impl_with_speed(
-        state, role_id, runtime, model, effort, None, project_id, cwd, cols, rows,
-    )
 }
 
 #[allow(clippy::too_many_arguments)]

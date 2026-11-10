@@ -749,7 +749,7 @@ mod tests {
         cx.update(|cx| {
             let options = files_font_options(None, cx);
             assert_eq!(options[0].value, "");
-            assert_eq!(options[1].value, crate::terminal_fonts::BUNDLED_FONT);
+            assert_eq!(options[1].value, crate::terminal::fonts::BUNDLED_FONT);
             let missing = TerminalFontFamily::new("Gone Mono");
             let options = files_font_options(Some(&missing), cx);
             assert!(options.iter().any(|option| option.value == "Gone Mono"));

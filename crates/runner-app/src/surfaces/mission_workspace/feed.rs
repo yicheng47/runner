@@ -7,10 +7,10 @@ use runner_app::ui::{app_scrollbar_gutter, Button, ButtonVariant, RoleAvatar, To
 use runner_core::protocol::model::{Event, EventKind};
 
 use super::*;
-use crate::surfaces::mission_feed::{message_target, FeedBlock};
 use crate::surfaces::mission_markdown::{
     FeedPosition, FeedSelection, FeedSelectionHandler, FeedSelectionPhase,
 };
+use crate::surfaces::mission_workspace::feed_model::{message_target, FeedBlock};
 use crate::*;
 
 impl MissionWorkspace {

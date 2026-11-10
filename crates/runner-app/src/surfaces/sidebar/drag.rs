@@ -1,5 +1,5 @@
 use super::*;
-use crate::surfaces::sidebar_logic::{
+use crate::surfaces::sidebar::logic::{
     complete_unpinned_scope_order, container_drop_target, list_drop_target,
     ordered_pinned_node_ids_after_drop, ordered_root_node_ids_after_project_drop,
     ordered_visible_node_ids_after_drop, take_drag_state, DropKind,

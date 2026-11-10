@@ -1,5 +1,5 @@
 use super::*;
-use crate::surfaces::mission_composer::ComposerPost;
+use crate::surfaces::mission_workspace::composer_model::ComposerPost;
 use crate::surfaces::remote_client::{
     tests::{self as remote_test, Fake},
     RemoteItem,

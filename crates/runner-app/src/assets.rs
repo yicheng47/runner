@@ -354,7 +354,7 @@ mod static_font_tests {
     };
 
     use super::{INTER_FONTS, JETBRAINS_MONO_FONTS};
-    use crate::terminal_fonts::BUNDLED_FONT;
+    use crate::terminal::fonts::BUNDLED_FONT;
 
     #[test]
     fn jetbrains_mono_static_faces_resolve_under_the_settings_family_name() {

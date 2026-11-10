@@ -12,7 +12,7 @@ use super::menus::sidebar_tab_icon;
 use super::menus::MenuOrigin;
 
 use super::*;
-use crate::surfaces::sidebar_logic::{AttentionState, DropKind};
+use crate::surfaces::sidebar::logic::{AttentionState, DropKind};
 use crate::*;
 use gpui::{svg, DragMoveEvent};
 use runner_app::ui::Tooltip;

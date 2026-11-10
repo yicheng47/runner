@@ -13,9 +13,6 @@ pub mod i18n;
 pub mod lifecycle;
 pub mod logging;
 pub mod pane_layout;
-pub mod terminal_ime;
-pub mod terminal_paste;
-pub mod terminal_resize;
 pub mod text_util;
 pub mod theme;
 pub mod ui;
@@ -27,8 +24,6 @@ mod wake;
 
 #[cfg(test)]
 mod render_counts;
-#[cfg(test)]
-mod terminal_redraw_tests;
 
 mod app_settings;
 mod app_store;
@@ -52,8 +47,6 @@ mod runtime_ui;
 mod single_instance;
 mod surfaces;
 mod terminal;
-mod terminal_clipboard;
-mod terminal_fonts;
 mod window_state;
 
 mod startup;
@@ -63,6 +56,7 @@ pub use platform_ui::platform_fonts;
 use startup::app_menus;
 use surfaces::root::*;
 use surfaces::windowing::*;
+pub use terminal::{ime as terminal_ime, paste as terminal_paste, resize as terminal_resize};
 
 #[cfg(not(test))]
 use std::borrow::Cow;

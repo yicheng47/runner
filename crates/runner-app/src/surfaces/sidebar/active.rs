@@ -4,7 +4,7 @@ use super::elements::{
 };
 use super::rows_render::GroupHead;
 use super::*;
-use crate::surfaces::sidebar_logic::AttentionState;
+use crate::surfaces::sidebar::logic::AttentionState;
 use runner_app::ui::agent_status::StatusRollup;
 use runner_core::protocol::model::Runtime;
 use runner_core::protocol::status::{Activity, AgentStatus, Lifecycle, ObservationSource};

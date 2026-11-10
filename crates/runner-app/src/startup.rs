@@ -62,7 +62,7 @@ pub(crate) fn run() -> Result<()> {
             )
             .expect("bundled fonts must be valid");
         #[cfg(target_os = "macos")]
-        crate::terminal_fonts::register_bundled_font_for_fallback();
+        crate::terminal::fonts::register_bundled_font_for_fallback();
 
         #[cfg(target_os = "macos")]
         install_app_icon();
@@ -119,7 +119,7 @@ pub(crate) fn run() -> Result<()> {
         keymap::install_bindings(cx, &keymap_overrides, terminal_ctrl_keys, false);
         cx.set_global(GlobalAppStore(app_store));
         notifications::install(cx);
-        crate::terminal_clipboard::install(cx);
+        crate::terminal::clipboard::install(cx);
         cx.set_global(GlobalNativePaths(paths.clone()));
         #[cfg(target_os = "macos")]
         let updater = cx.new(|cx| Updater::new(automatically_check_for_updates, cx));

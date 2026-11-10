@@ -5,7 +5,7 @@ use super::elements::workspace_new_tab_row;
 use super::elements::workspace_row;
 
 use super::*;
-use crate::surfaces::sidebar_logic::{
+use crate::surfaces::sidebar::logic::{
     attention_rollups, indicator_visible, take_drag_state, DropKind, SidebarTree,
 };
 use crate::*;

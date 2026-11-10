@@ -6,7 +6,7 @@ use super::link::{
 };
 use super::link_picker::recency;
 use super::*;
-use crate::surfaces::sidebar_logic::DropKind;
+use crate::surfaces::sidebar::logic::DropKind;
 use gpui::{size, Context, Render, TestAppContext, VisualTestContext, Window};
 use runner_core::protocol::status::{Activity, AgentObservation, AgentStatus, Lifecycle};
 use runner_core::protocol::{LinkedChat, MissionPhase};
@@ -213,7 +213,7 @@ fn archiving_the_chat_dissolves_the_group_and_a_terminal_cannot_head_one() {
 
 #[test]
 fn an_ended_mission_shows_only_its_unread_dot() {
-    use crate::surfaces::sidebar_logic::AttentionState;
+    use crate::surfaces::sidebar::logic::AttentionState;
     assert_eq!(
         super::link::phase_attention(MissionPhase::Ended, true),
         AttentionState::Unread
@@ -838,7 +838,7 @@ fn row_attention(
     sidebar: &Entity<Sidebar>,
     cx: &mut TestAppContext,
     mission_node: &str,
-) -> crate::surfaces::sidebar_logic::AttentionState {
+) -> crate::surfaces::sidebar::logic::AttentionState {
     sidebar.update(cx, |sidebar, cx| {
         let tabs = TabSet::from_rows(&sidebar.app_store.read(cx).nodes);
         sidebar
@@ -852,7 +852,7 @@ fn row_attention(
 
 #[test]
 fn mission_rows_show_the_daemons_state_over_their_members_statuses() {
-    use crate::surfaces::sidebar_logic::AttentionState;
+    use crate::surfaces::sidebar::logic::AttentionState;
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();

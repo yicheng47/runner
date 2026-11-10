@@ -16,7 +16,7 @@ use super::rows_render::project_header_icon;
 use super::view::sidebar_scroll_container;
 use super::view::sidebar_scroll_frame;
 use super::*;
-use crate::surfaces::sidebar_logic::DropKind;
+use crate::surfaces::sidebar::logic::DropKind;
 use gpui::{
     prelude::*, size, Context, Render, ScrollHandle, TestAppContext, VisualTestContext, Window,
 };

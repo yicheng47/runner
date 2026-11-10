@@ -57,11 +57,6 @@ pub fn text_display_lg() -> Rems {
     rems(24. / 16.)
 }
 
-/// 30px: single large figures.
-pub fn text_display_xl() -> Rems {
-    rems(30. / 16.)
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemeIntent {

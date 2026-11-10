@@ -4,7 +4,7 @@ use gpui::prelude::*;
 use gpui::{canvas, div, px, rems, AnyElement, CursorStyle, FontWeight, Window};
 
 use super::*;
-use crate::surfaces::mission_composer::{
+use crate::surfaces::mission_workspace::composer_model::{
     key_down as composer_key_down, mention_options, select_target as select_composer_target,
     ComposerPost, ComposerState, DraftEdit, RosterEntry as ComposerRosterEntry,
 };
