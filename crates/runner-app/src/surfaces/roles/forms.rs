@@ -196,15 +196,6 @@ impl NativeRoot {
             input.set_disabled(true, input_cx);
             input
         });
-        let args = cx.new(|input_cx| {
-            TextField::new(
-                input_cx.focus_handle(),
-                "",
-                crate::i18n::message("ui.extra_flags"),
-                true,
-            )
-            .text_size(theme::text_title())
-        });
         let model = cx.new(|input_cx| {
             TextField::new(
                 input_cx.focus_handle(),
@@ -337,7 +328,7 @@ impl NativeRoot {
             }
         }));
         subscriptions.push(cx.observe(&model, |this, _, cx| this.sync_create_role_efforts(cx)));
-        for input in [&display_name, &args, &model, &working_dir, &system_prompt] {
+        for input in [&display_name, &model, &working_dir, &system_prompt] {
             subscriptions.push(cx.observe(input, |_, _, cx| cx.notify()));
         }
         self.role_surfaces.prompt_preview = false;
@@ -352,7 +343,6 @@ impl NativeRoot {
                 runtime,
                 display_name,
                 command,
-                args,
                 model,
                 model_field,
                 effort: String::new(),
@@ -414,13 +404,16 @@ impl NativeRoot {
             input.set_disabled(true, input_cx);
             input
         });
-        let args = cx.new(|input_cx| {
-            TextField::new(
-                input_cx.focus_handle(),
-                role_visible_args(&role).join(" "),
-                crate::i18n::message("ui.extra_flags"),
-                true,
-            )
+        let visible_args = role_visible_args(&role);
+        let args = (!visible_args.is_empty()).then(|| {
+            cx.new(|input_cx| {
+                TextField::new(
+                    input_cx.focus_handle(),
+                    visible_args.join(" "),
+                    crate::i18n::message("ui.extra_flags"),
+                    true,
+                )
+            })
         });
         let model_value = resolution.model.clone();
         let model = cx.new(move |input_cx| {
@@ -548,18 +541,21 @@ impl NativeRoot {
         }));
         self.role_surfaces.prompt_preview = false;
         // The page redraws on every keystroke to keep "Unsaved changes" honest.
-        for input in [&display_name, &args, &model, &working_dir, &system_prompt] {
+        for input in [&display_name, &model, &working_dir, &system_prompt]
+            .into_iter()
+            .chain(args.as_ref())
+        {
             subscriptions.push(cx.observe(input, |_, _, cx| cx.notify()));
         }
         self.role_surfaces.edit = Some(RoleEditForm {
             role,
+            args,
             permission_mode,
             fields: RoleFormFields {
                 runtimes,
                 runtime: resolution.runtime,
                 display_name: display_name.clone(),
                 command,
-                args,
                 model,
                 model_field,
                 effort: resolution.effort,

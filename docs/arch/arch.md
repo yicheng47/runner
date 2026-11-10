@@ -645,7 +645,7 @@ runner project list | show <project> | create <name> [--path <dir>] | rename <pr
 runner role list | show <handle>
 runner role create <handle> --runtime <runtime> [--name <display name>] [--model <model>] [--effort <effort>] [--speed inherit|standard|fast]
                    [--permission <mode>] [--prompt <text> | --prompt-file <path | ->]
-                   [--arg <arg>]... [--env KEY=VALUE]... [--cwd <dir>]
+                   [--env KEY=VALUE]... [--cwd <dir>]
 runner role update <handle> [the same optional flags] | delete <handle>
 
 # crews; slots are addressed by handle

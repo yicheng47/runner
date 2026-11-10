@@ -12,7 +12,7 @@ A role is a saved agent configuration that you can reuse in chats and crews. It 
 | Speed | Codex's inherited, standard or fast service tier |
 | System prompt | The role's responsibilities and working style |
 | Working directory | A default folder when the launch does not supply one |
-| Command, arguments and environment | How the agent process is launched |
+| Command and environment | How the agent process is launched |
 
 Create and edit roles from **Roles**. A role's system prompt should describe its job, such as “review the diff and report defects without editing files.” Put a particular task in a chat prompt or mission goal so the role remains reusable.
 

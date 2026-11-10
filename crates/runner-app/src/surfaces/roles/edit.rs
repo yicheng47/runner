@@ -209,7 +209,7 @@ impl NativeRoot {
             display_name: Some(form.display_name.read(cx).text().trim().to_owned()),
             runtime: Runtime::parse(&form.runtime),
             command: Some(form.command.read(cx).text().trim().to_owned()),
-            args: Some(role_edit_args(form, cx)),
+            args: form.args.as_ref().map(|_| role_edit_args(form, cx)),
             working_dir: Some(trimmed_option(form.working_dir.read(cx).text())),
             system_prompt: Some(trimmed_option(form.system_prompt.read(cx).text())),
             env: None,

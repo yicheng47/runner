@@ -63,9 +63,7 @@ pub(super) fn role_fields(fields: &RoleFields, update: bool) -> Result<Value, Cl
     if let Some(prompt) = prompt {
         insert_value(&mut value, "system_prompt", json!(prompt));
     }
-    if !fields.args.is_empty() {
-        insert_value(&mut value, "args", json!(fields.args));
-    } else if !update {
+    if !update {
         insert_value(&mut value, "args", json!([]));
     }
     let env = parse_env(&fields.env)?;
