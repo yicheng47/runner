@@ -264,14 +264,27 @@ impl NativeRoot {
         let update = crate::surfaces::update_ui::visible_update_state(global_updater(cx).read(cx));
         let brand = self.render_sidebar_brand(update, window, cx);
         let (snapshot, visible_usage_runtimes, dimmed) = self.sidebar_usage(cx);
-        let show_usage = !visible_usage_runtimes.is_empty() && !self.front_page_sidebar_collapsed();
+        let older_host = self.remote_client.older_host(cx).is_some();
+        let show_usage = (older_host || !visible_usage_runtimes.is_empty())
+            && !self.front_page_sidebar_collapsed();
         if !show_usage {
             self.usage_open = false;
         }
         self.remote_client.sync_usage_popover(self.usage_open, cx);
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
-            let trigger = sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom)
+            let available = (self.front_page_sidebar_width(cx) - 92.) * zoom;
+            let trigger = if older_host {
+                sidebar_update_hint_element(available, zoom)
+            } else {
+                sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom)
+            };
+            let width = (!older_host).then(|| {
+                (visible_usage_runtimes.len() as f32 * 52. + 20.)
+                    .min(self.front_page_sidebar_width(cx) - 92.)
+                    * zoom
+            });
+            let trigger = trigger
                 .when(dimmed, |usage| usage.opacity(0.45))
                 .occlude()
                 .cursor_pointer()
@@ -289,9 +302,7 @@ impl NativeRoot {
                 }));
             div()
                 .relative()
-                .w(px((visible_usage_runtimes.len() as f32 * 52. + 20.)
-                    .min(self.front_page_sidebar_width(cx) - 92.)
-                    * zoom))
+                .when_some(width, |slot, width| slot.w(px(width)))
                 .flex_none()
                 .child(trigger)
                 .child(

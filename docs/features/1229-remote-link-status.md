@@ -1,6 +1,6 @@
 # Host usage in the remote footer, link status in the host popup
 
-Tracking issue: [#1229](https://github.com/yicheng47/runner/issues/1229). Design: `runner/desktop/specs/1229-remote-link-status.pen` in the design repo, frame `BGIfa`, options C and P1 with the footer's Slow state, signed off by Jason on 2026-11-09. It supersedes option B in frame `kLrRu`, which put the link status in the footer.
+Tracking issue: [#1229](https://github.com/yicheng47/runner/issues/1229). Design: `runner/desktop/specs/1229-remote-link-status.pen` in the design repo, frame `BGIfa`, options C and P1 with the footer's Slow state, signed off by Jason on 2026-11-09. It supersedes option B in frame `kLrRu`, which put the link status in the footer. The older-host hint is option H2 in frame `Q00ho1`, chosen by Jason on 2026-11-10 after live-testing against a host without `usage`.
 
 ## Motivation
 
@@ -28,7 +28,9 @@ A window showing this computer keeps its own usage, and switching back brings it
 | Unreachable | The last figures, at 45% opacity | Red |
 | Revoked | The last figures, at 45% opacity | Red |
 | Forgotten | The last figures, at 45% opacity | Grey |
-| Host cannot send usage | Empty | Follows the state |
+| Connected to a host that cannot send usage | `circle-arrow-up` and **Update for usage**, `text-low`, 11 px | Green |
+
+A host that cannot send usage would otherwise leave the slot blank, which reads as broken. The hint appears only while connected and once the host's features are known; in every other state that host's slot stays empty. Clicking it opens the usage popover in its older-host form, below. Runner cannot update another computer, so the hint offers no Update button.
 
 Slow and Reconnecting share amber, and the usage slot tells them apart: the figures stay at full strength while the link is slow and dim while it reconnects.
 
@@ -42,6 +44,8 @@ Clicking the host's usage opens the usage popover with the host's figures. It is
 - There is no refresh button and no agent settings button, since both act on the host. The gear still opens this computer's Settings.
 - With several Claude accounts, the host's active account is named as plain text where this computer shows the account menu. Switching it stays on the host.
 - Errors and missing figures use this computer's wording for the host's agents. While the host reports a refresh in progress, the age reads **Updating**, as it does here.
+
+For a host that cannot send usage, the popover keeps the title and shows one section instead of the agents: **{computer} runs Runner {version}**, from the version the host reports to the relay (**{computer} runs an older Runner** when it reports none), then *That version can't send its usage or measure latency. Update Runner on {computer} to see its weekly usage here.* It has no update age, since nothing arrives.
 
 Opening the popover asks the host for its latest figures, and the host refreshes them if they are more than 5 minutes old, as its own popover does.
 
@@ -112,7 +116,7 @@ The host answers from the figures it already has, without waiting for a fetch. A
 ### 3. App
 
 - `crates/runner-app/src/surfaces/remote_client/model.rs` keeps the latest latency per computer from `remote/latency` and whether the link is slow, applying the 180 ms margin, both cleared when the connection leaves Connected, and the last usage reply per computer, kept until the app quits or the computer is forgotten. It requests usage on the schedule above for computers a window shows, when the host lists `usage`.
-- `crates/runner-app/src/surfaces/app_shell/sidebar.rs` renders the host's usage in the usage slot when `remote_client.is_active()`, through `sidebar_usage_element` with the host's figures and agents, at 45% opacity when the route is not Connected, and an empty slot for a host without `usage`. It no longer renders a footer link status.
+- `crates/runner-app/src/surfaces/app_shell/sidebar.rs` renders the host's usage in the usage slot when `remote_client.is_active()`, through `sidebar_usage_element` with the host's figures and agents, at 45% opacity when the route is not Connected, and, for a connected host without `usage`, `sidebar_update_hint_element` capped to the slot's available width with its text truncated, opening `older_host_popover`. It no longer renders a footer link status.
 - `crates/runner-app/src/surfaces/app_shell/usage.rs` gives the usage popover a read-only remote form: the computer in the title, no refresh or agent settings button, and the active account's name in place of the account menu.
 - `crates/runner-app/src/surfaces/remote_client/picker.rs` leads the connected row's status line with the mark, maps Unreachable to `theme::danger()` in `host_tone` and `connection_subtitle`, and gives a slow Connected link `theme::warning()` in `host_tone` and the row. Remove `render_link_status` and the footer-only strings.
 - Add **Usage on {computer}** and the status line strings to `crates/runner-app/i18n/en.toml` and `zh-hans.toml`.
@@ -129,7 +133,7 @@ Update `docs/guide/guides/remote-access.md` and `docs/guide/zh-CN/guides/remote-
 - A host answers `ping` with a `pong` carrying the same id, and a route to a host without the feature sends none and reports no latency.
 - The median of the last 3 samples, the 10-second rule, and clearing samples when the route leaves Connected.
 - A host answers `usage` from its snapshot without waiting for a fetch, lists only its enabled and detected agents, names the active Claude account only when it has several, and leaks no account folder. A periodic request starts a refresh only after 15 minutes, a popover request after 5.
-- A remote window renders the host's figures and not this computer's; a local window renders this computer's. A host without `usage` leaves the slot empty, an agent this Runner does not know is skipped, and a route that is not Connected dims the last figures.
+- A remote window renders the host's figures and not this computer's; a local window renders this computer's. A connected host without `usage` shows the update hint, which fits beside the footer buttons at the minimum sidebar width in English and Chinese at every zoom, an agent this Runner does not know is skipped, and a route that is not Connected dims the last figures.
 - The remote usage popover has the computer in its title, no refresh or agent settings button, and the account name without the account menu.
 - Bar and colour boundaries at 99, 100, 199, 200, 499 and 500 ms in the popup row, and the row's mark and text in each state.
 - The amber margin: a link turns slow at 200 ms and stays slow at 190 ms, returns to normal at 179 ms, and the host button and the row agree throughout.
@@ -148,5 +152,5 @@ These change what a person sees in the running app, so the change runs in a Clau
 | Slow: add delay to this computer's network, for example with Network Link Conditioner, until the reading passes 200 ms, then see the host button, bars and text turn amber with the figures at full strength, and green again once the delay is removed | The new amber state, and the margin against flicker on a real link |
 | Reconnecting: interrupt the route, then see the figures dim, the host button and the row's icon and text turn amber, and the bars return once it reconnects | A real state transition, and samples must reset |
 | Unreachable: stop the host's remote access, then see the red icon and text in the row, the red host button and the dimmed figures | The colour change from today |
-| A host on 0.19.5, which has neither `ping` nor `usage`: it stays connected, the usage slot stays empty, the row shows `Connected · relay · encrypted`, and no errors are logged | Compatibility with hosts that have not updated |
+| A host on 0.19.5, which has neither `ping` nor `usage`: it stays connected, the usage slot shows **Update for usage**, clicking it opens the popover naming the host's version, the row shows `Connected · relay · encrypted`, and no errors are logged | Compatibility with hosts that have not updated |
 | Light and dark appearance, and Glass on macOS: the popup's bars and the dimmed figures stay legible | New marks, and reduced opacity on the translucent sidebar |

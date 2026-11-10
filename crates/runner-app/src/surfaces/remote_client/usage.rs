@@ -178,6 +178,23 @@ impl RemoteClient {
         ))
     }
 
+    /// The connected host's name and Runner version when it cannot send usage.
+    pub(crate) fn older_host(&self, cx: &App) -> Option<(String, String)> {
+        let remote = self.workspace.as_ref()?;
+        let lacks = remote.connection == Connection::Connected
+            && state(&self.app_store, cx)
+                .read(cx)
+                .capabilities
+                .get(&remote.computer.id)
+                .is_some_and(|access| access.lacks("usage"));
+        lacks.then(|| {
+            (
+                remote.computer.name.clone(),
+                remote.computer.info.runner_version.clone(),
+            )
+        })
+    }
+
     pub(crate) fn sync_usage_popover(&mut self, open: bool, cx: &App) {
         let computer = self
             .workspace

@@ -216,6 +216,98 @@ pub(super) fn sidebar_usage_element(
         .children(entries)
 }
 
+pub(super) fn sidebar_update_hint_element(max_width: f32, zoom: f32) -> gpui::Stateful<Div> {
+    div()
+        .id("sidebar-usage-update")
+        .when(cfg!(test), |hint| {
+            hint.debug_selector(|| "SIDEBAR_USAGE_UPDATE".into())
+        })
+        .max_w(px(max_width))
+        .min_w_0()
+        .overflow_hidden()
+        .h(px(32. * zoom))
+        .flex()
+        .items_center()
+        .gap(px(5. * zoom))
+        .px(px(10. * zoom))
+        .rounded(px(6. * zoom))
+        .text_color(theme::muted())
+        .child(
+            svg()
+                .flex_none()
+                .path("circle-arrow-up.svg")
+                .size(px(12. * zoom))
+                .text_color(theme::muted()),
+        )
+        .child(
+            div()
+                .when(cfg!(test), |text| {
+                    text.debug_selector(|| "SIDEBAR_USAGE_UPDATE_TEXT".into())
+                })
+                .min_w_0()
+                .truncate()
+                .text_size(px(11. * zoom))
+                .child(crate::i18n::text("client.update_for_usage")),
+        )
+}
+
+pub(super) fn older_host_popover(
+    max_height: Pixels,
+    computer: String,
+    version: String,
+) -> AnyElement {
+    let lead = if version.is_empty() {
+        crate::i18n::tf(
+            "client.older_host_unknown",
+            &[("computer", computer.clone())],
+        )
+    } else {
+        crate::i18n::tf(
+            "client.older_host_version",
+            &[("computer", computer.clone()), ("version", version)],
+        )
+    };
+    let header = div()
+        .min_w_0()
+        .truncate()
+        .text_size(theme::text_lead())
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(crate::i18n::tf(
+            "client.usage_on",
+            &[("computer", computer.clone())],
+        ))
+        .into_any_element();
+    let body = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .py_3()
+        .when(cfg!(test), |body| {
+            body.debug_selector(|| "USAGE_OLDER_HOST".into())
+        })
+        .child(
+            div()
+                .text_size(theme::text_title())
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(lead),
+        )
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .whitespace_normal()
+                .text_size(theme::text_body())
+                .text_color(theme::muted())
+                .child(crate::i18n::tf(
+                    "client.older_host_body",
+                    &[("computer", computer)],
+                )),
+        )
+        .into_any_element();
+    usage_popover_panel(max_height, header, vec![body])
+}
+
 pub(super) fn usage_window_label(label: &str) -> String {
     match label {
         "Week" => crate::i18n::text("ui.week").into(),
@@ -575,6 +667,9 @@ impl NativeRoot {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if let Some((computer, version)) = self.remote_client.older_host(cx) {
+            return older_host_popover(window.bounds().size.height - px(16.), computer, version);
+        }
         let remote = self.remote_client.remote_usage(cx);
         let readonly = self.remote_client.is_active();
         let snapshot = if readonly {

@@ -7294,7 +7294,7 @@ fn usage_requests_are_shared_by_windows_and_follow_the_periodic_and_popover_inte
 }
 
 #[test]
-fn a_host_without_usage_leaves_the_slot_empty_and_receives_no_usage_request() {
+fn a_host_without_usage_shows_the_update_hint_and_receives_no_usage_request() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
@@ -7308,9 +7308,83 @@ fn a_host_without_usage_leaves_the_slot_empty_and_receives_no_usage_request() {
         })
         .unwrap();
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(900.)));
     visual.run_until_parked();
     assert!(visual.debug_bounds("SIDEBAR_USAGE").is_none());
+    let hint = visual.debug_bounds("SIDEBAR_USAGE_UPDATE").unwrap();
+    visual.simulate_click(hint.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("USAGE_OLDER_HOST").is_some());
+    assert!(visual.debug_bounds("USAGE_SECTION_codex").is_none());
     assert_eq!(fake.request_count("usage"), 0);
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.return_to_this_computer(window, cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SIDEBAR_USAGE_UPDATE").is_none());
+    assert!(visual.debug_bounds("SIDEBAR_USAGE").is_some());
+}
+
+#[test]
+fn the_update_hint_fits_beside_the_footer_buttons_at_every_width_zoom_and_language() {
+    use crate::i18n::{testing::with_locale, Locale};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            for width in [
+                crate::app_settings::SIDEBAR_MIN,
+                crate::app_settings::SIDEBAR_DEFAULT,
+            ] {
+                for zoom in [1., 1.5, 2.] {
+                    let temp = tempfile::tempdir().unwrap();
+                    let mut cx = TestAppContext::single();
+                    let (store, fake, _) = fixture(&mut cx, temp.path());
+                    fake.set_features(&["overview"]);
+                    store.update(&mut cx, |store, _| {
+                        store.settings.sidebar_width = width;
+                        store.settings.app_zoom = zoom;
+                    });
+                    let window = add_window(&mut cx, &store, temp.path(), "hint-width");
+                    window.update(&mut cx, choose_host).unwrap();
+                    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                    visual.simulate_resize(size(px(1200.), px(900.)));
+                    visual.run_until_parked();
+                    let footer = visual.debug_bounds("SIDEBAR_FOOTER").unwrap();
+                    let hint = visual.debug_bounds("SIDEBAR_USAGE_UPDATE").unwrap();
+                    let text = visual.debug_bounds("SIDEBAR_USAGE_UPDATE_TEXT").unwrap();
+                    let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+                    let case = format!("{locale:?} {width} {zoom}");
+                    assert!(hint.left() >= footer.left(), "{case}");
+                    assert!(hint.right() <= gear.left(), "{case}: {hint:?} {gear:?}");
+                    assert!(
+                        gear.right() <= footer.right(),
+                        "{case}: {gear:?} {footer:?}"
+                    );
+                    assert!(text.right() <= hint.right(), "{case}: {text:?} {hint:?}");
+                    assert!(
+                        (hint.size.height - px(32. * zoom)).abs() <= px(1.),
+                        "{case}"
+                    );
+                }
+            }
+        });
+    }
+}
+
+#[test]
+fn a_host_with_usage_shows_no_update_hint() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    fake.set_features(&["overview", "usage"]);
+    let window = add_window(&mut cx, &store, temp.path(), "with-usage");
+    window.update(&mut cx, choose_host).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SIDEBAR_USAGE_UPDATE").is_none());
 }
 
 #[test]
