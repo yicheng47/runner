@@ -1,3 +1,4 @@
+mod launch;
 mod presentation;
 mod render;
 
@@ -89,6 +90,10 @@ pub(crate) struct AgentsPane {
     saving: HashSet<Runtime>,
     focused: HashSet<Runtime>,
     live_sessions: HashMap<Runtime, usize>,
+    launch_previews:
+        HashMap<(Runtime, bool), runner_core::protocol::runtime::RuntimeCommandPreview>,
+    mission_preview: bool,
+    launch_preview_errors: HashMap<Runtime, String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -193,6 +198,9 @@ impl AgentsPane {
             saving: HashSet::new(),
             focused: HashSet::new(),
             live_sessions: HashMap::new(),
+            launch_previews: HashMap::new(),
+            mission_preview: false,
+            launch_preview_errors: HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -220,6 +228,9 @@ impl AgentsPane {
                         this.catalog = catalog;
                         this.live_sessions = live;
                         this.apply_status(status, cx);
+                        if let Some(runtime) = this.selected_runtime {
+                            this.refresh_launch_previews(runtime, cx);
+                        }
                         this.error = None;
                     }
                     Err(error) => this.error = Some(error),
@@ -637,6 +648,7 @@ impl AgentsPane {
                 .update(cx, |accounts, cx| accounts.refresh(cx));
         }
         self.selected_runtime = Some(runtime);
+        self.refresh_launch_previews(runtime, cx);
         self.reset_scroll(cx);
         cx.notify();
     }
@@ -698,6 +710,7 @@ mod tests {
 
     fn runtime(state: RuntimeRowState) -> RuntimeExecutableStatus {
         RuntimeExecutableStatus {
+            launch_options: Default::default(),
             name: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
@@ -1731,5 +1744,58 @@ mod tests {
             override_validation_error_message(&error),
             "Codex executable is not executable: /tmp/codex"
         );
+    }
+    #[test]
+    fn launch_card_switches_follow_the_runtime_table() {
+        for name in [
+            Runtime::Codex,
+            Runtime::ClaudeCode,
+            Runtime::Pi,
+            Runtime::Cursor,
+        ] {
+            let mut cx = gpui::TestAppContext::single();
+            let mut row = runtime(RuntimeRowState::Detected);
+            row.name = name;
+            let (_temp, pane) = test_pane(vec![row], false, &mut cx);
+            pane.update(&mut cx, |pane, _, cx| {
+                pane.selected_runtime = Some(name);
+                pane.launch_previews.insert(
+                    (name, false),
+                    runner_core::protocol::runtime::RuntimeCommandPreview {
+                        lines: vec![runner_core::protocol::runtime::RuntimeCommandLine {
+                            command: "chat command".into(),
+                            note: runner_core::protocol::runtime::RuntimeCommandNote::None,
+                            option: None,
+                        }],
+                    },
+                );
+                cx.notify();
+            })
+            .unwrap();
+            cx.run_until_parked();
+            let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+            assert!(window
+                .debug_bounds(Box::leak(format!("AGENT_LAUNCH_{name}").into_boxed_str()))
+                .is_some());
+            for option in [
+                runner_core::protocol::runtime::RuntimeLaunchOption::Bypass,
+                runner_core::protocol::runtime::RuntimeLaunchOption::RemotePluginCatalog,
+                runner_core::protocol::runtime::RuntimeLaunchOption::StatusHooks,
+            ] {
+                assert_eq!(
+                    window
+                        .debug_bounds(Box::leak(
+                            format!("AGENT_LAUNCH_SWITCH_{name}_{option:?}").into_boxed_str()
+                        ))
+                        .is_some(),
+                    option.supported(name)
+                );
+            }
+            assert!(window
+                .debug_bounds(Box::leak(
+                    format!("AGENT_LAUNCH_COMMAND_{name}").into_boxed_str()
+                ))
+                .is_some());
+        }
     }
 }

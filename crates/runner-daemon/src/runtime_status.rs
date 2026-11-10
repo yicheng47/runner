@@ -52,6 +52,7 @@ pub fn status_list(
         .clone();
     let config_env = crate::claude_accounts::sharing::config_env(pool, shell_env.vars.clone());
     let overrides = db::runtime_overrides(pool)?;
+    let launch_options = db::runtime_launch_options(pool)?;
     let path = direct_chat_path(&shell_env);
     let home = runner_core::app_paths::home_dir();
     let result = discovery.result.as_ref();
@@ -117,6 +118,10 @@ pub fn status_list(
                 .flatten()
                 .map(str::to_owned);
             RuntimeExecutableStatus {
+                launch_options: launch_options
+                    .get(runtime.name.key())
+                    .copied()
+                    .unwrap_or_default(),
                 name: runtime.name,
                 display_name: runtime.display_name.to_string(),
                 command: runtime.command.to_string(),

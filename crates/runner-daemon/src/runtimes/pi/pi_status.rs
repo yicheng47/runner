@@ -149,8 +149,10 @@ export default async function (pi) {
       const sessionId = ctx.sessionManager.getSessionId();
       await append(event, { reason: event.reason, session_id: sessionId });
     } catch {}
-    trackEditor(ctx);
+    if (process.env.RUNNER_STATUS_HOOKS !== "false") trackEditor(ctx);
   });
+
+  if (process.env.RUNNER_STATUS_HOOKS === "false") return;
 
   pi.on("agent_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;

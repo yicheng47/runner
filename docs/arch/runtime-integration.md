@@ -50,7 +50,7 @@ An agent must be able to invoke the bundled `runner` CLI and use the mission bus
 
 ### P0.5 Permissions and folder trust
 
-Follow the current product policy: unattended missions use **Bypass**, while direct chats strip Runner-recognized permission flags from stored role args and let the CLI's own configuration govern approvals. Map the mission policy to the runtime's actual flags or native unattended behavior. Cover conflicting flags, aliases, and `--flag=value` forms supported by that parser; do not pass another runtime's permission or sandbox flags through an override.
+Follow the current product policy: unattended missions use **Bypass**, while direct chats strip Runner-recognized permission flags from stored role args. The Codex and Claude Code chat Bypass switch then supplies broad-access flags when enabled; otherwise the CLI's own configuration governs approvals. Map the mission policy to the runtime's actual flags or native unattended behavior. Cover conflicting flags, aliases, and `--flag=value` forms supported by that parser; do not pass another runtime's permission or sandbox flags through an override.
 
 Handle folder trust separately from tool permissions. If a trust dialog blocks unattended work, use the established trust-seeding pattern for the exact cwd, preserving unrelated user configuration. Suppress avoidable update or consent prompts at launch where the CLI supports it; document unavoidable behavior. A runtime without a workable unattended mode cannot pass the mission requirement.
 
@@ -93,6 +93,18 @@ Wire process lifecycle and the existing terminal-activity baseline even if no se
 Declare the supported platforms and record the tested CLI version and date. For each claimed platform, cover discovery, paths containing spaces and non-ASCII characters, shell/shim quoting, first-turn delivery, terminal input, process exit, and resume in the native app. Windows needs a ConPTY run, not only a macOS test of Windows argument construction.
 
 **Accept:** focused adapter/session tests, terminal fixture replay, and dated native smoke results exist. Update runtime support documentation, including `README.md` and `README.zh-CN.md` together when their support lists change. Keep unverified platforms or features labeled as such.
+
+## Per-runtime launch options / 按运行时配置启动选项
+
+The daemon stores a JSON map by runtime under `_app_state.runtime_launch_options`; defaults are Bypass off, remote plugin catalog on and status hooks on. `runtime_set_launch_option` validates the runtime’s supported switches and emits `runtime/changed`; runtime status includes the options. `runtime_command_preview` uses the same `compose_args` function as `apply_runtime_args`, with placeholder chat/role inputs and annotations for the Settings Launch card. The CLI has no new commands.
+
+Every attended chat strips stored role permission flags on direct start, resume and fork, preserving 328545ff (Jason, 2026-11-10). The Codex/Claude Code Bypass switch then applies equally to plain and role-backed chats. Mission permissions and hooks remain mandatory. Codex’s catalog option adds `-c features.remote_plugin=false` to interactive launches and the headless fork materializer without changing native configuration. Each launch snapshots its options; running sessions are unchanged.
+
+When chat status hooks are off, Claude Code keeps SessionStart, Codex keeps SessionStart and UserPromptSubmit (both carry conversation identity), and pi keeps its session_start extension handler. OpenCode keeps only conversation-route identity reports. Copilot uses a SessionStart-only plugin, and Grok keeps SessionStart/UserPromptSubmit identity reports while its other hook handlers skip reporting. `IdentityWatcher` drains these through the existing generation-scoped receiver, forwards conversation keys and discards status events before they reach the detector or reducer. The terminal adapter starts with hooks unavailable, so OSC 7501 or terminal activity owns status. Startup report delivery uses the existing output-settle gate. Antigravity’s optional status plugin and hook environment are omitted; Cursor’s identity-only integration stays unchanged.
+
+守护进程在 `_app_state.runtime_launch_options` 下以按运行时索引的 JSON 保存选项，无需迁移。默认关闭 Bypass，开启远程插件目录和状态钩子。设置请求校验支持范围并发送 `runtime/changed`，状态响应携带当前选项；预览和实际启动共享 `compose_args`。聊天直接启动、恢复和分叉时，始终去除角色已保存的权限参数，保留 328545ff 的行为（Jason，2026-11-10）。Codex 和 Claude Code 的 Bypass 开关随后统一适用于普通聊天和角色聊天；任务的权限和钩子始终保留。Codex 目录开关同时覆盖交互启动和无界面分叉，不修改原生配置。每次启动固定当时的选项。
+
+关闭聊天状态钩子时仍保留 Claude Code、Codex、pi、OpenCode、Copilot 和 Grok 的会话标识报告。`IdentityWatcher` 通过现有的按启动代次隔离的接收器更新会话标识，并在事件进入状态检测器前丢弃状态事件。终端适配器从钩子不可用的状态启动，由 OSC 7501 或终端活动提供状态，启动消息投递使用现有的输出稳定门限。Copilot 使用仅含 SessionStart 的插件，Grok 的其他钩子跳过状态报告；Antigravity 的可选状态插件和钩子环境被省略；Cursor 的纯标识集成不变。
 
 ## P1 — expected integration
 

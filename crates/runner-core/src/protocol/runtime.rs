@@ -1,6 +1,105 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RuntimeLaunchOptions {
+    pub bypass: bool,
+    pub remote_plugin_catalog: bool,
+    pub status_hooks: bool,
+}
+
+impl Default for RuntimeLaunchOptions {
+    fn default() -> Self {
+        Self {
+            bypass: false,
+            remote_plugin_catalog: true,
+            status_hooks: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeLaunchOption {
+    Bypass,
+    RemotePluginCatalog,
+    StatusHooks,
+}
+
+impl RuntimeLaunchOption {
+    pub fn supported(self, runtime: Runtime) -> bool {
+        match self {
+            Self::Bypass => matches!(runtime, Runtime::Codex | Runtime::ClaudeCode),
+            Self::RemotePluginCatalog => runtime == Runtime::Codex,
+            Self::StatusHooks => {
+                matches!(
+                    runtime,
+                    Runtime::Codex
+                        | Runtime::ClaudeCode
+                        | Runtime::Pi
+                        | Runtime::Copilot
+                        | Runtime::OpenCode
+                ) || (runtime == Runtime::Grok && !cfg!(windows))
+                    || (runtime == Runtime::Antigravity && cfg!(target_os = "macos"))
+            }
+        }
+    }
+}
+
+impl RuntimeLaunchOptions {
+    pub fn get(self, option: RuntimeLaunchOption) -> bool {
+        match option {
+            RuntimeLaunchOption::Bypass => self.bypass,
+            RuntimeLaunchOption::RemotePluginCatalog => self.remote_plugin_catalog,
+            RuntimeLaunchOption::StatusHooks => self.status_hooks,
+        }
+    }
+    pub fn set(&mut self, option: RuntimeLaunchOption, enabled: bool) {
+        match option {
+            RuntimeLaunchOption::Bypass => self.bypass = enabled,
+            RuntimeLaunchOption::RemotePluginCatalog => self.remote_plugin_catalog = enabled,
+            RuntimeLaunchOption::StatusHooks => self.status_hooks = enabled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeCommandNote {
+    #[default]
+    None,
+    Always,
+    AlwaysInMissions,
+    NamesChat,
+    FromChat,
+    FromRole,
+    FirstTurn,
+    MissionFiles,
+    CodexBypass,
+    ClaudeBypass,
+    CatalogOff,
+    StatusHooks,
+    HooksBypass,
+    IdentityBypass,
+    Identity,
+    ActiveAccount {
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeCommandLine {
+    pub command: String,
+    pub note: RuntimeCommandNote,
+    pub option: Option<RuntimeLaunchOption>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RuntimeCommandPreview {
+    pub lines: Vec<RuntimeCommandLine>,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeCommandSource {
@@ -33,6 +132,8 @@ pub struct ShellDiscoveryStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeExecutableStatus {
     pub name: Runtime,
+    #[serde(default)]
+    pub launch_options: RuntimeLaunchOptions,
     pub display_name: String,
     pub command: String,
     pub default_model: Option<String>,

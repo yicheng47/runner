@@ -135,6 +135,10 @@ pub(crate) fn codex_status_args(
     app_data_dir: &Path,
     _session_id: &str,
 ) -> Vec<String> {
+    codex_hook_args(role_args, app_data_dir, true)
+}
+
+fn codex_hook_args(role_args: &[String], app_data_dir: &Path, status: bool) -> Vec<String> {
     if !inject_codex_hooks(role_args, cfg!(windows)) {
         return Vec::new();
     }
@@ -151,6 +155,9 @@ pub(crate) fn codex_status_args(
         format!("mcp_servers.runner_hooks={{command={executable},args=[\"hook\",\"serve\"],env_vars=[\"{}\",\"{}\",\"{}\"],required=false,enabled=true}}", hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV),
     ]);
     for event in crate::runtimes::codex::codex_status::EVENTS {
+        if !status && !matches!(*event, "SessionStart" | "UserPromptSubmit") {
+            continue;
+        }
         if *event == "SessionEnd" {
             let command = toml_edit::Value::from(hook_report_command(
                 app_data_dir,
@@ -378,11 +385,18 @@ impl RuntimeAdapter for Codex {
                 format!("service_tier={}", speed.service_tier()),
             ]);
         }
-        out.extend(codex_status_args(
-            ctx.role_args,
-            ctx.app_data_dir,
-            ctx.session_id,
-        ));
+        if ctx
+            .env
+            .get(REMOTE_PLUGIN_ENV)
+            .is_some_and(|value| value == "false")
+        {
+            out.extend(strings(&["-c", "features.remote_plugin=false"]));
+        }
+        out.extend(if status_hooks_enabled(ctx.env) {
+            codex_status_args(ctx.role_args, ctx.app_data_dir, ctx.session_id)
+        } else {
+            codex_hook_args(ctx.role_args, ctx.app_data_dir, false)
+        });
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

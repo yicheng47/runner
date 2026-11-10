@@ -25,7 +25,7 @@ export function setup(context) {
   const flush = () => {
     const now = performance.now();
     if (stopped || reporter || !latest || now < retryAt) return;
-    if (acknowledged === latest.sequence && now - lastSent < 1000) return;
+    if (acknowledged === latest.sequence && (process.env.RUNNER_STATUS_HOOKS === "false" || now - lastSent < 1000)) return;
     const payload = latest;
     const args = ["hook", "report", "--runtime", "opencode", "--event", "snapshot", "--acknowledge"];
     if (bridgeLost) args.push("--bridge-unavailable");
@@ -67,6 +67,10 @@ export function setup(context) {
       const changed = root !== key;
       if (changed) { key = root; state = undefined; idle = info?.time?.idle; live = false; knownBaseline = false; }
       if (!root) { if (changed) send({}); flush(); return; }
+      if (process.env.RUNNER_STATUS_HOOKS === "false") {
+        if (changed) send({});
+        flush(); return;
+      }
       const current = context.data.session.status(root);
       if (!live) idle = info.time?.idle;
       if (live && !knownBaseline && current === "running" && Number.isFinite(info.time?.created)) { knownBaseline = true; idle = info.time.idle; }

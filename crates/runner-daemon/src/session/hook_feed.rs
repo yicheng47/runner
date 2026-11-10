@@ -21,6 +21,25 @@ pub trait HookWatcher: Send {
     ) -> Result<()>;
 }
 
+pub(crate) struct IdentityWatcher(pub(crate) Box<dyn HookWatcher>);
+
+impl HookWatcher for IdentityWatcher {
+    fn spawned(&mut self, pid: u32) {
+        self.0.spawned(pid);
+    }
+    fn drain_events(
+        &mut self,
+        cancel: u8,
+        _emit: &mut dyn FnMut(
+            super::state::agent::AgentEvent,
+        ) -> super::state::agent::AdapterFeedback,
+        session_start: &mut dyn FnMut(String),
+    ) -> Result<()> {
+        self.0
+            .drain_events(cancel, &mut |_| Default::default(), session_start)
+    }
+}
+
 pub(crate) fn clear_leftovers(app_data_dir: &Path) -> Result<()> {
     let entries = match fs::read_dir(app_data_dir.join(STATUS_DIR)) {
         Ok(entries) => entries,
@@ -140,5 +159,80 @@ mod tests {
         fs::write(path.with_extension("ps1.tmp"), "exit 0").unwrap();
         clear_leftovers(root.path()).unwrap();
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 0);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn identity_only_watcher_rekeys_without_publishing_status() {
+    let (hooks, receiver) =
+        super::hook_queue::TestHookRoute::new(crate::model::Runtime::ClaudeCode, "current".into());
+    let watcher =
+        crate::runtimes::claude_code::claude_status::ClaudeStatusWatcher::from_receiver(receiver);
+    let mut watcher = IdentityWatcher(Box::new(watcher));
+    hooks
+        .admit_event(
+            "SessionStart",
+            serde_json::json!({"session_id":"eec53725-8f5d-428a-8afb-46510ddfb000"}),
+        )
+        .unwrap();
+    let mut status_events = 0;
+    let mut keys = Vec::new();
+    watcher
+        .drain_events(
+            0,
+            &mut |_| {
+                status_events += 1;
+                Default::default()
+            },
+            &mut |key| keys.push(key),
+        )
+        .unwrap();
+    assert_eq!(keys, ["eec53725-8f5d-428a-8afb-46510ddfb000"]);
+    assert_eq!(status_events, 0);
+}
+
+#[cfg(test)]
+#[test]
+fn identity_only_copilot_and_grok_watchers_follow_conversation_changes() {
+    for runtime in [crate::model::Runtime::Copilot, crate::model::Runtime::Grok]
+        .into_iter()
+        .filter(|runtime| *runtime != crate::model::Runtime::Grok || !cfg!(windows))
+    {
+        let root = tempfile::tempdir().unwrap();
+        let (hooks, receiver) = super::hook_queue::TestHookRoute::new(runtime, "current".into());
+        let spec = super::runtime::SpawnSpec {
+            env: std::collections::BTreeMap::from([(
+                "COPILOT_HOME".into(),
+                root.path().display().to_string(),
+            )]),
+            ..Default::default()
+        };
+        let watcher = crate::runtimes::adapter(runtime)
+            .status_hooks()
+            .unwrap()
+            .start_receiver(&spec, receiver)
+            .unwrap();
+        let mut watcher = IdentityWatcher(watcher);
+        let mut keys = Vec::new();
+        let mut statuses = 0;
+        let second = "22222222-2222-4222-8222-222222222222";
+        for key in ["11111111-1111-4111-8111-111111111111", second] {
+            hooks
+                .admit_event("SessionStart", serde_json::json!({"sessionId":key}))
+                .unwrap();
+            watcher
+                .drain_events(
+                    0,
+                    &mut |_| {
+                        statuses += 1;
+                        Default::default()
+                    },
+                    &mut |key| keys.push(key),
+                )
+                .unwrap();
+        }
+        assert_eq!(keys.last().map(String::as_str), Some(second), "{runtime}");
+        assert_eq!(statuses, 0);
     }
 }

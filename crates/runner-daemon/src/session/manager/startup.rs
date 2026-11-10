@@ -54,6 +54,11 @@ impl StartupDelivery {
         }
     }
 
+    pub(super) fn with_status_hooks(mut self, enabled: bool) -> Self {
+        self.hooks &= enabled;
+        self
+    }
+
     pub(super) fn bridge_failed(&mut self) {
         self.hooks = false;
         self.working = false;

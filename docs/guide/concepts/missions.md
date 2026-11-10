@@ -45,7 +45,9 @@ A report waits until the chat is idle and its input is empty, for as long as an 
 
 ## Permissions
 
-Mission launches use the runtime's broad-access mode, generally **Bypass**; pi uses a trusted workspace. A role's more restrictive direct-chat permission setting does not turn a mission into an approval-by-approval workflow. Write clear limits in the goal, and choose the working directory accordingly.
+Mission launches use the runtime's broad-access mode, generally **Bypass**; pi uses a trusted workspace. A role’s stored permission flags do not change that policy. Write clear limits in the goal, and choose the working directory accordingly.
+
+The **Bypass** and **Status hooks** switches in **Settings → Agents → Launch** apply to chats only. Missions ignore both switches and keep broad access and hooks for crew delivery. Codex’s **Remote plugin catalog** switch applies to missions too.
 
 ## Stop, resume and archive
 

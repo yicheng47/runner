@@ -41,6 +41,33 @@ pub fn catalogs() -> Vec<RuntimeCatalog> {
         .collect()
 }
 
+pub(crate) const STATUS_HOOKS_ENV: &str = "RUNNER_STATUS_HOOKS";
+pub(crate) const REMOTE_PLUGIN_ENV: &str = "RUNNER_CODEX_REMOTE_PLUGIN";
+
+pub(crate) fn status_hooks_enabled(env: &std::collections::BTreeMap<String, String>) -> bool {
+    env.get(STATUS_HOOKS_ENV)
+        .is_none_or(|value| value != "false")
+}
+
+pub(crate) fn apply_launch_options(
+    role: &crate::model::Role,
+    mission: bool,
+    options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+) -> crate::model::Role {
+    let mut role = role.clone();
+    let permissions = for_key(&role.runtime).permissions();
+    if !mission
+        && options.bypass
+        && matches!(
+            Runtime::parse(&role.runtime),
+            Some(Runtime::Codex | Runtime::ClaudeCode)
+        )
+    {
+        role.args = permissions.apply_mission(&role.args);
+    }
+    role
+}
+
 pub struct LaunchContext<'a> {
     pub default_model: Option<&'a str>,
     pub env: &'a std::collections::BTreeMap<String, String>,

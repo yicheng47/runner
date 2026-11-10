@@ -73,6 +73,7 @@ impl AgentsPane {
             } else {
                 self.render_not_installed_page(runtime, cx)
             })
+            .child(self.render_launch(runtime, cx))
             .children(
                 (installed && runtime.name == Runtime::ClaudeCode).then(|| self.accounts.clone()),
             )

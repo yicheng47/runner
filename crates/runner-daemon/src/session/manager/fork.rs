@@ -83,8 +83,6 @@ impl SessionManager {
             crate::session::launch_definition::to_role(definition, effective_runtime, identity);
         let mut role = self.resolve_role_executable(&role, &pool)?;
 
-        // A fork is still an attended chat, so strip permission flags
-        // and leave every other arg alone.
         role.args = crate::runtimes::for_key(&role.runtime)
             .permissions()
             .strip(&role.args);
@@ -181,6 +179,13 @@ impl SessionManager {
             direct_env,
         );
 
+        if crate::db::runtime_launch_options(&pool)?
+            .get(&role.runtime)
+            .is_some_and(|options| !options.remote_plugin_catalog)
+        {
+            spec.env
+                .insert(crate::runtimes::REMOTE_PLUGIN_ENV.into(), "false".into());
+        }
         let assigned_key = match &plan {
             router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
             router::runtime::ForkPlan::Headless { .. } => None,
@@ -296,6 +301,7 @@ impl SessionManager {
                 if *spawning {
                     return Err(Error::msg("runnerd is stopping"));
                 }
+                let status_hooks_enabled = crate::runtimes::status_hooks_enabled(&spec.env);
                 let (rt_session, output) = match self.spawn_runtime(spec) {
                     Ok(spawned) => spawned,
                     Err(error) => {
@@ -359,6 +365,7 @@ impl SessionManager {
                                     false,
                                     super::super::clock::now(),
                                 )
+                                .with_status_hooks(status_hooks_enabled)
                             }),
                         #[cfg(windows)]
                         pending_first_turn: None,

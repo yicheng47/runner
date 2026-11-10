@@ -731,3 +731,394 @@ fn trae_first_turn_gets_capture_prompt_marker() {
     let expected = format!("first turn\n\n{marker}");
     assert_eq!(first_turn.as_deref(), Some(expected.as_str()));
 }
+
+#[test]
+fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption as OptionKey;
+    let root = tempfile::tempdir().unwrap();
+    crate::runtimes::pi::pi_status::install_extension(root.path()).unwrap();
+    crate::runtimes::copilot::copilot_status::install_plugin(root.path()).unwrap();
+    crate::runtimes::antigravity::agy_status::install_hooks(root.path()).unwrap();
+    let pool = pool_with_schema();
+    let manager = mgr_with_fake(None, fake_runtime());
+    for runtime in Runtime::ALL
+        .into_iter()
+        .filter(|runtime| !runtime.is_shell())
+    {
+        for resuming in [false, true] {
+            for mission in [false, true] {
+                let plan = crate::runtimes::adapter(runtime)
+                    .resume_plan(resuming.then_some("eec53725-8f5d-428a-8afb-46510ddfb000"));
+                let compose = |bypass, catalog, hooks| {
+                    crate::db::set_runtime_launch_option(&pool, runtime, OptionKey::Bypass, bypass)
+                        .unwrap();
+                    crate::db::set_runtime_launch_option(
+                        &pool,
+                        runtime,
+                        OptionKey::RemotePluginCatalog,
+                        catalog,
+                    )
+                    .unwrap();
+                    crate::db::set_runtime_launch_option(
+                        &pool,
+                        runtime,
+                        OptionKey::StatusHooks,
+                        hooks,
+                    )
+                    .unwrap();
+                    let mut role = role(runtime.command().unwrap(), &[]);
+                    role.runtime = runtime.key().into();
+                    if mission {
+                        role.args = crate::runtimes::adapter(runtime)
+                            .permissions()
+                            .mission_args();
+                    }
+                    let mut spec = SpawnSpec {
+                        session_id: "launch-options".into(),
+                        command: role.command.clone(),
+                        args: role.args.clone(),
+                        mission,
+                        ..Default::default()
+                    };
+                    manager.apply_runtime_args(
+                        &mut spec,
+                        &role,
+                        &plan,
+                        root.path(),
+                        None,
+                        Some("hello"),
+                        mission.then_some(Path::new("/mission")),
+                        Some(&pool),
+                    );
+                    spec
+                };
+                let baseline = compose(false, true, true);
+                let bypass = compose(true, true, true);
+                if mission || !matches!(runtime, Runtime::Codex | Runtime::ClaudeCode) {
+                    assert_eq!(baseline.args, bypass.args, "{runtime} mission={mission}");
+                } else {
+                    assert!(crate::runtimes::adapter(runtime)
+                        .permissions()
+                        .mission_args()
+                        .iter()
+                        .all(|arg| bypass.args.contains(arg)));
+                    assert_ne!(baseline.args, bypass.args);
+                    if runtime == Runtime::ClaudeCode {
+                        assert!(bypass
+                            .args
+                            .iter()
+                            .any(|arg| arg.contains("\"skipDangerousModePermissionPrompt\":true")));
+                    }
+                }
+                let catalog = compose(false, false, true);
+                assert_eq!(
+                    catalog
+                        .args
+                        .iter()
+                        .any(|arg| arg == "features.remote_plugin=false"),
+                    runtime == Runtime::Codex
+                );
+                let no_hooks = compose(false, true, false);
+                if mission {
+                    assert_eq!(baseline.args, no_hooks.args, "mission hooks for {runtime}");
+                } else {
+                    match runtime {
+                        Runtime::Codex => {
+                            assert!(no_hooks
+                                .args
+                                .iter()
+                                .any(|arg| arg.starts_with("hooks.SessionStart=")));
+                            assert!(no_hooks
+                                .args
+                                .iter()
+                                .any(|arg| arg.starts_with("hooks.UserPromptSubmit=")));
+                            assert!(!no_hooks
+                                .args
+                                .iter()
+                                .any(|arg| arg.starts_with("hooks.Stop=")));
+                        }
+                        Runtime::ClaudeCode => {
+                            let value = no_hooks
+                                .args
+                                .windows(2)
+                                .find(|pair| pair[0] == "--settings")
+                                .unwrap();
+                            let settings: serde_json::Value =
+                                serde_json::from_str(&value[1]).unwrap();
+                            assert_eq!(
+                                settings["hooks"]
+                                    .as_object()
+                                    .unwrap()
+                                    .keys()
+                                    .collect::<Vec<_>>(),
+                                ["SessionStart"]
+                            );
+                        }
+                        Runtime::Pi | Runtime::OpenCode | Runtime::Copilot => {
+                            assert!(
+                                no_hooks
+                                    .env
+                                    .contains_key(runner_core::protocol::hook::GENERATION_ENV),
+                                "identity for {runtime}"
+                            );
+                        }
+                        Runtime::Grok => {
+                            assert_eq!(
+                                no_hooks
+                                    .env
+                                    .contains_key(runner_core::protocol::hook::GENERATION_ENV),
+                                !cfg!(windows)
+                            );
+                        }
+                        Runtime::Antigravity => {
+                            assert!(!no_hooks
+                                .env
+                                .contains_key(runner_core::protocol::hook::GENERATION_ENV));
+                            assert!(!no_hooks
+                                .args
+                                .iter()
+                                .any(|arg| arg == "--plugin-dir" || arg == "--add-dir"));
+                        }
+                        _ => assert_eq!(baseline.args, no_hooks.args),
+                    }
+                }
+            }
+        }
+    }
+    for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+        let adapter = crate::runtimes::adapter(runtime);
+        for mode in adapter
+            .permissions()
+            .offered
+            .iter()
+            .copied()
+            .filter(|mode| *mode != router::runtime::PermissionMode::Default)
+        {
+            let mut role = role(runtime.command().unwrap(), &[]);
+            role.runtime = runtime.key().into();
+            role.args = adapter.permissions().mode_args(mode);
+            let effective = crate::runtimes::apply_launch_options(
+                &role,
+                false,
+                runner_core::protocol::runtime::RuntimeLaunchOptions {
+                    bypass: true,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(effective.args, adapter.permissions().mission_args());
+        }
+    }
+}
+
+#[test]
+fn launch_options_persist_under_one_key_and_publish_in_status() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption as OptionKey;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("launch.db");
+    {
+        let pool = crate::db::open_pool(&path).unwrap();
+        assert!(crate::db::runtime_launch_options(&pool).unwrap().is_empty());
+        crate::db::set_runtime_launch_option(&pool, Runtime::Codex, OptionKey::Bypass, true)
+            .unwrap();
+        crate::db::set_runtime_launch_option(
+            &pool,
+            Runtime::ClaudeCode,
+            OptionKey::StatusHooks,
+            false,
+        )
+        .unwrap();
+        crate::db::set_runtime_launch_option(
+            &pool,
+            Runtime::Codex,
+            OptionKey::RemotePluginCatalog,
+            false,
+        )
+        .unwrap();
+    }
+    let pool = crate::db::open_pool(&path).unwrap();
+    let options = crate::db::runtime_launch_options(&pool).unwrap();
+    assert!(options["codex"].bypass);
+    assert!(!options["codex"].remote_plugin_catalog);
+    assert!(options["codex"].status_hooks);
+    assert!(!options["claude-code"].status_hooks);
+    let count: i64 = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM _app_state WHERE key = 'runtime_launch_options'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let core = crate::test_support::test_core();
+    let status = crate::ops::runtime::runtime_set_launch_option(
+        &core,
+        Runtime::Codex,
+        OptionKey::Bypass,
+        true,
+    )
+    .unwrap();
+    assert!(
+        status
+            .runtimes
+            .iter()
+            .find(|row| row.name == Runtime::Codex)
+            .unwrap()
+            .launch_options
+            .bypass
+    );
+    assert!(crate::ops::runtime::runtime_set_launch_option(
+        &core,
+        Runtime::Cursor,
+        OptionKey::StatusHooks,
+        false
+    )
+    .is_err());
+}
+
+#[test]
+fn claude_account_metadata_records_effective_chat_bypass() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+    let pool = pool_with_schema();
+    let root = tempfile::tempdir().unwrap();
+    let mut accounts = crate::claude_accounts::load(&pool).unwrap();
+    accounts
+        .accounts
+        .push(runner_core::protocol::ClaudeAccount {
+            id: "work".into(),
+            name: "Work".into(),
+            folder: root.path().join("work").display().to_string(),
+            native: false,
+        });
+    accounts.active_id = "work".into();
+    crate::db::app_state_set(
+        &pool.get().unwrap(),
+        "claude_accounts",
+        &serde_json::to_string(&accounts).unwrap(),
+    )
+    .unwrap();
+    crate::db::set_runtime_launch_option(
+        &pool,
+        Runtime::ClaudeCode,
+        RuntimeLaunchOption::Bypass,
+        true,
+    )
+    .unwrap();
+    let mut configured = role("claude-custom", &[]);
+    configured.runtime = "claude-code".into();
+    insert_role_row(&pool.get().unwrap(), &configured);
+    let manager = mgr_with_fake(None, fake_runtime());
+    let session = manager
+        .spawn_direct(
+            &configured,
+            None,
+            None,
+            None,
+            None,
+            root.path().to_str(),
+            None,
+            None,
+            root.path(),
+            pool.clone(),
+            capture(),
+            None,
+        )
+        .unwrap();
+    let saved = crate::repo::session::get_row(&pool.get().unwrap(), &session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved
+            .launch_definition
+            .unwrap()
+            .claude_account
+            .unwrap()
+            .permission_mode,
+        "bypassPermissions"
+    );
+    manager.kill(&session.id).unwrap();
+}
+
+#[test]
+fn chat_bypass_switch_applies_to_roles_with_stored_permission_modes() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+    for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+        for mode in [
+            router::runtime::PermissionMode::Auto,
+            router::runtime::PermissionMode::Bypass,
+        ] {
+            let pool = pool_with_schema();
+            let root = tempfile::tempdir().unwrap();
+            let mut configured = role("agent-custom", &[]);
+            configured.runtime = runtime.key().into();
+            configured.args = crate::runtimes::adapter(runtime)
+                .permissions()
+                .mode_args(mode);
+            let stored_args = configured.args.clone();
+            insert_role_row(&pool.get().unwrap(), &configured);
+            crate::db::set_runtime_launch_option(&pool, runtime, RuntimeLaunchOption::Bypass, true)
+                .unwrap();
+            let fake = fake_runtime();
+            let manager = mgr_with_fake(None, fake.clone());
+            let session = manager
+                .spawn_direct(
+                    &configured,
+                    None,
+                    None,
+                    None,
+                    None,
+                    root.path().to_str(),
+                    None,
+                    None,
+                    root.path(),
+                    pool.clone(),
+                    capture(),
+                    None,
+                )
+                .unwrap();
+            let check = |args: &[String]| {
+                for pair in crate::runtimes::adapter(runtime)
+                    .permissions()
+                    .mission_args()
+                    .chunks_exact(2)
+                {
+                    assert!(
+                        has_arg_pair(args, &pair[0], &pair[1]),
+                        "{runtime}: {args:?}"
+                    );
+                }
+                assert!(!has_arg_pair(args, "--permission-mode", "auto"));
+                assert!(!has_arg_pair(args, "--sandbox", "workspace-write"));
+            };
+            check(&fake.last_spawn_spec().unwrap().args);
+            manager.kill(&session.id).unwrap();
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+                    params![session.id, "11111111-1111-4111-8111-111111111111"],
+                )
+                .unwrap();
+            manager
+                .resume(
+                    &session.id,
+                    None,
+                    None,
+                    root.path(),
+                    pool.clone(),
+                    capture(),
+                )
+                .unwrap();
+            check(&fake.last_spawn_spec().unwrap().args);
+            assert_eq!(
+                crate::repo::role::get(&pool.get().unwrap(), &configured.id)
+                    .unwrap()
+                    .unwrap()
+                    .args,
+                stored_args
+            );
+            manager.kill(&session.id).unwrap();
+        }
+    }
+}

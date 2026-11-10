@@ -224,6 +224,21 @@ impl SessionManager {
         mission_bus_dir: Option<&Path>,
         pool: Option<&DbPool>,
     ) -> bool {
+        let options = pool
+            .and_then(|pool| crate::db::runtime_launch_options(pool).ok())
+            .and_then(|options| options.get(&role.runtime).copied())
+            .unwrap_or_default();
+        let effective_role = crate::runtimes::apply_launch_options(role, spec.mission, options);
+        let role = &effective_role;
+        spec.args.clone_from(&role.args);
+        if !spec.mission && !options.status_hooks {
+            spec.env
+                .insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
+        }
+        if !options.remote_plugin_catalog {
+            spec.env
+                .insert(crate::runtimes::REMOTE_PLUGIN_ENV.into(), "false".into());
+        }
         let adapter = crate::runtimes::for_key(&role.runtime);
         let env = crate::shell_path::LoginShellEnv {
             path: spec.shell_path.clone(),
@@ -258,11 +273,25 @@ impl SessionManager {
             first_turn
         };
         adapter.prepare_capture(app_data_dir, &spec.session_id);
-        if let Some(hooks) = adapter.status_hooks() {
+        if let Some(hooks) = adapter.status_hooks().filter(|_| {
+            options.status_hooks
+                || spec.mission
+                || matches!(
+                    Runtime::parse(&role.runtime),
+                    Some(
+                        Runtime::Codex
+                            | Runtime::ClaudeCode
+                            | Runtime::Pi
+                            | Runtime::Cursor
+                            | Runtime::OpenCode
+                            | Runtime::Copilot
+                            | Runtime::Grok
+                    )
+                )
+        }) {
             let env = hooks.env(&role.args, plan, app_data_dir, spec);
             spec.env.extend(env);
         }
-        spec.args = adapter.launch_role_args(&spec.args);
         spec.env
             .extend(adapter.launch_context_env(&crate::runtimes::LaunchContext {
                 default_model: default_model.as_deref(),
@@ -279,20 +308,12 @@ impl SessionManager {
                 system_prompt: None,
                 first_turn,
             }));
-        let mut composed: Vec<String> = Vec::new();
-        if plan.prepend {
-            composed.extend(plan.args.iter().cloned());
-            composed.append(&mut spec.args);
-        } else {
-            composed.append(&mut spec.args);
-            composed.extend(plan.args.iter().cloned());
-        }
-        let first_turn_for_argv =
-            crate::runtimes::for_key(&role.runtime).first_turn_argv(first_turn);
-        let delivered_via_argv = !first_turn_for_argv.is_empty();
-        composed.extend(crate::runtimes::for_key(&role.runtime).mission_dir_args(mission_bus_dir));
-        for extra in
-            crate::runtimes::for_key(&role.runtime).launch_args(&crate::runtimes::LaunchContext {
+        let (args, delivered_via_argv) = compose_args(
+            adapter,
+            &spec.args,
+            plan,
+            mission_bus_dir,
+            &crate::runtimes::LaunchContext {
                 default_model: default_model.as_deref(),
                 env: &spec.env,
                 cwd: spec.cwd.as_deref(),
@@ -308,11 +329,9 @@ impl SessionManager {
                     .as_deref(),
                 first_turn,
                 mission: spec.mission,
-            })
-        {
-            composed.push(extra);
-        }
-        spec.args = composed;
+            },
+        );
+        spec.args = args;
         if is_terminal_shell(role) && !spec.mission {
             crate::shell_integration::inject(spec, app_data_dir, |name| std::env::var(name).ok());
         }
@@ -460,4 +479,393 @@ pub(crate) fn runtime_direct_role(
         created_at: now,
         updated_at: now,
     })
+}
+
+fn compose_args(
+    adapter: &dyn crate::runtimes::RuntimeAdapter,
+    role_args: &[String],
+    plan: &router::runtime::ResumePlan,
+    mission_dir: Option<&Path>,
+    ctx: &crate::runtimes::LaunchContext<'_>,
+) -> (Vec<String>, bool) {
+    let mut args = Vec::new();
+    if plan.prepend {
+        args.extend(plan.args.iter().cloned());
+    }
+    args.extend(adapter.launch_role_args(role_args));
+    if !plan.prepend {
+        args.extend(plan.args.iter().cloned());
+    }
+    args.extend(adapter.mission_dir_args(mission_dir));
+    args.extend(adapter.launch_args(ctx));
+    (args, !adapter.first_turn_argv(ctx.first_turn).is_empty())
+}
+
+impl SessionManager {
+    pub(crate) fn command_preview(
+        &self,
+        runtime: Runtime,
+        command: &str,
+        mission: bool,
+        options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+        app_data_dir: &Path,
+        mut env: BTreeMap<String, String>,
+    ) -> runner_core::protocol::runtime::RuntimeCommandPreview {
+        let adapter = crate::runtimes::adapter(runtime);
+        let role = Role {
+            id: String::new(),
+            handle: String::new(),
+            display_name: String::new(),
+            runtime: runtime.key().into(),
+            command: command.into(),
+            args: if mission {
+                adapter.permissions().mission_args()
+            } else {
+                Vec::new()
+            },
+            working_dir: None,
+            system_prompt: None,
+            env: HashMap::new(),
+            model: Some("<model>".into()),
+            effort: Some("<effort>".into()),
+            codex_speed: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let role = crate::runtimes::apply_launch_options(&role, mission, options);
+        if !mission && !options.status_hooks {
+            env.insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
+        }
+        if !options.remote_plugin_catalog {
+            env.insert(crate::runtimes::REMOTE_PLUGIN_ENV.into(), "false".into());
+        }
+        let mut plan = adapter.resume_plan(None);
+        if let Some(key) = &plan.assigned_key {
+            for arg in &mut plan.args {
+                if arg == key {
+                    *arg = "<session id>".into();
+                }
+            }
+        }
+        let first_turn = if mission {
+            "<role prompt, crew notes and mission goal>"
+        } else {
+            "<first message>"
+        };
+        let ctx = crate::runtimes::LaunchContext {
+            default_model: None,
+            env: &env,
+            cwd: None,
+            role_args: &role.args,
+            app_data_dir,
+            session_id: "<session id>",
+            resuming: false,
+            mission,
+            model: role.model.as_deref(),
+            effort: role.effort.as_deref(),
+            codex_speed: None,
+            system_prompt: None,
+            first_turn: Some(first_turn),
+        };
+        let (args, _) = compose_args(
+            adapter,
+            &role.args,
+            &plan,
+            mission.then_some(Path::new("<mission folder>")),
+            &ctx,
+        );
+        command_lines(runtime, command, &args, mission, options, app_data_dir)
+    }
+}
+
+fn command_lines(
+    runtime: Runtime,
+    command: &str,
+    args: &[String],
+    mission: bool,
+    options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+    app_data_dir: &Path,
+) -> runner_core::protocol::runtime::RuntimeCommandPreview {
+    use runner_core::protocol::runtime::{
+        RuntimeCommandLine, RuntimeCommandNote as Note, RuntimeCommandPreview,
+        RuntimeLaunchOption as OptionKey,
+    };
+    let mut lines = vec![RuntimeCommandLine {
+        command: command.into(),
+        note: Note::None,
+        option: None,
+    }];
+    let mut i = 0;
+    let mut hooks = Vec::new();
+    while i < args.len() {
+        let arg = &args[i];
+        let takes_value = [
+            "-c",
+            "--config",
+            "--ask-for-approval",
+            "--sandbox",
+            "--permission-mode",
+            "--model",
+            "-m",
+            "--effort",
+            "--thinking",
+            "--reasoning-effort",
+            "--add-dir",
+            "--settings",
+            "--enable",
+            "-e",
+            "--plugin-dir",
+            "--log-file",
+            "--session-id",
+            "--prompt",
+            "--",
+        ]
+        .contains(&arg.as_str());
+        let count = if takes_value && i + 1 < args.len() {
+            2
+        } else {
+            1
+        };
+        let tokens = &args[i..i + count];
+        let mut code = tokens.join(" ");
+        let mut note = Note::Always;
+        let mut option = None;
+        if code.contains("<model>") || code.contains("<effort>") {
+            note = if mission {
+                Note::FromRole
+            } else {
+                Note::FromChat
+            };
+        }
+        if code.contains("<mission folder>") {
+            note = Note::MissionFiles;
+        }
+        if code.contains("<first message>") || code.contains("<role prompt,") {
+            note = if mission {
+                Note::FirstTurn
+            } else {
+                Note::FromChat
+            };
+        }
+        if code.contains("tui.terminal_title") {
+            note = Note::NamesChat;
+        }
+        if code.contains("features.remote_plugin=false") {
+            note = Note::CatalogOff;
+            option = Some(OptionKey::RemotePluginCatalog);
+        }
+        if ["--ask-for-approval", "--sandbox", "--permission-mode"].contains(&arg.as_str()) {
+            note = if mission {
+                Note::AlwaysInMissions
+            } else if runtime == Runtime::Codex {
+                Note::CodexBypass
+            } else {
+                Note::ClaudeBypass
+            };
+            option = (!mission).then_some(OptionKey::Bypass);
+        }
+        if arg == "--settings" {
+            if let Some(value) = tokens
+                .get(1)
+                .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            {
+                let events = value["hooks"].as_object().map_or(0, |hooks| hooks.len());
+                code = format!("--settings {{\"tui\":\"fullscreen\",\"theme\":\"auto\",\"hooks\":{{…{events} events}}{}}}", if value["skipDangerousModePermissionPrompt"] == true { ",\"skipDangerousModePermissionPrompt\":true" } else { "" });
+            }
+            note = if mission {
+                Note::AlwaysInMissions
+            } else if options.status_hooks && options.bypass {
+                Note::HooksBypass
+            } else if options.bypass {
+                Note::IdentityBypass
+            } else if options.status_hooks {
+                Note::StatusHooks
+            } else {
+                Note::Identity
+            };
+            option = if mission {
+                None
+            } else if options.status_hooks {
+                Some(OptionKey::StatusHooks)
+            } else {
+                options.bypass.then_some(OptionKey::Bypass)
+            };
+        }
+        if code.contains("hooks.")
+            || code.contains("mcp_servers.runner_hooks")
+            || code == "--enable hooks"
+            || code == "--dangerously-bypass-hook-trust"
+        {
+            hooks.push(code);
+            i += count;
+            continue;
+        }
+        if arg == "-e"
+            || arg == "--plugin-dir"
+            || (runtime == Runtime::Antigravity
+                && arg == "--add-dir"
+                && !code.contains("<mission folder>"))
+        {
+            note = if mission {
+                Note::AlwaysInMissions
+            } else if options.status_hooks {
+                Note::StatusHooks
+            } else {
+                Note::Identity
+            };
+            option = (!mission && options.status_hooks).then_some(OptionKey::StatusHooks);
+        }
+        code = code.replace(app_data_dir.to_string_lossy().as_ref(), "<Runner data>");
+        let combine = lines.last().is_some_and(|line| {
+            (arg == "--sandbox" && line.command.contains("--ask-for-approval"))
+                || (code.contains("<effort>") && line.command.contains("<model>"))
+        });
+        if combine {
+            let line = lines.last_mut().unwrap();
+            line.command.push(' ');
+            line.command.push_str(&code);
+        } else {
+            lines.push(RuntimeCommandLine {
+                command: format!("  {code}"),
+                note,
+                option,
+            });
+        }
+        i += count;
+    }
+    if !hooks.is_empty() {
+        let count = hooks
+            .iter()
+            .filter(|line| line.starts_with("-c hooks."))
+            .count();
+        let note = if mission {
+            Note::AlwaysInMissions
+        } else if options.status_hooks {
+            Note::StatusHooks
+        } else {
+            Note::Identity
+        };
+        let option = (!mission && options.status_hooks).then_some(OptionKey::StatusHooks);
+        let hook_lines = [
+            RuntimeCommandLine {
+                command: "  --enable hooks --dangerously-bypass-hook-trust".into(),
+                note: note.clone(),
+                option,
+            },
+            RuntimeCommandLine {
+                command: format!(
+                    "  -c mcp_servers.runner_hooks={{…}} -c hooks.<event>=[…] × {count}"
+                ),
+                note: note.clone(),
+                option,
+            },
+        ];
+        let index = lines
+            .iter()
+            .position(|line| {
+                line.command.contains("<first message>") || line.command.contains("<role prompt,")
+            })
+            .unwrap_or(lines.len());
+        lines.splice(index..index, hook_lines);
+    }
+    RuntimeCommandPreview { lines }
+}
+
+#[cfg(test)]
+mod launch_preview_tests {
+    use super::*;
+    use runner_core::protocol::runtime::RuntimeLaunchOptions;
+
+    #[test]
+    fn preview_uses_composed_arguments_and_tracks_switches() {
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let options = RuntimeLaunchOptions {
+            bypass: true,
+            remote_plugin_catalog: false,
+            status_hooks: false,
+        };
+        let preview = core.sessions.command_preview(
+            Runtime::Codex,
+            "codex",
+            false,
+            options,
+            root.path(),
+            BTreeMap::new(),
+        );
+        let text = preview
+            .lines
+            .iter()
+            .map(|line| line.command.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for value in [
+            "--ask-for-approval never",
+            "--sandbox danger-full-access",
+            "--model <model>",
+            "model_reasoning_effort=<effort>",
+            "features.remote_plugin=false",
+            "hooks.<event>=[…] × 2",
+            "<first message>",
+        ] {
+            assert!(text.contains(value), "{value}: {text}");
+        }
+        let mission = core.sessions.command_preview(
+            Runtime::Codex,
+            "codex",
+            true,
+            options,
+            root.path(),
+            BTreeMap::new(),
+        );
+        let defaults = core.sessions.command_preview(
+            Runtime::Codex,
+            "codex",
+            true,
+            RuntimeLaunchOptions {
+                remote_plugin_catalog: false,
+                ..Default::default()
+            },
+            root.path(),
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            serde_json::to_value(mission).unwrap(),
+            serde_json::to_value(defaults).unwrap()
+        );
+        let preview = core.sessions.command_preview(
+            Runtime::Trae,
+            "traecli",
+            false,
+            RuntimeLaunchOptions::default(),
+            root.path(),
+            BTreeMap::new(),
+        );
+        let env = BTreeMap::new();
+        let ctx = crate::runtimes::LaunchContext {
+            default_model: None,
+            env: &env,
+            cwd: None,
+            role_args: &[],
+            app_data_dir: root.path(),
+            session_id: "<session id>",
+            resuming: false,
+            mission: false,
+            model: Some("<model>"),
+            effort: Some("<effort>"),
+            codex_speed: None,
+            system_prompt: None,
+            first_turn: Some("<first message>"),
+        };
+        let adapter = crate::runtimes::adapter(Runtime::Trae);
+        let (args, _) = compose_args(adapter, &[], &adapter.resume_plan(None), None, &ctx);
+        assert_eq!(
+            preview.lines[1..]
+                .iter()
+                .map(|line| line.command.trim())
+                .collect::<Vec<_>>()
+                .join(" "),
+            args.join(" ")
+        );
+    }
 }

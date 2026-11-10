@@ -502,6 +502,7 @@ record!(RuntimeCatalogOption {
 });
 variant!(RuntimeCommandSource => Self::Override);
 record!(RuntimeExecutableStatus {
+    launch_options,
     name,
     display_name,
     command,
@@ -968,3 +969,19 @@ impl Sample for files::FileContent {
         }
     }
 }
+
+impl Sample for RuntimeLaunchOptions {
+    fn sample() -> Self {
+        Self::default()
+    }
+}
+
+variant!(RuntimeLaunchOption => Self::Bypass);
+record!(RuntimeCommandPreview { lines });
+record!(RuntimeCommandLine {
+    command,
+    note,
+    option
+});
+
+variant!(RuntimeCommandNote => Self::ActiveAccount { name: "Work".into() });
