@@ -193,6 +193,9 @@ pub(crate) fn open_runner_window(
             app_id: Some(platform_ui::DESKTOP_APP_ID.into()),
             #[cfg(target_os = "linux")]
             window_decorations: Some(gpui::WindowDecorations::Client),
+            #[cfg(target_os = "linux")]
+            window_background: gpui::WindowBackgroundAppearance::Transparent,
+            #[cfg(not(target_os = "linux"))]
             window_background: runner_app::appearance::effective(
                 app_store.read(cx).settings.window_material,
                 cx,
@@ -215,6 +218,10 @@ pub(crate) fn open_runner_window(
             ..Default::default()
         },
         |window, cx| {
+            #[cfg(target_os = "linux")]
+            window.set_background_appearance(platform_ui::window_background(
+                window.window_decorations(),
+            ));
             let root = cx.new(|cx| {
                 NativeRoot::new(
                     open_label.clone(),

@@ -215,6 +215,13 @@ impl NativeRoot {
             .flex()
             .items_center()
             .bg(theme::sidebar())
+            .map(|titlebar| {
+                #[cfg(target_os = "linux")]
+                let titlebar = super::linux::round_window_corners(titlebar, window)
+                    .rounded_bl(px(0.))
+                    .rounded_br(px(0.));
+                titlebar
+            })
             .font(crate::app_settings::app_font())
             .child(
                 self.render_titlebar_drag_area(
@@ -276,6 +283,18 @@ impl NativeRoot {
                             .justify_center()
                             .occlude()
                             .window_control_area(area)
+                            .map(|button| {
+                                #[cfg(target_os = "linux")]
+                                let button = if close {
+                                    super::linux::round_window_corners(button, window)
+                                        .rounded_tl(px(0.))
+                                        .rounded_bl(px(0.))
+                                        .rounded_br(px(0.))
+                                } else {
+                                    button
+                                };
+                                button
+                            })
                             .when(cfg!(target_os = "linux"), |button| {
                                 button.on_click(move |_, window, cx| {
                                     cx.stop_propagation();

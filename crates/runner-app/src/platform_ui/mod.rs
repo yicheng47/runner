@@ -7,15 +7,34 @@ mod macos;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(all(test, not(target_os = "linux")))]
+pub(crate) use linux::round_window_corners;
 #[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use macos::show_about_panel;
+
+pub(crate) fn window_scrim(scrim: gpui::Div) -> impl gpui::IntoElement {
+    WindowScrim(scrim)
+}
+
+#[derive(gpui::IntoElement)]
+struct WindowScrim(gpui::Div);
+
+impl gpui::RenderOnce for WindowScrim {
+    fn render(self, _window: &mut gpui::Window, _: &mut gpui::App) -> impl gpui::IntoElement {
+        #[cfg(any(target_os = "linux", test))]
+        let scrim = linux::round_window_corners(self.0, _window);
+        #[cfg(not(any(target_os = "linux", test)))]
+        let scrim = self.0;
+        scrim
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{
     finish_window_close, initial_window_bounds, navigation_left, other_shortcut_modifiers_held,
-    primary_modifier_held, sidebar_row_wrapper, sidebar_section, sync_traffic_lights,
-    DESKTOP_APP_ID, PRIMARY_MODIFIER, SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET,
-    SHORTCUT_REQUIREMENTS_KEY,
+    primary_modifier_held, round_window_corners, sidebar_row_wrapper, sidebar_section,
+    sync_traffic_lights, window_background, DESKTOP_APP_ID, PRIMARY_MODIFIER, SETTINGS_CONTENT_TOP,
+    SETTINGS_DRAG_INSET, SHORTCUT_REQUIREMENTS_KEY,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{

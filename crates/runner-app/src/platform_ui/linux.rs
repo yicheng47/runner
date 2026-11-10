@@ -2,13 +2,27 @@
 pub(crate) use super::desktop::*;
 
 use gpui::{
-    div, point, prelude::*, px, size, App, Bounds, CursorStyle, Decorations, Div, Edges,
-    MouseButton, Pixels, Point, ResizeEdge, Size, Window,
+    div, point, prelude::*, px, size, App, Bounds, Corners, CursorStyle, Decorations, Div, Edges,
+    MouseButton, Pixels, Point, ResizeEdge, Size, Window, WindowBackgroundAppearance,
 };
 use std::rc::Rc;
 
 const RESIZE_BORDER: f32 = 6.;
+const CORNER_RADIUS: f32 = 8.;
 pub(crate) const DESKTOP_APP_ID: &str = "runner";
+
+#[cfg(test)]
+thread_local! {
+    // GPUI's test windows always report server decorations.
+    static TEST_FRAME_STATE: std::cell::Cell<Option<(Decorations, bool, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn window_background(decorations: Decorations) -> WindowBackgroundAppearance {
+    match decorations {
+        Decorations::Client { .. } => WindowBackgroundAppearance::Transparent,
+        Decorations::Server => WindowBackgroundAppearance::Opaque,
+    }
+}
 
 #[cfg(target_os = "linux")]
 pub(crate) fn initial_window_bounds(
@@ -69,6 +83,45 @@ fn frame_insets(decorations: Decorations, maximized: bool, fullscreen: bool) -> 
         bottom: px(if tiling.bottom { 0. } else { RESIZE_BORDER }),
         left: px(if tiling.left { 0. } else { RESIZE_BORDER }),
     }
+}
+
+fn frame_corners(decorations: Decorations, maximized: bool, fullscreen: bool) -> Corners<Pixels> {
+    let inset = frame_insets(decorations, maximized, fullscreen);
+    let radius = |a, b| {
+        if a > px(0.) && b > px(0.) {
+            px(CORNER_RADIUS)
+        } else {
+            px(0.)
+        }
+    };
+    Corners {
+        top_left: radius(inset.top, inset.left),
+        top_right: radius(inset.top, inset.right),
+        bottom_right: radius(inset.bottom, inset.right),
+        bottom_left: radius(inset.bottom, inset.left),
+    }
+}
+
+fn round_corners<T: Styled>(surface: T, corners: Corners<Pixels>) -> T {
+    surface
+        .rounded_tl(corners.top_left)
+        .rounded_tr(corners.top_right)
+        .rounded_br(corners.bottom_right)
+        .rounded_bl(corners.bottom_left)
+}
+
+pub(crate) fn round_window_corners<T: Styled>(surface: T, window: &Window) -> T {
+    // GPUI masks are rectangular, so edge-reaching panels must round their own paint.
+    let state = (
+        window.window_decorations(),
+        window.is_maximized(),
+        window.is_fullscreen(),
+    );
+    #[cfg(test)]
+    let state = TEST_FRAME_STATE
+        .with(|state_override| state_override.get())
+        .unwrap_or(state);
+    round_corners(surface, frame_corners(state.0, state.1, state.2))
 }
 
 fn resize_regions(outer: Size<Pixels>, inset: Edges<Pixels>) -> Vec<(ResizeEdge, Bounds<Pixels>)> {
@@ -143,19 +196,46 @@ pub(super) fn resize_frame(content: Div, window: &mut Window) -> Div {
     } else {
         px(0.)
     });
-    let inset = frame_insets(decorations, window.is_maximized(), window.is_fullscreen());
-    render_resize_frame(content, window.viewport_size(), inset, |edge, window, _| {
-        window.start_window_resize(edge)
-    })
+    render_resize_frame(
+        content,
+        window.viewport_size(),
+        decorations,
+        window.is_maximized(),
+        window.is_fullscreen(),
+        |edge, window, _| window.start_window_resize(edge),
+    )
 }
 
 fn render_resize_frame(
     content: Div,
     outer: Size<Pixels>,
-    inset: Edges<Pixels>,
+    decorations: Decorations,
+    maximized: bool,
+    fullscreen: bool,
     request: impl Fn(ResizeEdge, &mut Window, &mut App) + 'static,
 ) -> Div {
     let request = Rc::new(request);
+    let inset = frame_insets(decorations, maximized, fullscreen);
+    let corners = frame_corners(decorations, maximized, fullscreen);
+    let content = content.when(
+        matches!(decorations, Decorations::Client { .. }),
+        |content| {
+            round_corners(content, corners)
+                .overflow_hidden()
+                .bg(crate::theme::sidebar())
+                .border_1()
+                .border_color(crate::theme::border())
+                .when(inset != Edges::default(), |content| {
+                    content.shadow(vec![gpui::BoxShadow {
+                        color: crate::theme::with_alpha(gpui::black(), 0.3),
+                        offset: point(px(0.), px(1.)),
+                        blur_radius: px(6.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                })
+        },
+    );
     div()
         .debug_selector(|| "LINUX_WINDOW_FRAME".into())
         .relative()
@@ -164,7 +244,7 @@ fn render_resize_frame(
         .pr(inset.right)
         .pb(inset.bottom)
         .pl(inset.left)
-        .bg(crate::theme::sidebar())
+        .overflow_hidden()
         .child(content)
         .children(
             resize_regions(outer, inset)
@@ -201,6 +281,336 @@ mod tests {
     use super::*;
     use gpui::{Context, Render, Tiling};
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn background_is_transparent_only_for_client_decorations() {
+        assert_eq!(
+            window_background(Decorations::Client {
+                tiling: Tiling::default(),
+            }),
+            WindowBackgroundAppearance::Transparent
+        );
+        assert_eq!(
+            window_background(Decorations::Server),
+            WindowBackgroundAppearance::Opaque
+        );
+    }
+
+    #[test]
+    fn corners_round_only_where_both_edges_are_floating() {
+        for (tiling, expected) in [
+            (Tiling::default(), [8., 8., 8., 8.]),
+            (
+                Tiling {
+                    top: true,
+                    ..Tiling::default()
+                },
+                [0., 0., 8., 8.],
+            ),
+            (
+                Tiling {
+                    right: true,
+                    ..Tiling::default()
+                },
+                [8., 0., 0., 8.],
+            ),
+            (
+                Tiling {
+                    bottom: true,
+                    ..Tiling::default()
+                },
+                [8., 8., 0., 0.],
+            ),
+            (
+                Tiling {
+                    left: true,
+                    ..Tiling::default()
+                },
+                [0., 8., 8., 0.],
+            ),
+            (
+                Tiling {
+                    top: true,
+                    left: true,
+                    ..Tiling::default()
+                },
+                [0., 0., 8., 0.],
+            ),
+            (
+                Tiling {
+                    top: true,
+                    right: true,
+                    bottom: true,
+                    left: true,
+                },
+                [0.; 4],
+            ),
+        ] {
+            let decorations = Decorations::Client { tiling };
+            assert_eq!(
+                frame_corners(decorations, false, false),
+                Corners {
+                    top_left: px(expected[0]),
+                    top_right: px(expected[1]),
+                    bottom_right: px(expected[2]),
+                    bottom_left: px(expected[3]),
+                },
+                "{tiling:?}"
+            );
+            for (maximized, fullscreen) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    frame_corners(decorations, maximized, fullscreen),
+                    Corners::default()
+                );
+            }
+        }
+        assert_eq!(
+            frame_corners(Decorations::Server, false, false),
+            Corners::default()
+        );
+    }
+
+    #[test]
+    fn frame_paints_opaque_rounded_content_without_filling_the_resize_margin() {
+        struct FrameView {
+            decorations: Decorations,
+            maximized: bool,
+            fullscreen: bool,
+        }
+        impl Render for FrameView {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                render_resize_frame(
+                    div()
+                        .debug_selector(|| "FRAME_CONTENT".into())
+                        .size_full()
+                        .bg(crate::theme::sidebar()),
+                    window.viewport_size(),
+                    self.decorations,
+                    self.maximized,
+                    self.fullscreen,
+                    |_, _, _| {},
+                )
+            }
+        }
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let floating = Decorations::Client {
+            tiling: Tiling::default(),
+        };
+        let tiled = Decorations::Client {
+            tiling: Tiling {
+                top: true,
+                left: true,
+                ..Tiling::default()
+            },
+        };
+        for theme in [
+            crate::theme::ThemeVariant::Carbon,
+            crate::theme::ThemeVariant::RunnerLight,
+        ] {
+            crate::theme::set_active_variant(theme);
+            for (decorations, maximized, fullscreen) in [
+                (floating, false, false),
+                (tiled, false, false),
+                (floating, true, false),
+                (floating, false, true),
+                (Decorations::Server, false, false),
+            ] {
+                let mut cx = gpui::TestAppContext::single();
+                let host = cx.add_window(|_, _| FrameView {
+                    decorations,
+                    maximized,
+                    fullscreen,
+                });
+                let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+                visual.simulate_resize(size(px(800.), px(600.)));
+                visual.run_until_parked();
+                let content = visual.debug_bounds("FRAME_CONTENT").unwrap();
+                let inset = frame_insets(decorations, maximized, fullscreen);
+                assert_eq!(content.origin, point(inset.left, inset.top));
+                assert_eq!(
+                    content.size,
+                    size(
+                        px(800.) - inset.left - inset.right,
+                        px(600.) - inset.top - inset.bottom
+                    )
+                );
+                visual.update(|window, _| {
+                    let scale = window.scale_factor();
+                    let quads = window.painted_quads();
+                    let fills = quads
+                        .iter()
+                        .filter(|quad| !quad.background.is_transparent())
+                        .collect::<Vec<_>>();
+                    assert_eq!(fills.len(), 1);
+                    let fill = fills[0];
+                    assert_eq!(fill.bounds, content.scale(scale));
+                    assert_eq!(fill.background.as_solid(), Some(crate::theme::sidebar()));
+                    assert_eq!(fill.background.as_solid().unwrap().a, 1.);
+                    assert_eq!(
+                        fill.corner_radii,
+                        frame_corners(decorations, maximized, fullscreen).scale(scale)
+                    );
+                    let borders = quads
+                        .iter()
+                        .filter(|quad| quad.border_color.a > 0.)
+                        .collect::<Vec<_>>();
+                    if matches!(decorations, Decorations::Client { .. }) {
+                        assert!(!borders.is_empty());
+                        for border in borders {
+                            assert_eq!(border.border_color, crate::theme::border());
+                            assert_eq!(border.border_widths, Edges::all(px(1.)).scale(scale));
+                        }
+                    } else {
+                        assert!(borders.is_empty());
+                    }
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn real_dialog_scrims_keep_shell_corners_including_when_deferred() {
+        struct ResetFrameState;
+        impl Drop for ResetFrameState {
+            fn drop(&mut self) {
+                TEST_FRAME_STATE.with(|state| state.set(None));
+            }
+        }
+        struct DialogFrame {
+            decorations: Decorations,
+            maximized: bool,
+            fullscreen: bool,
+            deferred: bool,
+            drawer: bool,
+        }
+        impl Render for DialogFrame {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let dialog = if self.drawer {
+                    crate::ui::Drawer::new(
+                        "Role details",
+                        div().child("Choose a role"),
+                        Rc::new(|_, _| {}),
+                    )
+                    .footer(div().child("Done"))
+                    .into_any_element()
+                } else {
+                    crate::ui::Modal::new(
+                        "New chat",
+                        div().child("Choose a role"),
+                        Rc::new(|_, _| {}),
+                    )
+                    .into_any_element()
+                };
+                let dialog = if self.deferred {
+                    gpui::deferred(dialog).into_any_element()
+                } else {
+                    dialog.into_any_element()
+                };
+                render_resize_frame(
+                    div()
+                        .debug_selector(|| "FRAME_CONTENT".into())
+                        .relative()
+                        .size_full()
+                        .child(dialog),
+                    window.viewport_size(),
+                    self.decorations,
+                    self.maximized,
+                    self.fullscreen,
+                    |_, _, _| {},
+                )
+            }
+        }
+        let _reset = ResetFrameState;
+        let floating = Decorations::Client {
+            tiling: Tiling::default(),
+        };
+        let tiled = Decorations::Client {
+            tiling: Tiling {
+                left: true,
+                ..Tiling::default()
+            },
+        };
+        for (decorations, maximized, fullscreen) in [
+            (floating, false, false),
+            (tiled, false, false),
+            (floating, true, false),
+            (floating, false, true),
+            (Decorations::Server, false, false),
+        ] {
+            TEST_FRAME_STATE.with(|state| state.set(Some((decorations, maximized, fullscreen))));
+            for (deferred, drawer) in [(false, false), (true, false), (true, true)] {
+                let mut cx = gpui::TestAppContext::single();
+                let host = cx.add_window(|_, _| DialogFrame {
+                    decorations,
+                    maximized,
+                    fullscreen,
+                    deferred,
+                    drawer,
+                });
+                let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+                visual.simulate_resize(size(px(800.), px(600.)));
+                visual.run_until_parked();
+                let content = visual.debug_bounds("FRAME_CONTENT").unwrap();
+                let panel = visual
+                    .debug_bounds(if drawer {
+                        "DRAWER_PANEL"
+                    } else {
+                        "MODAL_PANEL"
+                    })
+                    .unwrap();
+                visual.update(|window, _| {
+                    let quads = window.painted_quads();
+                    let scrims = quads
+                        .iter()
+                        .filter(|quad| {
+                            quad.background.as_solid() == Some(gpui::rgba(0x00000099).into())
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(scrims.len(), 1);
+                    let scrim = scrims[0];
+                    assert_eq!(
+                        scrim.corner_radii,
+                        frame_corners(decorations, maximized, fullscreen)
+                            .scale(window.scale_factor())
+                    );
+                    let bounds = content.scale(window.scale_factor());
+                    assert!(
+                        scrim.bounds.left() >= bounds.left()
+                            && scrim.bounds.right() <= bounds.right()
+                    );
+                    assert!(
+                        scrim.bounds.top() >= bounds.top()
+                            && scrim.bounds.bottom() <= bounds.bottom()
+                    );
+                    if drawer {
+                        let panel = quads
+                            .iter()
+                            .find(|quad| {
+                                quad.bounds == panel.scale(window.scale_factor())
+                                    && quad.background.as_solid() == Some(crate::theme::panel())
+                            })
+                            .unwrap();
+                        assert_eq!(panel.corner_radii.top_right, scrim.corner_radii.top_right);
+                        assert_eq!(
+                            panel.corner_radii.bottom_right,
+                            scrim.corner_radii.bottom_right
+                        );
+                        let footer = quads
+                            .iter()
+                            .find(|quad| {
+                                quad.background.as_solid()
+                                    == Some(crate::theme::with_alpha(crate::theme::bg(), 0.4))
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            footer.corner_radii.bottom_right,
+                            scrim.corner_radii.bottom_right
+                        );
+                    }
+                });
+            }
+        }
+    }
 
     #[test]
     fn desktop_entry_matches_window_identity() {
@@ -340,13 +750,11 @@ mod tests {
                                 }),
                         ),
                     window.viewport_size(),
-                    frame_insets(
-                        Decorations::Client {
-                            tiling: Tiling::default(),
-                        },
-                        self.maximized,
-                        self.fullscreen,
-                    ),
+                    Decorations::Client {
+                        tiling: Tiling::default(),
+                    },
+                    self.maximized,
+                    self.fullscreen,
                     move |edge, _, _| requested.borrow_mut().push(edge),
                 )
             }

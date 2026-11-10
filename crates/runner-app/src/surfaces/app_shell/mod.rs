@@ -109,9 +109,12 @@ impl NativeRoot {
     ) -> AnyElement {
         self.sync_theme(window, cx);
         runner_app::appearance::configure(self.settings(cx).window_material, cx);
-        window.set_background_appearance(
-            runner_app::appearance::effective(self.settings(cx).window_material, cx).background(),
-        );
+        #[cfg(target_os = "linux")]
+        let background = platform_ui::window_background(window.window_decorations());
+        #[cfg(not(target_os = "linux"))]
+        let background =
+            runner_app::appearance::effective(self.settings(cx).window_material, cx).background();
+        window.set_background_appearance(background);
         window.set_rem_size(px(16. * self.settings(cx).app_zoom));
         if let Some(error) = self.error.take() {
             self.show_toast(error, ToastTone::Error, cx);
@@ -242,6 +245,11 @@ impl NativeRoot {
             .track_focus(&self.root_focus)
             .font(crate::app_settings::app_font())
             .bg(theme::chrome())
+            .map(|root| {
+                #[cfg(target_os = "linux")]
+                let root = platform_ui::round_window_corners(root, window);
+                root
+            })
             .text_color(theme::text())
             .children(
                 (self.remote_client.is_active() || self.route != AppRoute::Settings)

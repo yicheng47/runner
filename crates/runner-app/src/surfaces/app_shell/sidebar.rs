@@ -58,6 +58,13 @@ impl NativeRoot {
             } else {
                 theme::sidebar()
             })
+            .map(|sidebar| {
+                #[cfg(target_os = "linux")]
+                let sidebar = crate::platform_ui::round_window_corners(sidebar, window)
+                    .rounded_tr(px(0.))
+                    .rounded_br(px(0.));
+                sidebar
+            })
             .map(|element| {
                 #[cfg(test)]
                 let element = crate::theme_snapshot::record_fill("APP_SIDEBAR", element);
