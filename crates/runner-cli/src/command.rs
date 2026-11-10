@@ -1533,6 +1533,30 @@ mod tests {
     }
 
     #[test]
+    fn role_commands_reject_custom_arguments_before_connecting() {
+        for action in ["create", "update"] {
+            let error = Cli::try_parse_from(["runner", "role", action, "coder", "--arg=--verbose"])
+                .unwrap_err();
+            assert_eq!(error.exit_code(), 2);
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn role_fields_send_empty_args_only_on_create_and_keep_environment() {
+        let fields = RoleFields {
+            env: vec!["EXAMPLE=value".into()],
+            ..Default::default()
+        };
+        let create = role_fields(&fields, false).unwrap();
+        assert_eq!(create["args"], json!([]));
+        assert_eq!(create["env"], json!({"EXAMPLE": "value"}));
+        let update = role_fields(&fields, true).unwrap();
+        assert!(update.get("args").is_none());
+        assert_eq!(update["env"], create["env"]);
+    }
+
+    #[test]
     fn crew_commands_reject_removed_flags_before_connecting() {
         for action in ["create", "update"] {
             for flag in ["--purpose", "--goal"] {

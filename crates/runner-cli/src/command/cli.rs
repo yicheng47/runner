@@ -157,9 +157,6 @@ pub(super) struct RoleFields {
     /// Read the system prompt from a file, or - for stdin.
     #[arg(long, conflicts_with = "prompt")]
     pub(super) prompt_file: Option<PathBuf>,
-    /// Append one runtime argument; repeat for multiple arguments.
-    #[arg(long = "arg")]
-    pub(super) args: Vec<String>,
     /// Set one KEY=VALUE environment entry; repeat as needed.
     #[arg(long = "env")]
     pub(super) env: Vec<String>,

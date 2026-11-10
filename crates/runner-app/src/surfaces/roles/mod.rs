@@ -70,6 +70,7 @@ impl CreateRoleForm {
 struct RoleEditForm {
     role: Role,
     fields: RoleFormFields,
+    args: Option<Entity<TextField>>,
     permission_mode: PermissionMode,
 }
 
@@ -78,7 +79,6 @@ struct RoleFormFields {
     runtime: String,
     display_name: Entity<TextField>,
     command: Entity<TextField>,
-    args: Entity<TextField>,
     model: Entity<TextField>,
     model_field: Entity<ModelField>,
     effort: String,

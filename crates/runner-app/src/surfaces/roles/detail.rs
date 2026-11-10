@@ -2,6 +2,7 @@ use super::logic::distinct_crew_count;
 use super::logic::live_activity_label;
 use super::logic::local_short_timestamp;
 use super::logic::prompt_meta;
+use super::logic::role_command_label;
 use super::logic::role_edit_form_is_composing;
 use super::logic::role_edit_is_dirty;
 use super::logic::role_setting_label;
@@ -241,11 +242,7 @@ impl NativeRoot {
         let (model, model_default) = role_setting_label(role.model.as_deref());
         let (effort, effort_default) =
             crate::surfaces::roles::logic::role_effort_label(role.effort.as_deref());
-        let command = if role.args.is_empty() {
-            role.command.clone()
-        } else {
-            format!("{} {}", role.command, role.args.join(" "))
-        };
+        let command = role_command_label(&role);
         let icon = ChatIcon::for_runtime(&role.runtime);
         let profile = div()
             .flex()
@@ -615,7 +612,14 @@ impl NativeRoot {
                         crate::i18n::text("ui.command"),
                         form.command.clone(),
                     ))
-                    .child(edit_row(crate::i18n::text("ui.args"), form.args.clone()))
+                    .children(
+                        self.role_surfaces
+                            .edit
+                            .as_ref()
+                            .filter(|_| !creating)
+                            .and_then(|form| form.args.clone())
+                            .map(|args| edit_row(crate::i18n::text("ui.args"), args)),
+                    )
                     .child(
                         edit_row(
                             crate::i18n::text("ui.working_directory"),

@@ -302,11 +302,19 @@ pub(super) fn role_edit_is_dirty(form: &RoleEditForm, cx: &Context<NativeRoot>) 
         || trimmed_option(form.system_prompt.read(cx).text()) != stored(&role.system_prompt)
 }
 
-/// Mission permissions are fixed, so old role permission flags stay out of the form.
 pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
     runner_core::protocol::runtime_metadata::for_key(&role.runtime)
         .permissions()
         .strip(&role.args)
+}
+
+pub(super) fn role_command_label(role: &Role) -> String {
+    let args = role_visible_args(role);
+    if args.is_empty() {
+        role.command.clone()
+    } else {
+        format!("{} {}", role.command, args.join(" "))
+    }
 }
 
 /// The args a save writes. The field joins args with spaces, so while it
@@ -315,7 +323,10 @@ pub(super) fn role_visible_args(role: &Role) -> Vec<String> {
 /// whitespace.
 pub(super) fn role_edit_args(form: &RoleEditForm, cx: &Context<NativeRoot>) -> Vec<String> {
     let visible = role_visible_args(&form.role);
-    let edited = split_args(form.args.read(cx).text());
+    let Some(args) = form.args.as_ref() else {
+        return visible;
+    };
+    let edited = split_args(args.read(cx).text());
     if edited == split_args(&visible.join(" ")) {
         visible
     } else {
@@ -338,7 +349,6 @@ pub(super) fn create_role_form_is_composing(
 ) -> bool {
     form.handle.read(cx).is_composing()
         || form.display_name.read(cx).is_composing()
-        || form.args.read(cx).is_composing()
         || form.model.read(cx).is_composing()
         || form.working_dir.read(cx).is_composing()
         || form.system_prompt.read(cx).is_composing()
@@ -346,7 +356,10 @@ pub(super) fn create_role_form_is_composing(
 
 pub(super) fn role_edit_form_is_composing(form: &RoleEditForm, cx: &Context<NativeRoot>) -> bool {
     form.display_name.read(cx).is_composing()
-        || form.args.read(cx).is_composing()
+        || form
+            .args
+            .as_ref()
+            .is_some_and(|args| args.read(cx).is_composing())
         || form.model.read(cx).is_composing()
         || form.working_dir.read(cx).is_composing()
         || form.system_prompt.read(cx).is_composing()

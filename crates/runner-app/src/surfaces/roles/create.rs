@@ -4,7 +4,6 @@ use super::logic::parse_speed;
 use super::logic::runtime_entry;
 use super::logic::runtime_model_placeholder;
 use super::logic::runtime_models;
-use super::logic::split_args;
 use super::logic::trimmed_option;
 use super::logic::RoleFormKind;
 use runner_core::protocol::model::Runtime;
@@ -126,7 +125,7 @@ impl NativeRoot {
             display_name: form.display_name.read(cx).text().trim().to_owned(),
             runtime,
             command: form.command.read(cx).text().trim().to_owned(),
-            args: split_args(form.args.read(cx).text()),
+            args: Vec::new(),
             working_dir: trimmed_option(form.working_dir.read(cx).text()),
             system_prompt: trimmed_option(form.system_prompt.read(cx).text()),
             env: HashMap::new(),

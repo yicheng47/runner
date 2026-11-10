@@ -654,7 +654,6 @@ Options:
       --permission <PERMISSION>    Permission mode: default, accept_edits, auto, or bypass
       --prompt <PROMPT>            Inline system prompt; pass an empty value to clear it
       --prompt-file <PROMPT_FILE>  Read the system prompt from a file, or - for stdin
-      --arg <ARGS>                 Append one runtime argument; repeat for multiple arguments
       --env <ENV>                  Set one KEY=VALUE environment entry; repeat as needed
       --cwd <CWD>                  Working directory; pass an empty value to clear it
   -h, --help                       Print help
@@ -681,7 +680,6 @@ Options:
       --permission <PERMISSION>    Permission mode: default, accept_edits, auto, or bypass
       --prompt <PROMPT>            Inline system prompt; pass an empty value to clear it
       --prompt-file <PROMPT_FILE>  Read the system prompt from a file, or - for stdin
-      --arg <ARGS>                 Append one runtime argument; repeat for multiple arguments
       --env <ENV>                  Set one KEY=VALUE environment entry; repeat as needed
       --cwd <CWD>                  Working directory; pass an empty value to clear it
   -h, --help                       Print help
