@@ -9,10 +9,10 @@ use runner_core::protocol::model::{Event, EventKind, SessionStatus};
 use runner_core::protocol::window::Subject;
 
 use super::*;
-use crate::surfaces::mission_composer::{
+use crate::surfaces::mission_workspace::composer_model::{
     key_down as composer_key_down, update_draft as update_composer_draft, ComposerState,
 };
-use crate::surfaces::mission_feed::{
+use crate::surfaces::mission_workspace::feed_model::{
     append_feed_block, group_feed_blocks, is_human_authored, project_asks,
 };
 use crate::*;

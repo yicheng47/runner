@@ -121,14 +121,6 @@ pub fn ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<St
     ids.collect()
 }
 
-pub fn count_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<i64> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM slots WHERE crew_id = ?1",
-        rusqlite::params![crew_id],
-        |row| row.get(0),
-    )
-}
-
 /// The position after a crew's last slot, 0 for an empty crew.
 pub fn next_position(conn: &Connection, crew_id: &str) -> rusqlite::Result<i64> {
     conn.query_row(

@@ -302,18 +302,6 @@ pub fn ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<St
     ids.collect()
 }
 
-pub fn unarchived_ids_for_crew(conn: &Connection, crew_id: &str) -> rusqlite::Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id
-           FROM missions
-          WHERE crew_id = ?1
-            AND archived_at IS NULL
-          ORDER BY started_at ASC",
-    )?;
-    let ids = stmt.query_map(rusqlite::params![crew_id], |row| row.get(0))?;
-    ids.collect()
-}
-
 /// Every mission that is running and not archived, oldest first.
 pub fn running_ids(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let mut stmt = conn.prepare(

@@ -29,6 +29,7 @@ use super::viewer::Viewer;
 use super::{FilesEvent, FilesHub};
 use crate::file_icons::{self, IconSet};
 use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
+use crate::text_util::{abbreviate_home, HomePath};
 use crate::theme;
 
 const ROW_HEIGHT: f32 = 26.;
@@ -1895,7 +1896,7 @@ impl FilesView {
                      name: String,
                      path: PathBuf,
                      cx: &mut Context<Self>| {
-            let subtitle = picker::display_path(&path, home.as_deref());
+            let subtitle = abbreviate_home(HomePath::Native(&path, home.as_deref()));
             div()
                 .id(id)
                 .when(cfg!(test), |element| {

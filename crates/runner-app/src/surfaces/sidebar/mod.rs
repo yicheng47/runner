@@ -9,6 +9,7 @@ mod link;
 mod link_picker;
 #[cfg(test)]
 mod link_tests;
+mod logic;
 mod menus;
 mod model;
 mod project;
@@ -34,7 +35,7 @@ use super::*;
 use crate::surfaces::front_page::model::{
     MissionDisplay as MissionSummary, SessionDisplay, SidebarNodeDisplay as NodeRow,
 };
-use crate::surfaces::sidebar_logic::{
+use crate::surfaces::sidebar::logic::{
     AttentionState, DropTarget, NumberedSidebarRow, SidebarActivationTarget, SidebarShortcutRow,
 };
 use crate::*;

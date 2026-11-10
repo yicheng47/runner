@@ -1,4 +1,5 @@
 use super::*;
+use crate::text_util::{abbreviate_home, HomePath};
 
 pub type WorkingDirField = BrowseField;
 
@@ -39,20 +40,7 @@ pub fn compact_path_candidates(path: &str, home: Option<&str>) -> Vec<String> {
     } else {
         trimmed
     };
-    let home = home
-        .map(|home| home.trim_end_matches(['/', '\\']))
-        .filter(|home| !home.is_empty());
-    let abbreviated = match home {
-        Some(home) if path == home => "~".to_owned(),
-        Some(home)
-            if path
-                .strip_prefix(home)
-                .is_some_and(|rest| rest.starts_with(separator)) =>
-        {
-            format!("~{}", &path[home.len()..])
-        }
-        _ => path.to_owned(),
-    };
+    let abbreviated = abbreviate_home(HomePath::Text(path, home, separator));
     let mut parts = abbreviated.split(separator);
     let head = parts.next().unwrap_or_default().to_owned();
     let folders = parts.filter(|part| !part.is_empty()).collect::<Vec<_>>();

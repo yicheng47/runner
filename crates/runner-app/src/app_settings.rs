@@ -175,7 +175,7 @@ pub struct TerminalFontFamily(String);
 
 impl Default for TerminalFontFamily {
     fn default() -> Self {
-        Self(crate::terminal_fonts::BUNDLED_FONT.to_owned())
+        Self(crate::terminal::fonts::BUNDLED_FONT.to_owned())
     }
 }
 
@@ -183,7 +183,7 @@ impl<'de> Deserialize<'de> for TerminalFontFamily {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let family = String::deserialize(deserializer)?;
         Ok(Self::new(match family.as_str() {
-            "JetBrains Mono" | "Meslo Nerd Font" => crate::terminal_fonts::BUNDLED_FONT,
+            "JetBrains Mono" | "Meslo Nerd Font" => crate::terminal::fonts::BUNDLED_FONT,
             "Menlo" => runner_app::theme::SYSTEM_MONOSPACE_FONT,
             _ => &family,
         }))
@@ -200,7 +200,7 @@ impl TerminalFontFamily {
     }
 
     pub fn font(&self, cx: &gpui::App) -> Font {
-        let available = crate::terminal_fonts::FontFamilyCache::loaded(cx)
+        let available = crate::terminal::fonts::FontFamilyCache::loaded(cx)
             .is_some_and(|families| families.all.contains(&self.0));
         self.resolved_font(available)
     }
@@ -209,10 +209,10 @@ impl TerminalFontFamily {
         let mut font = font(if available {
             self.0.clone()
         } else {
-            crate::terminal_fonts::BUNDLED_FONT.to_owned()
+            crate::terminal::fonts::BUNDLED_FONT.to_owned()
         });
         font.fallbacks = Some(FontFallbacks::from_fonts(
-            std::iter::once(crate::terminal_fonts::BUNDLED_FONT)
+            std::iter::once(crate::terminal::fonts::BUNDLED_FONT)
                 .chain(
                     runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
                         .iter()
@@ -945,7 +945,7 @@ mod tests {
         let missing = TerminalFontFamily::new("Gone Mono");
         assert_eq!(
             missing.resolved_font(false).family.as_ref(),
-            crate::terminal_fonts::BUNDLED_FONT
+            crate::terminal::fonts::BUNDLED_FONT
         );
         assert_eq!(missing.resolved_font(true).family.as_ref(), "Gone Mono");
         let temp = tempfile::tempdir().unwrap();
@@ -1171,7 +1171,7 @@ mod tests {
         assert!(value.get("terminalTheme").is_none());
         assert_eq!(
             value["terminalFontFamily"],
-            crate::terminal_fonts::BUNDLED_FONT
+            crate::terminal::fonts::BUNDLED_FONT
         );
         assert_eq!(value["defaultCrewId"], "");
         assert_eq!(value["defaultWorkingDir"], "");
@@ -1404,11 +1404,11 @@ mod tests {
     fn terminal_fonts_migrate_each_legacy_choice() {
         assert_eq!(
             AppSettings::default().terminal_font_family.family(),
-            crate::terminal_fonts::BUNDLED_FONT
+            crate::terminal::fonts::BUNDLED_FONT
         );
         for (saved, expected) in [
-            ("JetBrains Mono", crate::terminal_fonts::BUNDLED_FONT),
-            ("Meslo Nerd Font", crate::terminal_fonts::BUNDLED_FONT),
+            ("JetBrains Mono", crate::terminal::fonts::BUNDLED_FONT),
+            ("Meslo Nerd Font", crate::terminal::fonts::BUNDLED_FONT),
             ("Menlo", runner_app::theme::SYSTEM_MONOSPACE_FONT),
             ("System default", "System default"),
             ("Monaco", "Monaco"),
@@ -1433,7 +1433,7 @@ mod tests {
                 .resolved_font(false)
                 .family
                 .as_ref(),
-            crate::terminal_fonts::BUNDLED_FONT
+            crate::terminal::fonts::BUNDLED_FONT
         );
         settings.save(&path).unwrap();
         assert_eq!(
@@ -1450,7 +1450,7 @@ mod tests {
         let family = TerminalFontFamily::new("SF Mono");
         let font = family.resolved_font(true);
         assert_eq!(font.family.as_ref(), "SF Mono");
-        let expected = std::iter::once(crate::terminal_fonts::BUNDLED_FONT)
+        let expected = std::iter::once(crate::terminal::fonts::BUNDLED_FONT)
             .chain(
                 runner_app::platform_fonts::TERMINAL_FONT_FALLBACKS
                     .iter()

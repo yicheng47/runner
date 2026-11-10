@@ -2,7 +2,7 @@ use runner_core::protocol::model::Runtime;
 use std::path::Path;
 
 use super::*;
-use crate::surfaces::sidebar_logic::AttentionState;
+use crate::surfaces::sidebar::logic::AttentionState;
 use crate::surfaces::*;
 use crate::*;
 use gpui::{radians, svg, FontWeight, Hsla, Transformation};

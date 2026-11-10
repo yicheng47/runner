@@ -81,7 +81,7 @@ Crate boundaries are in [`AGENTS.md`](../../AGENTS.md); this is the shape *insid
 | Logging | **`tracing`** + rotating file layer + panic hook | `~/Library/Logs/com.wycstudios.runner/runner.log`; release filter `info`, debug builds `debug`, `RUST_LOG` overrides. |
 | Updater | **Sparkle 2.9.5** via `objc2` (`updater` feature) | `SPUUpdater` with Runner's own `SPUUserDriver`, EdDSA-signed appcasts on GitHub Releases, with separate production and nightly feeds for each architecture — see §14. |
 | Packaging | `script/bundle-mac` | `.app` assembly, Developer ID codesign, notarization, DMG; `CFBundleVersion` is the build stamp. |
-| Input | GPUI key dispatch + native IME (`terminal_ime.rs`) | Pinyin composition in the terminal was the hard requirement of the rewrite. |
+| Input | GPUI key dispatch + native IME (`terminal/ime.rs`) | Pinyin composition in the terminal was the hard requirement of the rewrite. |
 
 **GPUI bumps.** Pin every direct `gpui-pre-*` dependency to the same exact release and move the pins together. The release's crates.io description names its Zed commit; read that commit's source when checking API and behavior changes. Keep `gpui-pre-platform` on macOS with `font-kit`, and use `gpui-pre-windows` directly with default features disabled on Windows. Re-check the defaults and the CI step “Verify Runner manifest and icon” after each bump: enabling GPUI's `windows-manifest` would embed a second manifest beside Runner's own `longPathAware` manifest.
 

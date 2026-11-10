@@ -1,5 +1,5 @@
 use super::*;
-use crate::surfaces::sidebar_logic::AttentionState;
+use crate::surfaces::sidebar::logic::AttentionState;
 use crate::*;
 use runner_app::ui::TextField;
 use runner_core::protocol::model::Runtime;

@@ -474,38 +474,6 @@ fn island_status_indicator(
     )
 }
 
-pub fn header_status_indicator(
-    status: StatusPresentation,
-    label: bool,
-    detail: bool,
-    id: impl Into<ElementId>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let width = header_status_width(label, detail);
-    let indicator = pane_status_indicator(status, label, detail, id, window, cx);
-    div()
-        .flex_none()
-        .flex()
-        .items_center()
-        .gap(rems(10. / 16.))
-        .child(
-            div()
-                .flex_none()
-                .w(rems(1. / 16.))
-                .h(rems(14. / 16.))
-                .bg(theme::border_strong()),
-        )
-        .child(
-            div()
-                .flex_none()
-                .when(label && !detail, |slot| slot.min_w(rems(width / 16.)))
-                .when(!label || detail, |slot| slot.w(rems(width / 16.)))
-                .child(indicator),
-        )
-        .into_any_element()
-}
-
 fn header_status_width(label: bool, detail: bool) -> f32 {
     if !label {
         16.

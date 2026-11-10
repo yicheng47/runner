@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use runner_core::protocol::files::{WorktreeEntry, WorktreeKind};
 
+use crate::text_util::{abbreviate_home, HomePath};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PickerKind {
     Worktree(WorktreeKind),
@@ -27,15 +29,6 @@ pub(crate) fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string())
-}
-
-/// `path` with the home folder shown as `~`.
-pub(crate) fn display_path(path: &Path, home: Option<&Path>) -> String {
-    match home.and_then(|home| path.strip_prefix(home).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
-        None => path.display().to_string(),
-    }
 }
 
 pub(crate) struct PickerSources<'a> {
@@ -85,7 +78,7 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
             items.push(PickerItem {
                 kind: PickerKind::Project,
                 title: name.clone(),
-                subtitle: display_path(path, sources.home),
+                subtitle: abbreviate_home(HomePath::Native(path, sources.home)),
                 current: path == sources.current,
                 path: Some(path.clone()),
             });
@@ -96,7 +89,7 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
             items.push(PickerItem {
                 kind: PickerKind::Recent,
                 title: folder_name(path),
-                subtitle: display_path(path, sources.home),
+                subtitle: abbreviate_home(HomePath::Native(path, sources.home)),
                 current: path == sources.current,
                 path: Some(path.clone()),
             });

@@ -2,7 +2,7 @@ use super::elements::command_held_alone;
 use super::elements::other_modifiers_held;
 
 use super::*;
-use crate::surfaces::sidebar_logic::{
+use crate::surfaces::sidebar::logic::{
     activation_target_for_index, numbered_sidebar_rows, should_show_shortcut_pills,
     visible_sidebar_walk, SidebarActivationTarget, SidebarShortcutProject,
     SHORTCUT_PILL_REVEAL_DELAY,
@@ -16,7 +16,7 @@ impl Sidebar {
         rows: &[(NodeRow, SidebarShortcutRow)],
         groups: &super::link::LinkGroups,
         cx: &App,
-    ) -> Vec<crate::surfaces::sidebar_logic::VisibleSidebarRow> {
+    ) -> Vec<crate::surfaces::sidebar::logic::VisibleSidebarRow> {
         // Each scope in the order it draws: a linked mission right after its
         // chat's row, unless the group is collapsed (#748).
         let collapsed = &self.settings(cx).sidebar_collapsed_link_groups;
@@ -104,7 +104,7 @@ impl Sidebar {
             let groups = super::link::LinkGroups::of(&sources);
             let nodes = self.source_nodes(cx);
             let activatable = |row: &super::active::ActiveSidebarRow| {
-                crate::surfaces::sidebar_logic::VisibleSidebarRow::Activatable(
+                crate::surfaces::sidebar::logic::VisibleSidebarRow::Activatable(
                     row.shortcut_row(&nodes),
                 )
             };

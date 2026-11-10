@@ -9,7 +9,7 @@ use runner_core::protocol::model::Runtime;
 use runner_core::protocol::MissionPhase;
 
 use super::{MissionSummary, SessionDisplay, Sidebar, SidebarRow};
-use crate::surfaces::sidebar_logic::{AttentionState, DropKind};
+use crate::surfaces::sidebar::logic::{AttentionState, DropKind};
 use crate::theme;
 
 /// The label a reorder line carries when its drop would change a mission's

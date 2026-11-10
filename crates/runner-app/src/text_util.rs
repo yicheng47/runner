@@ -5,6 +5,43 @@
 
 use unicode_segmentation::UnicodeSegmentation as _;
 
+pub(crate) enum HomePath<'a> {
+    Native(&'a std::path::Path, Option<&'a std::path::Path>),
+    Text(&'a str, Option<&'a str>, char),
+}
+
+pub(crate) fn abbreviate_home(path: HomePath<'_>) -> String {
+    let (original, relative, separator) = match path {
+        HomePath::Native(path, home) => (
+            path.to_string_lossy(),
+            home.and_then(|home| path.strip_prefix(home).ok())
+                .map(std::path::Path::to_string_lossy),
+            std::path::MAIN_SEPARATOR,
+        ),
+        HomePath::Text(path, home, separator) => {
+            // Fields preserve the path as typed, including non-native separators.
+            let home = home
+                .map(|home| home.trim_end_matches(['/', '\\']))
+                .filter(|home| !home.is_empty());
+            let relative = home.and_then(|home| {
+                path.strip_prefix(home).and_then(|rest| {
+                    if rest.is_empty() {
+                        Some(rest)
+                    } else {
+                        rest.strip_prefix(separator)
+                    }
+                })
+            });
+            (path.into(), relative.map(Into::into), separator)
+        }
+    };
+    match relative {
+        Some(rest) if rest.is_empty() => "~".into(),
+        Some(rest) => format!("~{separator}{rest}"),
+        None => original.into_owned(),
+    }
+}
+
 pub fn format_relative_time(
     value: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
@@ -97,6 +134,54 @@ pub fn next_grapheme_boundary(s: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_abbreviation_preserves_native_and_typed_path_separators() {
+        use std::path::{Path, MAIN_SEPARATOR};
+
+        for (path, home, expected) in [
+            ("/home/me", Some("/home/me"), "~".to_owned()),
+            (
+                "/home/me//./notes/",
+                Some("/home/me/"),
+                format!("~{MAIN_SEPARATOR}notes"),
+            ),
+            (
+                "/home/me-other/notes",
+                Some("/home/me"),
+                "/home/me-other/notes".to_owned(),
+            ),
+            ("/home/me/notes", None, "/home/me/notes".to_owned()),
+        ] {
+            assert_eq!(
+                abbreviate_home(HomePath::Native(Path::new(path), home.map(Path::new))),
+                expected
+            );
+        }
+        for (path, home, separator, expected) in [
+            ("/home/me", Some("/home/me/"), '/', "~"),
+            ("/home/me//./notes", Some("/home/me"), '/', "~//./notes"),
+            (
+                r"C:\Users\me\notes",
+                Some(r"C:\Users\me\"),
+                '\\',
+                r"~\notes",
+            ),
+            (
+                r"C:\Users\me-other\notes",
+                Some(r"C:\Users\me"),
+                '\\',
+                r"C:\Users\me-other\notes",
+            ),
+            ("/home/me/notes", None, '/', "/home/me/notes"),
+            ("relative", Some(""), '/', "relative"),
+        ] {
+            assert_eq!(
+                abbreviate_home(HomePath::Text(path, home, separator)),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn relative_time_keeps_future_and_unit_boundaries_localized() {

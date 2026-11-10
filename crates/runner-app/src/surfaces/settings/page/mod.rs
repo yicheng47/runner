@@ -409,7 +409,7 @@ impl SettingsState {
             SettingsSelection::DarkTerminalTheme,
             cx,
         );
-        let font_cache = crate::terminal_fonts::FontFamilyCache::global(cx);
+        let font_cache = crate::terminal::fonts::FontFamilyCache::global(cx);
         let terminal_font = settings_select(
             &root,
             "settings-terminal-font",
@@ -655,7 +655,7 @@ fn settings_content_column(
 }
 
 fn terminal_font_options(family: &TerminalFontFamily, cx: &App) -> Vec<SelectOption> {
-    use crate::terminal_fonts::{FontFamilyCache, BUNDLED_FONT};
+    use crate::terminal::fonts::{FontFamilyCache, BUNDLED_FONT};
     let mut options = vec![SelectOption::new(BUNDLED_FONT, "JetBrains Mono")
         .section(crate::i18n::message("ui.bundled"))];
     if let Some(families) = FontFamilyCache::loaded(cx) {

@@ -4,12 +4,13 @@ mod launch;
 pub(crate) mod launcher;
 pub(crate) mod launcher_model;
 mod modal;
+mod project_field;
 mod render;
 mod role_setup;
 mod terminal;
 
+use self::project_field::{ProjectChoice, ProjectField};
 use super::profile_page::{column_text, section_label, text_action};
-use super::project_field::{ProjectChoice, ProjectField};
 use super::*;
 use crate::chat_icon::runtime_mark;
 use crate::surfaces::front_page::model::{RoleChoice, RuntimeChoice};

@@ -452,7 +452,8 @@ fn composer_tracks_keyboard_and_mouse_caret_moves_and_completes_without_resettin
     visual.simulate_input("please check @rev");
     let query = |visual: &VisualTestContext| {
         workspace.read_with(visual, |workspace, _| {
-            crate::surfaces::mission_composer::mention_query(&workspace.composer).map(str::to_owned)
+            crate::surfaces::mission_workspace::composer_model::mention_query(&workspace.composer)
+                .map(str::to_owned)
         })
     };
     assert_eq!(query(&visual).as_deref(), Some("rev"));
@@ -2558,7 +2559,9 @@ fn roster_changes_are_dividers_with_person_attribution() {
         ("role_removed", "left", "removed"),
     ] {
         let event = signal(kind, serde_json::json!({"handle":"worker-2"}));
-        let blocks = crate::surfaces::mission_feed::group_feed_blocks(std::slice::from_ref(&event));
+        let blocks = crate::surfaces::mission_workspace::feed_model::group_feed_blocks(
+            std::slice::from_ref(&event),
+        );
         assert!(matches!(blocks.as_slice(), [FeedBlock::Divider(_)]));
         assert!(mission_divider_label(&event)
             .starts_with(&format!("@worker-2 {verb} · {action} by you · ")));
@@ -2572,7 +2575,9 @@ fn an_interruption_is_a_feed_warning_that_names_the_member() {
         serde_json::json!({"at": "2026-11-05T07:50:17Z"}),
     );
     event.from = "coder".into();
-    let blocks = crate::surfaces::mission_feed::group_feed_blocks(std::slice::from_ref(&event));
+    let blocks = crate::surfaces::mission_workspace::feed_model::group_feed_blocks(
+        std::slice::from_ref(&event),
+    );
     assert!(matches!(blocks.as_slice(), [FeedBlock::Signal(_)]));
     assert_eq!(
         mission_signal_body(&event),
@@ -2900,7 +2905,7 @@ fn assert_feed_projection(workspace: &MissionWorkspace) {
         format!("{:?}", workspace.feed_blocks),
         format!(
             "{:?}",
-            crate::surfaces::mission_feed::group_feed_blocks(&workspace.events)
+            crate::surfaces::mission_workspace::feed_model::group_feed_blocks(&workspace.events)
         ),
     );
     assert_eq!(

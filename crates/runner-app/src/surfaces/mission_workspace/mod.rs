@@ -1,9 +1,11 @@
 mod actions;
 mod attach;
 mod composer;
+mod composer_model;
 mod drawer;
 mod events;
 mod feed;
+mod feed_model;
 mod input;
 mod rail;
 mod remote;
@@ -33,9 +35,9 @@ use runner_core::protocol::session::SessionRow;
 
 use super::front_page::client::is_concurrent_resume_error;
 use super::*;
-use crate::surfaces::mission_composer::ComposerState;
-use crate::surfaces::mission_feed::{message_text, FeedBlock};
 use crate::surfaces::mission_markdown::{FeedMarkdown, FeedSelection};
+use crate::surfaces::mission_workspace::composer_model::ComposerState;
+use crate::surfaces::mission_workspace::feed_model::{message_text, FeedBlock};
 use crate::surfaces::side_panel::PanelViewId;
 use crate::*;
 
