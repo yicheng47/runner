@@ -4,7 +4,10 @@ use std::rc::Rc;
 use super::FrontPageClient;
 use crate::*;
 use gpui::{canvas, KeyDownEvent};
-use runner_app::ui::{menu::popup_layer, ButtonVariant, TextField};
+use runner_app::ui::{
+    menu::{popup_layer, popup_layer_right_aligned},
+    ButtonVariant, TextField,
+};
 use runner_core::companion::{Catalog, FolderPage};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +69,7 @@ pub(crate) struct FolderPicker {
     pub(crate) open: bool,
     anchor: Option<Bounds<Pixels>>,
     popup_width: Option<Pixels>,
+    align_right: bool,
     focus: FocusHandle,
     browsing: bool,
     requested: Option<String>,
@@ -101,6 +105,7 @@ impl FolderPicker {
             open: false,
             anchor: None,
             popup_width: None,
+            align_right: false,
             focus: cx.focus_handle(),
             browsing: false,
             requested: None,
@@ -121,6 +126,10 @@ impl FolderPicker {
 
     pub(crate) fn set_popup_width(&mut self, width: Pixels) {
         self.popup_width = Some(width);
+    }
+
+    pub(crate) fn set_align_right(&mut self, align_right: bool) {
+        self.align_right = align_right;
     }
 
     pub(crate) fn set_anchor(&mut self, anchor: Bounds<Pixels>, cx: &mut Context<Self>) {
@@ -589,7 +598,12 @@ impl Render for FolderPicker {
             );
         }
         let root = cx.entity();
-        popup_layer(
+        let popup = if self.align_right {
+            popup_layer_right_aligned
+        } else {
+            popup_layer
+        };
+        popup(
             anchor,
             window,
             self.popup_width.unwrap_or(anchor.size.width),
@@ -606,6 +620,7 @@ mod tests {
         add_window, choose_host, enable_front_page, fixture,
     };
     use gpui::{TestAppContext, VisualTestContext};
+    use runner_core::protocol::project::ProjectScope;
 
     struct PickerHost(Entity<FolderPicker>);
     impl Render for PickerHost {
@@ -729,6 +744,59 @@ mod tests {
     }
 
     #[test]
+    fn launcher_change_menu_has_a_readable_width_and_aligns_to_the_link_right_edge() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "launcher-menu-width");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, window, cx| {
+                root.open_launcher_page(
+                    ProjectScope::Root,
+                    crate::surfaces::start_chat::launcher::Step::Start,
+                    false,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        for zoom in [1., 1.5] {
+            window
+                .update(&mut visual, |root, window, cx| {
+                    root.set_zoom(zoom, window, cx)
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let change = visual.debug_bounds("LAUNCHER_CHANGE").unwrap();
+            visual.simulate_click(change.center(), Default::default());
+            visual.run_until_parked();
+            let menu = visual.debug_bounds("HOST_FOLDER_MENU").unwrap();
+            assert_eq!(menu.size.width, px(320. * zoom));
+            assert!((menu.right() - change.right()).abs() <= px(1.));
+            visual.simulate_resize(size(px(400.), px(900.)));
+            visual.run_until_parked();
+            let menu = visual.debug_bounds("HOST_FOLDER_MENU").unwrap();
+            let edge = px(8. * zoom);
+            assert_eq!(menu.size.width, px(320. * zoom).min(px(400.) - edge * 2.));
+            assert!(
+                menu.left() >= px(0.) && menu.right() <= px(400.),
+                "zoom {zoom}: {menu:?}"
+            );
+            visual.simulate_resize(size(px(1440.), px(900.)));
+            visual.run_until_parked();
+            let change = visual.debug_bounds("LAUNCHER_CHANGE").unwrap();
+            visual.simulate_click(change.center(), Default::default());
+            visual.run_until_parked();
+            assert!(visual.debug_bounds("HOST_FOLDER_MENU").is_none());
+        }
+    }
+
+    #[test]
     fn new_project_menu_has_a_readable_width_independent_of_the_plus_anchor() {
         let _theme = crate::theme_snapshot::ThemeGuard::new();
         for zoom in [1., 1.5] {
@@ -748,6 +816,7 @@ mod tests {
             let menu = visual.debug_bounds("HOST_FOLDER_MENU").unwrap();
             assert!(plus.size.width <= px(32. * zoom));
             assert_eq!(menu.size.width, px(320. * zoom));
+            assert_eq!(menu.left(), plus.left());
             assert!(visual.debug_bounds("HOST_FOLDER_EMPTY").is_some());
             window
                 .read_with(&visual, |root, cx| {
