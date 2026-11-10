@@ -510,15 +510,19 @@ impl ChatLauncher {
                         if let Some(computer) = computer {
                             let input = this.cwd.clone();
                             let client = this.client.clone();
+                            let popup_width = px(320. * this.store.read(cx).settings.app_zoom);
                             let picker = cx.new(|cx| {
-                                FolderPicker::new(
+                                let mut picker = FolderPicker::new(
                                     client,
                                     computer.name,
                                     computer.info.platform,
                                     input,
                                     crate::surfaces::front_page::folder_picker::choices(&catalog),
                                     cx,
-                                )
+                                );
+                                picker.set_popup_width(popup_width);
+                                picker.set_align_right(true);
+                                picker
                             });
                             this.subscriptions
                                 .push(cx.observe(&picker, |_, _, cx| cx.notify()));
@@ -789,7 +793,11 @@ impl ChatLauncher {
             return;
         }
         if let Some(picker) = &self.folder_picker {
-            picker.update(cx, |picker, cx| picker.toggle(window, cx));
+            let popup_width = px(320. * self.store.read(cx).settings.app_zoom);
+            picker.update(cx, |picker, cx| {
+                picker.set_popup_width(popup_width);
+                picker.toggle(window, cx);
+            });
             return;
         }
         if self.client.is_remote() {
@@ -1083,6 +1091,7 @@ impl Render for ChatLauncher {
         let location = (!split).then(|| {
             let change = div()
                 .id("launcher-change")
+                .debug_selector(|| "LAUNCHER_CHANGE".into())
                 .relative()
                 .cursor_pointer()
                 .text_size(rems(12. / 16.))
