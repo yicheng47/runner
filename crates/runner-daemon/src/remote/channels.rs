@@ -85,6 +85,7 @@ pub(super) struct Channels {
     rx: mpsc::Receiver<Event>,
     pub writes: Arc<TrustWrites>,
     companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
+    pub(super) features: Vec<&'static str>,
 }
 
 pub(super) struct TrustWrites {
@@ -286,6 +287,7 @@ impl Channels {
             rx,
             writes,
             companion,
+            features: crate::companion::FEATURES.to_vec(),
         }
     }
     pub fn open(&mut self, id: u32, machine: &Machine) -> Result<(), Reject> {
@@ -309,10 +311,7 @@ impl Channels {
                 .unwrap_or_else(|| machine.host.hostname.clone()),
             runner_version: machine.host.runner_version.clone(),
             platform: machine.host.platform.clone(),
-            features: crate::companion::FEATURES
-                .iter()
-                .map(|name| (*name).into())
-                .collect(),
+            features: self.features.iter().map(|name| (*name).into()).collect(),
         };
         let companion = self.companion.clone();
         let task = tokio::spawn(async move {

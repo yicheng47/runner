@@ -43,6 +43,7 @@ pub const FEATURES: &[&str] = &[
     "removeSlot",
     "reorderSlots",
     "catalog",
+    "usage",
     "folders",
     "startChat",
     "startShell",
@@ -68,6 +69,7 @@ pub const FEATURES: &[&str] = &[
     "takeControl",
     "viewport",
     "detach",
+    "ping",
 ];
 
 pub fn classify_input(bytes: &[u8]) -> InputEvent {
@@ -393,6 +395,11 @@ enum FeedJob {
         reserved: usize,
     },
 }
+struct FeedRead {
+    mission: String,
+    discard: bool,
+    work: tokio::task::JoinHandle<core::Result<feed::Updates>>,
+}
 struct FeedWork {
     ids: Vec<u64>,
     follow: Option<String>,
@@ -408,11 +415,14 @@ pub struct Adapter {
     events: broadcast::Receiver<AppEvent>,
     ready: Arc<Notify>,
     streams: VecDeque<Stream>,
+    pong: Option<u64>,
     priority: VecDeque<PendingMessage>,
     queued: usize,
     in_flight: usize,
     statuses: BTreeMap<String, SessionStatus>,
     feeds: BTreeMap<String, FeedSubscription>,
+    feed_read: Option<FeedRead>,
+    feed_ready: Option<(String, Vec<u8>)>,
     last_feed: Option<String>,
     feed_turn: bool,
     output_due: Option<Instant>,
@@ -453,11 +463,14 @@ impl Adapter {
             events,
             ready: Arc::new(Notify::new()),
             streams: VecDeque::new(),
+            pong: None,
             priority: VecDeque::new(),
             queued: 0,
             in_flight: 0,
             statuses: BTreeMap::new(),
             feeds: BTreeMap::new(),
+            feed_read: None,
+            feed_ready: None,
             last_feed: None,
             feed_turn: true,
             output_due: None,
@@ -624,7 +637,7 @@ impl Adapter {
         let pending = self.request_work.as_ref().is_some_and(|work| work.follow.as_ref() == Some(&request.mission))
             || self.requests.iter().any(|job| matches!(job, FeedJob::Request(ClientMessage::Follow(follow)) if follow.mission == request.mission));
         if !pending {
-            self.feeds.remove(&request.mission);
+            self.drop_feed(&request.mission);
             return self.reply(request.id, Ok(serde_json::Value::Null));
         }
         let reserved = serde_json::to_vec(&HostMessage::Result(ResultMessage {
@@ -718,6 +731,12 @@ impl Adapter {
                 return Ok(());
             }
             ClientMessage::Unfollow(request) => return self.unfollow(request),
+            // Only the newest ping is kept and it counts against no queue, so a ping can neither
+            // wait behind host work nor fail the channel.
+            ClientMessage::Ping(request) => {
+                self.pong = Some(request.id);
+                return Ok(());
+            }
             ClientMessage::Overview(request) => {
                 if self.overview_waiters.len()
                     + self.overview_next.len()
@@ -761,6 +780,7 @@ impl Adapter {
         let result: core::Result<serde_json::Value> = match message {
             ClientMessage::TakeControl(_)
             | ClientMessage::Viewport(_)
+            | ClientMessage::Ping(_)
             | ClientMessage::Action(_)
             | ClientMessage::Feed(_)
             | ClientMessage::Follow(_)
@@ -909,6 +929,11 @@ impl Adapter {
         })
     }
     pub async fn next(&mut self, terminal_credit: bool) -> Result<Option<Vec<u8>>, &'static str> {
+        if let Some(id) = self.pong.take() {
+            return serde_json::to_vec(&HostMessage::Pong(Pong { id }))
+                .map(Some)
+                .map_err(|_| "companion encoding failed");
+        }
         if let Some(message) = self.priority.pop_front() {
             self.queued -= message.bytes.len();
             return Ok(Some(message.bytes));
@@ -925,7 +950,7 @@ impl Adapter {
             return Ok(None);
         }
         if self.feed_turn {
-            if let Some(bytes) = self.next_feed().await? {
+            if let Some(bytes) = self.next_feed() {
                 self.feed_turn = false;
                 return Ok(Some(bytes));
             }
@@ -998,7 +1023,7 @@ impl Adapter {
         }
         self.output_due = self.streams.iter().filter_map(Stream::output_due).min();
         self.feed_turn = true;
-        self.next_feed().await
+        Ok(self.next_feed())
     }
     fn feed_changes(&mut self) {
         if self.feeds.is_empty() {
@@ -1009,53 +1034,82 @@ impl Adapter {
         }
         self.ready.notify_one();
     }
-    async fn next_feed(&mut self) -> Result<Option<Vec<u8>>, &'static str> {
-        if self.queued + self.in_flight + self.cleanup_bytes + feed::MAX_BATCH_BYTES
-            > MAX_MESSAGE_SIZE
+    fn drop_feed(&mut self, mission: &str) {
+        self.feeds.remove(mission);
+        // The read still counts as the one running, but a later follow of this mission is a new
+        // subscription that its result must not touch.
+        if let Some(read) = self
+            .feed_read
+            .as_mut()
+            .filter(|read| read.mission == mission)
         {
-            return Ok(None);
+            read.discard = true;
         }
-        let next = self
+        if self
+            .feed_ready
+            .as_ref()
+            .is_some_and(|(ready, _)| ready == mission)
+        {
+            self.feed_ready = None;
+        }
+    }
+    /// Reads run beside the channel loop, so a slow mission log holds up none of its other
+    /// messages. One read runs at a time and a finished batch waits here until sent, so at most
+    /// one extra batch is held.
+    fn next_feed(&mut self) -> Option<Vec<u8>> {
+        if let Some((_, bytes)) = self.feed_ready.take() {
+            return Some(bytes);
+        }
+        if self.feed_read.is_some()
+            || self.queued + self.in_flight + self.cleanup_bytes + feed::MAX_BATCH_BYTES
+                > MAX_MESSAGE_SIZE
+        {
+            return None;
+        }
+        let (mission, cursor) = self
             .feeds
             .iter()
             .find(|(id, feed)| feed.dirty && self.last_feed.as_ref().is_none_or(|last| *id > last))
             .or_else(|| self.feeds.iter().find(|(_, feed)| feed.dirty))
-            .map(|(id, feed)| (id.clone(), feed.cursor));
-        let Some((mission, cursor)) = next else {
-            return Ok(None);
-        };
+            .map(|(id, feed)| (id.clone(), feed.cursor))?;
+        // An append while this read runs marks the feed dirty again and earns another read.
+        self.feeds.get_mut(&mission).unwrap().dirty = false;
         self.last_feed = Some(mission.clone());
+        let core = self.core.clone();
         let id = mission.clone();
-        let message =
-            match blocking(self.core.clone(), move |core| core.feed_since(&id, cursor)).await {
-                Ok(updates) => {
-                    self.feeds.insert(
-                        mission.clone(),
-                        FeedSubscription {
-                            cursor: updates.cursor,
-                            dirty: updates.more,
-                        },
-                    );
-                    if updates.entries.is_empty() {
-                        Ok(None)
-                    } else {
-                        serde_json::to_vec(&HostMessage::FeedAppended(FeedAppended {
-                            mission,
-                            entries: updates.entries,
-                        }))
-                        .map(Some)
-                        .map_err(|_| "companion encoding failed")
-                    }
-                }
-                Err(_) => {
-                    self.feeds.remove(&mission);
-                    Ok(None)
-                }
-            };
-        if self.feeds.values().any(|feed| feed.dirty) {
-            self.ready.notify_one();
+        self.feed_read = Some(FeedRead {
+            mission,
+            discard: false,
+            work: tokio::task::spawn_blocking(move || core.feed_since(&id, cursor)),
+        });
+        None
+    }
+    fn finish_feed_read(
+        &mut self,
+        read: FeedRead,
+        result: core::Result<feed::Updates>,
+    ) -> Result<(), &'static str> {
+        if read.discard {
+            return Ok(());
         }
-        message
+        let Some(subscription) = self.feeds.get_mut(&read.mission) else {
+            return Ok(());
+        };
+        let Ok(updates) = result else {
+            self.feeds.remove(&read.mission);
+            return Ok(());
+        };
+        subscription.cursor = updates.cursor;
+        subscription.dirty |= updates.more;
+        if !updates.entries.is_empty() {
+            let bytes = serde_json::to_vec(&HostMessage::FeedAppended(FeedAppended {
+                mission: read.mission.clone(),
+                entries: updates.entries,
+            }))
+            .map_err(|_| "companion encoding failed")?;
+            self.feed_ready = Some((read.mission, bytes));
+        }
+        Ok(())
     }
     pub async fn changed(&mut self) -> Result<(), &'static str> {
         let due = self.overview_due;
@@ -1131,13 +1185,17 @@ impl Adapter {
                             self.ready.notify_one();
                             serde_json::Value::Null
                         }
-                        RequestReply::Unfollow(mission) => { self.feeds.remove(&mission); serde_json::Value::Null }
+                        RequestReply::Unfollow(mission) => { self.drop_feed(&mission); serde_json::Value::Null }
                     });
                 for id in work.ids {
                     let result = match &result { Ok(value) => Ok(value.clone()), Err(Failure(code, message)) => Err(Failure(code.clone(), message)) };
                     self.reply(id, result)?;
                 }
                 self.start_request();
+            }
+            result = async { match &mut self.feed_read { Some(read) => (&mut read.work).await, None => std::future::pending().await } } => {
+                let read = self.feed_read.take().unwrap();
+                self.finish_feed_read(read, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed."))))?;
             }
             result = async { match &mut self.action_work { Some((id, work)) => (*id, work.await), None => std::future::pending().await } } => {
                 self.action_work = None;

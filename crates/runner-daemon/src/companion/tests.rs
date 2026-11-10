@@ -18,6 +18,9 @@ pub struct Fake {
     feed_calls: AtomicU64,
     feed_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     feed_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    feed_since_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    feed_since_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    fail_feed_since: AtomicBool,
     requests_enabled: AtomicBool,
     request_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     request_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -52,6 +55,9 @@ impl Default for Fake {
             feed_calls: AtomicU64::new(0),
             feed_gate: Default::default(),
             feed_started: Default::default(),
+            feed_since_gate: Default::default(),
+            feed_since_started: Default::default(),
+            fail_feed_since: Default::default(),
             requests_enabled: AtomicBool::new(false),
             request_gate: Default::default(),
             request_started: Default::default(),
@@ -121,6 +127,16 @@ impl Core for Fake {
             ));
         }
         let entries = std::mem::take(&mut *self.appended.lock().unwrap());
+        let gate = self.feed_since_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            if let Some(started) = self.feed_since_started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            gate.recv().unwrap();
+        }
+        if self.fail_feed_since.load(Ordering::Relaxed) {
+            return Err(Failure(ErrorCode::Failed, "test feed failure"));
+        }
         Ok(feed::Updates {
             cursor: cursor + entries.len() as u64,
             entries,
@@ -257,6 +273,8 @@ async fn next(adapter: &mut Adapter) -> serde_json::Value {
             adapter.overview_work.is_some()
                 || adapter.request_work.is_some()
                 || adapter.status_work.is_some()
+                || adapter.feed_read.is_some()
+                || adapter.feed_ready.is_some()
                 || adapter.output_due.is_some()
                 || adapter.overview_due.is_some()
                 || adapter.action_work.is_some()
@@ -1458,7 +1476,7 @@ async fn a_held_stream_does_not_hold_back_other_streams_or_feeds() {
             dirty: true,
         },
     );
-    let feed = sent(&mut adapter).await.expect("a feed does not wait");
+    let feed = delivered(&mut adapter).await;
     assert_eq!(feed["type"], "feedAppended");
     assert!(sent(&mut adapter).await.is_none());
     let held = delivered(&mut adapter).await;
@@ -1913,12 +1931,302 @@ async fn snapshot_continuation_survives_chunking_attach_and_resync() {
     }
 }
 
+#[tokio::test]
+async fn a_ping_is_answered_with_its_id_while_overview_and_feed_work_runs() {
+    let fake = Arc::new(Fake::default());
+    fake.feed_enabled.store(true, Ordering::Relaxed);
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let (release_overview, gate) = std::sync::mpsc::channel();
+    let (started, overview_ready) = tokio::sync::oneshot::channel();
+    *fake.overview_gate.lock().unwrap() = Some(gate);
+    *fake.overview_started.lock().unwrap() = Some(started);
+    adapter
+        .request(request(serde_json::json!({"type":"overview","id":1})))
+        .await
+        .unwrap();
+    overview_ready.await.unwrap();
+    let (release_feed, gate) = std::sync::mpsc::channel();
+    let (started, feed_ready) = tokio::sync::oneshot::channel();
+    *fake.feed_gate.lock().unwrap() = Some(gate);
+    *fake.feed_started.lock().unwrap() = Some(started);
+    adapter
+        .request(request(
+            serde_json::json!({"type":"feed","id":2,"mission":"m","before":null,"limit":10}),
+        ))
+        .await
+        .unwrap();
+    feed_ready.await.unwrap();
+
+    adapter
+        .request(request(serde_json::json!({"type":"ping","id":7})))
+        .await
+        .unwrap();
+    assert_eq!(
+        next(&mut adapter).await,
+        serde_json::json!({"type":"pong","id":7})
+    );
+
+    release_overview.send(()).unwrap();
+    release_feed.send(()).unwrap();
+    let mut replies = BTreeMap::new();
+    while replies.len() < 2 {
+        let message = next(&mut adapter).await;
+        replies.insert(message["id"].as_u64().unwrap(), message["type"].clone());
+    }
+    assert_eq!(replies[&1], "result");
+    assert_eq!(replies[&2], "result");
+}
+
+fn feed_entry(id: &str) -> FeedEntry {
+    FeedEntry {
+        id: id.into(),
+        ts: "2026-11-09T00:00:00Z".into(),
+        from: "human".into(),
+        to: vec![],
+        content: FeedContent::Message { text: id.into() },
+    }
+}
+/// A followed mission whose first feed read has started and is held by the returned gate.
+async fn held_feed_read(fake: &Arc<Fake>, adapter: &mut Adapter) -> std::sync::mpsc::Sender<()> {
+    fake.requests_enabled.store(true, Ordering::Relaxed);
+    let (release, gate) = std::sync::mpsc::channel();
+    let (started, read_started) = tokio::sync::oneshot::channel();
+    *fake.feed_since_gate.lock().unwrap() = Some(gate);
+    *fake.feed_since_started.lock().unwrap() = Some(started);
+    fake.appended.lock().unwrap().push(feed_entry("first"));
+    adapter
+        .request(request(
+            serde_json::json!({"type":"follow","id":1,"mission":"m"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(delivered(adapter).await["id"], 1);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while adapter.feed_read.is_none() {
+            if adapter.next(true).await.unwrap().is_none() && adapter.feed_read.is_none() {
+                adapter.changed().await.unwrap();
+            }
+        }
+    })
+    .await
+    .expect("the followed mission's first read must start");
+    read_started.await.unwrap();
+    release
+}
+
+#[tokio::test]
+async fn a_ping_is_answered_while_a_followed_feed_read_is_held() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let release = held_feed_read(&fake, &mut adapter).await;
+
+    adapter
+        .request(request(serde_json::json!({"type":"ping","id":7})))
+        .await
+        .unwrap();
+    assert_eq!(
+        delivered(&mut adapter).await,
+        serde_json::json!({"type":"pong","id":7})
+    );
+    assert!(adapter.feed_read.is_some(), "the read is still held");
+
+    release.send(()).unwrap();
+    let batch = delivered(&mut adapter).await;
+    assert_eq!(batch["type"], "feedAppended");
+    assert_eq!(batch["entries"][0]["id"], "first");
+}
+
+#[tokio::test]
+async fn an_append_during_a_feed_read_is_read_after_it() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let release = held_feed_read(&fake, &mut adapter).await;
+
+    fake.appended.lock().unwrap().push(feed_entry("second"));
+    fake.events
+        .emit("event/appended", &serde_json::json!({"mission_id":"m"}));
+    drain(&mut adapter).await;
+
+    release.send(()).unwrap();
+    for (expected, cursor) in [("first", 18), ("second", 19)] {
+        let batch = loop {
+            let message = delivered(&mut adapter).await;
+            if message["type"] == "feedAppended" {
+                break message;
+            }
+        };
+        assert_eq!(batch["entries"][0]["id"], expected);
+        assert_eq!(adapter.feeds["m"].cursor, cursor);
+    }
+}
+
+#[tokio::test]
+async fn unfollowing_during_a_feed_read_delivers_no_later_batch() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let release = held_feed_read(&fake, &mut adapter).await;
+
+    adapter
+        .request(request(
+            serde_json::json!({"type":"unfollow","id":2,"mission":"m"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(delivered(&mut adapter).await["id"], 2);
+
+    release.send(()).unwrap();
+    while adapter.feed_read.is_some() {
+        adapter.changed().await.unwrap();
+    }
+    assert!(adapter.feed_ready.is_none());
+    assert!(adapter.feeds.is_empty());
+    assert!(adapter.next(true).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_finished_batch_is_dropped_if_its_mission_is_unfollowed_before_sending() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let release = held_feed_read(&fake, &mut adapter).await;
+    release.send(()).unwrap();
+    while adapter.feed_read.is_some() {
+        adapter.changed().await.unwrap();
+    }
+    assert!(adapter.feed_ready.is_some());
+
+    adapter
+        .request(request(
+            serde_json::json!({"type":"unfollow","id":2,"mission":"m"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(delivered(&mut adapter).await["id"], 2);
+    assert!(adapter.feed_ready.is_none());
+    assert!(adapter.next(true).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_read_from_before_a_refollow_does_not_reach_the_new_subscription() {
+    for cursor in [17, 40] {
+        let fake = Arc::new(Fake::default());
+        let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+        let release = held_feed_read(&fake, &mut adapter).await;
+
+        adapter
+            .request(request(
+                serde_json::json!({"type":"unfollow","id":2,"mission":"m"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delivered(&mut adapter).await["id"], 2);
+        adapter.feeds.insert(
+            "m".into(),
+            FeedSubscription {
+                cursor,
+                dirty: true,
+            },
+        );
+
+        release.send(()).unwrap();
+        while adapter.feed_read.is_some() {
+            adapter.changed().await.unwrap();
+        }
+        assert!(adapter.feed_ready.is_none(), "cursor {cursor}");
+        assert_eq!(adapter.feeds["m"].cursor, cursor);
+        assert!(adapter.feeds["m"].dirty);
+    }
+}
+
+#[tokio::test]
+async fn a_failed_read_from_before_a_same_cursor_refollow_leaves_the_new_subscription_working() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    let release = held_feed_read(&fake, &mut adapter).await;
+    let cursor = adapter.feeds["m"].cursor;
+    fake.fail_feed_since.store(true, Ordering::Relaxed);
+
+    for (id, kind) in [(2, "unfollow"), (3, "follow")] {
+        adapter
+            .request(request(
+                serde_json::json!({"type":kind,"id":id,"mission":"m"}),
+            ))
+            .await
+            .unwrap();
+        let reply = delivered(&mut adapter).await;
+        assert_eq!(
+            (reply["id"].as_u64(), &reply["type"]),
+            (Some(id), &"result".into())
+        );
+    }
+    assert_eq!(adapter.feeds["m"].cursor, cursor);
+    assert!(adapter.feed_read.is_some(), "the old read is still running");
+
+    release.send(()).unwrap();
+    while adapter.feed_read.is_some() {
+        adapter.changed().await.unwrap();
+    }
+    assert!(
+        adapter.feeds.contains_key("m"),
+        "the new subscription stays"
+    );
+
+    fake.fail_feed_since.store(false, Ordering::Relaxed);
+    fake.appended.lock().unwrap().push(feed_entry("after"));
+    fake.events
+        .emit("event/appended", &serde_json::json!({"mission_id":"m"}));
+    let batch = loop {
+        let message = delivered(&mut adapter).await;
+        if message["type"] == "feedAppended" {
+            break message;
+        }
+    };
+    assert_eq!(batch["entries"][0]["id"], "after");
+    assert_eq!(batch["mission"], "m");
+}
+
+#[tokio::test]
+async fn a_feed_read_waits_for_room_in_the_reply_queue() {
+    let fake = Arc::new(Fake::default());
+    fake.feed_enabled.store(true, Ordering::Relaxed);
+    fake.appended.lock().unwrap().push(feed_entry("first"));
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    adapter.feeds.insert(
+        "m".into(),
+        FeedSubscription {
+            cursor: 0,
+            dirty: true,
+        },
+    );
+    adapter.in_flight(MAX_MESSAGE_SIZE - 10);
+    assert!(adapter.next(true).await.unwrap().is_none());
+    assert!(adapter.feed_read.is_none());
+    adapter.in_flight(0);
+    assert_eq!(delivered(&mut adapter).await["type"], "feedAppended");
+}
+
+#[tokio::test]
+async fn a_ping_never_fails_the_channel_however_full_its_reply_queue_is() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake, 1, String::new()).unwrap();
+    adapter.in_flight(MAX_MESSAGE_SIZE);
+    for id in [9, 10] {
+        adapter
+            .request(request(serde_json::json!({"type":"ping","id":id})))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        next(&mut adapter).await,
+        serde_json::json!({"type":"pong","id":10})
+    );
+}
+
 #[test]
 fn every_action_and_served_feed_request_is_advertised() {
     for name in ActionRequest::NAMES
         .iter()
         .copied()
-        .chain(["feed", "follow", "unfollow", "answer", "post"])
+        .chain(["feed", "follow", "unfollow", "answer", "post", "ping"])
     {
         assert!(FEATURES.contains(&name), "{name}");
     }

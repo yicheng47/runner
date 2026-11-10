@@ -10,6 +10,7 @@ mod start_chat;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transport;
+mod usage;
 mod workspace;
 
 use crate::*;
@@ -19,6 +20,7 @@ use runner_app::ui::ButtonVariant;
 use runner_core::remote::{Computer, DeviceKind, PairedDevice, RemoteStatus, RemoteTrust};
 
 pub(crate) use pairing::PairDialog;
+pub(crate) use usage::usage_snapshot;
 pub(crate) use workspace::{sidebar_nodes, Item as RemoteItem, RemoteWindow};
 
 pub(crate) struct RemoteClient {
@@ -26,6 +28,7 @@ pub(crate) struct RemoteClient {
     workspace: Option<RemoteWindow>,
     app_store: Entity<AppStore>,
     root_focus: FocusHandle,
+    usage_popover: Option<usage::UsageWatch>,
     _subscription: Subscription,
 }
 
@@ -40,6 +43,7 @@ impl RemoteClient {
         Self {
             ui: ClientUi::new(cx),
             workspace: None,
+            usage_popover: None,
             app_store,
             root_focus,
             _subscription: subscription,
@@ -62,6 +66,7 @@ impl RemoteClient {
     }
     pub(crate) fn disconnect(&mut self) {
         self.workspace = None;
+        self.usage_popover = None;
     }
     pub(crate) fn client(&self, cx: &App) -> crate::surfaces::front_page::FrontPageClient {
         self.workspace

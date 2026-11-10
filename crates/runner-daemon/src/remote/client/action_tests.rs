@@ -111,6 +111,7 @@ impl Host {
     async fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut core = crate::test_support::test_core_in(root.path().into());
+        core.usage = Arc::new(crate::usage::UsageService::without_fetch());
         let runtime = Arc::new(Runtime::default());
         core.sessions = crate::session::SessionManager::new(
             core.runtime_shell_env.clone(),
@@ -1081,11 +1082,15 @@ async fn large_feed_pages_and_incremental_pushes_keep_the_shared_terminal_route_
     assert!(adapter.next(true).await.unwrap().is_none());
     adapter.in_flight(0);
     let mut probed = vec![];
-    while let Some(bytes) = adapter.next(true).await.unwrap() {
-        assert!(bytes.len() <= crate::companion::feed::MAX_BATCH_BYTES);
-        let c::HostMessage::FeedAppended(feed) = serde_json::from_slice(&bytes).unwrap() else {
-            panic!("feed batch expected")
+    while probed.len() < ids.len() {
+        let Some(bytes) = adapter.next(true).await.unwrap() else {
+            adapter.changed().await.unwrap();
+            continue;
         };
+        let c::HostMessage::FeedAppended(feed) = serde_json::from_slice(&bytes).unwrap() else {
+            continue;
+        };
+        assert!(bytes.len() <= crate::companion::feed::MAX_BATCH_BYTES);
         probed.extend(feed.entries.into_iter().map(|entry| entry.id));
     }
     assert_eq!(probed, ids);
@@ -1588,4 +1593,21 @@ async fn role_permission_modes_match_the_desktop_inference_and_preserve_sent_arg
     let read = host.ok(json!({"type":"role","role":id})).await;
     assert_eq!(read["permissionMode"], "default");
     assert_eq!(read["args"], json!([]));
+}
+
+#[tokio::test]
+async fn usage_is_forwarded_with_the_negotiated_features() {
+    let host = Host::new().await;
+    let result = host
+        .fixture
+        .client
+        .request(
+            "2".into(),
+            serde_json::from_value(json!({"type":"usage","id":1,"popover":true})).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(result.features.iter().any(|feature| feature == "usage"));
+    let usage: c::Usage = serde_json::from_value(result.result).unwrap();
+    assert!(usage.agents.is_empty());
 }

@@ -21,6 +21,7 @@ pub enum ClientMessage {
     TakeControl(ViewportRequest),
     Viewport(ViewportRequest),
     Detach(SessionRequest),
+    Ping(PingRequest),
     #[serde(untagged)]
     Unknown(UnknownRequest),
     #[serde(untagged)]
@@ -47,6 +48,7 @@ impl ClientMessage {
             Self::Input(r) => r.id,
             Self::TakeControl(r) | Self::Viewport(r) => r.id,
             Self::Detach(r) => r.id,
+            Self::Ping(r) => r.id,
             Self::Unknown(r) => r.id,
             Self::Action(r) => r.id(),
         })
@@ -63,6 +65,7 @@ impl ClientMessage {
             Self::Input(r) => r.id = value,
             Self::TakeControl(r) | Self::Viewport(r) => r.id = value,
             Self::Detach(r) => r.id = value,
+            Self::Ping(r) => r.id = value,
             Self::Unknown(r) => r.id = value,
             Self::Action(r) => r.set_id(value),
         }
@@ -145,6 +148,7 @@ impl ClientMessage {
             "viewport" => decode!(Viewport, session: String => "a string",
                 cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer"),
             "detach" => decode!(Detach, session: String => "a string"),
+            "ping" => decode!(Ping),
             name if super::ActionRequest::NAMES.contains(&name) => {
                 serde_json::from_value(value.clone())
                     .map(Self::Action)
@@ -203,6 +207,7 @@ pub enum HostMessage {
     Resized(Resized),
     Closed(Closed),
     Clipboard(ClipboardPush),
+    Pong(Pong),
     #[serde(untagged)]
     Unknown(UnknownPush),
 }
@@ -243,6 +248,7 @@ impl<'de> Deserialize<'de> for HostMessage {
             "resized" => decode!(Resized),
             "closed" => decode!(Closed),
             "clipboard" => decode!(Clipboard),
+            "pong" => decode!(Pong),
             _ => serde_json::from_value(value)
                 .map(Self::Unknown)
                 .map_err(D::Error::custom),
@@ -360,6 +366,18 @@ impl ViewportRequest {
 pub struct SessionRequest {
     pub id: u64,
     pub session: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PingRequest {
+    pub id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pong {
+    pub id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

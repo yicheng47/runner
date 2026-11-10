@@ -8,6 +8,8 @@
     "answer",
     "post",
     "takeControl",
-    "viewport"
+    "viewport",
+    "ping",
+    "usage"
   ]
 }

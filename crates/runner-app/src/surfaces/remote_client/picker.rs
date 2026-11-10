@@ -59,7 +59,12 @@ impl RemoteClient {
                     && current.is_none_or(|remote| remote.computer.id != computer.id)
                     && clients.read(cx).needs_attention(&computer.id)
             });
-        let tone = current.map(|remote| host_tone(remote.connection));
+        let tone = current.map(|remote| {
+            host_tone(
+                remote.connection,
+                clients.read(cx).slow(&remote.computer.id),
+            )
+        });
         let open = self.ui.picker_open;
         let owner = cx.weak_entity();
         let button = div()
@@ -205,10 +210,19 @@ impl RemoteClient {
                     .as_ref()
                     .is_some_and(|remote| remote.computer.id == computer.id)
             };
-            let (detail, detail_color) = match self.workspace.as_ref() {
-                Some(remote) if current => connection_subtitle(remote.connection, &computer.name),
-                _ => (computer_detail(computer), theme::faint()),
-            };
+            let status = self.workspace.as_ref().filter(|_| current).map(|remote| {
+                connection_status(
+                    remote.connection,
+                    clients.read(cx).latency(&computer.id),
+                    clients.read(cx).lacks_ping(&computer.id),
+                    clients.read(cx).slow(&computer.id),
+                    &computer.name,
+                )
+            });
+            let (detail, detail_color) = status.as_ref().map_or_else(
+                || (computer_detail(computer), theme::faint()),
+                |status| (status.text.clone(), status.text_color),
+            );
             let attention = !current && clients.read(cx).needs_attention(&computer.id);
             let devices = model::incoming_devices(computer, &computers, &trust);
             let menu = self.computer_menu(Some(computer), &devices, cx);
@@ -310,10 +324,23 @@ impl RemoteClient {
                                         detail
                                             .debug_selector(|| "COMPUTER_PICKER_CONNECTION".into())
                                     })
-                                    .text_size(theme::text_meta())
+                                    .flex()
+                                    .items_center()
+                                    .gap(rems(5. / 16.))
+                                    .text_size(rems(11. / 16.))
                                     .text_color(detail_color)
-                                    .truncate()
-                                    .child(detail),
+                                    .children(status.as_ref().and_then(connection_mark))
+                                    .child(
+                                        div()
+                                            .when(current && !computer.is_self, |text| {
+                                                text.debug_selector(|| {
+                                                    "COMPUTER_PICKER_STATUS_TEXT".into()
+                                                })
+                                            })
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(detail),
+                                    ),
                             ),
                     )
                     .children(attention.then(|| attention_dot("COMPUTER_ROW_ATTENTION")))
@@ -492,26 +519,124 @@ impl RemoteClient {
     }
 }
 
-pub(super) fn host_tone(connection: Connection) -> Hsla {
+pub(super) fn host_tone(connection: Connection, slow: bool) -> Hsla {
     match connection {
+        Connection::Connected if slow => theme::warning(),
         Connection::Connected | Connection::Opening => theme::accent(),
-        Connection::Reconnecting | Connection::Unreachable => theme::warning(),
-        Connection::Revoked => theme::danger(),
+        Connection::Reconnecting => theme::warning(),
+        Connection::Unreachable | Connection::Revoked => theme::danger(),
         Connection::Forgotten => theme::muted(),
     }
 }
 
-pub(super) fn connection_subtitle(connection: Connection, computer: &str) -> (String, Hsla) {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum LinkMark {
+    Bars(u8),
+    Icon(&'static str),
+    None,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct LinkStatus {
+    pub(super) mark: LinkMark,
+    pub(super) text: String,
+    pub(super) mark_color: Hsla,
+    pub(super) text_color: Hsla,
+}
+
+pub(super) fn connection_status(
+    connection: Connection,
+    latency: Option<u64>,
+    lacks_ping: bool,
+    slow: bool,
+    computer: &str,
+) -> LinkStatus {
+    let (text, text_color) = connection_subtitle(connection, latency, slow, computer);
+    let mark = match (connection, latency) {
+        (Connection::Connected, Some(ms)) => LinkMark::Bars(match ms {
+            0..=99 => 4,
+            100..=199 => 3,
+            200..=499 => 2,
+            _ => 1,
+        }),
+        (Connection::Connected, None) if lacks_ping => LinkMark::None,
+        (Connection::Connected | Connection::Opening, _) => LinkMark::Icon("loader-circle.svg"),
+        (Connection::Reconnecting, _) => LinkMark::Icon("refresh-cw.svg"),
+        (Connection::Unreachable, _) => LinkMark::Icon("unplug.svg"),
+        _ => LinkMark::None,
+    };
+    let mark_color = match connection {
+        Connection::Connected if latency.is_some() => host_tone(connection, slow),
+        Connection::Connected | Connection::Opening => theme::muted(),
+        _ => text_color,
+    };
+    LinkStatus {
+        mark,
+        text,
+        mark_color,
+        text_color,
+    }
+}
+
+fn connection_mark(status: &LinkStatus) -> Option<AnyElement> {
+    match status.mark {
+        LinkMark::Bars(lit) => Some(
+            div()
+                .debug_selector(|| "COMPUTER_PICKER_LATENCY_BARS".into())
+                .flex_none()
+                .flex()
+                .items_end()
+                .w(rems(18. / 16.))
+                .h(rems(9. / 16.))
+                .gap(rems(2. / 16.))
+                .children([3., 5., 7., 9.].into_iter().enumerate().map(|(i, height)| {
+                    div()
+                        .w(rems(3. / 16.))
+                        .h(rems(height / 16.))
+                        .rounded(rems(0.5 / 16.))
+                        .bg(if i < lit as usize {
+                            status.mark_color
+                        } else {
+                            theme::border_strong()
+                        })
+                }))
+                .into_any_element(),
+        ),
+        LinkMark::Icon(path) => Some(
+            svg()
+                .path(path)
+                .size(rems(10. / 16.))
+                .flex_none()
+                .text_color(status.mark_color)
+                .into_any_element(),
+        ),
+        LinkMark::None => None,
+    }
+}
+
+pub(super) fn connection_subtitle(
+    connection: Connection,
+    latency: Option<u64>,
+    slow: bool,
+    computer: &str,
+) -> (String, Hsla) {
     let (key, color) = match connection {
         Connection::Connected => {
             return (
-                crate::i18n::text("client.connection_live").into(),
-                theme::faint(),
+                latency.map_or_else(
+                    || crate::i18n::text("client.connection_live").into(),
+                    |ms| crate::i18n::tf("client.connection_latency", &[("ms", ms.to_string())]),
+                ),
+                if slow {
+                    theme::warning()
+                } else {
+                    theme::faint()
+                },
             )
         }
-        Connection::Opening => ("client.connection_opening", theme::muted()),
+        Connection::Opening => ("client.connection_opening", theme::faint()),
         Connection::Reconnecting => ("client.connection_reconnecting", theme::warning()),
-        Connection::Unreachable => ("client.connection_unreachable", theme::warning()),
+        Connection::Unreachable => ("client.connection_unreachable", theme::danger()),
         Connection::Revoked => ("client.connection_revoked", theme::danger()),
         Connection::Forgotten => ("client.connection_forgotten", theme::muted()),
     };

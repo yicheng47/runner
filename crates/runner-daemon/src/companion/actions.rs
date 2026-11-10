@@ -551,6 +551,11 @@ impl DaemonCore {
                 Ok(Value::Null)
             }
             Catalog { .. } => serde_json::to_value(catalog(core)?).map_err(failed),
+            Usage { popover, .. } => {
+                core.usage
+                    .request_refresh(core.clone(), usage_refresh_reason(popover));
+                serde_json::to_value(usage(core)?).map_err(failed)
+            }
             Folders { path, .. } => serde_json::to_value(folders(path)?).map_err(failed),
             StartChat {
                 role,
@@ -848,6 +853,65 @@ impl DaemonCore {
     }
 }
 
+fn usage_refresh_reason(popover: bool) -> p::usage::RefreshReason {
+    if popover {
+        p::usage::RefreshReason::Open
+    } else {
+        p::usage::RefreshReason::Schedule
+    }
+}
+
+fn usage(core: &AppCore) -> Result<runner_core::companion::Usage> {
+    let snapshot = core.usage.snapshot();
+    let enabled = core.usage.enabled();
+    let statuses = crate::runtime_status::status_list(
+        &core.db,
+        &core.runtime_shell_env,
+        &core.runtime_discovery,
+    )
+    .map_err(failed)?;
+    let agents: Vec<_> = statuses
+        .runtimes
+        .into_iter()
+        .filter(|status| {
+            enabled.contains(&status.name)
+                && crate::runtimes::adapter(status.name).usage().is_some()
+                && matches!(
+                    status.effective_source,
+                    Some(
+                        crate::runtime_status::RuntimeCommandSource::Detected
+                            | crate::runtime_status::RuntimeCommandSource::Override
+                    )
+                )
+        })
+        .map(|status| UsageAgent {
+            name: status.name.key().into(),
+            value: snapshot.get(status.name).cloned().map(Into::into),
+            error: snapshot.error(status.name).map(Into::into),
+        })
+        .collect();
+    let active_claude_account = agents
+        .iter()
+        .any(|agent| agent.name == "claude-code")
+        .then(|| {
+            let accounts = crate::claude_accounts::load(&core.db).ok()?;
+            if accounts.accounts.len() <= 1 {
+                return None;
+            }
+            accounts
+                .accounts
+                .into_iter()
+                .find(|account| account.id == accounts.active_id)
+                .map(|account| account.name)
+        })
+        .flatten();
+    Ok(runner_core::companion::Usage {
+        agents,
+        refreshing: snapshot.refreshing,
+        active_claude_account,
+    })
+}
+
 fn folders(path: Option<String>) -> Result<FolderPage> {
     let path = path
         .map(std::path::PathBuf::from)
@@ -989,6 +1053,90 @@ fn catalog(core: &AppCore) -> Result<Catalog> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn usage_projects_only_enabled_installed_agents_and_the_active_account_name() {
+        use crate::model::Runtime;
+        use crate::usage::{AgentUsage, UsageWindow};
+        let mut core = crate::test_support::test_core();
+        core.usage = std::sync::Arc::new(crate::usage::UsageService::without_fetch());
+        let core = std::sync::Arc::new(core);
+        let executable = std::env::current_exe().unwrap();
+        crate::db::set_runtime_override(&core.db, "codex", executable.to_str()).unwrap();
+        crate::db::set_runtime_override(&core.db, "claude-code", executable.to_str()).unwrap();
+        core.runtime_shell_env.write().unwrap().path = Some(String::new());
+        core.usage.set_enabled(vec![Runtime::Codex, Runtime::Pi]);
+        let value = AgentUsage {
+            windows: vec![UsageWindow {
+                name: "Week".into(),
+                used_percent: 41.,
+                resets_at: None,
+            }],
+            updated_at: chrono::Utc::now(),
+        };
+        crate::db::set_usage_lkg(
+            &core.db,
+            &crate::db::UsageLkg {
+                runtimes: [
+                    (Runtime::Codex, value.clone()),
+                    (Runtime::ClaudeCode, value.clone()),
+                ]
+                .into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        core.usage.restore(&core.db);
+        core.usage.set_polling_enabled(false);
+        let daemon = DaemonCore(std::sync::Arc::downgrade(&core));
+        let request = || ActionRequest::Usage {
+            id: 1,
+            popover: false,
+        };
+        let result: runner_core::companion::Usage =
+            serde_json::from_value(daemon.action(request()).unwrap()).unwrap();
+        assert_eq!(result.agents.len(), 1);
+        assert_eq!(result.agents[0].name, "codex");
+        assert_eq!(result.agents[0].value, Some(value.into()));
+        assert_eq!(result.active_claude_account, None);
+        crate::db::app_state_set(&core.db.get().unwrap(), "claude_accounts", &json!({"accounts":[{"id":"native","name":"Personal","folder":"private-folder-canary","native":true},{"id":"work","name":"Work","folder":"private-folder-canary","native":false}],"main_id":"native","active_id":"work"}).to_string()).unwrap();
+        assert_eq!(
+            daemon.action(request()).unwrap()["activeClaudeAccount"],
+            Value::Null
+        );
+        core.usage
+            .set_enabled(vec![Runtime::Codex, Runtime::ClaudeCode]);
+        let result = daemon.action(request()).unwrap();
+        assert_eq!(result["activeClaudeAccount"], "Work");
+        let encoded = result.to_string();
+        for private in [
+            "folder",
+            "private-folder-canary",
+            "command",
+            "path",
+            "main_id",
+            "work",
+        ] {
+            assert!(!encoded.contains(private), "{private}");
+        }
+        crate::db::app_state_set(
+            &core.db.get().unwrap(),
+            "claude_accounts",
+            "unreadable-json",
+        )
+        .unwrap();
+        let result = daemon.action(request()).unwrap();
+        assert_eq!(result["activeClaudeAccount"], Value::Null);
+        assert_eq!(
+            result["agents"][0]["value"]["windows"][0]["usedPercent"],
+            41.
+        );
+        assert_eq!(
+            usage_refresh_reason(false),
+            p::usage::RefreshReason::Schedule
+        );
+        assert_eq!(usage_refresh_reason(true), p::usage::RefreshReason::Open);
+    }
+
     #[test]
     fn chat_drawer_layout_requests_fail_without_mutation() {
         let core = std::sync::Arc::new(crate::test_support::test_core());
