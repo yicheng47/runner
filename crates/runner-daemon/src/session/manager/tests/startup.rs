@@ -2252,3 +2252,16 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
     );
     manager.kill(&id).unwrap();
 }
+
+#[test]
+fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
+    let now = super::super::super::clock::now();
+    for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi] {
+        let mut gate =
+            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now)
+                .with_status_hooks(false);
+        gate.output(b"ready", now);
+        assert!(!gate.output_settled(now + Duration::from_secs(1)));
+        assert!(gate.output_settled(now + Duration::from_secs(11)));
+    }
+}

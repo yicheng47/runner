@@ -8,6 +8,12 @@ Runner starts its background service before showing a window. If that fails, Run
 
 If a copy of Runner from another version or build is open on the same data, a new copy does not take over the background service; it stops with a message that another Runner build is using this data. Quit the other copy, then open Runner again. If the background service changes hands while Runner is open, the same message appears in a banner: quit the other copy, then click **Try again**. Versions of Runner released before this check still take over the background service without asking.
 
+## Codex starts slowly or chat status is less detailed
+
+Codex can download its remote plugin catalog on every start. Turn **Settings → Agents → Codex → Launch → Remote plugin catalog** off to skip that download; catalog plugins will no longer load. Start a new session to apply the change.
+
+If **Status hooks** is off, Runner uses native terminal status or terminal activity. Update Codex to 0.163.0+, Claude Code to 2.1.295+ or pi to 1.1.0+ for native status, or turn hooks back on for detailed reports. Resume still uses the identity hook. Missions always use status hooks.
+
 ## An agent is missing or fails to start
 
 1. Run the agent in your usual terminal. If it cannot start or sign in there, finish its own setup first.

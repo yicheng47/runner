@@ -21,6 +21,14 @@ pub(crate) fn materialize(
             "direct fork plan cannot run as a headless materializer",
         ));
     };
+    let mut args = args.clone();
+    if spec
+        .env
+        .get(crate::runtimes::REMOTE_PLUGIN_ENV)
+        .is_some_and(|value| value == "false")
+    {
+        args.extend(["-c".into(), "features.remote_plugin=false".into()]);
+    }
     let codex_sessions_root = codex_fork_sessions_root(spec)?;
     let inherited_path = std::env::var("PATH").ok();
     let home = runner_core::app_paths::home_dir();

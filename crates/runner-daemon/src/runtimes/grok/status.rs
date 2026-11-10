@@ -18,7 +18,12 @@ const EVENTS: &[&str] = &[
 fn hooks() -> Value {
     let mut hooks = serde_json::Map::new();
     for event in EVENTS {
-        let mut group = json!({"hooks":[{"type":"command","command":format!("if [ -n \"$RUNNER_HOOK_EXECUTABLE\" ]; then \"$RUNNER_HOOK_EXECUTABLE\" hook report --runtime grok --event {event} >/dev/null 2>&1; fi; exit 0"),"timeout":2}]});
+        let status_guard = if matches!(*event, "SessionStart" | "UserPromptSubmit") {
+            ""
+        } else {
+            "[ \"$RUNNER_STATUS_HOOKS\" != \"false\" ] && "
+        };
+        let mut group = json!({"hooks":[{"type":"command","command":format!("if {status_guard}[ -n \"$RUNNER_HOOK_EXECUTABLE\" ]; then \"$RUNNER_HOOK_EXECUTABLE\" hook report --runtime grok --event {event} >/dev/null 2>&1; fi; exit 0"),"timeout":2}]});
         if *event == "Notification" {
             group["matcher"] = json!("^(permission_prompt|idle_prompt)$");
         }

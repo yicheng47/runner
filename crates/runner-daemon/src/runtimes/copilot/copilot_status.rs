@@ -32,6 +32,11 @@ pub(crate) const EVENTS: &[&str] = &[
 ];
 
 const PLUGIN_DIR: &str = "copilot-hooks";
+const IDENTITY_PLUGIN_DIR: &str = "copilot-identity-hooks";
+
+pub(crate) fn identity_plugin_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join(IDENTITY_PLUGIN_DIR)
+}
 
 pub(crate) fn plugin_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(PLUGIN_DIR)
@@ -61,7 +66,15 @@ fn write_plugin_file(path: &Path, contents: &[u8]) -> Result<()> {
 // Copilot runs this slot instead of `command` on Windows.
 
 pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
-    let plugin_dir = plugin_dir(app_data_dir);
+    install_plugin_at(&plugin_dir(app_data_dir), app_data_dir, EVENTS)?;
+    install_plugin_at(
+        &identity_plugin_dir(app_data_dir),
+        app_data_dir,
+        &["SessionStart"],
+    )
+}
+
+fn install_plugin_at(plugin_dir: &Path, app_data_dir: &Path, events: &[&str]) -> Result<()> {
     fs::create_dir_all(plugin_dir.join("hooks"))?;
     write_plugin_file(
         &plugin_dir.join("plugin.json"),
@@ -72,7 +85,7 @@ pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
         }))?,
     )?;
     let mut hooks = serde_json::Map::new();
-    for event in EVENTS {
+    for event in events {
         let command = crate::runtimes::helpers::hook_report_command(
             app_data_dir,
             Runtime::Copilot,
@@ -94,7 +107,7 @@ pub(crate) fn install_plugin(app_data_dir: &Path) -> Result<()> {
         hooks.insert((*event).into(), Value::Array(vec![entry]));
     }
     write_plugin_file(
-        &hooks_path(app_data_dir),
+        &plugin_dir.join("hooks/hooks.json"),
         &serde_json::to_vec(&serde_json::json!({"version": 1, "hooks": hooks}))?,
     )?;
     Ok(())
@@ -871,6 +884,18 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let app_data = root.path().join("runner app data");
         install_plugin(&app_data).unwrap();
+        let identity: Value = serde_json::from_slice(
+            &fs::read(identity_plugin_dir(&app_data).join("hooks/hooks.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            identity["hooks"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["SessionStart"]
+        );
         assert!(plugin_available(&app_data));
         fs::write(hooks_path(&app_data), "{}").unwrap();
         install_plugin(&app_data).unwrap();

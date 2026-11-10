@@ -173,7 +173,9 @@ impl RuntimeAdapter for Antigravity {
                 .to_string_lossy()
                 .into_owned(),
         ]);
-        out.extend(antigravity_status_args(ctx.app_data_dir));
+        if status_hooks_enabled(ctx.env) {
+            out.extend(antigravity_status_args(ctx.app_data_dir));
+        }
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

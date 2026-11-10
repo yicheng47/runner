@@ -753,3 +753,146 @@ fn resume_respawns_recorded_override_runtime() {
 
     mgr.kill("ovr-sid").unwrap();
 }
+
+#[test]
+fn chat_bypass_ignores_synthetic_runtime_override_permissions_on_start_and_resume() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+    for target in [Runtime::Codex, Runtime::ClaudeCode] {
+        let original = if target == Runtime::Codex {
+            Runtime::ClaudeCode
+        } else {
+            Runtime::Codex
+        };
+        let pool = pool_with_schema();
+        let root = tempfile::tempdir().unwrap();
+        let mut configured = role("original-agent", &[]);
+        configured.runtime = original.key().into();
+        configured.args = crate::runtimes::adapter(original)
+            .permissions()
+            .mode_args(router::runtime::PermissionMode::Auto);
+        insert_role_row(&pool.get().unwrap(), &configured);
+        crate::db::set_runtime_launch_option(&pool, target, RuntimeLaunchOption::Bypass, true)
+            .unwrap();
+        let fake = fake_runtime();
+        let manager = mgr_with_fake(None, fake.clone());
+        let session = manager
+            .spawn_direct(
+                &configured,
+                Some(target.key()),
+                None,
+                None,
+                None,
+                root.path().to_str(),
+                None,
+                None,
+                root.path(),
+                pool.clone(),
+                capture(),
+                None,
+            )
+            .unwrap();
+        let check = |args: &[String]| {
+            let expected = crate::runtimes::adapter(target)
+                .permissions()
+                .mission_args();
+            for pair in expected.chunks_exact(2) {
+                assert!(has_arg_pair(args, &pair[0], &pair[1]), "{target}: {args:?}");
+            }
+            assert!(!has_arg_pair(args, "--permission-mode", "auto"));
+            assert!(!has_arg_pair(args, "--ask-for-approval", "on-request"));
+        };
+        check(&fake.last_spawn_spec().unwrap().args);
+        manager.kill(&session.id).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+                params![session.id, "11111111-1111-4111-8111-111111111111"],
+            )
+            .unwrap();
+        manager
+            .resume(
+                &session.id,
+                None,
+                None,
+                root.path(),
+                pool.clone(),
+                capture(),
+            )
+            .unwrap();
+        check(&fake.last_spawn_spec().unwrap().args);
+        manager.kill(&session.id).unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn chat_bypass_ignores_synthetic_runtime_override_permissions_on_fork() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+    for target in [Runtime::Codex, Runtime::ClaudeCode] {
+        let original = if target == Runtime::Codex {
+            Runtime::ClaudeCode
+        } else {
+            Runtime::Codex
+        };
+        let source_key = uuid::Uuid::new_v4().to_string();
+        let fork_key = uuid::Uuid::new_v4().to_string();
+        let (_materializer, command, _capture, codex_home) =
+            super::fork::codex_fork_materializer(&source_key, &fork_key, true);
+        let pool = pool_with_schema();
+        let root = tempfile::tempdir().unwrap();
+        let mut configured = role("original-agent", &[]);
+        configured.runtime = original.key().into();
+        insert_role_row(&pool.get().unwrap(), &configured);
+        let mut definition = crate::session::launch_definition::from_effective(&configured);
+        definition.command = if target == Runtime::Codex {
+            command
+        } else {
+            "claude-custom".into()
+        };
+        definition.args = crate::runtimes::adapter(target)
+            .permissions()
+            .mode_args(router::runtime::PermissionMode::Auto);
+        definition
+            .env
+            .insert("CODEX_HOME".into(), codex_home.display().to_string());
+        let mut source =
+            crate::repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
+        source.status = crate::model::SessionStatus::Stopped;
+        source.role_id = Some(configured.id.clone());
+        source.cwd = Some(root.path().display().to_string());
+        source.agent_runtime = Some(target.key().into());
+        source.agent_session_key = Some(source_key);
+        source.launch_definition = Some(definition);
+        crate::test_support::insert_session_row(&pool.get().unwrap(), &source).unwrap();
+        crate::db::set_runtime_launch_option(&pool, target, RuntimeLaunchOption::Bypass, true)
+            .unwrap();
+        let fake = fake_runtime();
+        let manager = mgr_with_fake(None, fake.clone());
+        let fork = manager
+            .spawn_fork(
+                &source.id,
+                None,
+                None,
+                None,
+                root.path(),
+                pool.clone(),
+                capture(),
+            )
+            .unwrap();
+        let args = fake.last_spawn_spec().unwrap().args;
+        for pair in crate::runtimes::adapter(target)
+            .permissions()
+            .mission_args()
+            .chunks_exact(2)
+        {
+            assert!(
+                has_arg_pair(&args, &pair[0], &pair[1]),
+                "{target}: {args:?}"
+            );
+        }
+        assert!(!has_arg_pair(&args, "--permission-mode", "auto"));
+        assert!(!has_arg_pair(&args, "--ask-for-approval", "on-request"));
+        manager.kill(&fork.id).unwrap();
+    }
+}

@@ -1,4 +1,5 @@
 use super::mcp::*;
+use super::runtime::{RuntimeCommandPreview, RuntimeLaunchOption};
 use super::terminal::*;
 use super::*;
 use super::{agent_skill, command, files};
@@ -111,6 +112,8 @@ macro_rules! daemon_api {
         runtime_refresh_models(runtimes: &[Runtime] => Vec<Runtime> = { runtimes.to_vec() }) -> () [false] => |core: &crate::AppCore, runtimes: Vec<Runtime>| { Ok(crate::ops::runtime::runtime_refresh_models(core, &runtimes)) };
         runtime_request_models(runtimes: &[Runtime] => Vec<Runtime> = { runtimes.to_vec() }) -> () [false] => |core: &crate::AppCore, runtimes: Vec<Runtime>| { Ok(crate::ops::runtime::runtime_request_models(core, &runtimes)) };
         runtime_set_override(runtime: Runtime => Runtime = { runtime }, path: &str => String = { path.to_owned() }) -> std::result::Result<RuntimeStatusResponse, OverrideValidationError> [false] => |core: &crate::AppCore, runtime: Runtime, path: String| { Ok(crate::ops::runtime::runtime_set_override(core, runtime, &path)) };
+        runtime_set_launch_option(runtime: Runtime => Runtime = { runtime }, option: RuntimeLaunchOption => RuntimeLaunchOption = { option }, enabled: bool => bool = { enabled }) -> RuntimeStatusResponse [false] => |core: &crate::AppCore, runtime: Runtime, option: RuntimeLaunchOption, enabled: bool| { crate::ops::runtime::runtime_set_launch_option(core, runtime, option, enabled) };
+        runtime_command_preview(runtime: Runtime => Runtime = { runtime }, mission: bool => bool = { mission }) -> RuntimeCommandPreview [false] => |core: &crate::AppCore, runtime: Runtime, mission: bool| { crate::ops::runtime::runtime_command_preview(core, runtime, mission) };
         runtime_status_list() -> RuntimeStatusResponse [false] => |core: &crate::AppCore| { crate::ops::runtime::runtime_status_list(core) };
         live_session_counts() -> HashMap<Runtime, usize> [false] => |core: &crate::AppCore| { crate::ops::session::live_session_counts(core) };
         session_activity_snapshot() -> BTreeMap<String, SessionActivityState> [true] => |core: &crate::AppCore| { Ok(crate::ops::session::session_activity_snapshot(core)) };

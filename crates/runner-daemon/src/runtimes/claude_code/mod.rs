@@ -47,6 +47,10 @@ pub(crate) fn claude_settings_args(
     app_data_dir: &Path,
     _runner_session_id: &str,
 ) -> Vec<String> {
+    claude_launch_settings(role_args, app_data_dir, true)
+}
+
+fn claude_launch_settings(role_args: &[String], app_data_dir: &Path, status: bool) -> Vec<String> {
     if !inject_claude_settings(role_args) {
         return Vec::new();
     }
@@ -75,6 +79,9 @@ pub(crate) fn claude_settings_args(
         "Stop",
         "StopFailure",
     ] {
+        if !status && event != "SessionStart" {
+            continue;
+        }
         if !ClaudeCode
             .status_hooks()
             .is_some_and(|hooks| hooks.supported(cfg!(windows)))
@@ -445,11 +452,11 @@ impl RuntimeAdapter for ClaudeCode {
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
-        out.extend(claude_settings_args(
-            ctx.role_args,
-            ctx.app_data_dir,
-            ctx.session_id,
-        ));
+        out.extend(if status_hooks_enabled(ctx.env) {
+            claude_settings_args(ctx.role_args, ctx.app_data_dir, ctx.session_id)
+        } else {
+            claude_launch_settings(ctx.role_args, ctx.app_data_dir, false)
+        });
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

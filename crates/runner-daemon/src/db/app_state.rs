@@ -14,6 +14,7 @@ use crate::error::Result;
 pub(super) const SEED_MARKER_KEY: &str = "default_crew_seeded";
 const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
 const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
+const RUNTIME_LAUNCH_OPTIONS_KEY: &str = "runtime_launch_options";
 const TERMINAL_PALETTE_KEY: &str = "terminal_palette";
 const USAGE_LKG_KEY: &str = "usage_lkg";
 const FILES_RECENT_FOLDERS_KEY: &str = "files_recent_folders";
@@ -140,6 +141,42 @@ pub fn runtime_overrides(pool: &DbPool) -> Result<BTreeMap<String, String>> {
         .map(|value| serde_json::from_str(&value))
         .transpose()?
         .unwrap_or_default())
+}
+
+pub fn runtime_launch_options(
+    pool: &DbPool,
+) -> Result<BTreeMap<String, runner_core::protocol::runtime::RuntimeLaunchOptions>> {
+    let conn = pool.get()?;
+    Ok(app_state_get(&conn, RUNTIME_LAUNCH_OPTIONS_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?
+        .unwrap_or_default())
+}
+
+pub fn set_runtime_launch_option(
+    pool: &DbPool,
+    runtime: Runtime,
+    option: runner_core::protocol::runtime::RuntimeLaunchOption,
+    enabled: bool,
+) -> Result<()> {
+    let mut conn = pool.get()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut options: BTreeMap<String, runner_core::protocol::runtime::RuntimeLaunchOptions> =
+        app_state_get(&tx, RUNTIME_LAUNCH_OPTIONS_KEY)?
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?
+            .unwrap_or_default();
+    options
+        .entry(runtime.key().into())
+        .or_default()
+        .set(option, enabled);
+    app_state_set(
+        &tx,
+        RUNTIME_LAUNCH_OPTIONS_KEY,
+        &serde_json::to_string(&options)?,
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) -> Result<()> {

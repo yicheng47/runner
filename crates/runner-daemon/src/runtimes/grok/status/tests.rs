@@ -217,3 +217,37 @@ fn delayed_turn_reports_preserve_the_current_turn_and_approval() {
     );
     assert_eq!(keys, vec![next]);
 }
+
+#[cfg(unix)]
+#[test]
+fn hooks_off_only_runs_identity_reporters() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let reporter = root.path().join("reporter");
+    let log = root.path().join("events");
+    std::fs::write(
+        &reporter,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOOK_TEST_LOG\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&reporter, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = hooks();
+    for event in ["SessionStart", "UserPromptSubmit", "Stop", "Notification"] {
+        let command = config["hooks"][event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(std::process::Command::new("/bin/sh")
+            .args(["-c", command])
+            .env("RUNNER_HOOK_EXECUTABLE", &reporter)
+            .env("RUNNER_STATUS_HOOKS", "false")
+            .env("HOOK_TEST_LOG", &log)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let reports = std::fs::read_to_string(log).unwrap();
+    assert!(reports.contains("--event SessionStart"));
+    assert!(reports.contains("--event UserPromptSubmit"));
+    assert!(!reports.contains("--event Stop"));
+    assert!(!reports.contains("--event Notification"));
+}

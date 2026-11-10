@@ -238,6 +238,12 @@ impl SessionRuntime for PtyRuntime {
                     None
                 }
             });
+        let status_hooks_enabled = crate::runtimes::status_hooks_enabled(&spec.env);
+        if !status_hooks_enabled {
+            hook_status = hook_status.map(|watcher| {
+                Box::new(super::hook_feed::IdentityWatcher(watcher)) as Box<dyn HookWatcher>
+            });
+        }
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -297,7 +303,7 @@ impl SessionRuntime for PtyRuntime {
             idle_detector.read_shell_marks();
         }
         idle_detector.awaiting_first_hook = spec.mission && hook_status.is_some();
-        if hook_status.is_none() {
+        if hook_status.is_none() || !status_hooks_enabled {
             if spec.mission {
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
             }
