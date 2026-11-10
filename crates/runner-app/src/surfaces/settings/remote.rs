@@ -1127,6 +1127,7 @@ impl NativeRoot {
                             ),
                     ),
             )
+            .map(crate::platform_ui::window_scrim)
             .into_any_element()
     }
     fn confirm_remote_action(&mut self, cx: &mut Context<Self>) {

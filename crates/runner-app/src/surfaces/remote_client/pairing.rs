@@ -551,6 +551,7 @@ impl RemoteClient {
                                 ),
                         ),
                 )
+                .map(crate::platform_ui::window_scrim)
                 .into_any_element(),
         )
     }

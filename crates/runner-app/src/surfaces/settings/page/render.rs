@@ -54,6 +54,11 @@ impl NativeRoot {
             .flex()
             .overflow_hidden()
             .bg(gpui::transparent_black())
+            .map(|settings| {
+                #[cfg(target_os = "linux")]
+                let settings = crate::platform_ui::round_window_corners(settings, window);
+                settings
+            })
             .occlude()
             .child(
                 div()
@@ -67,6 +72,13 @@ impl NativeRoot {
                         gpui::transparent_black()
                     } else {
                         theme::sidebar()
+                    })
+                    .map(|sidebar| {
+                        #[cfg(target_os = "linux")]
+                        let sidebar = crate::platform_ui::round_window_corners(sidebar, window)
+                            .rounded_tr(px(0.))
+                            .rounded_br(px(0.));
+                        sidebar
                     })
                     .children(self.render_sidebar_titlebar(window, cx))
                     .child(

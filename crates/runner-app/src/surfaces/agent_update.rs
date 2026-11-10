@@ -750,6 +750,7 @@ impl Render for AgentUpdateDialog {
                     )
                     .child(footer),
             )
+            .map(crate::platform_ui::window_scrim)
     }
 }
 

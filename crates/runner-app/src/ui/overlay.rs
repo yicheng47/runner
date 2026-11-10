@@ -243,6 +243,7 @@ impl RenderOnce for Modal {
                             .child(footer)
                     })),
             )
+            .map(crate::platform_ui::window_scrim)
     }
 }
 
@@ -354,6 +355,13 @@ impl RenderOnce for Drawer {
                     .bg(theme::panel())
                     .shadow_2xl()
                     .debug_selector(|| "DRAWER_PANEL".into())
+                    .map(|panel| {
+                        #[cfg(any(target_os = "linux", test))]
+                        let panel = crate::platform_ui::round_window_corners(panel, window)
+                            .rounded_tl(px(0.))
+                            .rounded_bl(px(0.));
+                        panel
+                    })
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -396,11 +404,21 @@ impl RenderOnce for Drawer {
                             .border_t_1()
                             .border_color(theme::border())
                             .bg(theme::with_alpha(theme::bg(), 0.4))
+                            .map(|footer| {
+                                #[cfg(any(target_os = "linux", test))]
+                                let footer =
+                                    crate::platform_ui::round_window_corners(footer, window)
+                                        .rounded_tl(px(0.))
+                                        .rounded_tr(px(0.))
+                                        .rounded_bl(px(0.));
+                                footer
+                            })
                             .px(rems(24. / 16.))
                             .py(rems(1.))
                             .child(footer)
                     })),
             )
+            .map(crate::platform_ui::window_scrim)
     }
 }
 
@@ -664,6 +682,7 @@ impl RenderOnce for ConfirmDialog {
                             )),
                     ),
             )
+            .map(crate::platform_ui::window_scrim)
     }
 }
 
