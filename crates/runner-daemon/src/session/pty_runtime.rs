@@ -75,7 +75,7 @@ const RESIZE_GRACE: Duration = Duration::from_millis(500);
 /// in-memory and the per-session resources tear down with their handles.
 pub struct PtyRuntime {
     hooks: Arc<super::hook_queue::HookRoutes>,
-    sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
+    sessions: Sessions,
     readers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
@@ -83,7 +83,7 @@ impl PtyRuntime {
     pub fn new() -> Self {
         Self {
             hooks: Arc::new(super::hook_queue::HookRoutes::default()),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             readers: Mutex::new(Vec::new()),
         }
     }
@@ -95,12 +95,12 @@ impl Default for PtyRuntime {
     }
 }
 
+type Sessions = Arc<Mutex<HashMap<String, Arc<SessionHandle>>>>;
+
 struct SessionHandle {
-    #[cfg(unix)]
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    #[cfg(windows)]
+    /// `None` once the session has ended, which closes the PTY.
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
     #[cfg(unix)]
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     /// `Arc<Mutex<Option<Box<dyn Child + Send + Sync>>>>` — the reader
@@ -304,11 +304,8 @@ impl SessionRuntime for PtyRuntime {
             idle_detector.hooks_unavailable();
         }
         let handle = Arc::new(SessionHandle {
-            #[cfg(unix)]
-            master: Mutex::new(pair.master),
-            #[cfg(windows)]
             master: Mutex::new(Some(pair.master)),
-            writer: Mutex::new(writer),
+            writer: Mutex::new(Some(writer)),
             #[cfg(unix)]
             killer: Mutex::new(killer),
             child: Arc::clone(&child_slot),
@@ -328,6 +325,12 @@ impl SessionRuntime for PtyRuntime {
 
         let stop_for_reader = Arc::clone(&stop);
         let handle_for_reader = Arc::clone(&handle);
+        let entry = Arc::new(SessionEntry {
+            sessions: Arc::clone(&self.sessions),
+            session_id: spec.session_id.clone(),
+            handle: Arc::clone(&handle),
+        });
+        let entry_for_reader = Arc::clone(&entry);
         let session_id_for_reader = spec.session_id.clone();
         let worker = thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
@@ -337,25 +340,32 @@ impl SessionRuntime for PtyRuntime {
                     tx,
                     stop_for_reader,
                     handle_for_reader,
+                    entry_for_reader,
                     session_id_for_reader,
                     hook_status,
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
-        self.readers.lock().unwrap().push(worker);
+        let mut readers = self.readers.lock().unwrap();
+        readers.retain(|reader| !reader.is_finished());
+        readers.push(worker);
 
         let rt_session = RuntimeSession {
             runtime: RUNTIME_LABEL.to_string(),
             session_id: spec.session_id,
         };
-        let stream = OutputStream::new(rx, stop);
+        let stream = OutputStream::new(rx, stop).holding(entry);
         Ok((rt_session, stream))
     }
 
     #[cfg(unix)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        let handle = lookup(self, &session.session_id)?;
         self.hooks.retire(&session.session_id);
+        // An untracked session's reader has reaped its child and its output
+        // stream is gone, so it has already stopped.
+        let Ok(handle) = lookup(self, &session.session_id) else {
+            return Ok(());
+        };
         let mut killer = handle.killer.lock().expect("killer poisoned");
         let child = handle.child.lock().expect("child slot poisoned").take();
         // Snapshot before SIGHUP: once the agent is gone its children are
@@ -404,8 +414,12 @@ impl SessionRuntime for PtyRuntime {
 
     #[cfg(windows)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        let handle = lookup(self, &session.session_id)?;
         self.hooks.retire(&session.session_id);
+        // An untracked session's reader has reaped its child and its output
+        // stream is gone, so it has already stopped.
+        let Ok(handle) = lookup(self, &session.session_id) else {
+            return Ok(());
+        };
         let child = handle.child.lock().expect("child slot poisoned").take();
         match child {
             Some(mut child) => {
@@ -445,7 +459,6 @@ impl SessionRuntime for PtyRuntime {
         let handle = lookup(self, &session.session_id)?;
         {
             let master = handle.master.lock().expect("master poisoned");
-            #[cfg(windows)]
             let Some(master) = master.as_ref() else {
                 return Ok(());
             };
@@ -497,7 +510,10 @@ impl SessionRuntime for PtyRuntime {
             None => return Ok(Some(false)),
         };
         // Keep foreground queries serialized with other PTY master operations.
-        let _master = handle.master.lock().expect("SessionHandle.master poisoned");
+        let master = handle.master.lock().expect("SessionHandle.master poisoned");
+        if master.is_none() {
+            return Ok(Some(false));
+        }
         Ok(handle
             .process_tree
             .as_ref()
@@ -1091,6 +1107,7 @@ fn reader_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     handle: Arc<SessionHandle>,
+    entry: Arc<SessionEntry>,
     session_id: String,
     hook_status: Option<Box<dyn HookWatcher>>,
 ) {
@@ -1181,12 +1198,42 @@ fn reader_thread(
             }
         }
     }
+    drop(child_slot);
+    release_pty(&handle);
+    drop(entry);
     // tx dropped on scope exit → OutputStream::recv_timeout sees
     // Disconnected on the manager side, which is how the existing
     // forwarder thread knows to wind down.
 }
 
 // --- Helpers ------------------------------------------------------------
+
+fn release_pty(handle: &SessionHandle) {
+    drop(handle.writer.lock().expect("writer poisoned").take());
+    drop(handle.master.lock().expect("master poisoned").take());
+}
+
+/// Shared by a session's reader thread and its output stream. The session
+/// stays in the map, so the manager can still read its exit status, until
+/// both are gone.
+struct SessionEntry {
+    sessions: Sessions,
+    session_id: String,
+    handle: Arc<SessionHandle>,
+}
+
+impl Drop for SessionEntry {
+    fn drop(&mut self) {
+        let mut sessions = self.sessions.lock().expect("PtyRuntime.sessions poisoned");
+        // A respawn under the same id has replaced the entry and keeps it.
+        if sessions
+            .get(&self.session_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.handle))
+        {
+            sessions.remove(&self.session_id);
+        }
+    }
+}
 
 fn lookup(runtime: &PtyRuntime, session_id: &str) -> RuntimeResult<Arc<SessionHandle>> {
     runtime
@@ -1201,6 +1248,9 @@ fn lookup(runtime: &PtyRuntime, session_id: &str) -> RuntimeResult<Arc<SessionHa
 fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResult<()> {
     let handle = lookup(runtime, session_id)?;
     let mut writer = handle.writer.lock().expect("writer poisoned");
+    let writer = writer
+        .as_mut()
+        .ok_or_else(|| RuntimeError::Msg(format!("session {session_id} has exited")))?;
     writer.write_all(bytes)?;
     writer.flush()?;
     handle
@@ -3396,6 +3446,108 @@ mod tests {
         let stopped = rt.stop(&session);
         result.unwrap();
         stopped.unwrap();
+    }
+
+    #[cfg(unix)]
+    fn wait_for_disconnect(stream: &OutputStream) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "output stream never closed");
+            if let Err(mpsc::RecvTimeoutError::Disconnected) =
+                stream.recv_timeout(Duration::from_millis(50))
+            {
+                return;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn tracks(rt: &PtyRuntime, session_id: &str) -> bool {
+        rt.sessions.lock().unwrap().contains_key(session_id)
+    }
+
+    #[cfg(unix)]
+    fn wait_until_forgotten(rt: &PtyRuntime, session_id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tracks(rt, session_id) {
+            assert!(Instant::now() < deadline, "{session_id} was never released");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exited_session_closes_its_pty_and_is_forgotten_with_its_stream() {
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec("test-release-exited", "/bin/sh", &["-c", "exit 3"]))
+            .unwrap();
+        let handle = lookup(&rt, "test-release-exited").unwrap();
+
+        wait_for_disconnect(&stream);
+
+        assert!(handle.master.lock().unwrap().is_none());
+        assert!(handle.writer.lock().unwrap().is_none());
+        assert_eq!(rt.has_foreground_process(&sess).unwrap(), Some(false));
+        assert!(rt.send_bytes(&sess, b"x").is_err());
+        let status = rt
+            .status(&sess)
+            .unwrap()
+            .expect("status while the stream lives");
+        assert_eq!(status.exit_code, Some(3));
+        rt.stop(&sess).unwrap();
+
+        drop(stream);
+        assert!(!tracks(&rt, "test-release-exited"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stopped_session_is_forgotten_once_its_stream_is_dropped() {
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec("test-release-cancelled", "/bin/sleep", &["30"]))
+            .unwrap();
+
+        rt.stop(&sess).unwrap();
+        drop(stream);
+
+        wait_until_forgotten(&rt, "test-release-cancelled");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stopping_a_forgotten_session_succeeds() {
+        let rt = PtyRuntime::new();
+        let (sess, stream) = rt
+            .spawn(spec("test-release-late-stop", "/bin/sh", &["-c", "exit 0"]))
+            .unwrap();
+        wait_for_disconnect(&stream);
+        drop(stream);
+        wait_until_forgotten(&rt, "test-release-late-stop");
+
+        rt.stop(&sess).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dropping_an_old_stream_keeps_a_respawn_under_the_same_id() {
+        let rt = PtyRuntime::new();
+        let (_, old) = rt
+            .spawn(spec("test-release-respawn", "/bin/sh", &["-c", "exit 0"]))
+            .unwrap();
+        wait_for_disconnect(&old);
+        let (sess, new) = rt
+            .spawn(spec("test-release-respawn", "/bin/sleep", &["30"]))
+            .unwrap();
+
+        drop(old);
+        assert!(tracks(&rt, "test-release-respawn"));
+        assert!(rt.status(&sess).unwrap().unwrap().alive);
+
+        rt.stop(&sess).unwrap();
+        drop(new);
+        wait_until_forgotten(&rt, "test-release-respawn");
     }
 
     #[test]

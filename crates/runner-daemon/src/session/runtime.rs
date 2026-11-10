@@ -166,6 +166,7 @@ pub struct OutputStream {
     /// when it flips, releasing the PTY reader and `Sender` half of
     /// the channel.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    guard: Option<Box<dyn Send>>,
 }
 
 impl OutputStream {
@@ -180,9 +181,16 @@ impl OutputStream {
         Self {
             inner,
             stop,
+            guard: None,
             #[cfg(test)]
             test_agent: Default::default(),
         }
+    }
+
+    /// Keeps `guard` alive for as long as the stream is.
+    pub fn holding(mut self, guard: impl Send + 'static) -> Self {
+        self.guard = Some(Box::new(guard));
+        self
     }
 
     /// Mirrors `Receiver::recv_timeout`. Used by the integration
