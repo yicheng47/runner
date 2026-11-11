@@ -417,13 +417,39 @@ impl MissionWorkspace {
                 }
                 _ => unreachable!(),
             };
-            result.map_err(|error| error.to_string())
+            let gate = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.version_gate.clone());
+            (result.map_err(|error| error.to_string()), gate)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let result = task.await;
+            let (result, gate) = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) = this.complete_mission_action(operation, result, |ids| ids, cx)
-                else {
+                let Some(result) = this.complete_mission_action_observed(
+                    operation,
+                    result,
+                    |ids| ids,
+                    |workspace, succeeded, cx| {
+                        let target = target.clone();
+                        let host = workspace.client.target.clone();
+                        let _ = workspace.shell.update(cx, |root, cx| {
+                            root.record_session_gate(
+                                &host,
+                                &target,
+                                gate,
+                                if action == SessionControlKind::Restart {
+                                    crate::surfaces::agent_recovery::RecoveryAction::Restart
+                                } else {
+                                    crate::surfaces::agent_recovery::RecoveryAction::Resume
+                                },
+                                succeeded,
+                            );
+                            cx.notify();
+                        });
+                    },
+                    cx,
+                ) else {
                     return;
                 };
                 if !this.is_current(&mission_id, generation) {
@@ -588,7 +614,7 @@ impl MissionWorkspace {
             return;
         }
         let stopped = self
-            .sessions
+            .members()
             .iter()
             .filter(|session| session.session.status != SessionStatus::Running)
             .map(|session| session.session.id.clone())
@@ -602,7 +628,7 @@ impl MissionWorkspace {
             return;
         };
         self.resuming = true;
-        for session_id in &stopped {
+        for session_id in stopped.iter().filter(|_| !remote) {
             self.begin_mission_transition(
                 session_id,
                 MissionTransitionKind::Resuming,
@@ -618,16 +644,48 @@ impl MissionWorkspace {
         let client = self.client.clone();
         let resume_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            client
-                .resume_mission_state(resume_id, size)
-                .map_err(|error| error.to_string())
+            let result = client.resume_mission_state(resume_id, size);
+            let gate = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.version_gate.clone());
+            (result.map_err(|error| error.to_string()), gate)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let result = task.await;
+            let (result, gate) = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) =
-                    this.complete_mission_action(operation, result, |output| output.sessions, cx)
-                else {
+                let Some(result) = this.complete_mission_action_observed(
+                    operation,
+                    result,
+                    |output| output.sessions,
+                    |workspace, succeeded, cx| {
+                        let host = workspace.client.target.clone();
+                        let sessions = workspace
+                            .members()
+                            .iter()
+                            .filter(|session| {
+                                stopped.contains(&session.session.id)
+                                    && gate
+                                        .as_ref()
+                                        .is_none_or(|gate| session.runtime == gate.runtime.key())
+                            })
+                            .map(|session| session.session.id.clone())
+                            .collect::<Vec<_>>();
+                        let _ = workspace.shell.update(cx, |root, cx| {
+                            for session in sessions {
+                                root.record_session_gate(
+                                    &host,
+                                    &session,
+                                    gate.clone(),
+                                    crate::surfaces::agent_recovery::RecoveryAction::Resume,
+                                    succeeded,
+                                );
+                            }
+                            cx.notify();
+                        });
+                    },
+                    cx,
+                ) else {
                     return;
                 };
                 if this.mission_id.as_deref() != Some(mission_id.as_str()) {

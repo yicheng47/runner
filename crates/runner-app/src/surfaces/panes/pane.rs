@@ -793,6 +793,18 @@ impl NativeRoot {
                     } => {
                         if Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) {
                             None
+                        } else if let Some(overlay) =
+                            Runtime::parse(&entry.agent_runtime).and_then(|runtime| {
+                                self.agent_recovery_overlay(
+                                    &pane_id,
+                                    &session_id,
+                                    runtime,
+                                    cx.weak_entity(),
+                                    cx,
+                                )
+                            })
+                        {
+                            Some(overlay.into_any_element())
                         } else {
                             let resume_root = cx.entity();
                             let archive_root = resume_root.clone();

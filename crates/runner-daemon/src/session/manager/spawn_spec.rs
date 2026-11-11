@@ -73,17 +73,31 @@ impl SessionManager {
         let Some(definition) = crate::runtimes::for_key(&role.runtime).catalog() else {
             return Ok(role.clone());
         };
-        if role.command != definition.command {
-            return Ok(role.clone());
-        }
-        let effective = crate::runtime_status::effective_runtime_command(
-            definition.name,
-            pool,
-            &self.shell_env,
-            &self.discovery_state,
-        )?;
         let mut resolved = role.clone();
-        resolved.command = effective.command;
+        if role.command == definition.command {
+            resolved.command = crate::runtime_status::effective_runtime_command(
+                definition.name,
+                pool,
+                &self.shell_env,
+                &self.discovery_state,
+            )?
+            .command;
+        }
+        let discovery = self
+            .discovery_state
+            .read()
+            .map_err(|_| Error::msg("runtime discovery lock poisoned"))?;
+        let installed = discovery
+            .versions
+            .installed(definition.name, &resolved.command);
+        if crate::runtime_status::versions::below_minimum(installed, definition.min_version) {
+            return Err(runner_core::protocol::runtime::RuntimeVersionGate {
+                runtime: definition.name,
+                installed_version: installed.unwrap().into(),
+                min_version: definition.min_version.unwrap().into(),
+            }
+            .into());
+        }
         Ok(resolved)
     }
 

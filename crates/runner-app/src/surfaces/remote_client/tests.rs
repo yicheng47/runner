@@ -1400,6 +1400,7 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
     ] {
         for unread in [false, true] {
             let wire = SessionStatus {
+                startup_error: None,
                 status: status.clone(),
                 reason: reason.clone(),
                 unread,
@@ -1425,6 +1426,7 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
         }
     }
     let interrupted = model::agent_status(&SessionStatus {
+        startup_error: None,
         status: Status::Idle,
         reason: None,
         unread: false,
@@ -1459,6 +1461,7 @@ fn remote_status_adapter_keeps_reasons_and_shared_rollup_priority() {
             (
                 id.into(),
                 model::agent_status(&SessionStatus {
+                    startup_error: None,
                     status,
                     reason,
                     unread,
@@ -7454,4 +7457,103 @@ fn usage_keeps_the_last_reply_after_failures_and_reentry_but_forget_removes_it()
     });
     cx.run_until_parked();
     assert!(!clients.read_with(&cx, |clients, _| clients.usage.contains_key("host")));
+}
+
+pub(crate) fn update_gate_error() -> ClientError {
+    ClientError {
+        message: "Codex needs an update".into(),
+        version_gate: Some(runner_core::protocol::RuntimeVersionGate {
+            runtime: runner_core::protocol::Runtime::Codex,
+            installed_version: "0.147.0".into(),
+            min_version: "0.149.0".into(),
+        }),
+    }
+}
+
+pub(crate) fn completed_update() -> serde_json::Value {
+    serde_json::to_value(runner_core::protocol::RuntimeUpdateTask {
+        id: "host-update".into(),
+        runtime: runner_core::protocol::Runtime::Codex,
+        state: runner_core::protocol::RuntimeUpdateState::Succeeded,
+        from_version: Some("0.147.0".into()),
+        to_version: Some("0.167.0".into()),
+        installed_version: Some("0.167.0".into()),
+        step: "Done".into(),
+        message: None,
+        exit_code: Some(0),
+        running_sessions: 0,
+    })
+    .unwrap()
+}
+
+#[test]
+fn remote_resume_and_fork_refusals_offer_host_scoped_update_recovery() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for action in ["resume", "fork"] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        fake.features
+            .lock()
+            .unwrap()
+            .extend(["runtimeTaskStart".into(), "runtimeTask".into()]);
+        let mut data = overview();
+        data.sessions.get_mut("s").unwrap().status.status = runner_core::companion::Status::Stopped;
+        fake.set_overview(data);
+        fake.queue_result(action, Err(update_gate_error()));
+        fake.queue_result("runtimeTaskStart", Ok(completed_update()));
+        let window = add_window(&mut cx, &store, temp.path(), action);
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, window, cx| {
+                if action == "resume" {
+                    let pane = root.front_page_layout().unwrap().focused_pane_id.clone();
+                    root.resume_chat(&pane, "s", window, cx);
+                } else {
+                    root.fork_chat("s", window, cx);
+                    root.confirm_fork_chat(window, cx);
+                }
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        let selector = if action == "resume" {
+            "AGENT_RECOVERY_UPDATE:s"
+        } else {
+            "launcher-update-wait-primary"
+        };
+        if action == "resume" {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "remote resume must render its update card"
+            );
+            let button = visual.debug_bounds(selector).unwrap();
+            visual.simulate_click(button.center(), Default::default());
+        } else {
+            // The fork refusal is a launcher card using the same stopped-card action.
+            let button = visual
+                .debug_bounds("LAUNCHER_UPDATE_ACTION")
+                .expect("fork update card action");
+            visual.simulate_click(button.center(), Default::default());
+        }
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("runtimeTaskStart"), 1, "{action}");
+        assert_eq!(
+            fake.request_count(action),
+            2,
+            "{action} retries the original host operation"
+        );
+        window
+            .read_with(&visual, |root, _| {
+                assert!(
+                    root.agent_tasks.tasks.is_empty(),
+                    "host tasks never enter the local list"
+                );
+                assert!(root.agent_update.is_none(), "no automatic dialog");
+            })
+            .unwrap();
+    }
 }

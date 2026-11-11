@@ -57,13 +57,28 @@ impl WorkspaceAction {
         remote_completion: impl FnOnce(T) -> Completion,
         cx: &mut Context<NativeRoot>,
     ) -> Option<Result<T, String>> {
+        Self::complete_observed(root, action, result, remote_completion, |_, _, _, _| {}, cx)
+    }
+
+    pub(crate) fn complete_observed<T>(
+        root: &mut NativeRoot,
+        action: WorkspaceAction,
+        result: Result<T, String>,
+        remote_completion: impl FnOnce(T) -> Completion,
+        observe: impl FnOnce(&mut NativeRoot, &FrontPageClient, bool, &mut Context<NativeRoot>),
+        cx: &mut Context<NativeRoot>,
+    ) -> Option<Result<T, String>> {
+        let client = action.client.clone();
+        let succeeded = result.is_ok();
         if action.remote.is_none() {
+            observe(root, &client, succeeded, cx);
             return Some(result);
         }
         if root
             .remote_client
             .complete_action(action, result, remote_completion, cx)
         {
+            observe(root, &client, succeeded, cx);
             root.sync_remote_state(cx);
             cx.notify();
         }

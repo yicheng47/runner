@@ -216,6 +216,32 @@ impl RuntimeAdapter for Codex {
                 .collect(),
         )
     }
+    fn classify_startup_error(
+        &self,
+        output: &str,
+    ) -> Option<runner_core::protocol::status::StartupError> {
+        let (_, cause) = output.split_once("Error loading config.toml:")?;
+        let cause = cause.trim();
+        let detail = cause
+            .lines()
+            .take(4)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(512)
+            .collect::<String>();
+        let message = if cause.contains("unknown variant `mcp_tool`") {
+            "This Codex does not recognize Runner's mcp_tool hook type.".into()
+        } else {
+            format!("Codex could not load Runner's configuration: {detail}")
+        };
+        Some(runner_core::protocol::status::StartupError {
+            runtime: Runtime::Codex,
+            message,
+            output: cause.to_owned(),
+        })
+    }
+
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
             startup_ready_batch: true,
@@ -464,3 +490,37 @@ static MCP: McpConfig = McpConfig {
     preserve_disabled: false,
     supports_http: true,
 };
+
+#[cfg(test)]
+mod startup_error_tests {
+    use super::*;
+    #[test]
+    fn config_failure_is_classified_but_normal_output_is_not() {
+        let adapter = crate::runtimes::adapter(Runtime::Codex);
+        let field_error = "Error loading config.toml: unknown variant `mcp_tool`, expected one of `command`, `prompt`, `agent` in `hooks`";
+        let error = adapter.classify_startup_error(field_error).unwrap();
+        assert_eq!(error.runtime, Runtime::Codex);
+        assert!(error.output.contains("unknown variant `mcp_tool`"));
+        assert_eq!(
+            error.message,
+            "This Codex does not recognize Runner's mcp_tool hook type."
+        );
+        let future = adapter.classify_startup_error("Error loading config.toml: invalid type: integer, expected a string in hooks.command").unwrap();
+        assert!(future
+            .message
+            .contains("invalid type: integer, expected a string in hooks.command"));
+        let bounded = adapter
+            .classify_startup_error(&format!(
+                "Error loading config.toml: {}",
+                "x".repeat(10_000)
+            ))
+            .unwrap();
+        assert!(bounded.message.len() < 600);
+        assert!(adapter
+            .classify_startup_error("Interrupted by user")
+            .is_none());
+        assert!(crate::runtimes::adapter(Runtime::Pi)
+            .classify_startup_error(field_error)
+            .is_none());
+    }
+}

@@ -158,6 +158,69 @@ impl FrontPageClient {
         self.action("usage", ActionRequest::Usage { id: 0, popover })
     }
 
+    pub(crate) fn start_runtime_task(
+        &self,
+        runtime: runner_core::protocol::Runtime,
+    ) -> ClientResult<runner_core::protocol::RuntimeUpdateTask> {
+        if !self.is_remote() {
+            return self.daemon.runtime_task_start(runtime);
+        }
+        self.action(
+            "runtimeTaskStart",
+            ActionRequest::RuntimeTaskStart {
+                id: 0,
+                runtime: runtime.key().into(),
+            },
+        )
+    }
+
+    pub(crate) fn runtime_task(
+        &self,
+        runtime: runner_core::protocol::Runtime,
+    ) -> ClientResult<Option<runner_core::protocol::RuntimeUpdateTask>> {
+        if !self.is_remote() {
+            return self
+                .daemon
+                .runtime_task_list()
+                .map(|tasks| tasks.into_iter().find(|task| task.runtime == runtime));
+        }
+        self.action(
+            "runtimeTask",
+            ActionRequest::RuntimeTask {
+                id: 0,
+                runtime: runtime.key().into(),
+            },
+        )
+    }
+
+    pub(crate) fn task_terminal(
+        &self,
+        id: &str,
+    ) -> Option<(
+        String,
+        DaemonClient,
+        crate::surfaces::remote_client::transport::AttachmentLifetime,
+    )> {
+        let FrontPageTarget::Remote { computer, .. } = &self.target else {
+            return None;
+        };
+        let config = runner_core::remote::RemoteTerminal {
+            computer: computer.clone(),
+            session: id.into(),
+            cols: 80,
+            rows: 24,
+            take_control: true,
+        };
+        let address = config.address();
+        let (client, lifetime) = crate::surfaces::remote_client::transport::RemoteTransport::client(
+            self.daemon.clone(),
+            config,
+            "Agent update".into(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        );
+        Some((address, client, lifetime))
+    }
+
     pub(crate) fn catalog(&self) -> ClientResult<Catalog> {
         self.action("catalog", ActionRequest::Catalog { id: 0 })
     }

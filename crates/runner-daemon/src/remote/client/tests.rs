@@ -483,6 +483,7 @@ impl crate::companion::core::Core for TestCore {
             return Err(crate::companion::core::Failure(
                 c::ErrorCode::NotFound,
                 "Terminal has stopped.",
+                None,
             ));
         }
         let terminal = self.clone().terminal(target, history)?;

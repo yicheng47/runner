@@ -9,7 +9,7 @@ mod project;
 mod start_chat;
 #[cfg(test)]
 pub(crate) mod tests;
-mod transport;
+pub(crate) mod transport;
 mod usage;
 mod workspace;
 

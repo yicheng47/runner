@@ -133,6 +133,11 @@ pub fn status_list(
                 effective_source,
                 state,
                 invalid_reason,
+                below_minimum: versions::below_minimum(
+                    installed_version.as_deref(),
+                    runtime.min_version,
+                ),
+                min_version: runtime.min_version.map(str::to_owned),
                 installed_version,
                 available_version,
             }

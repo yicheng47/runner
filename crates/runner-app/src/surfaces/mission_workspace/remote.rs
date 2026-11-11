@@ -391,7 +391,26 @@ impl MissionWorkspace {
         remote_ids: impl FnOnce(T) -> Vec<String>,
         cx: &mut Context<Self>,
     ) -> Option<Result<T, String>> {
+        self.complete_mission_action_observed(action, result, remote_ids, |_, _, _| {}, cx)
+    }
+
+    pub(super) fn complete_mission_action_observed<T>(
+        &mut self,
+        action: MissionAction,
+        result: Result<T, String>,
+        remote_ids: impl FnOnce(T) -> Vec<String>,
+        observe: impl FnOnce(&mut Self, bool, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) -> Option<Result<T, String>> {
+        let succeeded = result.is_ok();
         if !action.remote {
+            if self.generation != action.generation
+                || self.client.target != action.client.target
+                || !action.client.valid()
+            {
+                return None;
+            }
+            observe(self, succeeded, cx);
             return Some(result);
         }
         let done = self.presentation.complete_action(
@@ -402,6 +421,7 @@ impl MissionWorkspace {
             result,
             remote_ids,
         )?;
+        observe(self, succeeded, cx);
         let MissionCompletion {
             key,
             client: guard,

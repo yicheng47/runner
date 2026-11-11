@@ -1321,6 +1321,19 @@ impl NativeRoot {
         }
     }
 
+    pub(crate) fn refresh_agents_tasks(
+        &self,
+        tasks: &[runner_core::protocol::RuntimeUpdateTask],
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(agents) = &self.settings_page.agents {
+            agents.update(cx, |agents, cx| {
+                agents.tasks = tasks.to_vec();
+                cx.notify();
+            });
+        }
+    }
+
     pub(crate) fn refresh_agents_pane(&self, cx: &mut Context<Self>) {
         if let Some(agents) = self.settings_page.agents.clone() {
             agents.update(cx, |pane, pane_cx| pane.refresh(pane_cx));

@@ -149,6 +149,10 @@ pub struct RuntimeExecutableStatus {
     /// npm's latest version when it is newer than `installed_version` and
     /// the runtime can update itself; its presence shows the Update button.
     pub available_version: Option<String>,
+    #[serde(default)]
+    pub min_version: Option<String>,
+    #[serde(default)]
+    pub below_minimum: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +201,15 @@ pub struct RuntimeCatalogOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuntimeCatalogEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub below_minimum: bool,
+
     pub name: Runtime,
     pub display_name: String,
     pub command: String,
@@ -217,6 +230,14 @@ impl<'de> Deserialize<'de> for RuntimeCatalogEntry {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
         struct Fields {
+            #[serde(default)]
+            installed_version: Option<String>,
+            #[serde(default)]
+            available_version: Option<String>,
+            #[serde(default)]
+            min_version: Option<String>,
+            #[serde(default)]
+            below_minimum: bool,
             name: Runtime,
             display_name: String,
             command: String,
@@ -236,6 +257,10 @@ impl<'de> Deserialize<'de> for RuntimeCatalogEntry {
             .map(|catalog| catalog.capabilities)
             .unwrap_or_default();
         Ok(Self {
+            installed_version: fields.installed_version,
+            available_version: fields.available_version,
+            min_version: fields.min_version,
+            below_minimum: fields.below_minimum,
             name: fields.name,
             display_name: fields.display_name,
             command: fields.command,
@@ -262,6 +287,7 @@ pub struct RuntimeCatalog {
     pub capabilities: RuntimeCapabilities,
     pub skills_dirs: &'static [&'static str],
     pub update_args: &'static [&'static str],
+    pub min_version: Option<&'static str>,
     pub npm_package: Option<&'static str>,
     pub description: &'static str,
     pub install_url: &'static str,
@@ -273,6 +299,10 @@ pub struct RuntimeCatalog {
 impl RuntimeCatalog {
     pub fn into_entry(self) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
+            installed_version: None,
+            available_version: None,
+            min_version: self.min_version.map(str::to_owned),
+            below_minimum: false,
             name: self.name,
             display_name: self.display_name.into(),
             command: self.command.into(),
@@ -329,4 +359,53 @@ pub fn filter_selectable_runtime_catalog(
             enabled && runtime.available
         })
         .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[error("{runtime} {installed_version} is too old for Runner. Runner needs {min_version} or newer. Update {runtime} in Settings → Agents.")]
+pub struct RuntimeVersionGate {
+    pub runtime: Runtime,
+    pub installed_version: String,
+    pub min_version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeUpdateState {
+    Running,
+    MayNeedInput,
+    Verifying,
+    Stopping,
+    Succeeded,
+    Failed,
+    BrokenAfterStop,
+}
+impl RuntimeUpdateState {
+    pub fn active(self) -> bool {
+        matches!(
+            self,
+            Self::Running | Self::MayNeedInput | Self::Verifying | Self::Stopping
+        )
+    }
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::MayNeedInput => 0,
+            Self::Failed | Self::BrokenAfterStop => 1,
+            Self::Running | Self::Verifying | Self::Stopping => 2,
+            Self::Succeeded => 3,
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeUpdateTask {
+    pub id: String,
+    pub runtime: Runtime,
+    pub from_version: Option<String>,
+    pub to_version: Option<String>,
+    pub state: RuntimeUpdateState,
+    pub step: String,
+    pub message: Option<String>,
+    pub exit_code: Option<i32>,
+    pub installed_version: Option<String>,
+    pub running_sessions: usize,
 }

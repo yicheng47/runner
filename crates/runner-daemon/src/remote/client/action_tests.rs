@@ -157,6 +157,7 @@ impl Host {
             .request("2".into(), message)
             .await
             .map(|reply| reply.result)
+            .map_err(|error| error.message)
     }
     async fn ok(&self, value: Value) -> Value {
         let kind = value["type"].as_str().unwrap_or("unknown").to_owned();
@@ -1609,4 +1610,95 @@ async fn usage_is_forwarded_with_the_negotiated_features() {
     assert!(result.features.iter().any(|feature| feature == "usage"));
     let usage: c::Usage = serde_json::from_value(result.result).unwrap();
     assert!(usage.agents.is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_launch_refusal_keeps_the_typed_runtime_version_gate() {
+    use std::os::unix::fs::PermissionsExt;
+    let host = Host::new().await;
+    let executable = host._root.path().join("codex-fixture");
+    std::fs::write(&executable, "#!/bin/sh\necho 'codex-cli 0.147.0'\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::db::set_runtime_override(&host.core.db, "codex", executable.to_str()).unwrap();
+    host.core
+        .runtime_discovery
+        .write()
+        .unwrap()
+        .versions
+        .set_installed(
+            runner_core::protocol::Runtime::Codex,
+            executable.to_str().unwrap(),
+            Some("0.147.0"),
+        );
+    let request = c::ClientMessage::decode(&serde_json::to_vec(&json!({"type":"startChat","id":1,"runtime":"codex","cwd":host.path(),"cols":80,"rows":24})).unwrap()).unwrap();
+    let error = host
+        .fixture
+        .client
+        .request("2".into(), request)
+        .await
+        .unwrap_err();
+    let gate = error
+        .version_gate
+        .expect("remote refusal lost its typed recovery details");
+    assert_eq!(gate.runtime, runner_core::protocol::Runtime::Codex);
+    assert_eq!(gate.installed_version, "0.147.0");
+    assert_eq!(gate.min_version, "0.149.0");
+    assert!(error.message.contains("Settings → Agents"));
+
+    let mission = {
+        let mut conn = host.core.db.get().unwrap();
+        let mission = crate::ops::mission::start(
+            &mut conn,
+            &host.core.app_data_dir,
+            runner_core::protocol::StartMissionInput {
+                crew_id: Some("crew".into()),
+                project_id: None,
+                title: "Old Codex mission".into(),
+                goal_override: None,
+                cwd: Some(host.path()),
+                started_by_session_id: None,
+                no_report: false,
+            },
+        )
+        .unwrap()
+        .mission;
+        let role = crate::ops::role::get(&conn, "role").unwrap();
+        let mut row = crate::test_support::test_session_row(
+            "old-codex",
+            crate::model::SessionStatus::Stopped,
+        );
+        row.mission_id = Some(mission.id.clone());
+        row.role_id = Some("role".into());
+        row.slot_id = Some("slot".into());
+        row.agent_runtime = Some("codex".into());
+        row.agent_command = Some("codex".into());
+        row.launch_definition = Some(crate::session::launch_definition::from_effective(&role));
+        crate::test_support::insert_session_row(&conn, &row).unwrap();
+        mission
+    };
+    let local = crate::daemon::InProcessTransport::client(host.core.as_ref().clone());
+    assert_eq!(
+        local
+            .mission_resume(&mission.id)
+            .unwrap_err()
+            .version_gate
+            .unwrap()
+            .installed_version,
+        "0.147.0"
+    );
+    let request = c::ClientMessage::decode(
+        &serde_json::to_vec(
+            &json!({"type":"resumeMission","id":2,"mission":mission.id,"cols":80,"rows":24}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = host
+        .fixture
+        .client
+        .request("2".into(), request)
+        .await
+        .unwrap_err();
+    assert_eq!(error.version_gate.unwrap().min_version, "0.149.0");
 }

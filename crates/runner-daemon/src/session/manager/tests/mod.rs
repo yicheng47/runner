@@ -30,6 +30,7 @@ mod startup;
 mod status;
 mod terminal_size;
 mod unlisted;
+mod version_gate;
 mod wake;
 #[cfg(windows)]
 mod windows_batch;

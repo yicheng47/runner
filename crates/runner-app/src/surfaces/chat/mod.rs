@@ -15,6 +15,14 @@ use crate::*;
 
 use runner_core::protocol::model::Runtime;
 
+#[derive(Clone)]
+pub(crate) struct ForkRequest {
+    pub(crate) client: crate::surfaces::front_page::FrontPageClient,
+    pub(crate) source: String,
+    title: Option<String>,
+    size: (u16, u16),
+}
+
 pub(super) fn tab_is_terminal(
     layout: &PaneLayout,
     runtime: impl Fn(&str) -> Option<Runtime>,
@@ -192,6 +200,16 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn retry_agent_fork(
+        &mut self,
+        request: ForkRequest,
+        launcher: Entity<crate::surfaces::start_chat::launcher::ChatLauncher>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.submit_agent_fork(request, Some(launcher), window, cx);
+    }
+
     pub(crate) fn confirm_fork_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let remote = self.front_page_client(cx).is_remote();
         let (source_session_id, title, size) = if remote {
@@ -219,46 +237,111 @@ impl NativeRoot {
             self.chat_error = None;
             (id, title, (INITIAL_COLS, INITIAL_ROWS))
         };
+        let request = ForkRequest {
+            client: self.front_page_client(cx),
+            source: source_session_id,
+            title,
+            size,
+        };
+        self.submit_agent_fork(request, None, window, cx);
+    }
+
+    fn submit_agent_fork(
+        &mut self,
+        request: ForkRequest,
+        launcher: Option<Entity<crate::surfaces::start_chat::launcher::ChatLauncher>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source_session_id = request.source.clone();
+        let retry_request = request.clone();
+        let reveal = launcher
+            .as_ref()
+            .is_none_or(|launcher| self.update_launcher_visible(launcher, cx));
         cx.notify();
-        let Some(operation) =
-            WorkspaceAction::prepare(self, format!("session:{source_session_id}"), &["fork"], cx)
-        else {
+        let Some(operation) = self.remote_client.prepare_action(
+            request.client.clone(),
+            format!("session:{source_session_id}"),
+            &["fork"],
+            cx,
+        ) else {
             return;
         };
+        cx.notify();
         let core = operation.client.clone();
         let backend_source_session_id = source_session_id.clone();
         let fork = cx.background_spawn(async move {
-            core.fork(&backend_source_session_id, title, size)
-                .map_err(|error| error.to_string())
+            let result = core.fork(&backend_source_session_id, request.title, request.size);
+            let gate = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.version_gate.clone());
+            (result.map_err(|error| error.to_string()), gate)
         });
         let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
-            let result = fork.await;
+            let (result, gate) = fork.await;
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) = WorkspaceAction::complete(
+                let Some(result) = WorkspaceAction::complete_observed(
                     this,
                     operation,
                     result,
                     |session| crate::surfaces::front_page::actions::Completion {
-                        session: Some(session),
+                        session: reveal.then_some(session),
                         ..Default::default()
+                    },
+                    |root, client, succeeded, cx| {
+                        root.record_session_gate(
+                            &client.target,
+                            &source_session_id,
+                            None,
+                            crate::surfaces::agent_recovery::RecoveryAction::Resume,
+                            succeeded,
+                        );
+                        if client.is_remote() {
+                            if let Some(gate) = gate.clone() {
+                                root.show_fork_update(
+                                    gate,
+                                    retry_request.clone(),
+                                    launcher.clone(),
+                                    window,
+                                    cx,
+                                );
+                            } else if succeeded {
+                                if let Some(launcher) = &launcher {
+                                    root.launchers.retain(|_, cached| cached != launcher);
+                                }
+                            }
+                        }
                     },
                     cx,
                 ) else {
                     return;
                 };
-                if this.remote_client.ui.epoch != origin_epoch {
+                if launcher.is_none() && this.remote_client.ui.epoch != origin_epoch {
                     this.forking_sessions.remove(&source_session_id);
                     cx.notify();
                     return;
                 }
-                this.fork_confirm = None;
+                if launcher.is_none() {
+                    this.fork_confirm = None;
+                }
                 match result {
                     Ok(spawned) => {
                         let session_id = spawned;
                         finish_fork_tracking(&mut this.forking_sessions, &session_id);
+                        let should_reveal = launcher.as_ref().map_or(reveal, |launcher| {
+                            this.update_launcher_visible(launcher, cx)
+                        });
+                        if let Some(launcher) = &launcher {
+                            this.launchers.retain(|_, cached| cached != launcher);
+                        }
                         let placement = (|| -> Result<()> {
                             this.refresh_sessions(cx);
+                            if !should_reveal {
+                                this.reload_tabs(cx)?;
+                                return Ok(());
+                            }
                             this.reload_tabs(cx)?;
                             this.tabs.activate_session(&session_id);
                             this.sync_active_project_from_active_tab(cx);
@@ -290,11 +373,21 @@ impl NativeRoot {
                         }
                         this.refresh_sessions(cx);
                         let _ = this.reload_tabs(cx);
-                        this.tabs.activate_session(&source_session_id);
-                        this.sync_active_project_from_active_tab(cx);
-                        let _ = this.ensure_active_tab_attached(window, cx);
-                        this.sync_active_chat_detail(cx);
-                        this.chat_error = Some(error.into());
+                        if launcher.is_none()
+                            || launcher
+                                .as_ref()
+                                .is_some_and(|launcher| this.update_launcher_visible(launcher, cx))
+                        {
+                            this.tabs.activate_session(&source_session_id);
+                            this.sync_active_project_from_active_tab(cx);
+                            let _ = this.ensure_active_tab_attached(window, cx);
+                            this.sync_active_chat_detail(cx);
+                        }
+                        if let Some(gate) = gate {
+                            this.show_fork_update(gate, retry_request, launcher, window, cx);
+                        } else {
+                            this.chat_error = Some(error.into());
+                        }
                     }
                 }
                 cx.notify();

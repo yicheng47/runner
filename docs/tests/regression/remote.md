@@ -80,6 +80,12 @@ Current authority: the [remote access guide](../../guide/guides/remote-access.md
 | REMOTE-MIS-03 | Arrange member tabs in a remote mission, then stop and resume it. | The members keep the window's arrangement through stop and resume. | both | account | full | [release checks §7](../archive/836-release-checks.md#7-missions-on-the-other-computer--pr-2) |
 | REMOTE-MIS-04 | Open a host running an earlier release that lacks an action the client offers. | The client hides that action's controls; the host's terminals stay usable. | both | account, human | full | [release checks §8](../archive/836-release-checks.md#8-older-host) |
 
+## Agent update recovery
+
+| ID | Case | Expected | Platform | Needs | Tier | Origin |
+| --- | --- | --- | --- | --- | --- | --- |
+| REMOTE-UPDATE-01 | On a safe scratch host with an executable override below Codex's minimum, refuse a chat resume, fork, mission resume and slot restart; use each recovery card to update with a deterministic fixture. Back up and restore host development settings. | Each refusal offers Update on the selected host; success retries the original operation once, and a slot restart stays a restart. Host update tasks never enter the local pill/list. Switching computers or opening later work does not redirect a saved local mission/fork or replace later focus. Record an unavailable safe host fixture as blocked. | both | account, computer-use, fixture | full | [#1165 verification](../../features/1165-agent-cli-version-gate.md#verification), [recovery](../../../crates/runner-app/src/surfaces/agent_recovery.rs) |
+
 ## Retired
 
 | ID | Case | Expected | Platform | Needs | Tier | Origin |

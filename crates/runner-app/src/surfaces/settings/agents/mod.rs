@@ -102,6 +102,7 @@ pub(crate) struct AgentsPane {
     last_mcp: Option<Runtime>,
     accounts: Entity<super::claude_accounts::AccountsSection>,
     status: Option<RuntimeStatusResponse>,
+    pub(crate) tasks: Vec<runner_core::protocol::RuntimeUpdateTask>,
     catalog: Vec<RuntimeCatalogEntry>,
     error: Option<String>,
     loading: bool,
@@ -227,7 +228,13 @@ impl AgentsPane {
         subscriptions.push(cx.observe(&skills, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&mcp, |_, _, cx| cx.notify()));
 
+        let tasks = app_store
+            .read(cx)
+            .client
+            .runtime_task_list()
+            .unwrap_or_default();
         Self {
+            tasks,
             shell,
             app_store,
             accounts,
@@ -316,24 +323,10 @@ impl AgentsPane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (Some(installed), Some(available)) = (
-            runtime.installed_version.clone(),
-            runtime.available_version.clone(),
-        ) else {
-            return;
-        };
-        let request = crate::surfaces::agent_update::AgentUpdateRequest {
-            runtime: runtime.name,
-            display_name: runtime.display_name.clone(),
-            command: runtime.command.clone(),
-            installed,
-            available,
-        };
+        let name = runtime.name;
         let shell = self.shell.clone();
-        window.defer(cx, move |window, cx| {
-            let _ = shell.update(cx, |root, root_cx| {
-                root.open_agent_update(request, window, root_cx)
-            });
+        window.defer(cx, move |_, cx| {
+            let _ = shell.update(cx, |root, cx| root.start_agent_update(name, cx));
         });
     }
 
@@ -823,6 +816,8 @@ mod tests {
             invalid_reason: None,
             installed_version: None,
             available_version: None,
+            min_version: Some("0.149.0".into()),
+            below_minimum: false,
         }
     }
 
@@ -1120,6 +1115,10 @@ mod tests {
         runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .map(|entry| RuntimeCatalogEntry {
+                installed_version: None,
+                available_version: None,
+                min_version: None,
+                below_minimum: false,
                 name: entry.name,
                 capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                     entry.name,
@@ -1684,6 +1683,10 @@ mod tests {
     #[test]
     fn unavailable_default_waits_for_discovery_then_clears() {
         let catalog = vec![RuntimeCatalogEntry {
+            installed_version: None,
+            available_version: None,
+            min_version: None,
+            below_minimum: false,
             name: Runtime::Codex,
             capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::Codex,

@@ -88,6 +88,7 @@ impl ClientMessage {
 
     fn bad_request(id: Option<u64>, message: &str) -> Box<ErrorMessage> {
         Box::new(ErrorMessage {
+            version_gate: None,
             id,
             code: ErrorCode::BadRequest,
             message: message.into(),
@@ -393,6 +394,7 @@ pub struct UnknownRequest {
 impl UnknownRequest {
     pub fn response(&self) -> HostMessage {
         HostMessage::Error(ErrorMessage {
+            version_gate: None,
             id: Some(self.id),
             code: ErrorCode::UnknownRequest,
             message: "The host does not serve that request.".into(),

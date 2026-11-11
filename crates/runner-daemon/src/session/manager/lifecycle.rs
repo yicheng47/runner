@@ -263,8 +263,14 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
     ) -> Result<()> {
-        // Keep the sequence counter monotonic across a later respawn under
-        // this database id. The terminal registry releases the exited Term.
+        let retain_terminal = self
+            .runtime_updates
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .any(|task| task.id == session_id);
+        // Update tasks retain output until dismissal or their success timeout.
         if let Some(state) = self.session_state(session_id) {
             let gate = state.lock().unwrap().delivery_gate.clone();
             let mut delivery = gate.state.lock().unwrap();
@@ -282,7 +288,9 @@ impl SessionManager {
                 gate.ready.notify_all();
                 state.handle = None;
                 state.finish_companion_terminals();
-                state.terminal = None;
+                if !retain_terminal {
+                    state.terminal = None;
+                }
                 state.terminal_input = None;
                 for (_, queue) in state.subscribers.drain(..) {
                     queue.close();

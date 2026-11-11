@@ -37,6 +37,7 @@ pub struct SessionOverlay {
     primary_visible: bool,
     secondary_visible: bool,
     primary_selector: Option<SharedString>,
+    subtitle_selector: Option<SharedString>,
     resume_shortcut: Option<SharedString>,
 }
 
@@ -54,6 +55,7 @@ impl SessionOverlay {
             primary_visible: true,
             secondary_visible: true,
             primary_selector: None,
+            subtitle_selector: None,
             resume_shortcut: None,
             ended_style: EndedStyle::Chat,
         }
@@ -76,6 +78,7 @@ impl SessionOverlay {
             primary_visible: true,
             secondary_visible: true,
             primary_selector: None,
+            subtitle_selector: None,
             resume_shortcut: None,
             ended_style: EndedStyle::Chat,
         }
@@ -89,6 +92,11 @@ impl SessionOverlay {
 
     pub fn primary_debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
         self.primary_selector = Some(selector.into());
+        self
+    }
+
+    pub fn subtitle_debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.subtitle_selector = Some(selector.into());
         self
     }
 
@@ -119,7 +127,9 @@ impl SessionOverlay {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stopped_chat_card(
+    primary_label: SharedString,
     id: SharedString,
     title: SharedString,
     subtitle: SharedString,
@@ -127,6 +137,7 @@ fn stopped_chat_card(
     shortcut: Option<SharedString>,
     primary_visible: bool,
     primary_selector: Option<SharedString>,
+    subtitle_selector: Option<SharedString>,
 ) -> gpui::AnyElement {
     gpui::container_query(move |size, window, _| {
         let zoom = f32::from(window.rem_size()) / 16.;
@@ -166,12 +177,7 @@ fn stopped_chat_card(
                 f32::from(style.line_height_in_pixels(window.rem_size())).ceil(),
             )
         };
-        let (resume_width, _, resume_line) = measure(
-            crate::i18n::text("ui.resume"),
-            14.,
-            FontWeight::MEDIUM,
-            None,
-        );
+        let (resume_width, _, resume_line) = measure(&primary_label, 14., FontWeight::MEDIUM, None);
         let (shortcut_width, _, shortcut_line) =
             shortcut.as_ref().map_or((0., 0, 0.), |shortcut| {
                 measure(shortcut, 11., FontWeight::MEDIUM, None)
@@ -306,7 +312,12 @@ fn stopped_chat_card(
                     }))
                     .children((reason_limit > 0).then(|| {
                         div()
-                            .debug_selector(|| "SESSION_ENDED_SUBTITLE".into())
+                            .debug_selector(|| {
+                                subtitle_selector
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| "SESSION_ENDED_SUBTITLE".into())
+                            })
                             .w_full()
                             .min_w_0()
                             .flex_none()
@@ -329,7 +340,7 @@ fn stopped_chat_card(
                             .child(
                                 Button::new(
                                     SharedString::from(format!("{id}-resume")),
-                                    crate::i18n::text("ui.resume"),
+                                    primary_label.clone(),
                                 )
                                 .icon("play.svg")
                                 .variant(ButtonVariant::Primary)
@@ -446,6 +457,8 @@ impl RenderOnce for SessionOverlay {
                 let slot = self.ended_style == EndedStyle::Slot;
                 if self.ended_style == EndedStyle::Chat {
                     return stopped_chat_card(
+                        self.label
+                            .unwrap_or_else(|| crate::i18n::text("ui.resume").into()),
                         id,
                         title,
                         subtitle,
@@ -453,6 +466,7 @@ impl RenderOnce for SessionOverlay {
                         self.resume_shortcut,
                         self.primary_visible,
                         self.primary_selector,
+                        self.subtitle_selector,
                     );
                 }
                 let primary_click = Rc::clone(&primary);

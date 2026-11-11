@@ -83,3 +83,11 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 - A resume key identifies the runtime's conversation. The runtime must still have that conversation history. Working/idle and needs-input indicators depend on the runtime's reporting and do not certify completion of a task.
 
 See [Sessions](../concepts/sessions.md) for lifecycle behavior and [Troubleshooting](../guides/troubleshooting.md) for detection and resume problems.
+
+## Minimum versions and agent updates
+
+Codex needs **0.149.0 or newer** for Runner's launch hooks. The launcher marks only an older Codex’s agent row **Update needed**; role rows have no update labels or actions. The notice explains that starting Codex or a role using it updates Codex first and leaves the pane waiting; the chat starts when the update succeeds. A refused resume or fork offers the same recovery. An unknown version is allowed to try launching.
+
+When a supported agent has a newer version, only its agent row shows the installed and available versions with **Update**; its roles keep their normal rows. You can still start chats on the supported installed version. A dot on the sidebar's Settings gear opens **Settings → Agents** and covers enabled agents with an update command, including those without a usage meter.
+
+Manual updates run as [background tasks](../guides/chats-and-windows.md#background-tasks). Starting the same update again joins the existing task. Running chats keep their current executable version until they restart. These controls update agent CLIs; Runner's own updates remain in **Settings → Updates**. Automatic agent updates are separate work.

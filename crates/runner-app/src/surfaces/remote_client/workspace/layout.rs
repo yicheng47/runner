@@ -280,6 +280,23 @@ impl RemoteClient {
         })
     }
 
+    pub(crate) fn startup_error(
+        &self,
+        id: &str,
+        cx: &App,
+    ) -> Option<runner_core::protocol::StartupError> {
+        let remote = self.workspace.as_ref()?;
+        let state = self.app_store.read(cx).remote_clients.read(cx);
+        state
+            .overviews
+            .get(&remote.computer.id)?
+            .sessions
+            .get(id)?
+            .status
+            .startup_error
+            .clone()
+    }
+
     pub(crate) fn status(
         &self,
         id: &str,

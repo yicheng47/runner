@@ -17,11 +17,33 @@ pub enum Error {
     #[error("direct input timed out after {timeout_ms} ms waiting for session {session_id}")]
     DirectInputTimeout { session_id: String, timeout_ms: u64 },
 
+    #[error(transparent)]
+    RuntimeVersionGate(#[from] runner_core::protocol::runtime::RuntimeVersionGate),
+
     #[error("{0}")]
     Msg(String),
 }
 
 impl Error {
+    pub fn context(self, context: &str) -> Self {
+        match self {
+            Self::RuntimeVersionGate(_) => self,
+            error => Self::msg(format!("{context}: {error}")),
+        }
+    }
+
+    pub fn into_client_error(self) -> runner_core::protocol::ClientError {
+        let message = self.to_string();
+        let version_gate = match self {
+            Self::RuntimeVersionGate(gate) => Some(gate),
+            _ => None,
+        };
+        runner_core::protocol::ClientError {
+            message,
+            version_gate,
+        }
+    }
+
     pub fn msg(s: impl Into<String>) -> Self {
         Error::Msg(s.into())
     }
@@ -50,6 +72,9 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 impl From<runner_core::protocol::ClientError> for Error {
     fn from(error: runner_core::protocol::ClientError) -> Self {
-        Self::msg(error.message)
+        match error.version_gate {
+            Some(gate) => Self::RuntimeVersionGate(gate),
+            None => Self::msg(error.message),
+        }
     }
 }

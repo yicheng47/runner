@@ -57,6 +57,7 @@ impl VersionRange {
             .max()
             .ok_or_else(|| {
                 Box::new(ErrorMessage {
+                    version_gate: None,
                     id: None,
                     code: ErrorCode::UnsupportedVersion,
                     message: "No supported companion protocol version in common.".into(),
@@ -97,6 +98,8 @@ wire_enum!(ErrorCode, Failed, {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_gate: Option<crate::protocol::RuntimeVersionGate>,
     pub id: Option<u64>,
     pub code: ErrorCode,
     pub message: String,

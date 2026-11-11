@@ -2066,6 +2066,10 @@ mod tests {
     #[test]
     fn runtime_select_hides_unavailable_catalog_entries() {
         let mut catalog = vec![RuntimeCatalogEntry {
+            installed_version: None,
+            available_version: None,
+            min_version: None,
+            below_minimum: false,
             name: Runtime::Codex,
             capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::Codex,

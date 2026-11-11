@@ -419,7 +419,7 @@ impl Client {
         &self,
         computer: String,
         mut request: c::ClientMessage,
-    ) -> Result<remote::RemoteResult> {
+    ) -> runner_core::protocol::ClientResult<remote::RemoteResult> {
         if matches!(
             request,
             c::ClientMessage::Hello(_)
@@ -446,7 +446,8 @@ impl Client {
         let route = self.route(&id).await?;
         let value = route
             .request(|id| c::ClientMessage::Overview(c::OverviewRequest { id }))
-            .await?;
+            .await
+            .map_err(|error| error.message)?;
         serde_json::from_value(value).map_err(|_| "Invalid remote overview".into())
     }
     pub async fn follow(&self, id: String, owner: u64, follow: bool) -> Result<()> {
@@ -544,6 +545,7 @@ impl Client {
             })
             .await
             .map(|_| ())
+            .map_err(|error| error.message)
     }
 }
 fn pairing_label(name: &str) -> &str {

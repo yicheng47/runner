@@ -18,6 +18,7 @@ pub(crate) fn agent_status(status: &SessionStatus) -> runner_core::protocol::Age
     let marker = i64::MAX;
     let kind = status.status.effective();
     AgentStatus {
+        startup_error: status.startup_error.clone(),
         lifecycle: match kind {
             Status::Starting => Lifecycle::Starting,
             Status::Stopped => Lifecycle::Stopped,

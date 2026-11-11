@@ -803,7 +803,7 @@ pub fn session_resume(
             state.db.clone(),
             emitter,
         )
-        .map_err(|e| Error::msg(format!("session_resume: {e}")))?;
+        .map_err(|e| e.context("session_resume"))?;
     state.events.emit(
         "session/updated",
         &crate::session::manager::SessionUpdatedEvent {
@@ -843,7 +843,7 @@ pub fn session_restart(
             state.db.clone(),
             Arc::new(state.session_events()),
         )
-        .map_err(|error| Error::msg(format!("session_restart: {error}")))?;
+        .map_err(|error| error.context("session_restart"))?;
     if let Err(error) = router.record_slot_restart(
         &spawned.handle,
         session_id,
@@ -890,7 +890,7 @@ pub fn session_fork(
             state.db.clone(),
             emitter,
         )
-        .map_err(|error| Error::msg(format!("session_fork: {error}")))?;
+        .map_err(|error| error.context("session_fork"))?;
     log::info!(
         "session_fork: source={source_session_id} new={} cols={cols:?} rows={rows:?}",
         spawned.id
@@ -945,7 +945,7 @@ pub fn session_resume_on_launch(
     }
     let spawned = result.map_err(|error| {
         log::warn!("session_resume: automatic resume of {session_id} failed: {error}");
-        Error::msg(format!("session_resume: {error}"))
+        error.context("session_resume")
     })?;
     state.events.emit(
         "session/updated",
@@ -1052,7 +1052,7 @@ fn spawn_direct_chat(
             emitter,
             first_turn,
         )
-        .map_err(|e| Error::msg(format!("session_start_direct: {e}")))?;
+        .map_err(|e| e.context("session_start_direct"))?;
     Ok(StartDirectSessionOutput {
         session,
         project_id,
@@ -1147,7 +1147,7 @@ pub fn session_start_runtime_with_speed(
             state.db.clone(),
             emitter,
         )
-        .map_err(|e| Error::msg(format!("session_start_runtime: {e}")))?;
+        .map_err(|e| e.context("session_start_runtime"))?;
     state.events.emit(
         "session/updated",
         &serde_json::json!({ "session_id": spawned.id }),

@@ -626,6 +626,10 @@ pub(super) mod tests {
 
     fn runtime(name: &str, efforts: &[&str]) -> RuntimeCatalogEntry {
         RuntimeCatalogEntry {
+            installed_version: None,
+            available_version: None,
+            min_version: None,
+            below_minimum: false,
             name: Runtime::parse(name).unwrap(),
             capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                 Runtime::parse(name).unwrap(),

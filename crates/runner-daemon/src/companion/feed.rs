@@ -154,6 +154,7 @@ fn select_page(request: FeedRequest, events: impl IntoIterator<Item = Event>) ->
         return Err(Failure(
             ErrorCode::BadRequest,
             "The feed cursor is no longer available.",
+            None,
         ));
     }
     let before = older.then(|| entries.front().unwrap().0.id.clone());
@@ -176,6 +177,7 @@ impl DaemonCore {
             return Err(Failure(
                 ErrorCode::NotFound,
                 "That question is no longer pending.",
+                None,
             ));
         }
         crate::daemon::block_on(crate::ops::mission::mission_signal_impl(

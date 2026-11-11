@@ -308,6 +308,13 @@ pub fn unbatched_status_semantics() -> StatusSemantics {
 }
 
 pub trait RuntimeAdapter: Send + Sync {
+    fn classify_startup_error(
+        &self,
+        _output: &str,
+    ) -> Option<runner_core::protocol::status::StartupError> {
+        None
+    }
+
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics::default()
     }

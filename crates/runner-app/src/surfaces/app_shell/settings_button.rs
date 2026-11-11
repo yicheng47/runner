@@ -3,10 +3,12 @@ use super::*;
 impl NativeRoot {
     pub(crate) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
+        let update = update_dot_visible(&self.agent_updates, self.settings(cx));
         div()
             .id("sidebar-settings")
             .debug_selector(|| "SIDEBAR_SETTINGS".into())
             .tab_index(0)
+            .relative()
             .flex_none()
             .size(px(32. * zoom))
             .flex()
@@ -18,14 +20,12 @@ impl NativeRoot {
             .hover(|button| button.bg(theme::chrome_hover()))
             .focus_visible(|button| button.bg(theme::chrome_hover()))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(
-                cx.listener(|root, _, window, cx| {
-                    root.open_this_computer_settings(None, window, cx)
-                }),
-            )
-            .on_key_down(cx.listener(|root, event: &KeyDownEvent, window, cx| {
+            .on_click(cx.listener(move |root, _, window, cx| {
+                root.open_this_computer_settings(update.then_some("agents"), window, cx)
+            }))
+            .on_key_down(cx.listener(move |root, event: &KeyDownEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                    root.open_this_computer_settings(None, window, cx);
+                    root.open_this_computer_settings(update.then_some("agents"), window, cx);
                     cx.stop_propagation();
                 }
             }))
@@ -35,6 +35,16 @@ impl NativeRoot {
                     .size(px(16. * zoom))
                     .text_color(theme::muted()),
             )
+            .children(update.then(|| {
+                div()
+                    .debug_selector(|| "SIDEBAR_SETTINGS_UPDATE_DOT".into())
+                    .absolute()
+                    .top(px(5. * zoom))
+                    .right(px(5. * zoom))
+                    .size(px(6. * zoom))
+                    .rounded_full()
+                    .bg(theme::accent())
+            }))
             .into_any_element()
     }
 }
