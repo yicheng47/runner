@@ -105,6 +105,8 @@ pub(super) struct Handle {
     pub cancel: CancellationToken,
     pub ready: Arc<AtomicBool>,
     pub features: Arc<std::sync::Mutex<Vec<String>>>,
+    viewports: Arc<std::sync::Mutex<std::collections::BTreeMap<String, c::ViewportRequest>>>,
+    viewport_ready: Arc<tokio::sync::Notify>,
     generation: Arc<AtomicU64>,
     next: Arc<AtomicU64>,
     failure: Arc<std::sync::Mutex<Option<String>>>,
@@ -113,6 +115,25 @@ pub(super) struct Handle {
     events: crate::events::EventChannel,
 }
 impl Handle {
+    pub fn viewport(&self, session: String, cols: u16, rows: u16) {
+        self.viewports.lock().unwrap().insert(
+            session.clone(),
+            c::ViewportRequest {
+                id: self.next_id(),
+                session,
+                cols,
+                rows,
+            },
+        );
+        self.viewport_ready.notify_one();
+    }
+
+    fn remember_viewports(&self, terminals: &mut terminal::Terminals) {
+        for (_, viewport) in std::mem::take(&mut *self.viewports.lock().unwrap()) {
+            terminals.viewport(&c::ClientMessage::Viewport(viewport));
+        }
+    }
+
     pub fn failure(&self) -> String {
         self.failure
             .lock()
@@ -124,6 +145,18 @@ impl Handle {
         self.next.fetch_add(1, Ordering::Relaxed)
     }
     pub async fn send(&self, command: Command) -> Result<()> {
+        match &command {
+            Command::Request(
+                c::ClientMessage::TakeControl(request) | c::ClientMessage::Viewport(request),
+                _,
+            ) => {
+                self.viewports.lock().unwrap().remove(&request.session);
+            }
+            Command::Attach(config, _) => {
+                self.viewports.lock().unwrap().remove(&config.session);
+            }
+            _ => {}
+        }
         self.tx.send(command).await.map_err(|_| self.failure())
     }
     pub async fn request(
@@ -323,6 +356,8 @@ pub(super) fn spawn(
         cancel: client.0.cancel.child_token(),
         ready: Arc::new(AtomicBool::new(false)),
         features: Default::default(),
+        viewports: Default::default(),
+        viewport_ready: Default::default(),
         generation: Arc::new(AtomicU64::new(0)),
         next: Arc::new(AtomicU64::new(1)),
         failure: Default::default(),
@@ -574,6 +609,26 @@ impl Session {
         self.outgoing.push_back(Outgoing { bytes, input: None });
         Ok(())
     }
+    fn viewport(
+        &mut self,
+        handle: &Handle,
+        terminals: &mut terminal::Terminals,
+        commands: &mpsc::Receiver<Command>,
+    ) -> Result<()> {
+        if commands.is_empty()
+            && !self.records.sending()
+            && self.outgoing.is_empty()
+            && self.records.send_credit() > 0
+        {
+            let viewport = handle.viewports.lock().unwrap().pop_first();
+            if let Some((_, viewport)) = viewport {
+                let message = c::ClientMessage::Viewport(viewport);
+                terminals.viewport(&message);
+                self.queue(message)?;
+            }
+        }
+        Ok(())
+    }
     fn frame(&mut self) -> Result<Option<Frame>> {
         if !self.records.sending() {
             if let Some(outgoing) = self.outgoing.pop_front() {
@@ -776,6 +831,7 @@ async fn run(
                     break;
                 }
                 while inputs.try_recv().is_ok() {}
+                handle.remember_viewports(&mut terminals);
                 let delay = error.after.unwrap_or_else(|| reconnect_delay(attempt));
                 attempt = attempt.saturating_add(1);
                 tokio::select! { _ = handle.cancel.cancelled() => break, _ = tokio::time::sleep(delay) => {} }
@@ -822,10 +878,10 @@ async fn run(
                 while let Ok((target, sent)) = session.writer.sent.try_recv() { session.echo.input(&target, sent); }
                 let writer_full = loop {
                     match tx.try_reserve() {
-                        Ok(permit) => match session.frame()? {
+                        Ok(permit) => { session.viewport(&handle, &mut terminals, &commands)?; match session.frame()? {
                             Some(frame) => { permit.send(frame); }
                             None => break false,
-                        },
+                        } },
                         Err(mpsc::error::TrySendError::Full(_)) => break true,
                         Err(_) => return Err("Remote route closed".into()),
                     }
@@ -843,6 +899,7 @@ async fn run(
                     result = &mut session.writer.task => return result.map_err(|_| "Remote route writer stopped".to_owned())?,
                     permit = tx.reserve(), if writer_full => {
                         let permit = permit.map_err(|_| "Remote route closed")?;
+                        session.viewport(&handle, &mut terminals, &commands)?;
                         if let Some(frame) = session.frame()? { permit.send(frame); }
                     }
                     _ = tokio::time::sleep_until(deadline) => session.expire(&mut terminals, Instant::now()),
@@ -866,6 +923,7 @@ async fn run(
                             session.latency.sent(id, now);
                         }
                     }
+                    _ = handle.viewport_ready.notified() => {},
                     command = commands.recv() => {
                         last_use = Instant::now();
                         match command.ok_or("Remote channel closed")? {
@@ -974,6 +1032,7 @@ async fn run(
                 Command::Detach(target, subscriber) => terminals.remove(&target, subscriber),
             }
         }
+        handle.remember_viewports(&mut terminals);
         if handle.cancel.is_cancelled() || outcome.is_ok() || !signed_in(&status.borrow()) {
             break;
         }
@@ -1031,6 +1090,8 @@ mod tests {
             cancel: CancellationToken::new(),
             ready: Arc::new(AtomicBool::new(true)),
             features: Default::default(),
+            viewports: Default::default(),
+            viewport_ready: Default::default(),
             generation: Arc::new(AtomicU64::new(1)),
             next: Arc::new(AtomicU64::new(100)),
             failure: Default::default(),
@@ -1151,6 +1212,196 @@ mod tests {
         );
         assert!(terminals.is_empty());
         assert!(!session.writer.task.is_finished());
+    }
+
+    #[tokio::test]
+    async fn viewport_bursts_keep_the_last_size_until_the_writer_can_send() {
+        let (mut session, handle) = session().await;
+        let (_, commands) = mpsc::channel(32);
+        let mut terminals = terminal::Terminals::default();
+        for cols in 80..1000 {
+            handle.viewport("terminal".into(), cols, 30);
+        }
+        handle.viewport("other".into(), 100, 40);
+        assert_eq!(handle.viewports.lock().unwrap().len(), 2);
+        assert_eq!(handle.viewports.lock().unwrap()["terminal"].cols, 999);
+        session
+            .queue(c::ClientMessage::TakeControl(c::ViewportRequest {
+                id: 1,
+                session: "terminal".into(),
+                cols: 80,
+                rows: 24,
+            }))
+            .unwrap();
+        session
+            .queue(c::ClientMessage::TakeControl(c::ViewportRequest {
+                id: 2,
+                session: "terminal".into(),
+                cols: 81,
+                rows: 25,
+            }))
+            .unwrap();
+        session
+            .viewport(&handle, &mut terminals, &commands)
+            .unwrap();
+        assert_eq!(session.outgoing.len(), 2);
+        assert_eq!(handle.viewports.lock().unwrap().len(), 2);
+        assert!(session.frame().unwrap().is_some());
+        assert!(session.frame().unwrap().is_some());
+        session
+            .viewport(&handle, &mut terminals, &commands)
+            .unwrap();
+        let first: c::ClientMessage = serde_json::from_slice(&session.outgoing[0].bytes).unwrap();
+        assert!(matches!(
+            first,
+            c::ClientMessage::Viewport(c::ViewportRequest {
+                cols: 100,
+                rows: 40,
+                ..
+            })
+        ));
+        session.frame().unwrap().unwrap();
+        session
+            .viewport(&handle, &mut terminals, &commands)
+            .unwrap();
+        let last: c::ClientMessage = serde_json::from_slice(&session.outgoing[0].bytes).unwrap();
+        assert!(matches!(
+            last,
+            c::ClientMessage::Viewport(c::ViewportRequest {
+                cols: 999,
+                rows: 30,
+                ..
+            })
+        ));
+        assert!(handle.viewports.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unsent_viewport_is_remembered_for_reattach_after_the_route_drops() {
+        let (mut old, handle) = session().await;
+        let (_, commands) = mpsc::channel(32);
+        let mut terminals = terminal::Terminals::default();
+        let (reply, _) = oneshot::channel();
+        terminals
+            .attach(
+                RemoteTerminal {
+                    computer: "2".into(),
+                    session: "terminal".into(),
+                    cols: 80,
+                    rows: 24,
+                    take_control: true,
+                },
+                reply,
+                &mut old,
+                &handle,
+            )
+            .unwrap();
+        old.frame().unwrap().unwrap();
+        old.records.queue(vec![42; c::MAX_MESSAGE_SIZE]).unwrap();
+        old.records.next_frame().unwrap().unwrap();
+        assert!(old.records.sending());
+        handle.viewport("terminal".into(), 120, 50);
+        old.viewport(&handle, &mut terminals, &commands).unwrap();
+        assert_eq!(handle.viewports.lock().unwrap().len(), 1);
+        terminals.disconnected("test route loss");
+        handle.remember_viewports(&mut terminals);
+        drop(old);
+        let (mut fresh, _) = session().await;
+        terminals.reattach(&mut fresh, &handle).unwrap();
+        let attach: c::ClientMessage = serde_json::from_slice(&fresh.outgoing[0].bytes).unwrap();
+        assert!(matches!(
+            attach,
+            c::ClientMessage::Attach(c::AttachRequest {
+                cols: 120,
+                rows: 50,
+                control: c::ControlMode::IfFree,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_later_viewport_cannot_overtake_an_attach_or_take_control_in_the_command_queue() {
+        for attach in [false, true] {
+            let (mut session, mut handle) = session().await;
+            let (tx, mut commands) = mpsc::channel(32);
+            handle.tx = tx;
+            let mut terminals = terminal::Terminals::default();
+            if attach {
+                let (reply, _) = oneshot::channel();
+                handle
+                    .send(Command::Attach(
+                        RemoteTerminal {
+                            computer: "2".into(),
+                            session: "terminal".into(),
+                            cols: 80,
+                            rows: 24,
+                            take_control: true,
+                        },
+                        reply,
+                    ))
+                    .await
+                    .unwrap();
+            } else {
+                let (reply, _) = oneshot::channel();
+                handle
+                    .send(Command::Request(
+                        c::ClientMessage::TakeControl(c::ViewportRequest {
+                            id: 1,
+                            session: "terminal".into(),
+                            cols: 80,
+                            rows: 24,
+                        }),
+                        reply,
+                    ))
+                    .await
+                    .unwrap();
+            }
+            handle.viewport("terminal".into(), 120, 50);
+            session
+                .viewport(&handle, &mut terminals, &commands)
+                .unwrap();
+            assert!(session.outgoing.is_empty());
+            assert_eq!(handle.viewports.lock().unwrap().len(), 1);
+            match commands.try_recv().unwrap() {
+                Command::Request(message, reply) => {
+                    terminals.viewport(&message);
+                    session.request(message, reply);
+                }
+                Command::Attach(config, reply) => terminals
+                    .attach(config, reply, &mut session, &handle)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            session
+                .viewport(&handle, &mut terminals, &commands)
+                .unwrap();
+            let first: c::ClientMessage =
+                serde_json::from_slice(&session.outgoing[0].bytes).unwrap();
+            match first {
+                c::ClientMessage::Attach(request) => {
+                    assert_eq!((request.cols, request.rows), (80, 24))
+                }
+                c::ClientMessage::TakeControl(request) => {
+                    assert_eq!((request.cols, request.rows), (80, 24))
+                }
+                _ => panic!("the later viewport overtook the earlier command"),
+            }
+            session.frame().unwrap().unwrap();
+            session
+                .viewport(&handle, &mut terminals, &commands)
+                .unwrap();
+            let last: c::ClientMessage =
+                serde_json::from_slice(&session.outgoing[0].bytes).unwrap();
+            assert!(matches!(
+                last,
+                c::ClientMessage::Viewport(c::ViewportRequest {
+                    cols: 120,
+                    rows: 50,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

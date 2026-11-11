@@ -2373,3 +2373,329 @@ async fn clipboard_and_selection_writes_both_complete_once() {
         "the latest write lands last, where both targets share one clipboard"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn overview_pushes_ignore_unchanged_state_and_status_but_keep_real_changes_and_replies() {
+    async fn settle(adapter: &mut Adapter) -> Vec<serde_json::Value> {
+        let mut messages = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                while let Some(bytes) = adapter.next(true).await.unwrap() {
+                    messages.push(serde_json::from_slice(&bytes).unwrap());
+                }
+                if adapter.events.is_empty()
+                    && adapter.overview_due.is_none()
+                    && adapter.overview_work.is_none()
+                    && adapter.status_work.is_none()
+                {
+                    break;
+                }
+                adapter.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        messages
+    }
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    adapter.initialize().await.unwrap();
+    fake.events.emit("session/status-changed", &());
+    assert_eq!(
+        settle(&mut adapter)
+            .await
+            .iter()
+            .filter(|m| m["type"] == "overview")
+            .count(),
+        1
+    );
+    fake.events.emit("event/appended", &());
+    assert!(settle(&mut adapter).await.is_empty());
+    {
+        let mut overview = fake.overview.lock().unwrap();
+        let session = overview.sessions.values_mut().next().unwrap();
+        session.status.unread = !session.status.unread;
+        session.status.interrupted_since = Some(123);
+    }
+    fake.events.emit("session/status-changed", &());
+    let messages = settle(&mut adapter).await;
+    assert!(messages.iter().any(|m| m["type"] == "status"));
+    assert!(!messages.iter().any(|m| m["type"] == "overview"));
+    for change in 0..5 {
+        {
+            let mut overview = fake.overview.lock().unwrap();
+            match change {
+                0 => {
+                    let mut tab = overview.tabs[0].clone();
+                    tab.id = "new-chat".into();
+                    overview.tabs.push(tab);
+                }
+                1 => overview.tabs.last_mut().unwrap().name = "renamed".into(),
+                2 => {
+                    overview.tabs.pop();
+                }
+                3 => {
+                    let mut mission = overview.missions[0].clone();
+                    mission.id = "new-mission".into();
+                    overview.missions.push(mission);
+                }
+                _ => {
+                    let mut project = overview.projects[0].clone();
+                    project.id = "new-project".into();
+                    overview.projects.push(project);
+                }
+            }
+        }
+        fake.events.emit("chat/layout-changed", &());
+        assert_eq!(
+            settle(&mut adapter)
+                .await
+                .iter()
+                .filter(|m| m["type"] == "overview")
+                .count(),
+            1,
+            "change {change}"
+        );
+    }
+    adapter
+        .request(request(serde_json::json!({"type":"overview","id":42})))
+        .await
+        .unwrap();
+    let messages = settle(&mut adapter).await;
+    assert!(messages
+        .iter()
+        .any(|m| m["type"] == "result" && m["id"] == 42));
+    let mut second = Adapter::new(fake.clone(), 2, String::new()).unwrap();
+    fake.events.emit("session/status-changed", &());
+    assert!(settle(&mut second)
+        .await
+        .iter()
+        .any(|m| m["type"] == "overview"));
+}
+
+#[tokio::test]
+async fn a_flood_resync_finishes_the_current_snapshot_before_starting_another() {
+    let fake = Arc::new(Fake::default());
+    *fake.bytes.lock().unwrap() = vec![b'x'; TERMINAL_CHUNK_SIZE * 2 + 1];
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    attach(&mut adapter, "flood").await;
+    let first = next(&mut adapter).await;
+    assert_eq!(first["type"], "snapshot");
+    assert_eq!(first["more"], true);
+    let seq = first["seq"].clone();
+    for more in [true, false] {
+        stream_queue(&adapter, "flood")
+            .lock()
+            .unwrap()
+            .push(TerminalFrame::Resync);
+        assert!(adapter.next_paced(true, true).await.unwrap().is_none());
+        let chunk = next(&mut adapter).await;
+        assert_eq!(chunk["type"], "snapshot");
+        assert_eq!(
+            chunk["seq"], seq,
+            "queue overflow interrupted an in-progress snapshot"
+        );
+        assert_eq!(chunk["more"], more);
+    }
+    stream_queue(&adapter, "flood")
+        .lock()
+        .unwrap()
+        .push(TerminalFrame::Resync);
+    assert!(adapter.next_paced(true, true).await.unwrap().is_none());
+    let end = next(&mut adapter).await;
+    assert_eq!(end["type"], "resized");
+    assert_eq!(end["seq"], seq);
+    let fresh = next(&mut adapter).await;
+    assert_eq!(fresh["type"], "snapshot");
+    assert!(fresh["seq"].as_u64().unwrap() > seq.as_u64().unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn delivery_pacing_holds_output_but_preserves_priority_and_order() {
+    let fake = Arc::new(Fake::default());
+    let mut adapter = streaming(&fake, &["terminal"]).await;
+    push_output(&adapter, "terminal", b"first ");
+    push_output(&adapter, "terminal", b"second");
+    adapter
+        .request(ClientMessage::Ping(PingRequest { id: 1 }))
+        .await
+        .unwrap();
+    adapter
+        .push(HostMessage::Result(ResultMessage {
+            id: 2,
+            result: serde_json::Value::Null,
+        }))
+        .unwrap();
+    adapter
+        .push(HostMessage::Status(StatusPush {
+            session: "terminal".into(),
+            status: fake
+                .overview
+                .lock()
+                .unwrap()
+                .sessions
+                .values()
+                .next()
+                .unwrap()
+                .status
+                .clone(),
+        }))
+        .unwrap();
+    adapter.feed_ready = Some((
+        "mission".into(),
+        serde_json::to_vec(&HostMessage::FeedAppended(FeedAppended {
+            mission: "mission".into(),
+            entries: vec![],
+        }))
+        .unwrap(),
+    ));
+    adapter.feed_turn = false;
+    for expected in ["pong", "result", "status", "feedAppended"] {
+        let bytes = adapter.next_paced(true, true).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["type"],
+            expected
+        );
+    }
+    assert!(adapter.next_paced(true, true).await.unwrap().is_none());
+    let output: HostMessage =
+        serde_json::from_slice(&adapter.next_paced(true, false).await.unwrap().unwrap()).unwrap();
+    let HostMessage::Output(output) = output else {
+        panic!("expected the paused output");
+    };
+    assert_eq!(output.data.0, b"first second");
+}
+
+#[tokio::test(start_paused = true)]
+async fn delivery_pacing_keeps_a_quiet_stream_responsive_beside_a_slow_link_flood() {
+    use runner_core::{
+        companion::channel::{self, BrowserConnect, NoiseKeys, Records},
+        remote::HostKey,
+    };
+    async fn simulate(pacing: bool) -> (Vec<Duration>, usize) {
+        let host = HostKey::generate().unwrap();
+        let device = HostKey::generate().unwrap();
+        let (connect, first) = BrowserConnect::start(
+            NoiseKeys {
+                private: &device.private,
+                fixed_ephemeral: None,
+            },
+            &host.public,
+        )
+        .unwrap();
+        let (transport, accept, _) = channel::connect(
+            NoiseKeys {
+                private: &host.private,
+                fixed_ephemeral: None,
+            },
+            &first,
+            |_| true,
+        )
+        .unwrap();
+        let mut sender = Records::new(transport);
+        let mut receiver = Records::new(connect.accept(&accept).unwrap());
+        let fake = Arc::new(Fake::default());
+        let mut adapter = streaming(&fake, &["flood", "quiet"]).await;
+        let start = Instant::now();
+        let mut tail = start;
+        let mut forward = VecDeque::<(Instant, Vec<u8>)>::new();
+        let mut credits = VecDeque::<(Instant, Vec<u8>)>::new();
+        let mut sent = BTreeMap::new();
+        let mut echoes = Vec::new();
+        let mut pauses = 0;
+        let mut produced = 0;
+        let mut delivered = 0;
+        let mut next_quiet = 300;
+        for step in 0..1800u64 {
+            let now = Instant::now();
+            while credits.front().is_some_and(|(due, _)| *due <= now) {
+                sender.receive(&credits.pop_front().unwrap().1).unwrap();
+            }
+            while forward.front().is_some_and(|(due, _)| *due <= now) {
+                if let Some(bytes) = receiver.receive(&forward.pop_front().unwrap().1).unwrap() {
+                    let message: HostMessage = serde_json::from_slice(&bytes).unwrap();
+                    if let HostMessage::Output(output) = message {
+                        if output.session == "flood" {
+                            delivered += output.data.0.len();
+                        }
+                        if output.session == "quiet" {
+                            for id in output.data.0.chunks_exact(8) {
+                                let id = u64::from_be_bytes(id.try_into().unwrap());
+                                assert_eq!(id, next_quiet, "quiet output was reordered");
+                                next_quiet += 20;
+                                echoes.push(now - sent.remove(&id).unwrap());
+                            }
+                        }
+                    }
+                    receiver.handled();
+                }
+                while let Some(credit) = receiver.next_frame().unwrap() {
+                    credits.push_back((now + Duration::from_millis(20), credit));
+                }
+            }
+            if step < 1500 {
+                if stream_queue(&adapter, "flood")
+                    .lock()
+                    .unwrap()
+                    .frames
+                    .is_empty()
+                {
+                    assert!(push_output(
+                        &adapter,
+                        "flood",
+                        &vec![b'x'; TERMINAL_CHUNK_SIZE]
+                    ));
+                    produced += TERMINAL_CHUNK_SIZE;
+                }
+                if (300..1300).contains(&step) && step % 20 == 0 {
+                    sent.insert(step, now);
+                    assert!(push_output(&adapter, "quiet", &step.to_be_bytes()));
+                }
+            }
+            for _ in 0..64 {
+                let paused = pacing && sender.output_paced(now.into_std());
+                pauses += usize::from(paused);
+                if !sender.sending() {
+                    if let Some(message) = adapter
+                        .next_paced(sender.send_credit() > 0, paused)
+                        .await
+                        .unwrap()
+                    {
+                        sender.queue(message).unwrap();
+                    }
+                }
+                let Some(frame) = sender.next_frame_at(now.into_std()).unwrap() else {
+                    break;
+                };
+                tail = tail.max(now)
+                    + Duration::from_nanos(frame.len() as u64 * 1_000_000_000 / 500_000);
+                forward.push_back((tail + Duration::from_millis(10), frame));
+            }
+            tokio::time::advance(Duration::from_millis(10)).await;
+        }
+        assert!(sent.is_empty(), "a quiet echo was lost");
+        assert_eq!(echoes.len(), 50);
+        assert_eq!(delivered, produced, "flood output was lost across pacing");
+        echoes.sort();
+        (echoes, pauses)
+    }
+    let (unpaced, _) = simulate(false).await;
+    let (paced, pauses) = simulate(true).await;
+    let baseline = unpaced[unpaced.len() / 2];
+    let median = paced[paced.len() / 2];
+    eprintln!(
+        "simulated flooded echo: paced={}ms, unpaced={}ms",
+        median.as_millis(),
+        baseline.as_millis()
+    );
+    assert!(pauses > 0);
+    assert!(baseline > Duration::from_millis(800));
+    assert!(
+        median <= Duration::from_millis(700),
+        "paced median {median:?}, unpaced {baseline:?}"
+    );
+    assert!(
+        median + Duration::from_millis(200) < baseline,
+        "paced {median:?}, unpaced {baseline:?}"
+    );
+}

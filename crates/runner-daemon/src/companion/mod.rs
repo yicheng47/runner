@@ -433,6 +433,7 @@ pub struct Adapter {
     overview_next: Vec<u64>,
     overview_replies: VecDeque<(u64, Arc<serde_json::Value>)>,
     overview_broadcast: bool,
+    overview_hash: Option<u64>,
     status_work: Option<tokio::task::JoinHandle<core::Result<BTreeMap<String, SessionStatus>>>>,
     status_dirty: bool,
     status_revision: u64,
@@ -481,6 +482,7 @@ impl Adapter {
             overview_next: Vec::new(),
             overview_replies: VecDeque::new(),
             overview_broadcast: false,
+            overview_hash: None,
             status_work: None,
             status_dirty: false,
             status_revision: 0,
@@ -928,7 +930,15 @@ impl Adapter {
             }),
         })
     }
+    #[cfg(test)]
     pub async fn next(&mut self, terminal_credit: bool) -> Result<Option<Vec<u8>>, &'static str> {
+        self.next_paced(terminal_credit, false).await
+    }
+    pub async fn next_paced(
+        &mut self,
+        terminal_credit: bool,
+        paced: bool,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
         if let Some(id) = self.pong.take() {
             return serde_json::to_vec(&HostMessage::Pong(Pong { id }))
                 .map(Some)
@@ -949,11 +959,14 @@ impl Adapter {
         if !terminal_credit {
             return Ok(None);
         }
-        if self.feed_turn {
+        if self.feed_turn || paced {
             if let Some(bytes) = self.next_feed() {
                 self.feed_turn = false;
                 return Ok(Some(bytes));
             }
+        }
+        if paced {
+            return Ok(None);
         }
         for _ in 0..self.streams.len() {
             let mut stream = self.streams.pop_front().unwrap();
@@ -961,7 +974,7 @@ impl Adapter {
                 let q = stream.queue.lock().unwrap();
                 (q.resync, q.ended && q.frames.is_empty())
             };
-            if resync {
+            if resync && stream.snapshot.is_none() && stream.initial_size.is_none() {
                 let resync = stream.resync.clone();
                 let attachment = blocking(self.core.clone(), move |_| resync()).await;
                 match attachment {
@@ -1152,7 +1165,13 @@ impl Adapter {
                             let value = Arc::new(serde_json::to_value(&overview).map_err(|_| "companion encoding failed")?);
                             self.overview_replies.extend(waiters.into_iter().map(|id| (id, value.clone())));
                         }
-                        if broadcast { self.push(HostMessage::Overview(overview))?; }
+                        if broadcast {
+                            let hash = overview_hash(&overview)?;
+                            if self.overview_hash != Some(hash) {
+                                self.push(HostMessage::Overview(overview))?;
+                                self.overview_hash = Some(hash);
+                            }
+                        }
                     }
                     Err(Failure(code, message)) => {
                         if waiters.is_empty() && self.overview_next.is_empty() { return Err("core unavailable"); }
@@ -1219,6 +1238,25 @@ impl Adapter {
         Ok(())
     }
 }
+fn overview_hash(overview: &Overview) -> Result<u64, &'static str> {
+    use std::hash::{Hash, Hasher};
+    let mut value = serde_json::to_value(overview).map_err(|_| "companion encoding failed")?;
+    for (id, session) in &overview.sessions {
+        let status =
+            serde_json::to_value(&session.status).map_err(|_| "companion encoding failed")?;
+        if let Some(fields) = value["sessions"][id].as_object_mut() {
+            for key in status.as_object().unwrap().keys() {
+                fields.remove(key);
+            }
+        }
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_vec(&value)
+        .map_err(|_| "companion encoding failed")?
+        .hash(&mut hash);
+    Ok(hash.finish())
+}
+
 fn relevant(name: &str) -> bool {
     [
         "session/",

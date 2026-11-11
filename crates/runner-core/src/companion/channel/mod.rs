@@ -11,6 +11,9 @@ pub const MAX_FRAME: usize = 65_536;
 pub const MAX_RECORD_BODY: usize = 65_518;
 pub const INITIAL_CREDIT: usize = 512 * 1024;
 pub const CREDIT_THRESHOLD: usize = 64 * 1024;
+pub const MAX_IN_FLIGHT: usize = 768 * 1024;
+pub const PACING_WINDOW: usize = 128 * 1024;
+pub const PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 pub const PAIR_PROLOGUE: &[u8] = b"runner-pair-v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,15 +1,21 @@
-use super::{body, frame, Kind, Reject, CREDIT_THRESHOLD, INITIAL_CREDIT, MAX_RECORD_BODY};
+use super::{
+    body, frame, Kind, Reject, CREDIT_THRESHOLD, INITIAL_CREDIT, MAX_IN_FLIGHT, MAX_RECORD_BODY,
+    PACING_DELAY, PACING_WINDOW,
+};
 use crate::companion::MAX_MESSAGE_SIZE;
 use snow::TransportState;
+use std::{collections::VecDeque, time::Instant};
 
 pub struct Records {
     noise: TransportState,
     send_credit: usize,
     receive_credit: usize,
     owed: usize,
-    flush_credit: bool,
+    owed_cost: usize,
+    in_flight: VecDeque<(usize, usize, Instant)>,
+    in_flight_cost: usize,
     incoming: Vec<u8>,
-    handling: Option<usize>,
+    handling: Option<(usize, usize)>,
     outgoing: Option<(Vec<u8>, usize)>,
 }
 impl Records {
@@ -19,7 +25,9 @@ impl Records {
             send_credit: INITIAL_CREDIT,
             receive_credit: INITIAL_CREDIT,
             owed: 0,
-            flush_credit: false,
+            owed_cost: 0,
+            in_flight: VecDeque::new(),
+            in_flight_cost: 0,
             incoming: Vec::new(),
             handling: None,
             outgoing: None,
@@ -48,11 +56,25 @@ impl Records {
             .map_or(0, |(bytes, offset)| bytes.len() - offset)
     }
 
+    pub fn output_paced(&self, now: Instant) -> bool {
+        self.in_flight_cost > PACING_WINDOW
+            && self
+                .in_flight
+                .front()
+                .is_some_and(|(_, _, sent)| now.duration_since(*sent) >= PACING_DELAY)
+    }
+
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, Reject> {
-        let record = if self.owed >= CREDIT_THRESHOLD || (self.flush_credit && self.owed > 0) {
+        self.next_frame_at(Instant::now())
+    }
+
+    pub fn next_frame_at(&mut self, now: Instant) -> Result<Option<Vec<u8>>, Reject> {
+        let record = if self.owed > 0
+            && (self.owed >= CREDIT_THRESHOLD || self.owed_cost >= CREDIT_THRESHOLD)
+        {
             let n = self.owed;
             self.owed = 0;
-            self.flush_credit = false;
+            self.owed_cost = 0;
             self.receive_credit += n;
             let mut record = vec![2];
             record.extend_from_slice(&(n as u32).to_be_bytes());
@@ -63,6 +85,12 @@ impl Records {
                 return Ok(None);
             }
             let n = left.min(MAX_RECORD_BODY).min(self.send_credit);
+            let cost = n + 1 + 16 + 1 + 64;
+            if self.in_flight_cost + cost > MAX_IN_FLIGHT {
+                return Ok(None);
+            }
+            self.in_flight.push_back((n, cost, now));
+            self.in_flight_cost += cost;
             let end = n == left;
             let mut record = Vec::with_capacity(n + 1);
             record.push(u8::from(end));
@@ -86,6 +114,7 @@ impl Records {
     }
 
     pub fn receive(&mut self, input: &[u8]) -> Result<Option<Vec<u8>>, Reject> {
+        let cost = input.len() + 64;
         let input = body(input, Kind::Data)?;
         let mut record = vec![0; input.len()];
         let n = self
@@ -108,9 +137,10 @@ impl Records {
                 self.incoming.extend_from_slice(bytes);
                 if record[0] == 0 {
                     self.owed += bytes.len();
+                    self.owed_cost += cost;
                     Ok(None)
                 } else {
-                    self.handling = Some(bytes.len());
+                    self.handling = Some((bytes.len(), cost));
                     Ok(Some(std::mem::take(&mut self.incoming)))
                 }
             }
@@ -121,6 +151,17 @@ impl Records {
                     return Err(Reject::BadHandshake);
                 }
                 self.send_credit += n;
+                let mut remaining = n;
+                while let Some((bytes, cost, _)) = self.in_flight.front_mut() {
+                    let credited = remaining.min(*bytes);
+                    *bytes -= credited;
+                    remaining -= credited;
+                    if *bytes > 0 {
+                        break;
+                    }
+                    self.in_flight_cost -= *cost;
+                    self.in_flight.pop_front();
+                }
                 Ok(None)
             }
             _ => Err(Reject::BadHandshake),
@@ -128,9 +169,9 @@ impl Records {
     }
 
     pub fn handled(&mut self) {
-        if let Some(n) = self.handling.take() {
+        if let Some((n, cost)) = self.handling.take() {
             self.owed += n;
-            self.flush_credit = self.owed > 0;
+            self.owed_cost += cost;
         }
     }
 }

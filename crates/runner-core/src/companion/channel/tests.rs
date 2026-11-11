@@ -56,11 +56,7 @@ fn transcript() -> Value {
     let hello_frame = encrypt_record(&mut browser, &last_part);
     assert_eq!(host.receive(&hello_frame).unwrap().unwrap(), hello);
     host.handled();
-    let credit = host.next_frame().unwrap().unwrap();
-    assert_eq!(
-        decrypt_record(&mut browser, &credit),
-        [2, 0, 0, 0, hello.len() as u8]
-    );
+    assert!(host.next_frame().unwrap().is_none());
     let welcome = br#"{"type":"welcome","version":1,"name":"Mac Studio","runnerVersion":"0.16.7","platform":"macos","features":[]}"#;
     host.queue(welcome.to_vec()).unwrap();
     let w = host.next_frame().unwrap().unwrap();
@@ -68,8 +64,6 @@ fn transcript() -> Value {
         decrypt_record(&mut browser, &w),
         [&[1], welcome.as_slice()].concat()
     );
-    let bc = encrypt_record(&mut browser, &[2, 0, 0, 0, welcome.len() as u8]);
-    host.receive(&bc).unwrap();
     let (b, connect_frame) = BrowserConnect::start(keys(1), &host_key).unwrap();
     let (_, accept, public) =
         connect(keys(2), &connect_frame, |key| key == device.public_key).unwrap();
@@ -102,7 +96,7 @@ fn transcript() -> Value {
         "route":{"channel":17,"pair":hex(&wrap(17,&pair_frame))},
         "inputs": {"browserStatic":hex(&[1;32]), "hostStatic":hex(&[2;32]), "browserEphemeral":hex(&[3;32]), "hostEphemeral":hex(&[4;32]), "sid":hex(&[5;16]), "browserScalar":hex(&[6;32]), "hostScalar":hex(&[7;32]), "pin":"012345", "name":"Chrome on Windows", "wrongPin":"999999"},
         "pair": [hex(&pair_frame),hex(&reply),hex(&finish)],
-        "records": [json!({"from":"browser","plaintext":hex(&first_part),"frame":hex(&part_frame)}),json!({"from":"browser","plaintext":hex(&last_part),"frame":hex(&hello_frame)}),json!({"from":"host","plaintext":hex(&[2,0,0,0,hello.len() as u8]),"frame":hex(&credit)}),json!({"from":"host","plaintext":hex(&[&[1],welcome.as_slice()].concat()),"frame":hex(&w)}),json!({"from":"browser","plaintext":hex(&[2,0,0,0,welcome.len() as u8]),"frame":hex(&bc)})],
+        "records": [json!({"from":"browser","plaintext":hex(&first_part),"frame":hex(&part_frame)}),json!({"from":"browser","plaintext":hex(&last_part),"frame":hex(&hello_frame)}),json!({"from":"host","plaintext":hex(&[&[1],welcome.as_slice()].concat()),"frame":hex(&w)})],
         "connect": [hex(&connect_frame),hex(&accept)],
 
         "wrongPin": [hex(&wp),hex(&wr),hex(&wf),hex(&Reject::WrongPin.frame())],
@@ -323,26 +317,174 @@ fn client_records_replay_the_shared_record_vector() {
             unhex(record["frame"].as_str().unwrap())
         );
     }
-    let credit = unhex(records[2]["frame"].as_str().unwrap());
-    assert_eq!(
-        decrypt_record(&mut transport, &credit),
-        unhex(records[2]["plaintext"].as_str().unwrap())
-    );
     let mut client = Records::new(transport);
     let welcome = client
-        .receive(&unhex(records[3]["frame"].as_str().unwrap()))
+        .receive(&unhex(records[2]["frame"].as_str().unwrap()))
         .unwrap()
         .unwrap();
     assert_eq!(
         welcome,
-        unhex(records[3]["plaintext"].as_str().unwrap())[1..]
+        unhex(records[2]["plaintext"].as_str().unwrap())[1..]
     );
     client.handled();
-    assert_eq!(
-        client.next_frame().unwrap().unwrap(),
-        unhex(records[4]["frame"].as_str().unwrap())
-    );
+    assert!(client.next_frame().unwrap().is_none());
     assert!(client
         .queue(vec![0; crate::companion::MAX_MESSAGE_SIZE + 1])
         .is_err());
+}
+
+#[test]
+fn tiny_frames_stop_before_the_relay_cap_and_credit_frees_them_in_fifo_order() {
+    let (bt, mut peer) = transports();
+    let mut sender = Records::new(bt);
+    let mut cost = 0;
+    let mut count = 0;
+    loop {
+        if !sender.sending() {
+            sender.queue(vec![42; 3]).unwrap();
+        }
+        let Some(frame) = sender.next_frame().unwrap() else {
+            break;
+        };
+        cost += frame.len() + 64;
+        count += 1;
+        assert_eq!(decrypt_record(&mut peer, &frame), [1, 42, 42, 42]);
+    }
+    assert!(sender.send_credit() > 0);
+    assert!(cost <= MAX_IN_FLIGHT);
+    assert!(cost + 85 > MAX_IN_FLIGHT);
+    assert!(cost < 1024 * 1024);
+    let grant = encrypt_record(&mut peer, &[2, 0, 0, 0, 1]);
+    sender.receive(&grant).unwrap();
+    assert!(sender.next_frame().unwrap().is_none());
+    let grant = encrypt_record(&mut peer, &[2, 0, 0, 0, 2]);
+    sender.receive(&grant).unwrap();
+    assert!(sender.next_frame().unwrap().is_some());
+    assert!(sender.next_frame().unwrap().is_none());
+    assert!(count > 9000);
+}
+
+#[test]
+fn two_new_peers_make_progress_through_long_runs_of_tiny_messages() {
+    let (bt, ht) = transports();
+    let mut client = Records::new(bt);
+    let mut host = Records::new(ht);
+    let mut grants = 0;
+    for _ in 0..20000 {
+        for direction in [true, false] {
+            let (sender, receiver) = if direction {
+                (&mut client, &mut host)
+            } else {
+                (&mut host, &mut client)
+            };
+            sender.queue(vec![42]).unwrap();
+            let frame = sender
+                .next_frame()
+                .unwrap()
+                .expect("tiny-message credit deadlock");
+            assert_eq!(receiver.receive(&frame).unwrap(), Some(vec![42]));
+            receiver.handled();
+            if let Some(grant) = receiver.next_frame().unwrap() {
+                sender.receive(&grant).unwrap();
+                grants += 1;
+            }
+        }
+    }
+    assert!(grants > 0 && grants < 100);
+}
+
+#[test]
+fn a_large_message_completes_with_old_grant_rules_in_both_directions() {
+    for new_sender in [true, false] {
+        let (bt, mut old) = transports();
+        let mut new = Records::new(bt);
+        let message = vec![42; crate::companion::MAX_MESSAGE_SIZE];
+        let mut received = Vec::new();
+        let mut owed = 0;
+        let mut old_credit = INITIAL_CREDIT;
+        if new_sender {
+            new.queue(message.clone()).unwrap();
+        }
+        for _ in 0..100 {
+            if new_sender {
+                while let Some(frame) = new.next_frame().unwrap() {
+                    let record = decrypt_record(&mut old, &frame);
+                    received.extend_from_slice(&record[1..]);
+                    owed += record.len() - 1;
+                    if record[0] == 1 {
+                        break;
+                    }
+                }
+                if owed > 0 {
+                    let grant = encrypt_record(
+                        &mut old,
+                        &[&[2], &(owed as u32).to_be_bytes()[..]].concat(),
+                    );
+                    new.receive(&grant).unwrap();
+                    owed = 0;
+                }
+            } else {
+                let n = (message.len() - received.len())
+                    .min(MAX_RECORD_BODY)
+                    .min(old_credit);
+                assert!(n > 0, "old sender exhausted credit before a batch grant");
+                old_credit -= n;
+                let end = received.len() + n == message.len();
+                let frame = encrypt_record(
+                    &mut old,
+                    &[
+                        &[u8::from(end)],
+                        &message[received.len()..received.len() + n],
+                    ]
+                    .concat(),
+                );
+                if let Some(bytes) = new.receive(&frame).unwrap() {
+                    assert_eq!(bytes, message);
+                    new.handled();
+                }
+                received.extend_from_slice(&message[received.len()..received.len() + n]);
+                if let Some(grant) = new.next_frame().unwrap() {
+                    let record = decrypt_record(&mut old, &grant);
+                    assert_eq!(record[0], 2);
+                    let n = u32::from_be_bytes(record[1..].try_into().unwrap()) as usize;
+                    assert!(n > 0 && n <= INITIAL_CREDIT - old_credit);
+                    old_credit += n;
+                }
+            }
+            if received.len() == message.len() {
+                break;
+            }
+        }
+        assert_eq!(received, message);
+    }
+}
+
+#[test]
+fn delivery_pacing_uses_the_oldest_uncredited_frame_and_resumes_on_credit() {
+    let (transport, mut peer) = transports();
+    let mut sender = Records::new(transport);
+    let start = std::time::Instant::now();
+    sender.queue(vec![42; MAX_RECORD_BODY * 2]).unwrap();
+    for _ in 0..2 {
+        let frame = sender.next_frame_at(start).unwrap().unwrap();
+        decrypt_record(&mut peer, &frame);
+    }
+    assert!(!sender.output_paced(start + PACING_DELAY - std::time::Duration::from_millis(1)));
+    assert!(sender.output_paced(start + PACING_DELAY));
+    let credit = encrypt_record(
+        &mut peer,
+        &[&[2], &(MAX_RECORD_BODY as u32).to_be_bytes()[..]].concat(),
+    );
+    sender.receive(&credit).unwrap();
+    assert!(!sender.output_paced(start + PACING_DELAY));
+    sender.queue(vec![42; MAX_RECORD_BODY]).unwrap();
+    let frame = sender.next_frame_at(start + PACING_DELAY).unwrap().unwrap();
+    decrypt_record(&mut peer, &frame);
+    assert!(sender.output_paced(start + PACING_DELAY));
+    let credit = encrypt_record(
+        &mut peer,
+        &[&[2], &(MAX_RECORD_BODY as u32).to_be_bytes()[..]].concat(),
+    );
+    sender.receive(&credit).unwrap();
+    assert!(!sender.output_paced(start + PACING_DELAY * 2));
 }

@@ -1215,14 +1215,17 @@ async fn a_browser_without_credit_does_not_block_other_channels() {
     .concat();
     relay.feed(1, &raw_frame(&mut browser, &hello));
     let mut spent = 0;
+    let mut cost = 0;
+    let mut paused = false;
     loop {
         let record = raw_record(&mut relay, 1, &mut browser).await;
         if record[0] == 1 {
             spent += record.len() - 1;
+            cost += record.len() + 17 + 64;
             break;
         }
     }
-    while spent < channel::INITIAL_CREDIT {
+    'flood: while spent < channel::INITIAL_CREDIT {
         relay.feed(
             1,
             &raw_frame(
@@ -1231,15 +1234,26 @@ async fn a_browser_without_credit_does_not_block_other_channels() {
             ),
         );
         loop {
-            let record = raw_record(&mut relay, 1, &mut browser).await;
+            let Ok(record) = tokio::time::timeout(
+                Duration::from_secs(2),
+                raw_record(&mut relay, 1, &mut browser),
+            )
+            .await
+            else {
+                paused = true;
+                break 'flood;
+            };
             if record[0] != 2 {
                 spent += record.len() - 1;
+                cost += record.len() + 17 + 64;
             }
             if record[0] == 1 || spent == channel::INITIAL_CREDIT {
                 break;
             }
         }
     }
+    assert!(paused || spent == channel::INITIAL_CREDIT);
+    assert!(cost <= channel::MAX_IN_FLIGHT);
     let (mut second, _) = relay.pair_finish(2, "012345").await;
     assert_eq!(relay.hello(2, &mut second).await["type"], "welcome");
     // Keep a response pending even when credit ended exactly at a message boundary.

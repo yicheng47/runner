@@ -515,20 +515,10 @@ impl Client {
             .values()
             .find(|r| r.computer == computer && r.ready.load(std::sync::atomic::Ordering::Acquire))
             .ok_or("Remote computer is reconnecting; viewport was discarded.")?;
-        let (reply, _) = oneshot::channel();
-        route
-            .tx
-            .try_send(route::Command::Request(
-                c::ClientMessage::Viewport(c::ViewportRequest {
-                    id: route.next_id(),
-                    session: target,
-                    cols,
-                    rows,
-                }),
-                reply,
-            ))
-            .map_err(|_| "Remote viewport queue is full or closed".into())
+        route.viewport(target, cols, rows);
+        Ok(())
     }
+
     pub async fn viewport(
         &self,
         computer: String,

@@ -11,6 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use machine::{Command, Effect, Input, Machine};
 use persistence::Saved;
 use runner_core::remote::{self, RemoteLogout, RemoteStatus, RemoteTrust};
+use std::time::Duration;
 use std::{path::PathBuf, sync::Arc};
 #[cfg(test)]
 use store::Secrets;
@@ -470,7 +471,7 @@ async fn run(
         }
     };
     let (mut machine, initial) = Machine::restore(saved, secrets, clock.now());
-    machine.identity = identity;
+    machine.set_identity(identity);
     machine.trust = trust;
     machine.host = remote::HostInfo::current();
     let mut socket = None;
@@ -516,8 +517,8 @@ async fn run(
     }
     let mut pending_start: Option<oneshot::Sender<Result<Reply, String>>> = None;
     let mut channels: Option<channels::Channels> = None;
+    publish(&machine, &events, &status_tx);
     loop {
-        publish(&machine, &events, &status_tx);
         let deadline = machine.deadline.map(|at| {
             at.signed_duration_since(clock.now())
                 .to_std()
@@ -529,8 +530,16 @@ async fn run(
                 None => std::future::pending().await,
             }
         };
+        let writer = socket.as_ref().map(|s: &Relay| s.tx.clone());
+        let writer_ready = writer
+            .as_ref()
+            .is_some_and(|tx| tx.capacity() > CONTROL_HEADROOM);
+        let (stream, task) = match socket.as_mut() {
+            Some(s) => (Some(&mut s.stream), Some(&mut s.task)),
+            None => (None, None),
+        };
         let read = async {
-            match &mut socket {
+            match stream {
                 Some(s) => s.next().await,
                 None => std::future::pending().await,
             }
@@ -542,6 +551,8 @@ async fn run(
                 (Input::Command(e.command), Some(e.reply))
             }
             _ = delay => (Input::Deadline, None),
+            _ = async { match task { Some(task) => { let _ = task.await; }, None => std::future::pending().await } } => (Input::Failure(transport::Failure::network()), None),
+            _ = async { match &writer { Some(tx) => { let _ = tx.reserve_many(CONTROL_HEADROOM + 1).await; }, None => std::future::pending().await } }, if !writer_ready => continue,
             completion = async {
                 match trust_writes.get() { Some(writes) => writes.next().await, None => std::future::pending().await }
             } => {
@@ -552,20 +563,22 @@ async fn run(
             },
             event = async {
                 match &mut channels { Some(routes) => routes.next().await, None => std::future::pending().await }
-            } => {
+            }, if writer_ready => {
+                let changed = !matches!(event, channels::Event::Send { .. });
                 let output = channels.as_mut().unwrap().handle(event, &mut machine, &root, &clock, &events);
-                let input = match output {
-                    Some(frame) => match send_frames(&mut socket, [frame]).await {
-                        Ok(()) => { channels.as_ref().unwrap().sync(&mut machine); publish(&machine, &events, &status_tx); continue; },
-                        Err(f) => Input::Failure(f),
-                    },
-                    None => { channels.as_ref().unwrap().sync(&mut machine); publish(&machine, &events, &status_tx); continue; },
-                };
-                (input, None)
+                if changed {
+                    channels.as_ref().unwrap().sync(&mut machine);
+                    publish(&machine, &events, &status_tx);
+                }
+                match output.map(|frame| send_frames(&socket, [frame])) {
+                    Some(Err(f)) => (Input::Failure(f), None),
+                    _ => continue,
+                }
             },
             frame = read => {
                 let input = match frame {
                     Some(Ok(Message::Text(text))) => {
+                        let mut failure = None;
                         if text.len() <= remote::MAX_CONTROL_SIZE && matches!(machine.status.state, remote::RemoteState::Connected { .. }) {
                             match serde_json::from_str::<remote::Control>(&text) {
                                 Ok(remote::Control::ChannelOpen { channel }) => {
@@ -573,7 +586,7 @@ async fn run(
                                     let routes = channels.get_or_insert_with(||channels::Channels::new(writes, inbox.companion.clone()));
                                     if let Err(reason) = routes.open(channel, &machine) {
                                         let frames = [Message::Binary(runner_core::companion::channel::wrap(channel, &reason.frame()).into()), channels::close_message(channel)];
-                                        let _ = send_frames(&mut socket, frames).await;
+                                        failure = send_frames(&socket, frames).err();
                                     }
                                 }
                                 Ok(remote::Control::ChannelClosed { channel }) => {
@@ -582,7 +595,7 @@ async fn run(
                                 _ => {}
                             }
                         }
-                        Input::Text(text.to_string())
+                        match failure { Some(failure) => Input::Failure(failure), None => Input::Text(text.to_string()) }
                     },
                     Some(Ok(Message::Close(frame))) => {
                         let code = frame.map(|f| u16::from(f.code)).unwrap_or(1006);
@@ -590,16 +603,19 @@ async fn run(
                         Input::Failure(transport::Failure { retry: remote::close_action(code), message: format!("Remote connection closed ({code})."), code: "unknown".into() })
                     }
                     Some(Ok(Message::Ping(_))) => {
-                        match tokio::time::timeout(std::time::Duration::from_secs(10), socket.as_mut().unwrap().flush()).await {
-                            Ok(Ok(())) => Input::Frame,
-                            _ => Input::Failure(transport::Failure::network()),
-                        }
+                        if let Some(writer) = &writer { let _ = writer.try_send(Write::Flush); }
+                        Input::Frame
                     },
                     Some(Ok(Message::Binary(bytes))) => {
+                        let mut input = Input::Frame;
                         if let (Some(routes), Some((id, frame))) = (&mut channels, runner_core::companion::channel::unwrap(&bytes)) {
-                            if !routes.feed(id, frame) { let _ = send_frames(&mut socket, [channels::close_message(id)]).await; }
+                            if !routes.feed(id, frame) {
+                                routes.sync(&mut machine);
+                                publish(&machine, &events, &status_tx);
+                                if let Err(failure) = send_frames(&socket, [channels::close_message(id)]) { input = Input::Failure(failure); }
+                            }
                         }
-                        Input::Frame
+                        input
                     }
                     Some(Ok(_)) => Input::Frame,
                     _ => Input::Failure(transport::Failure::network()),
@@ -607,14 +623,16 @@ async fn run(
                 (input, None)
             }
         };
+        let changed = !matches!(&input, Input::Frame);
         #[cfg(test)]
         if let Input::Command(Command::TestSocket(test)) = input {
-            socket = Some(*test.0);
+            socket = Some(Relay::new(*test.0));
             machine.status.state = remote::RemoteState::Connected { since: clock.now() };
             machine.deadline = Some(clock.now() + chrono::Duration::seconds(75));
             if let Some(reply) = reply {
                 let _ = reply.send(Ok(Reply::Status(Box::new(machine.status.clone()))));
             }
+            publish(&machine, &events, &status_tx);
             continue;
         }
         let logout = matches!(&input, Input::Command(Command::Logout));
@@ -641,7 +659,7 @@ async fn run(
             .await
             .map_err(|_| "Host identity worker failed")?;
             match identity {
-                Ok(identity) => machine.identity = Some(identity),
+                Ok(identity) => machine.set_identity(Some(identity)),
                 Err(error) => {
                     if let Some(reply) = reply {
                         let _ = reply.send(Err(error.into()));
@@ -654,7 +672,8 @@ async fn run(
             Input::Command(Command::RevokeDevice(fingerprint)) => Some(fingerprint.clone()),
             _ => None,
         };
-        let effects = match apply_input(&mut machine, input, &clock, &root, trust_writes).await {
+        let mut effects = match apply_input(&mut machine, input, &clock, &root, trust_writes).await
+        {
             Ok(effects) => effects,
             Err(ApplyError::Command(error)) => {
                 if let Some(reply) = reply {
@@ -669,9 +688,23 @@ async fn run(
                 return Err(error.into());
             }
         };
+        let changed = changed || !effects.is_empty();
         let frames = channels::transition(&mut channels, &mut machine, &effects, revoke.as_deref());
         if !frames.is_empty() {
-            let _ = send_frames(&mut socket, frames).await;
+            if let Err(failure) = send_frames(&socket, frames) {
+                effects.extend(
+                    apply_input(
+                        &mut machine,
+                        Input::Failure(failure),
+                        &clock,
+                        &root,
+                        trust_writes,
+                    )
+                    .await
+                    .map_err(|_| "Invalid remote transition")?,
+                );
+                channels::transition(&mut channels, &mut machine, &effects, None);
+            }
         }
         if starting {
             if let Some(previous) = pending_start.take() {
@@ -711,7 +744,9 @@ async fn run(
                 device.connected = false;
             }
         }
-        publish(&machine, &events, &status_tx);
+        if changed {
+            publish(&machine, &events, &status_tx);
+        }
         let waiting_for_code =
             matches!(machine.status.state, remote::RemoteState::Off) && machine.deadline.is_some();
         if starting && waiting_for_code {
@@ -773,7 +808,7 @@ fn publish_status(machine: &Machine, events: &crate::events::EventChannel, tx: &
 async fn perform(
     machine: &mut Machine,
     effects: Vec<Effect>,
-    socket: &mut Option<transport::Socket>,
+    socket: &mut Option<Relay>,
     client: &reqwest::Client,
     store: &Arc<dyn SecretStore>,
     root: &std::path::Path,
@@ -833,7 +868,7 @@ async fn perform(
                     .await
                     {
                         Ok(connection) => {
-                            *socket = Some(connection);
+                            *socket = Some(Relay::new(connection));
                             machine.deadline = Some(
                                 (clock.now() + chrono::Duration::seconds(10)).min(if s.activated {
                                     chrono::DateTime::<Utc>::MAX_UTC
@@ -955,29 +990,83 @@ async fn perform(
     }
     Ok(outcome)
 }
-async fn send_frames(
-    socket: &mut Option<transport::Socket>,
+const WRITER_CAPACITY: usize = 64;
+const CONTROL_HEADROOM: usize = channels::MAX_CHANNELS + 2;
+
+enum Write {
+    Frame(Message),
+    Flush,
+}
+struct Relay {
+    stream: futures_util::stream::SplitStream<transport::Socket>,
+    tx: mpsc::Sender<Write>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Relay {
+    fn new(socket: transport::Socket) -> Self {
+        let (mut sink, stream) = socket.split();
+        let (tx, mut rx) = mpsc::channel::<Write>(WRITER_CAPACITY);
+        let task = tokio::spawn(async move {
+            while let Some(first) = rx.recv().await {
+                let mut next = Some(first);
+                let mut closing = false;
+                for index in 0..WRITER_CAPACITY {
+                    let Some(frame) = next.take() else {
+                        break;
+                    };
+                    if let Write::Frame(frame) = frame {
+                        closing = matches!(frame, Message::Close(_));
+                        if !matches!(
+                            tokio::time::timeout(Duration::from_secs(10), sink.feed(frame)).await,
+                            Ok(Ok(()))
+                        ) {
+                            return;
+                        }
+                    }
+                    if closing || index + 1 == WRITER_CAPACITY {
+                        break;
+                    }
+                    next = rx.try_recv().ok();
+                }
+                if !matches!(
+                    tokio::time::timeout(Duration::from_secs(10), sink.flush()).await,
+                    Ok(Ok(()))
+                ) || closing
+                {
+                    return;
+                }
+            }
+        });
+        Self { stream, tx, task }
+    }
+}
+impl Drop for Relay {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+fn send_frames(
+    socket: &Option<Relay>,
     frames: impl IntoIterator<Item = Message>,
 ) -> Result<(), transport::Failure> {
-    let socket = socket.as_mut().ok_or_else(transport::Failure::network)?;
+    let socket = socket.as_ref().ok_or_else(transport::Failure::network)?;
     for frame in frames {
-        tokio::time::timeout(std::time::Duration::from_secs(10), socket.send(frame))
-            .await
-            .map_err(|_| transport::Failure::network())?
+        socket
+            .tx
+            .try_send(Write::Frame(frame))
             .map_err(|_| transport::Failure::network())?;
     }
     Ok(())
 }
-async fn close(socket: &mut Option<transport::Socket>) {
+async fn close(socket: &mut Option<Relay>) {
     if let Some(mut s) = socket.take() {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            s.close(Some(CloseFrame {
-                code: CloseCode::Away,
-                reason: "".into(),
-            })),
-        )
-        .await;
+        let _ = s.tx.try_send(Write::Frame(Message::Close(Some(CloseFrame {
+            code: CloseCode::Away,
+            reason: "".into(),
+        }))));
+        if !s.task.is_finished() {
+            let _ = tokio::time::timeout(Duration::from_secs(1), &mut s.task).await;
+        }
     }
 }
 
