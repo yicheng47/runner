@@ -156,6 +156,31 @@ impl NativeRoot {
                 cx,
             ),
         ];
+        let owner = cx.entity();
+        let usage = SettingsRow::new(
+            crate::i18n::text("usage.near_limit"),
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(self.settings_page.usage_threshold.clone())
+                .child(
+                    Toggle::new(
+                        "notification-usage",
+                        self.settings(cx).notifications.usage.near_limit,
+                    )
+                    .on_change(move |value, _, cx| {
+                        owner.update(cx, |root, cx| {
+                            root.update_app_settings(cx, true, |s| {
+                                s.notifications.usage.near_limit = value;
+                                true
+                            });
+                        })
+                    }),
+                ),
+        )
+        .subtitle(crate::i18n::text("usage.near_limit_hint"))
+        .into_any_element();
         div()
             .flex()
             .flex_col()
@@ -171,6 +196,7 @@ impl NativeRoot {
                     (crate::i18n::text("ui.system"), vec![system]),
                     (crate::i18n::text("ui.chats"), chats),
                     (crate::i18n::text("ui.missions"), missions),
+                    (crate::i18n::text("ui.usage"), vec![usage]),
                 ]
                 .into_iter()
                 .map(|(heading, rows)| {
@@ -181,6 +207,12 @@ impl NativeRoot {
                         .child(settings_section_heading(heading))
                         .child(SettingsCard::new(rows))
                 }),
+            )
+            .child(
+                div()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(crate::i18n::text("usage.notification_caption")),
             )
             .into_any_element()
     }

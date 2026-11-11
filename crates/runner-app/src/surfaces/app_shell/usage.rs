@@ -15,8 +15,7 @@ pub(crate) fn agents_with_updates(core: &DaemonClient) -> Vec<Runtime> {
         .unwrap_or_default()
 }
 
-/// The Agent settings gear carries a dot while any enabled agent has an
-/// update available; a disabled agent's update does not count.
+/// The Agents settings link carries a dot while an enabled agent has an update.
 pub(crate) fn update_dot_visible(
     updates: &[Runtime],
     settings: &app_settings::AppSettings,
@@ -156,13 +155,13 @@ pub(super) fn visible_usage_runtimes(installed: &[Runtime], enabled: &[Runtime])
         .collect()
 }
 
-pub(super) fn usage_popover_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
+pub(crate) fn usage_popover_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
     let mut runtimes = visible_usage_runtimes(installed, enabled);
     runtimes.sort_by_key(|runtime| crate::runtime_ui::runtime_ui(*runtime).usage_order);
     runtimes
 }
 
-pub(super) fn sidebar_usage_element(
+pub(crate) fn sidebar_usage_element(
     snapshot: &UsageSnapshot,
     visible: &[Runtime],
     zoom: f32,
@@ -308,6 +307,10 @@ pub(super) fn older_host_popover(
     usage_popover_panel(max_height, header, vec![body])
 }
 
+pub(crate) fn is_five_hour(name: &str) -> bool {
+    name == "5 hours" || name == "5h" || name == "300 min"
+}
+
 pub(super) fn usage_window_label(label: &str) -> String {
     match label {
         "Week" => crate::i18n::text("ui.week").into(),
@@ -321,7 +324,7 @@ pub(super) fn usage_window_label(label: &str) -> String {
     }
 }
 
-pub(super) fn usage_window_name(name: &str) -> String {
+pub(crate) fn usage_window_name(name: &str) -> String {
     let (group, label) = name
         .split_once(" · ")
         .map_or((None, name), |(group, label)| (Some(group), label));
@@ -402,7 +405,7 @@ pub(super) fn usage_section(
     usage_section_with_account(runtime, usage, reason, refreshing, now, None)
 }
 
-pub(super) fn usage_section_with_account(
+pub(crate) fn usage_section_with_account(
     runtime: Runtime,
     usage: Option<&AgentUsage>,
     reason: Option<UnavailableReason>,
@@ -535,6 +538,26 @@ pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 }
 
 impl NativeRoot {
+    pub(crate) fn start_usage_refresh_timer(&mut self, cx: &mut Context<Self>) {
+        self.usage_refresh_task = Some(cx.spawn(async move |weak, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(5 * 60))
+                .await;
+            let keep = weak
+                .update(cx, |root, cx| {
+                    if !root.usage_open || root.remote_client.is_active() {
+                        return false;
+                    }
+                    let _ = root.core(cx).usage_refresh(RefreshReason::Open);
+                    true
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
+            }
+        }));
+    }
+
     pub(crate) fn sidebar_usage(&self, cx: &App) -> (UsageSnapshot, Vec<Runtime>, bool) {
         let remote = self.remote_client.is_active();
         let remote_usage = self.remote_client.remote_usage(cx);
@@ -555,13 +578,16 @@ impl NativeRoot {
         } else {
             (
                 self.app_store.read(cx).usage.clone(),
-                visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes()),
+                visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+                    .into_iter()
+                    .filter(|runtime| self.settings(cx).usage.badge(*runtime))
+                    .collect(),
                 false,
             )
         }
     }
 
-    pub(super) fn render_claude_usage_picker(
+    pub(crate) fn render_claude_usage_picker(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -672,7 +698,7 @@ impl NativeRoot {
         }
         let remote = self.remote_client.remote_usage(cx);
         let readonly = self.remote_client.is_active();
-        let snapshot = if readonly {
+        let mut snapshot = if readonly {
             remote
                 .as_ref()
                 .map(|(usage, _, _)| crate::surfaces::remote_client::usage_snapshot(usage))
@@ -680,6 +706,13 @@ impl NativeRoot {
         } else {
             self.app_store.read(cx).usage.clone()
         };
+        if !self.settings(cx).usage.five_hour {
+            for entry in snapshot.runtimes.values_mut() {
+                if let Some(usage) = &mut entry.value {
+                    usage.windows.retain(|window| !is_five_hour(&window.name));
+                }
+            }
+        }
         let now = chrono::Utc::now();
         let updated = snapshot
             .runtimes
@@ -729,15 +762,10 @@ impl NativeRoot {
                     .text_color(theme::muted())
                     .into_any_element()
             });
-        let update_dot = update_dot_visible(&self.agent_updates, self.settings(cx));
         let owner = cx.weak_entity();
         let agent_settings = Tooltip::new(
             "usage-agent-settings-tooltip",
-            if update_dot {
-                crate::i18n::text("ui.agent_settings_agent_cli_update_available")
-            } else {
-                crate::i18n::text("ui.agent_settings")
-            },
+            crate::i18n::text("usage.settings"),
             div()
                 .id("usage-agent-settings")
                 .debug_selector(|| "USAGE_AGENT_SETTINGS".into())
@@ -752,7 +780,7 @@ impl NativeRoot {
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
                         this.usage_open = false;
-                        this.open_this_computer_settings(Some("agents"), window, cx);
+                        this.open_this_computer_settings(Some("usage"), window, cx);
                     });
                 })
                 .child(
@@ -760,17 +788,7 @@ impl NativeRoot {
                         .path("settings.svg")
                         .size(px(14.))
                         .text_color(theme::muted()),
-                )
-                .children(update_dot.then(|| {
-                    div()
-                        .debug_selector(|| "USAGE_AGENT_SETTINGS_DOT".into())
-                        .absolute()
-                        .top(px(3.))
-                        .right(px(3.))
-                        .size(px(6.))
-                        .rounded_full()
-                        .bg(theme::accent())
-                })),
+                ),
         );
         let mut account_picker = if readonly {
             remote

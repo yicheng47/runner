@@ -2,6 +2,7 @@ pub(crate) mod about;
 pub(crate) mod agents;
 pub(crate) mod archived;
 pub(crate) mod claude_accounts;
+mod integration_account;
 pub(crate) mod mcp;
 pub(crate) mod notifications;
 pub(crate) mod page;
@@ -9,6 +10,7 @@ pub(crate) mod remote;
 pub(crate) mod skills;
 pub(crate) mod theme_preview;
 pub(crate) mod updates;
+pub(crate) mod usage;
 
 /// Raised by a settings editor's Save, success or failure, so the app shell
 /// can show it as a toast.

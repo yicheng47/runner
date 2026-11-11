@@ -85,6 +85,7 @@ pub(crate) enum SettingsPane {
     SidePanel,
     Files,
     Agents,
+    Usage,
     Skills,
     Mcp,
     Updates,
@@ -105,6 +106,7 @@ impl SettingsPane {
             Some("side-panel") => Self::SidePanel,
             Some("files") => Self::Files,
             Some("agents") => Self::Agents,
+            Some("usage") => Self::Usage,
             Some("mcp") => Self::Mcp,
             Some("skills") => Self::Skills,
             Some("updates") => Self::Updates,
@@ -127,6 +129,7 @@ impl SettingsPane {
             Self::SidePanel => "side-panel",
             Self::Files => "files",
             Self::Agents => "agents",
+            Self::Usage => "usage",
             Self::Skills => "skills",
             Self::Mcp => "mcp",
             Self::Updates => "updates",
@@ -148,6 +151,7 @@ impl SettingsPane {
             Self::SidePanel => crate::i18n::text("side_panel.panel"),
             Self::Files => crate::i18n::text("ui.files"),
             Self::Agents => crate::i18n::text("ui.agents"),
+            Self::Usage => crate::i18n::text("ui.usage"),
             Self::Skills => crate::i18n::text("ui.skills"),
             Self::Mcp => "MCP",
             Self::Updates => crate::i18n::text("ui.updates"),
@@ -199,6 +203,7 @@ impl SettingsPane {
             Self::SidePanel => "panel-right-open.svg",
             Self::Files => "folder.svg",
             Self::Agents => "bot.svg",
+            Self::Usage => "gauge.svg",
             Self::Skills => "file-text.svg",
             Self::Mcp => "plug.svg",
             Self::Updates => "refresh-cw.svg",
@@ -220,11 +225,7 @@ const APP_PANES: &[SettingsPane] = &[
 
 const SIDE_PANEL_PANES: &[SettingsPane] = &[SettingsPane::SidePanel, SettingsPane::Files];
 
-const INTEGRATION_PANES: &[SettingsPane] = &[
-    SettingsPane::Agents,
-    SettingsPane::Skills,
-    SettingsPane::Mcp,
-];
+const INTEGRATION_PANES: &[SettingsPane] = &[SettingsPane::Agents, SettingsPane::Usage];
 
 const CLOUD_PANES: &[SettingsPane] = &[SettingsPane::Account, SettingsPane::Remote];
 
@@ -246,6 +247,12 @@ fn filtered_nav_groups(query: &str) -> Vec<(&'static str, Vec<SettingsPane>)> {
             let panes = panes
                 .iter()
                 .copied()
+                .chain(
+                    (!query.is_empty() && *panes == INTEGRATION_PANES)
+                        .then_some([SettingsPane::Skills, SettingsPane::Mcp])
+                        .into_iter()
+                        .flatten(),
+                )
                 .filter(|pane| {
                     query.is_empty()
                         || std::iter::once(pane.label())
@@ -284,6 +291,7 @@ enum SettingsSelection {
     FileIcons,
     FilesFont,
     MarkdownOpenAs,
+    UsageThreshold,
 }
 
 pub(crate) struct SettingsState {
@@ -312,11 +320,11 @@ pub(crate) struct SettingsState {
     file_icons: Entity<StyledSelect>,
     files_font: Entity<StyledSelect>,
     markdown_open_as: Entity<StyledSelect>,
+    pub(crate) usage_threshold: Entity<StyledSelect>,
+    pub(crate) usage_interval: Entity<StyledSelect>,
     pub(crate) language: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
-    skills: Option<Entity<settings::skills::SkillsPane>>,
-    mcp: Option<Entity<settings::mcp::McpPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
     about: Option<Entity<settings::about::AboutPane>>,
     archived: Option<Entity<settings::archived::ArchivedPane>>,
@@ -365,6 +373,63 @@ impl SettingsState {
                 runner_app::ui::working_dir_placeholder(None, ""),
             )
             .truncate_unfocused()
+        });
+        let usage_threshold = settings_select(
+            &root,
+            "usage-threshold",
+            settings.notifications.usage.threshold.to_string(),
+            [50, 60, 70, 80, 90]
+                .into_iter()
+                .map(|n| SelectOption::new(n.to_string(), format!("{n}%")))
+                .collect(),
+            SettingsSelection::UsageThreshold,
+            cx,
+        );
+        let interval_root = root.clone();
+        let usage_interval = cx.new(|cx| {
+            StyledSelect::new(
+                "usage-interval",
+                cx.focus_handle(),
+                "900",
+                [300, 900, 1800, 3600]
+                    .into_iter()
+                    .map(|n| {
+                        SelectOption::new(
+                            n.to_string(),
+                            crate::i18n::message(match n {
+                                300 => "usage.every_5",
+                                900 => "usage.every_15",
+                                1800 => "usage.every_30",
+                                _ => "usage.every_hour",
+                            }),
+                        )
+                    })
+                    .collect(),
+                Rc::new(move |value, _, cx| {
+                    interval_root.update(cx, |root, cx| {
+                        if let Ok(seconds) = value.parse() {
+                            if let Err(error) = root.core(cx).usage_set_interval(seconds) {
+                                if let Ok(seconds) = root.core(cx).usage_interval() {
+                                    let select = root.settings_page.usage_interval.clone();
+                                    cx.defer(move |cx| {
+                                        select.update(cx, |select, cx| {
+                                            select.set_value(seconds.to_string(), cx)
+                                        })
+                                    });
+                                }
+                                root.show_toast(
+                                    error.to_string(),
+                                    crate::toast::ToastTone::Error,
+                                    cx,
+                                );
+                            }
+                        }
+                        cx.notify();
+                    });
+                }),
+                cx,
+            )
+            .width(px(140.))
         });
         let default_crew = settings_select(
             &root,
@@ -568,11 +633,11 @@ impl SettingsState {
             file_icons,
             files_font,
             markdown_open_as,
+            usage_threshold,
+            usage_interval,
             language,
             quit_behavior,
             agents: None,
-            skills: None,
-            mcp: None,
             updates: None,
             about: None,
             archived: None,
@@ -714,7 +779,8 @@ fn settings_select(
         | SettingsSelection::TerminalScrollback
         | SettingsSelection::QuitBehavior
         | SettingsSelection::FilesFont
-        | SettingsSelection::MarkdownOpenAs => None,
+        | SettingsSelection::MarkdownOpenAs
+        | SettingsSelection::UsageThreshold => None,
         #[cfg(target_os = "macos")]
         SettingsSelection::OptionAsMeta => None,
     };
@@ -834,6 +900,18 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             return;
         }
+        if matches!(pane, SettingsPane::Skills | SettingsPane::Mcp) {
+            self.enter_settings_pane(SettingsPane::Agents, window, cx);
+            let tab = if pane == SettingsPane::Skills {
+                settings::agents::AgentTab::Skills
+            } else {
+                settings::agents::AgentTab::Mcp
+            };
+            if let Some(agents) = self.settings_page.agents.clone() {
+                agents.update(cx, |pane, cx| pane.open_tab(tab, cx));
+            }
+            return;
+        }
 
         if self.settings_page.pane != pane {
             self.dismiss_remote_dialog();
@@ -867,6 +945,16 @@ impl NativeRoot {
         match pane {
             SettingsPane::Account | SettingsPane::Remote => self.enter_remote_settings(cx),
             SettingsPane::Missions => self.refresh_settings_crews(cx),
+            SettingsPane::Usage => {
+                let _ = self
+                    .core(cx)
+                    .usage_refresh(runner_core::protocol::RefreshReason::Open);
+                if let Ok(seconds) = self.core(cx).usage_interval() {
+                    self.settings_page
+                        .usage_interval
+                        .update(cx, |select, cx| select.set_value(seconds.to_string(), cx));
+                }
+            }
             SettingsPane::Agents => {
                 if self.settings_page.agents.is_none() {
                     let shell = cx.entity().downgrade();
@@ -883,40 +971,7 @@ impl NativeRoot {
                 }
                 let _ = self.core(cx).runtime_check_updates(false);
             }
-            SettingsPane::Skills => {
-                if self.settings_page.skills.is_none() {
-                    let app_store = self.app_store.clone();
-                    let pane = cx.new(|cx| settings::skills::SkillsPane::new(app_store, cx));
-                    let detail = pane.read(cx).detail.clone();
-                    self.settings_page._subscriptions.push(cx.subscribe(
-                        &detail,
-                        |this, _, notice: &settings::SaveNotice, cx| {
-                            this.show_toast(notice.message.clone(), notice.tone, cx)
-                        },
-                    ));
-                    self.settings_page.skills = Some(pane);
-                }
-                if let Some(skills) = self.settings_page.skills.clone() {
-                    skills.update(cx, |pane, cx| pane.refresh(cx));
-                }
-            }
-            SettingsPane::Mcp => {
-                if self.settings_page.mcp.is_none() {
-                    let app_store = self.app_store.clone();
-                    let pane = cx.new(|cx| settings::mcp::McpPane::new(app_store, cx));
-                    let detail = pane.read(cx).detail.clone();
-                    self.settings_page._subscriptions.push(cx.subscribe(
-                        &detail,
-                        |this, _, notice: &settings::SaveNotice, cx| {
-                            this.show_toast(notice.message.clone(), notice.tone, cx)
-                        },
-                    ));
-                    self.settings_page.mcp = Some(pane);
-                }
-                if let Some(mcp) = self.settings_page.mcp.clone() {
-                    mcp.update(cx, |pane, cx| pane.refresh(cx));
-                }
-            }
+            SettingsPane::Skills | SettingsPane::Mcp => {}
             SettingsPane::Updates => {
                 if self.settings_page.updates.is_none() {
                     let app_store = self.app_store.clone();
@@ -1028,6 +1083,11 @@ impl NativeRoot {
                 &mut settings.files_font_family,
                 (!value.is_empty()).then(|| TerminalFontFamily::new(value)),
             ),
+            SettingsSelection::UsageThreshold => value
+                .parse::<u8>()
+                .ok()
+                .filter(|n| [50, 60, 70, 80, 90].contains(n))
+                .is_some_and(|n| update_if_changed(&mut settings.notifications.usage.threshold, n)),
             SettingsSelection::MarkdownOpenAs => crate::app_settings::MarkdownOpenAs::parse(value)
                 .is_some_and(|value| update_if_changed(&mut settings.markdown_open_as, value)),
         });
@@ -1753,7 +1813,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_stays_solid_and_settings_gear_opens_agents_in_both_materials() {
+    fn usage_stays_solid_and_settings_gear_opens_usage_in_both_materials() {
         use crate::theme_snapshot::{assert_fill, ThemeGuard};
         use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
         use runner_app::appearance::{Appearance, WindowMaterial};
@@ -1801,10 +1861,261 @@ mod tests {
             host.read_with(&visual, |root, _| {
                 assert!(!root.usage_open);
                 assert_eq!(root.route, AppRoute::Settings);
-                assert_eq!(root.settings_page.pane, SettingsPane::Agents);
+                assert_eq!(root.settings_page.pane, SettingsPane::Usage);
             })
             .unwrap();
             assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_none());
+        }
+    }
+
+    #[test]
+    fn usage_preview_matches_the_240_pixel_sidebar_reference_at_each_zoom() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "usage-preview-size".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1440.), px(1000.)));
+        host.update(&mut visual, |root, window, cx| {
+            root.usage_installed = vec![
+                runner_core::Runtime::ClaudeCode,
+                runner_core::Runtime::Codex,
+            ];
+            root.enter_settings_pane(SettingsPane::Usage, window, cx);
+        })
+        .unwrap();
+        for zoom in [1., 1.3] {
+            store.update(&mut visual, |store, cx| {
+                store.update_settings(
+                    |s| {
+                        s.app_zoom = zoom;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            });
+            let sample = visual.debug_bounds("USAGE_PREVIEW_SIDEBAR").unwrap();
+            let preview = visual.debug_bounds("USAGE_SIDEBAR_PREVIEW").unwrap();
+            let recent = visual.debug_bounds("USAGE_PREVIEW_RECENT").unwrap();
+            let divider = visual.debug_bounds("USAGE_PREVIEW_DIVIDER").unwrap();
+            let footer = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
+            let badges = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+            let host = visual.debug_bounds("USAGE_PREVIEW_monitor.svg").unwrap();
+            let gear = visual.debug_bounds("USAGE_PREVIEW_settings.svg").unwrap();
+            assert!((sample.size.width - px(240. * zoom)).abs() < px(1.));
+            assert!((sample.center().x - preview.center().x).abs() < px(1.));
+            assert!((recent.size.height - px(30. * zoom)).abs() < px(1.));
+            assert!((footer.size.height - px(32. * zoom)).abs() < px(1.));
+            assert!((recent.left() - sample.left() - px(12. * zoom)).abs() < px(1.));
+            assert!((divider.top() - recent.bottom() - px(8. * zoom)).abs() < px(1.));
+            assert!((footer.top() - divider.bottom() - px(8. * zoom)).abs() < px(1.));
+            assert!((sample.bottom() - footer.bottom() - px(12. * zoom)).abs() < px(1.));
+            assert!((gear.left() - host.right() - px(8. * zoom)).abs() < px(1.));
+            assert!(badges.size.width < px(128. * zoom));
+            assert!(badges.left() >= footer.left() && gear.right() <= footer.right() + px(1.));
+        }
+    }
+
+    #[test]
+    fn usage_preview_buttons_never_open_pickers_or_navigate() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "usage-preview".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store,
+                window,
+                cx,
+            )
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1200.), px(900.)));
+        host.update(&mut visual, |root, window, cx| {
+            root.enter_settings_pane(SettingsPane::Usage, window, cx)
+        })
+        .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_none());
+        assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_none());
+        let anchor = host
+            .read_with(&visual, |root, _| root.remote_client.ui.anchor)
+            .unwrap();
+        for selector in ["USAGE_PREVIEW_monitor.svg", "USAGE_PREVIEW_settings.svg"] {
+            let button = visual.debug_bounds(selector).unwrap();
+            visual.simulate_click(button.center(), gpui::Modifiers::default());
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            host.read_with(&visual, |root, _| {
+                assert_eq!(root.settings_page.pane, SettingsPane::Usage);
+                assert!(!root.remote_client.ui.picker_open);
+                assert_eq!(root.remote_client.ui.anchor, anchor);
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn usage_page_account_picker_follows_refreshed_accounts_and_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            store.claude_accounts = runner_core::protocol::ClaudeAccounts {
+                accounts: ["personal", "work"]
+                    .into_iter()
+                    .map(|id| runner_core::protocol::ClaudeAccount {
+                        id: id.into(),
+                        name: id.into(),
+                        folder: format!("/tmp/{id}"),
+                        native: false,
+                    })
+                    .collect(),
+                main_id: "personal".into(),
+                active_id: "personal".into(),
+                statuses: ["personal", "work"]
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id.into(),
+                            runner_core::protocol::ClaudeAuthStatus {
+                                logged_in: true,
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .collect(),
+                ..Default::default()
+            };
+        });
+        let accounts = store.read_with(&cx, |store, _| store.claude_accounts.clone());
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "usage-picker".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1200.), px(900.)));
+        host.update(&mut visual, |root, window, cx| {
+            root.enter_settings_pane(SettingsPane::Usage, window, cx)
+        })
+        .unwrap();
+        visual.run_until_parked();
+        host.read_with(&visual, |root, cx| {
+            assert_eq!(
+                root.claude_account_picker
+                    .as_ref()
+                    .unwrap()
+                    .read(cx)
+                    .value(),
+                "personal"
+            )
+        })
+        .unwrap();
+        store.update(&mut visual, |store, cx| {
+            store.claude_accounts = accounts;
+            store.claude_accounts.active_id = "work".into();
+            store.revisions.activity = store.revisions.activity.wrapping_add(1);
+            store.claude_account_usage.insert(
+                "work".into(),
+                runner_core::protocol::RuntimeUsage {
+                    value: Some(runner_core::protocol::AgentUsage {
+                        updated_at: chrono::Utc::now(),
+                        windows: vec![runner_core::protocol::UsageWindow {
+                            name: "Week".into(),
+                            used_percent: 91.,
+                            resets_at: None,
+                        }],
+                    }),
+                    error: None,
+                },
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.refresh();
+            let _ = window.draw(cx);
+        });
+        host.read_with(&visual, |root, cx| {
+            assert_eq!(
+                root.app_store.read(cx).claude_accounts.active_id,
+                "work",
+                "refreshed account snapshot"
+            );
+            let picker = root.claude_account_picker.as_ref().unwrap().read(cx);
+            assert_eq!(picker.value(), "work");
+            assert_eq!(
+                picker
+                    .selected()
+                    .unwrap()
+                    .description
+                    .as_ref()
+                    .unwrap()
+                    .as_ref(),
+                "91%"
+            );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn legacy_catalog_routes_redirect_to_agent_tabs_and_reset_on_other_agent() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let host = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "integration-routes".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store,
+                window,
+                cx,
+            )
+        });
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        for (route, tab) in [
+            ("skills", settings::agents::AgentTab::Skills),
+            ("mcp", settings::agents::AgentTab::Mcp),
+        ] {
+            host.update(&mut visual, |root, window, cx| {
+                root.enter_settings_pane(SettingsPane::from_route(Some(route)), window, cx);
+                assert_eq!(root.settings_page.pane, SettingsPane::Agents);
+                let agents = root.settings_page.agents.as_ref().unwrap().clone();
+                assert_eq!(agents.read(cx).tab, tab);
+                agents.update(cx, |pane, cx| {
+                    pane.open_runtime(runner_core::Runtime::Codex, cx)
+                });
+                assert_eq!(agents.read(cx).tab, settings::agents::AgentTab::General);
+            })
+            .unwrap();
         }
     }
 
@@ -2178,7 +2489,7 @@ mod tests {
                 all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
                 ["App", "Side panel", "Integrations", "Cloud", "System"]
             );
-            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 16);
+            assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
             assert_eq!(
                 all[0],
                 (
@@ -2215,11 +2526,7 @@ mod tests {
                 all[2],
                 (
                     "Integrations",
-                    vec![
-                        SettingsPane::Agents,
-                        SettingsPane::Skills,
-                        SettingsPane::Mcp
-                    ]
+                    vec![SettingsPane::Agents, SettingsPane::Usage]
                 )
             );
             assert_eq!(

@@ -301,6 +301,7 @@ impl NativeRoot {
                     this.usage_open = !this.usage_open;
                     this.remote_client.sync_usage_popover(this.usage_open, cx);
                     if this.usage_open && this.remote_client.is_local() {
+                        this.start_usage_refresh_timer(cx);
                         let core = this.core(cx).clone();
                         let _ = core.usage_refresh(RefreshReason::Open);
                         let _ = this.core(cx).runtime_check_updates(false);
@@ -328,53 +329,29 @@ impl NativeRoot {
                 footer.debug_selector(|| "SIDEBAR_FOOTER".into())
             })
             .px_3()
+            .child(sidebar_footer_divider())
             .child(
-                div()
-                    .w_full()
-                    .h(px(1.))
-                    .flex()
-                    .children([90., 270.].map(|angle| {
-                        div().flex_1().h_full().bg(linear_gradient(
-                            angle,
-                            linear_color_stop(alpha(theme::chrome_selected_border(), 0.), 0.),
-                            linear_color_stop(theme::chrome_selected_border(), 1.),
-                        ))
-                    })),
-            )
-            .child(
-                div()
-                    .when(cfg!(test), |row| {
-                        row.debug_selector(|| "SIDEBAR_FOOTER_ROW".into())
-                    })
-                    .w_full()
-                    .pt_2()
-                    .flex()
-                    .items_center()
-                    .relative()
-                    .children(usage)
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(4. * zoom))
-                            .child(self.remote_client.render_host_button(cx))
-                            .child(self.render_settings_button(cx)),
+                sidebar_footer_contents(
+                    usage.map(IntoElement::into_any_element),
+                    self.remote_client.render_host_button(cx),
+                    self.render_settings_button(cx),
+                    zoom,
+                    4.,
+                )
+                .pt_2()
+                .child({
+                    let owner = cx.entity();
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, _, cx| {
+                            owner.update(cx, |this, _| {
+                                this.remote_client.ui.footer_left = Some(bounds.left())
+                            });
+                        },
                     )
-                    .child({
-                        let owner = cx.entity();
-                        canvas(
-                            |_, _, _| {},
-                            move |bounds, _, _, cx| {
-                                owner.update(cx, |this, _| {
-                                    this.remote_client.ui.footer_left = Some(bounds.left())
-                                });
-                            },
-                        )
-                        .absolute()
-                        .inset_0()
-                    }),
+                    .absolute()
+                    .inset_0()
+                }),
             );
         // The content keeps its full width while the wrapper animates, so the
         // transition clips instead of squashing every row; a squashed row
@@ -525,4 +502,46 @@ impl NativeRoot {
         })
         .detach();
     }
+}
+
+pub(crate) fn sidebar_footer_contents(
+    usage: Option<AnyElement>,
+    host: AnyElement,
+    settings: AnyElement,
+    zoom: f32,
+    control_gap: f32,
+) -> Div {
+    div()
+        .when(cfg!(test), |row| {
+            row.debug_selector(|| "SIDEBAR_FOOTER_ROW".into())
+        })
+        .w_full()
+        .flex()
+        .items_center()
+        .relative()
+        .children(usage)
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(control_gap * zoom))
+                .child(host)
+                .child(settings),
+        )
+}
+
+pub(crate) fn sidebar_footer_divider() -> Div {
+    div()
+        .w_full()
+        .h(px(1.))
+        .flex()
+        .children([90., 270.].map(|angle| {
+            div().flex_1().h_full().bg(linear_gradient(
+                angle,
+                linear_color_stop(alpha(theme::chrome_selected_border(), 0.), 0.),
+                linear_color_stop(theme::chrome_selected_border(), 1.),
+            ))
+        }))
 }

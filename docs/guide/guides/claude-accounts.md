@@ -10,7 +10,7 @@ Each account shows its sign-in status, email and any available organization or p
 
 ## Switch the active account
 
-Choose **Use** beside a signed-in account, or select it from the Claude Code dropdown in the usage popover. The dropdown lists signed-in accounts and their weekly usage. **Manage accounts…** opens the Claude Code settings page. The popover and footer show the active account’s usage.
+Choose **Use** beside a signed-in account, or select it from the Claude Code dropdown in the usage popover. The dropdown lists signed-in accounts and their weekly usage. **Manage accounts…** opens the Claude Code settings page. The popover, footer and **Settings → Usage** show the active account’s usage. Usage settings control sidebar badges, the check interval and the 5-hour window. Near-the-limit notifications cover the active account only.
 
 The selected account shows **Active**, including when it is also **main**; both badges appear together.
 
@@ -32,7 +32,7 @@ Choose **Use Personal’s settings** on another account’s row, then confirm. T
 
 Choose **Stop using Personal’s settings** in the account’s **⋯** menu to disconnect. Runner removes only links it created whose targets still match its records, including individual skill links. The real skill directory, local/synced skills and plugin state stay in place. Removing an account uses the same cleanup. Your folder, own files, sign-in and conversation history stay on disk. On Windows, sharing uses directory junctions and a memory import, and links `settings.json` with a symbolic link when Developer Mode is on. Without Developer Mode, Runner passes main’s settings to each new session at launch instead; Claude Code may ignore some settings delivered that way, so turn on Developer Mode if the account doesn’t start like main.
 
-**Settings → Skills** and **Settings → MCP** edit the main account’s configuration. **Make main** moves those panes, model discovery and update-channel lookup to the selected account. The promoted account’s managed links are removed and other linked accounts follow the new owner. Its own files become the shared configuration; Runner does not copy the previous owner’s files. If Runner cannot finish because a folder is inaccessible, the previous main stays selected. Restore access and choose **Retry** in Accounts. Accounts involved in that change wait to launch until it finishes; the pending change survives restarting Runner.
+**Settings → Agents → Claude Code → Skills / MCP** opens on the main account; choose another account from the dropdown to inspect and edit its own configuration. Sharing accounts show a note explaining which settings are shared. This selection does not change the active account and resets on each visit. **Make main** changes the default configuration owner, model discovery and update-channel lookup to the selected account. The promoted account’s managed links are removed and other linked accounts follow the new owner. Its own files become the shared configuration; Runner does not copy the previous owner’s files. If Runner cannot finish because a folder is inaccessible, the previous main stays selected. Restore access and choose **Retry** in Accounts. Accounts involved in that change wait to launch until it finishes; the pending change survives restarting Runner.
 
 ## Rename, make main, sign out or remove
 

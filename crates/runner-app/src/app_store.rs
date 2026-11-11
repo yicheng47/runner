@@ -265,6 +265,12 @@ impl From<&AppSettings> for ShellSettingsSnapshot {
         settings.default_runtime.hash(&mut hasher);
         settings.disabled_agents.hash(&mut hasher);
         settings.enabled_agents.hash(&mut hasher);
+        settings.usage.sidebar.hash(&mut hasher);
+        settings.usage.codex.hash(&mut hasher);
+        settings.usage.claude_code.hash(&mut hasher);
+        settings.usage.five_hour.hash(&mut hasher);
+        settings.notifications.usage.near_limit.hash(&mut hasher);
+        settings.notifications.usage.threshold.hash(&mut hasher);
         settings.runner_skill_enabled.hash(&mut hasher);
         settings.keymap_overrides.hash(&mut hasher);
         Self(hasher.finish())
@@ -1726,4 +1732,34 @@ mod roster_change_tests {
             );
         }
     }
+}
+
+#[test]
+fn usage_controls_invalidate_shell_but_alert_history_does_not() {
+    let settings = AppSettings::default();
+    let before = ShellSettingsSnapshot::from(&settings);
+    let changes: [fn(&mut AppSettings); 6] = [
+        |s| s.usage.sidebar = false,
+        |s| s.usage.codex = false,
+        |s| s.usage.claude_code = false,
+        |s| s.usage.five_hour = false,
+        |s| s.notifications.usage.near_limit = false,
+        |s| s.notifications.usage.threshold = 50,
+    ];
+    for change in changes {
+        let mut next = settings.clone();
+        change(&mut next);
+        assert_ne!(ShellSettingsSnapshot::from(&next), before);
+    }
+    let mut next = settings;
+    next.notifications
+        .usage
+        .alerted
+        .push(crate::app_settings::UsageAlertPeriod {
+            runtime: runner_core::Runtime::Codex,
+            account: String::new(),
+            window: "Week".into(),
+            resets_at: None,
+        });
+    assert_eq!(ShellSettingsSnapshot::from(&next), before);
 }

@@ -167,6 +167,8 @@ pub(crate) struct McpPane {
     app_store: Entity<AppStore>,
     runtime: Option<McpClientId>,
     runtime_select: Entity<StyledSelect>,
+    scoped: bool,
+    account_select: Entity<StyledSelect>,
     search: Entity<TextField>,
     pub(crate) detail: Entity<McpDetail>,
     _subscriptions: Vec<Subscription>,
@@ -186,6 +188,20 @@ impl McpPane {
                         this.runtime = McpClientId::parse(&value).ok();
                         cx.notify();
                     });
+                }),
+                cx,
+            )
+            .width(px(200.))
+        });
+        let account_owner = cx.weak_entity();
+        let account_select = cx.new(|cx| {
+            StyledSelect::new(
+                "integration-account",
+                cx.focus_handle(),
+                "",
+                Vec::new(),
+                Rc::new(move |id, _, cx| {
+                    let _ = account_owner.update(cx, |this, cx| this.select_account(id, cx));
                 }),
                 cx,
             )
@@ -216,6 +232,8 @@ impl McpPane {
             app_store,
             runtime: Some(McpClientId::ClaudeCode),
             runtime_select,
+            scoped: false,
+            account_select,
             search,
             detail,
             _subscriptions: subscriptions,
@@ -227,9 +245,10 @@ impl McpPane {
             &self.detail.read(cx).runtimes,
             &self.app_store.read(cx).settings,
         );
-        if !self
-            .runtime
-            .is_some_and(|runtime| clients.contains(&runtime))
+        if !self.scoped
+            && !self
+                .runtime
+                .is_some_and(|runtime| clients.contains(&runtime))
         {
             self.runtime = clients.first().copied();
         }
@@ -243,6 +262,35 @@ impl McpPane {
             );
             select.set_value(self.runtime.map(McpClientId::key).unwrap_or_default(), cx);
         });
+    }
+
+    pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
+        self.search.read(cx).is_composing() || self.detail.read(cx).editor.read(cx).is_composing()
+    }
+    pub(crate) fn count(&self, cx: &gpui::App) -> usize {
+        self.detail
+            .read(cx)
+            .catalog
+            .as_ref()
+            .map_or(0, |c| c.servers.len())
+    }
+    pub(crate) fn scope(&mut self, runtime: runner_core::Runtime, cx: &mut Context<Self>) {
+        self.scoped = true;
+        self.runtime = McpClientId::for_runtime(runtime);
+        self.search.update(cx, |search, cx| search.reset("", cx));
+        let id = self.app_store.read(cx).claude_accounts.main_id.clone();
+        self.select_account(id, cx);
+    }
+    fn select_account(&mut self, id: String, cx: &mut Context<Self>) {
+        self.detail.update(cx, |detail, _| {
+            detail.account_id = (!id.is_empty()).then_some(id.clone());
+            detail.generation += 1;
+            detail.catalog = None;
+        });
+        let select = self.account_select.clone();
+        cx.defer(move |cx| select.update(cx, |select, cx| select.set_value(id, cx)));
+        self.refresh(cx);
+        cx.notify();
     }
 
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -338,7 +386,21 @@ impl McpPane {
 
 impl Render for McpPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accounts = self.app_store.read(cx).claude_accounts.clone();
+        self.account_select.update(cx, |select, cx| {
+            select.set_options(super::integration_account::options(&accounts), cx)
+        });
+        let shared = (self.runtime == Some(McpClientId::ClaudeCode))
+            .then(|| {
+                super::integration_account::shared_note(
+                    &accounts,
+                    self.detail.read(cx).account_id.as_deref(),
+                    true,
+                )
+            })
+            .flatten();
         let owner = cx.entity();
+        let refresh_owner = owner.clone();
         let state = self.detail.read(cx);
         let mut rows = Vec::new();
         let mut meta = None;
@@ -353,10 +415,41 @@ impl Render for McpPane {
                 .iter()
                 .filter(|entry| !server_toggle_on(entry, client))
                 .count();
+            let config_file = if client == McpClientId::ClaudeCode {
+                let accounts = &self.app_store.read(cx).claude_accounts;
+                let id = state.account_id.as_deref().unwrap_or(&accounts.main_id);
+                let id = if accounts.sharing.get(id).is_some_and(|s| s.using_main) {
+                    accounts.main_id.as_str()
+                } else {
+                    id
+                };
+                accounts
+                    .accounts
+                    .iter()
+                    .find(|a| a.id == id)
+                    .map(|a| {
+                        if a.native {
+                            self.app_store
+                                .read(cx)
+                                .home_dir
+                                .as_ref()
+                                .map(|home| home.join(".claude.json").display().to_string())
+                                .unwrap_or_default()
+                        } else {
+                            std::path::Path::new(&a.folder)
+                                .join(".claude.json")
+                                .display()
+                                .to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| client.config_file().to_owned())
+            } else {
+                client.config_file().to_owned()
+            };
             meta = Some(crate::i18n::tf(
                 "format.servers_off",
                 &[
-                    ("config_file", (client.config_file()).to_string()),
+                    ("config_file", config_file.clone()),
                     ("server_count", (catalog.servers.len()).to_string()),
                     ("off", (off).to_string()),
                 ],
@@ -368,8 +461,8 @@ impl Render for McpPane {
                     .any(|s| s.clients[&client].registered)
             {
                 rows.push(div().px_4().py_4().flex().flex_col().gap_2().text_size(theme::text_ui()).text_color(theme::faint())
-                    .child(crate::i18n::tf("format.no_servers_in_yet", &[("config_file", (client.config_file()).to_string())]))
-                    .child(crate::i18n::tf("format.add_servers_with_s_cli_or_switch_runtime_to_copy_a_server_another_agent_alread", &[("runtime", (client.label()).to_string())])).into_any_element());
+                    .child(crate::i18n::tf("format.no_servers_in_yet", &[("config_file", config_file.clone())]))
+                    .child(crate::i18n::tf(if self.scoped { "integration.add_servers" } else { "format.add_servers_with_s_cli_or_switch_runtime_to_copy_a_server_another_agent_alread" }, &[("runtime", (client.label()).to_string())])).into_any_element());
             } else if rows.is_empty() && !self.search.read(cx).text().trim().is_empty() {
                 rows.push(
                     div()
@@ -385,23 +478,76 @@ impl Render for McpPane {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                PaneHeader::new("MCP", "").action(
-                    Button::new("mcp-refresh", crate::i18n::text("ui.refresh"))
-                        .icon("refresh-cw.svg")
-                        .size(ButtonSize::Sm)
-                        .disabled(state.loading || state.busy)
-                        .on_press(move |_, cx| owner.update(cx, |this, cx| this.refresh(cx))),
-                ),
-            )
+            .when(!self.scoped, |pane| {
+                pane.child(
+                    PaneHeader::new("MCP", "").action(
+                        Button::new("mcp-refresh", crate::i18n::text("ui.refresh"))
+                            .icon("refresh-cw.svg")
+                            .size(ButtonSize::Sm)
+                            .disabled(state.loading || state.busy)
+                            .on_press(move |_, cx| owner.update(cx, |this, cx| this.refresh(cx))),
+                    ),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(self.runtime_select.clone())
-                    .child(div().flex_1().min_w_0().child(self.search.clone())),
+                    .when(!self.scoped, |row| row.child(self.runtime_select.clone()))
+                    .when(
+                        self.scoped
+                            && self.runtime == Some(McpClientId::ClaudeCode)
+                            && self.app_store.read(cx).claude_accounts.multiple(),
+                        |row| row.child(self.account_select.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().child(self.search.clone()))
+                    .when(self.scoped, |row| {
+                        row.child(
+                            Button::new("integration-refresh", crate::i18n::text("ui.refresh"))
+                                .icon("refresh-cw.svg")
+                                .size(ButtonSize::Sm)
+                                .on_press(move |_, cx| {
+                                    refresh_owner.update(cx, |this, cx| this.refresh(cx))
+                                }),
+                        )
+                    }),
             )
+            .children(shared.map(|(note, label, id)| {
+                let owner = cx.entity();
+                div()
+                    .debug_selector(|| "INTEGRATION_SHARING_NOTE".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .debug_selector(|| "INTEGRATION_SHARING_TEXT".into())
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .line_height(rems(1.))
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(note),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "INTEGRATION_SHOW_MAIN".into())
+                            .flex_none()
+                            .child(
+                                Button::new("integration-show-main", label)
+                                    .size(ButtonSize::Sm)
+                                    .on_press(move |_, cx| {
+                                        owner.update(cx, |this, cx| {
+                                            this.select_account(id.clone(), cx)
+                                        })
+                                    }),
+                            ),
+                    )
+            }))
             .children(meta.map(|meta| {
                 div()
                     .flex()
@@ -451,6 +597,7 @@ impl Render for McpPane {
 impl EventEmitter<SaveNotice> for McpDetail {}
 
 pub(crate) struct McpDetail {
+    account_id: Option<String>,
     app_store: Entity<AppStore>,
     catalog: Option<McpCatalog>,
     runtimes: Vec<RuntimeCatalogEntry>,
@@ -488,6 +635,7 @@ impl McpDetail {
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), owner));
         let subscriptions = vec![cx.observe(&editor, |_, _, cx| cx.notify())];
         Self {
+            account_id: None,
             app_store,
             catalog: None,
             runtimes: Vec::new(),
@@ -523,12 +671,14 @@ impl McpDetail {
         let generation = self.generation;
         let home = self.app_store.read(cx).home_dir.clone();
         let core = self.app_store.read(cx).client.clone();
+        let account_id = self.account_id.clone();
         let task = cx.background_spawn(async move {
             let home = home.ok_or_else(|| {
                 crate::i18n::text("ui.home_directory_is_not_available").to_owned()
             })?;
             Ok::<_, String>((
-                core.mcp_catalog(&home).map_err(|e| e.to_string())?,
+                core.mcp_catalog(&home, account_id.as_deref())
+                    .map_err(|e| e.to_string())?,
                 core.runtime_catalog().map_err(|e| e.to_string())?,
             ))
         });
@@ -631,6 +781,7 @@ impl McpDetail {
         {
             return;
         }
+        let account_id = self.account_id.clone();
         self.write(
             move |daemon, home| {
                 if enabled {
@@ -643,9 +794,10 @@ impl McpDetail {
                         })?,
                         client,
                         &name,
+                        account_id.as_deref(),
                     )
                 } else {
-                    daemon.mcp_remove_server(home, client, &name)
+                    daemon.mcp_remove_server(home, client, &name, account_id.as_deref())
                 }
             },
             None,
@@ -671,13 +823,18 @@ impl McpDetail {
         self.editor.update(cx, |e, cx| e.set_disabled(true, cx));
         let home = self.app_store.read(cx).home_dir.clone();
         let core = self.app_store.read(cx).client.clone();
+        let account_id = self.account_id.clone();
         let task = cx.background_spawn(async move {
             let Some(home) = home else {
                 let error = crate::i18n::text("ui.home_directory_is_not_available").to_owned();
                 return (Err(error.clone()), Err(error));
             };
             let result = operation(&core, &home).map_err(|e| e.to_string());
-            (result, core.mcp_catalog(&home).map_err(|e| e.to_string()))
+            (
+                result,
+                core.mcp_catalog(&home, account_id.as_deref())
+                    .map_err(|e| e.to_string()),
+            )
         });
         cx.spawn(async move |weak, cx| {
             let (result, catalog) = task.await;
@@ -795,8 +952,11 @@ impl McpDetail {
             "format.saved_to",
             &[("name", (name).to_string()), ("files", (files).to_string())],
         );
+        let account_id = self.account_id.clone();
         self.write(
-            move |daemon, home| daemon.mcp_edit_server(home, client, &name, &text, &also),
+            move |daemon, home| {
+                daemon.mcp_edit_server(home, client, &name, &text, &also, account_id.as_deref())
+            },
             Some(saved),
             cx,
         );
@@ -1396,6 +1556,124 @@ mod tests {
                 .child(self.0.clone())
                 .child(self.0.read(cx).detail.clone())
         }
+    }
+
+    #[test]
+    fn sharing_guidance_wraps_and_keeps_show_main_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        store.update(&mut cx, |store, _| {
+            store.claude_accounts = runner_core::protocol::ClaudeAccounts {
+                accounts: vec![
+                    runner_core::protocol::ClaudeAccount {
+                        id: "main".into(),
+                        name: "Personal".into(),
+                        folder: temp.path().join("main").display().to_string(),
+                        native: false,
+                    },
+                    runner_core::protocol::ClaudeAccount {
+                        id: "shared".into(),
+                        name: "Work account with a longer descriptive name".into(),
+                        folder: temp.path().join("shared").display().to_string(),
+                        native: false,
+                    },
+                ],
+                main_id: "main".into(),
+                active_id: "main".into(),
+                sharing: std::collections::BTreeMap::from([(
+                    "shared".into(),
+                    runner_core::protocol::ClaudeAccountSharing {
+                        using_main: true,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+        });
+        let host = cx.add_window(|_, cx| Host(cx.new(|cx| McpPane::new(store, cx))));
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        host.update(&mut visual, |host, _, cx| {
+            host.0.update(cx, |pane, cx| {
+                pane.scope(runner_core::Runtime::ClaudeCode, cx);
+                pane.select_account("shared".into(), cx);
+            })
+        })
+        .unwrap();
+        for rem in [16., 19.2] {
+            host.update(&mut visual, |_, window, _| window.set_rem_size(px(rem)))
+                .unwrap();
+            for width in [640., 900.] {
+                visual.simulate_resize(gpui::size(px(width), px(800.)));
+                visual.run_until_parked();
+                let row = visual.debug_bounds("INTEGRATION_SHARING_NOTE").unwrap();
+                let text = visual.debug_bounds("INTEGRATION_SHARING_TEXT").unwrap();
+                let action = visual.debug_bounds("INTEGRATION_SHOW_MAIN").unwrap();
+                assert!(row.right() <= px(width) + px(1.));
+                assert!(text.size.height > px(rem * 16. / 16.));
+                assert!(text.right() <= action.left());
+                assert!(action.right() <= row.right() + px(1.));
+                assert!(action.top() >= row.top() && action.bottom() <= row.bottom());
+            }
+        }
+    }
+
+    #[test]
+    fn account_picker_keyboard_selection_defers_its_own_value_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        store.update(&mut cx, |store, _| {
+            store.claude_accounts = runner_core::protocol::ClaudeAccounts {
+                accounts: ["main", "fixture"]
+                    .into_iter()
+                    .map(|id| runner_core::protocol::ClaudeAccount {
+                        id: id.into(),
+                        name: id.into(),
+                        folder: temp.path().join(id).display().to_string(),
+                        native: false,
+                    })
+                    .collect(),
+                main_id: "main".into(),
+                active_id: "main".into(),
+                ..Default::default()
+            };
+        });
+        let host = cx.add_window(|_, cx| Host(cx.new(|cx| McpPane::new(store, cx))));
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        host.update(&mut visual, |host, window, cx| {
+            host.0.update(cx, |pane, cx| {
+                pane.scope(runner_core::Runtime::ClaudeCode, cx)
+            });
+            host.0
+                .read(cx)
+                .account_select
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx);
+        })
+        .unwrap();
+        visual.run_until_parked();
+        for key in ["space", "down", "enter", "space", "space"] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+        }
+        host.read_with(&visual, |host, cx| {
+            let pane = host.0.read(cx);
+            assert_eq!(pane.account_select.read(cx).value(), "fixture");
+            assert_eq!(pane.detail.read(cx).account_id.as_deref(), Some("fixture"));
+        })
+        .unwrap();
+        host.update(&mut visual, |host, _, cx| {
+            host.0
+                .update(cx, |pane, cx| pane.select_account("main".into(), cx))
+        })
+        .unwrap();
+        visual.run_until_parked();
+        host.read_with(&visual, |host, cx| {
+            assert_eq!(host.0.read(cx).account_select.read(cx).value(), "main")
+        })
+        .unwrap();
     }
 
     #[test]

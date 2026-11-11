@@ -2,7 +2,7 @@ use super::*;
 
 impl NativeRoot {
     pub(crate) fn render_settings_takeover(
-        &self,
+        &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -166,21 +166,21 @@ impl NativeRoot {
                     )),
             )
             .child(self.render_sidebar_resize_handle(width, cx))
-            .when(active == SettingsPane::Skills, |takeover| {
-                takeover.children(
-                    self.settings_page
-                        .skills
-                        .as_ref()
-                        .map(|pane| pane.read(cx).detail.clone()),
-                )
-            })
-            .when(active == SettingsPane::Mcp, |takeover| {
-                takeover.children(
-                    self.settings_page
-                        .mcp
-                        .as_ref()
-                        .map(|pane| pane.read(cx).detail.clone()),
-                )
+            .when(active == SettingsPane::Agents, |takeover| {
+                if let Some(agents) = &self.settings_page.agents {
+                    let agents = agents.read(cx);
+                    match agents.tab {
+                        settings::agents::AgentTab::Skills => {
+                            takeover.child(agents.skills.read(cx).detail.clone())
+                        }
+                        settings::agents::AgentTab::Mcp => {
+                            takeover.child(agents.mcp.read(cx).detail.clone())
+                        }
+                        _ => takeover,
+                    }
+                } else {
+                    takeover
+                }
             })
             .into_any_element()
     }
@@ -324,6 +324,22 @@ impl NativeRoot {
                     }),
             )
             .child(div().min_w(px(0.)).truncate().child(pane.label()))
+            .when(
+                pane == SettingsPane::Agents
+                    && crate::surfaces::app_shell::update_dot_visible(
+                        &self.agent_updates,
+                        self.settings(cx),
+                    ),
+                |row| {
+                    row.child(div().flex_1()).child(
+                        div()
+                            .debug_selector(|| "SETTINGS_AGENTS_UPDATE_DOT".into())
+                            .size(rems(6. / 16.))
+                            .rounded_full()
+                            .bg(theme::accent()),
+                    )
+                },
+            )
             .on_click(move |_, window, cx| {
                 root.update(cx, |this, root_cx| {
                     this.enter_settings_pane(pane, window, root_cx)
@@ -340,9 +356,10 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    pub(super) fn render_settings_pane(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_settings_pane(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         match self.settings_page.pane {
             SettingsPane::General => Some(self.render_general_settings(cx)),
+            SettingsPane::Usage => Some(self.render_usage_settings(cx)),
             SettingsPane::Missions => Some(self.render_missions_settings(cx)),
             SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
             SettingsPane::Account => Some(self.render_account_settings(cx)),
@@ -357,16 +374,7 @@ impl NativeRoot {
                 .agents
                 .clone()
                 .map(IntoElement::into_any_element),
-            SettingsPane::Skills => self
-                .settings_page
-                .skills
-                .clone()
-                .map(IntoElement::into_any_element),
-            SettingsPane::Mcp => self
-                .settings_page
-                .mcp
-                .clone()
-                .map(IntoElement::into_any_element),
+            SettingsPane::Skills | SettingsPane::Mcp => None,
             SettingsPane::Updates => self
                 .settings_page
                 .updates

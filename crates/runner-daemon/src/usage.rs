@@ -13,6 +13,7 @@ use crate::AppCore;
 
 pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_REFRESH_VISIBLE: Duration = Duration::from_millis(400);
+#[cfg(test)]
 const SCHEDULE_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const OPEN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
@@ -70,8 +71,10 @@ impl UsageState {
 pub struct UsageService {
     state: Mutex<UsageState>,
     saved_seq: Mutex<u64>,
+    interval: std::sync::atomic::AtomicU64,
     wake_scheduler: Condvar,
     enabled: RwLock<Vec<Runtime>>,
+    checked: RwLock<Option<Vec<Runtime>>>,
     polling_enabled: std::sync::atomic::AtomicBool,
     clients: std::sync::atomic::AtomicUsize,
     transport_lifetime: std::sync::atomic::AtomicBool,
@@ -85,8 +88,10 @@ impl Default for UsageService {
         Self {
             state: Mutex::new(UsageState::default()),
             saved_seq: Mutex::new(0),
+            interval: std::sync::atomic::AtomicU64::new(900),
             wake_scheduler: Condvar::new(),
             enabled: RwLock::new(Vec::new()),
+            checked: RwLock::new(None),
             polling_enabled: std::sync::atomic::AtomicBool::new(true),
             clients: std::sync::atomic::AtomicUsize::new(0),
             transport_lifetime: std::sync::atomic::AtomicBool::new(false),
@@ -164,6 +169,21 @@ impl UsageService {
         self.wake_scheduler.notify_all();
     }
 
+    pub fn interval(&self) -> u64 {
+        self.interval.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn set_interval(&self, pool: &crate::db::DbPool, seconds: u64) -> crate::error::Result<()> {
+        if ![300, 900, 1800, 3600].contains(&seconds) {
+            return Err(crate::error::Error::msg("invalid usage interval"));
+        }
+        let conn = pool.get()?;
+        crate::db::app_state_set(&conn, "usage_interval", &seconds.to_string())?;
+        self.interval
+            .store(seconds, std::sync::atomic::Ordering::Release);
+        self.wake_scheduler.notify_all();
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> UsageSnapshot {
         self.state.lock().unwrap().snapshot.clone()
     }
@@ -182,6 +202,17 @@ impl UsageService {
     }
 
     pub fn restore(&self, pool: &crate::db::DbPool) {
+        if let Ok(conn) = pool.get() {
+            if let Ok(Some(value)) = crate::db::app_state_get(&conn, "usage_interval") {
+                if let Ok(seconds) = value.parse::<u64>() {
+                    if [300, 900, 1800, 3600].contains(&seconds) {
+                        self.interval
+                            .store(seconds, std::sync::atomic::Ordering::Release);
+                    }
+                }
+            }
+        }
+
         let lkg = match crate::db::usage_lkg(pool) {
             Ok(Some(lkg)) => lkg,
             Ok(None) => return,
@@ -226,13 +257,29 @@ impl UsageService {
         true
     }
 
+    pub fn set_checked(&self, runtimes: Vec<Runtime>) {
+        let mut checked = self.checked.write().unwrap();
+        if checked.as_ref() == Some(&runtimes) {
+            return;
+        }
+        *checked = Some(runtimes);
+        self.wake_scheduler.notify_all();
+    }
+
     pub fn enabled(&self) -> Vec<Runtime> {
         self.enabled.read().unwrap().clone()
     }
 
     fn begin_refresh(&self, reason: RefreshReason, now: DateTime<Utc>) -> bool {
         let mut state = self.state.lock().unwrap();
-        if state.snapshot.refreshing || !refresh_due(state.last_attempt_at, reason, now) {
+        if state.snapshot.refreshing
+            || !refresh_due_with_interval(
+                state.last_attempt_at,
+                reason,
+                now,
+                Duration::from_secs(self.interval()),
+            )
+        {
             return false;
         }
         state.last_attempt_at = Some(now);
@@ -253,13 +300,17 @@ impl UsageService {
     }
 
     pub fn request_refresh(self: &Arc<Self>, core: AppCore, reason: RefreshReason) {
-        if !self.fetch || !self.begin_refresh(reason, Utc::now()) {
+        let force = matches!(reason, RefreshReason::Open | RefreshReason::Button);
+        if (!force && self.fetch_runtimes(false).is_empty())
+            || !self.fetch
+            || !self.begin_refresh(reason, Utc::now())
+        {
             return;
         }
         core.events.emit("usage/updated", &());
         let service = Arc::clone(self);
         thread::spawn(move || {
-            service.fetch(&core);
+            service.fetch(&core, force);
             core.events.emit("usage/updated", &());
             let pending =
                 std::mem::take(&mut service.state.lock().unwrap().account_refresh_pending);
@@ -291,7 +342,10 @@ impl UsageService {
                         .unwrap(),
                 );
             }
-            if crate::claude_accounts::load(&core.db).is_ok_and(|state| state.accounts.len() > 1) {
+            if service.fetch_runtimes(false).contains(&Runtime::ClaudeCode)
+                && crate::claude_accounts::load(&core.db)
+                    .is_ok_and(|state| state.accounts.len() > 1)
+            {
                 crate::claude_accounts::refresh(&core);
             }
             service.request_refresh(core.clone(), RefreshReason::Launch);
@@ -300,6 +354,7 @@ impl UsageService {
                 if !service
                     .polling_enabled
                     .load(std::sync::atomic::Ordering::Acquire)
+                    || service.fetch_runtimes(false).is_empty()
                 {
                     state = service
                         .wake_scheduler
@@ -308,7 +363,11 @@ impl UsageService {
                         .0;
                     continue;
                 }
-                let wait = schedule_wait(state.last_attempt_at, Utc::now());
+                let wait = schedule_wait_with_interval(
+                    state.last_attempt_at,
+                    Utc::now(),
+                    Duration::from_secs(service.interval()),
+                );
                 if wait.is_zero() && !state.snapshot.refreshing {
                     drop(state);
                     service.request_refresh(core.clone(), RefreshReason::Schedule);
@@ -324,21 +383,31 @@ impl UsageService {
         });
     }
 
-    fn fetch(&self, core: &AppCore) {
+    fn fetch_runtimes(&self, force: bool) -> Vec<Runtime> {
+        let mut enabled = self.enabled();
+        if !force {
+            if let Some(checked) = self.checked.read().unwrap().as_ref() {
+                enabled.retain(|runtime| checked.contains(runtime));
+            }
+        }
+        enabled
+    }
+
+    fn fetch(&self, core: &AppCore, force: bool) {
         let statuses = crate::runtime_status::status_list(
             &core.db,
             &core.runtime_shell_env,
             &core.runtime_discovery,
         );
         let env = core.runtime_shell_env.read().unwrap().clone();
-        let enabled = self.enabled();
+        let enabled = self.fetch_runtimes(force);
         let mut results = Vec::new();
         let account_state = crate::claude_accounts::load(&core.db).ok();
         let accounts = account_state
             .as_ref()
             .filter(|state| state.accounts.len() > 1);
         let mut account_results = Vec::new();
-        if accounts.is_some() {
+        if accounts.is_some() && enabled.contains(&Runtime::ClaudeCode) {
             crate::claude_accounts::refresh_for_usage(core);
         }
         if let Ok(statuses) = statuses {
@@ -472,20 +541,38 @@ fn refresh_visible_remaining(started: Instant, now: Instant) -> Duration {
     MIN_REFRESH_VISIBLE.saturating_sub(now.saturating_duration_since(started))
 }
 
+#[cfg(test)]
 fn schedule_wait(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Duration {
+    schedule_wait_with_interval(last, now, SCHEDULE_INTERVAL)
+}
+
+fn schedule_wait_with_interval(
+    last: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    interval: Duration,
+) -> Duration {
     last.and_then(|last| {
-        (last + chrono::TimeDelta::seconds(SCHEDULE_INTERVAL.as_secs() as i64) - now)
+        (last + chrono::TimeDelta::seconds(interval.as_secs() as i64) - now)
             .to_std()
             .ok()
     })
     .unwrap_or(Duration::ZERO)
 }
 
+#[cfg(test)]
 fn refresh_due(last: Option<DateTime<Utc>>, reason: RefreshReason, now: DateTime<Utc>) -> bool {
+    refresh_due_with_interval(last, reason, now, SCHEDULE_INTERVAL)
+}
+fn refresh_due_with_interval(
+    last: Option<DateTime<Utc>>,
+    reason: RefreshReason,
+    now: DateTime<Utc>,
+    scheduled: Duration,
+) -> bool {
     let interval = match reason {
         RefreshReason::Button => return true,
         RefreshReason::Launch => Duration::ZERO,
-        RefreshReason::Schedule => SCHEDULE_INTERVAL,
+        RefreshReason::Schedule => scheduled,
         RefreshReason::Open => OPEN_INTERVAL,
     };
     last.is_none_or(|last| {
@@ -1327,5 +1414,66 @@ mod lkg_tests {
             crate::db::usage_lkg(&core.db).unwrap().unwrap().runtimes[&Runtime::Codex],
             week(30., now)
         );
+    }
+}
+
+#[test]
+fn configured_interval_is_persisted_and_drives_scheduled_refresh() {
+    let pool = crate::db::open_in_memory().unwrap();
+    let service = UsageService::without_fetch();
+    assert_eq!(service.interval(), 900);
+    for seconds in [300, 900, 1800, 3600] {
+        service.set_interval(&pool, seconds).unwrap();
+        let restored = UsageService::without_fetch();
+        restored.restore(&pool);
+        assert_eq!(restored.interval(), seconds);
+        let now = Utc::now();
+        let interval = Duration::from_secs(seconds);
+        assert_eq!(
+            schedule_wait_with_interval(Some(now), now, interval),
+            interval
+        );
+        assert!(!refresh_due_with_interval(
+            Some(now),
+            RefreshReason::Schedule,
+            now + chrono::TimeDelta::seconds(seconds as i64 - 1),
+            interval
+        ));
+        assert!(refresh_due_with_interval(
+            Some(now),
+            RefreshReason::Schedule,
+            now + chrono::TimeDelta::seconds(seconds as i64),
+            interval
+        ));
+        assert!(refresh_due_with_interval(
+            Some(now),
+            RefreshReason::Open,
+            now + chrono::TimeDelta::minutes(6),
+            interval
+        ));
+    }
+    assert!(service.set_interval(&pool, 1).is_err());
+    assert_eq!(service.interval(), 3600);
+}
+
+#[test]
+fn scheduled_usage_selection_preserves_agent_discovery_and_open_loads_enabled_agents() {
+    let service = Arc::new(UsageService::default());
+    let agents = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi];
+    service.set_enabled(agents.clone());
+    service.set_checked(vec![Runtime::ClaudeCode]);
+    assert_eq!(service.enabled(), agents);
+    assert_eq!(service.fetch_runtimes(false), [Runtime::ClaudeCode]);
+    service.set_checked(Vec::new());
+    assert!(service.fetch_runtimes(false).is_empty());
+    assert_eq!(service.fetch_runtimes(true), agents);
+    let temp = tempfile::tempdir().unwrap();
+    let core = crate::test_support::test_core_in(temp.path().join("data"));
+    for reason in [RefreshReason::Launch, RefreshReason::Schedule] {
+        service.request_refresh(core.clone(), reason);
+        let state = service.state.lock().unwrap();
+        assert!(!state.snapshot.refreshing);
+        assert!(state.last_attempt_at.is_none());
+        assert!(state.snapshot.last_fetch_at.is_none());
     }
 }

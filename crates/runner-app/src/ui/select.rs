@@ -58,6 +58,7 @@ impl std::fmt::Debug for SelectLeading {
 pub struct SelectOption {
     pub value: String,
     pub label: SharedString,
+    tags: Vec<crate::i18n::Text>,
     label_source: crate::i18n::Text,
     description_source: Option<crate::i18n::Text>,
     trigger_description_source: Option<crate::i18n::Text>,
@@ -81,6 +82,7 @@ impl SelectOption {
             value: value.into(),
             label: label_source.resolve(),
             label_source,
+            tags: Vec::new(),
             description_source: None,
             trigger_description_source: None,
             description: None,
@@ -103,6 +105,11 @@ impl SelectOption {
     pub fn with_label(mut self, label: impl Into<crate::i18n::Text>) -> Self {
         self.label_source = label.into();
         self.label = self.label_source.resolve();
+        self
+    }
+
+    pub fn tags(mut self, tags: Vec<crate::i18n::Text>) -> Self {
+        self.tags = tags;
         self
     }
 
@@ -1107,6 +1114,22 @@ pub(crate) fn option_menu(
         };
         let on_choose = Rc::clone(&on_choose);
         let section = option.section.clone();
+        let label = if option.tags.is_empty() {
+            option.label.into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(div().min_w_0().truncate().child(option.label))
+                .children(
+                    option
+                        .tags
+                        .into_iter()
+                        .map(|tag| super::Badge::new(tag.resolve(), super::Tone::Muted)),
+                )
+                .into_any_element()
+        };
         let row = div()
             .id(("select-option", index))
             .debug_selector(|| format!("STYLED_SELECT_OPTION_{index}"))
@@ -1218,7 +1241,7 @@ pub(crate) fn option_menu(
                             .when(style.monospace, |label| {
                                 label.font_family(theme::UI_MONOSPACE_FONT)
                             })
-                            .child(option.label),
+                            .child(label),
                     )
                     .children(option.description.map(|description| {
                         div()
