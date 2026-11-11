@@ -59,17 +59,55 @@ impl RemoteClient {
                     }),
             )
             .children((remote.connection == Connection::Reconnecting).then(|| {
+                let pill = div()
+                    .min_w(px(0.))
+                    .max_w(rems(600. / 16.))
+                    .h(rems(32. / 16.))
+                    .pl(rems(12. / 16.))
+                    .pr(rems(14. / 16.))
+                    .flex()
+                    .items_center()
+                    .gap(rems(8. / 16.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme::with_alpha(theme::warning(), 0.4))
+                    .bg(theme::panel())
+                    .shadow(vec![gpui::BoxShadow {
+                        color: theme::scrim(),
+                        offset: gpui::point(px(0.), px(8.)),
+                        blur_radius: px(24.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    }])
+                    .child(
+                        gpui::svg()
+                            .flex_none()
+                            .path("refresh-cw.svg")
+                            .size(rems(14. / 16.))
+                            .text_color(theme::warning()),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(theme::text_body())
+                            .text_color(theme::text())
+                            .child(label("client.reconnecting_banner", &remote.computer.name)),
+                    );
+                #[cfg(test)]
+                let pill = crate::theme_snapshot::record_border(
+                    "REMOTE_RECONNECTING_PILL",
+                    crate::theme_snapshot::record_fill("REMOTE_RECONNECTING_PILL", pill),
+                );
                 div()
                     .absolute()
                     .top(rems(74. / 16.))
                     .left_0()
                     .right_0()
                     .px_4()
-                    .py_2()
-                    .bg(theme::with_alpha(theme::warning(), 0.12))
-                    .text_color(theme::warning())
-                    .text_size(theme::text_body())
-                    .child(label("client.reconnecting_banner", &remote.computer.name))
+                    .flex()
+                    .justify_center()
+                    .child(pill)
             }))
             .children(
                 matches!(

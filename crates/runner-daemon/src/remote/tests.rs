@@ -1599,3 +1599,254 @@ async fn legacy_enrollment_upgrade_reconnects_with_its_original_fingerprint() {
     assert!(saved.get("key").is_none());
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn one_channels_stalled_socket_write_does_not_hold_another_channels_input() {
+    use runner_core::companion::channel::{self, BrowserConnect, NoiseKeys, Records};
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(store::MemoryStore::default());
+    let identity = Identity::generate().unwrap();
+    let host_key = identity.host_key().unwrap();
+    identity.save(store.as_ref()).unwrap();
+    let fake = Arc::new(crate::companion::tests::Fake::default());
+    let handle = spawn_with_store(
+        root.path().into(),
+        store,
+        crate::events::EventChannel::new(),
+    );
+    handle.set_companion_core(fake.clone());
+    handle
+        .set_pin(remote::Secret("012345".into()))
+        .await
+        .unwrap();
+    let device = remote::HostKey::generate().unwrap();
+    handle
+        .record_paired(device.public.to_vec(), "test".into())
+        .await
+        .unwrap();
+    let (host, peer) = tokio::io::duplex(1024 * 1024);
+    let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(host) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    let mut peer =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+    handle
+        .request(Command::TestSocket(transport::TestSocket(Box::new(host))))
+        .await
+        .unwrap();
+    let mut browsers = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for id in 1..=2 {
+            peer.send(Message::Text(
+                format!("{{\"type\":\"channelOpen\",\"channel\":{id}}}").into(),
+            ))
+            .await
+            .unwrap();
+            let (connect, first) = BrowserConnect::start(
+                NoiseKeys {
+                    private: &device.private,
+                    fixed_ephemeral: None,
+                },
+                &host_key.public,
+            )
+            .unwrap();
+            peer.send(Message::Binary(channel::wrap(id, &first).into()))
+                .await
+                .unwrap();
+            let Message::Binary(accept) = peer.next().await.unwrap().unwrap() else {
+                panic!("accept required");
+            };
+            let (channel, accept) = channel::unwrap(&accept).unwrap();
+            assert_eq!(channel, id);
+            let mut records = Records::new(connect.accept(accept).unwrap());
+            records
+                .queue(
+                    br#"{"type":"hello","versions":[1],"client":"test","build":"test"}"#.to_vec(),
+                )
+                .unwrap();
+            peer.send(Message::Binary(
+                channel::wrap(id, &records.next_frame().unwrap().unwrap()).into(),
+            ))
+            .await
+            .unwrap();
+            loop {
+                let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() else {
+                    panic!("welcome required");
+                };
+                let (channel, frame) = channel::unwrap(&bytes).unwrap();
+                assert_eq!(channel, id);
+                if let Some(bytes) = records.receive(frame).unwrap() {
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["type"],
+                        "welcome"
+                    );
+                    records.handled();
+                    break;
+                }
+            }
+            browsers.push(records);
+        }
+    })
+    .await
+    .unwrap();
+    browsers[1]
+        .queue(
+            br#"{"type":"attach","id":3,"session":"test","cols":80,"rows":24,"control":"take"}"#
+                .to_vec(),
+        )
+        .unwrap();
+    peer.send(Message::Binary(
+        channel::wrap(2, &browsers[1].next_frame().unwrap().unwrap()).into(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() else {
+                panic!("attachment required");
+            };
+            let (id, frame) = channel::unwrap(&bytes).unwrap();
+            assert_eq!(id, 2);
+            if let Some(bytes) = browsers[1].receive(frame).unwrap() {
+                let message: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                browsers[1].handled();
+                assert_ne!(message["type"], "error", "{message}");
+                if message["type"] == "resized" {
+                    break;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (host, next_peer) = tokio::io::duplex(1024 * 1024);
+    let (closed, _) = oneshot::channel();
+    let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(HeartbeatWriter {
+            read: host,
+            entered: entered.clone(),
+            fail: false,
+            _closed: closed,
+        }) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    handle
+        .request(Command::TestSocket(transport::TestSocket(Box::new(host))))
+        .await
+        .unwrap();
+    peer = tokio_tungstenite::WebSocketStream::from_raw_socket(next_peer, Role::Server, None).await;
+    browsers[0]
+        .queue(br#"{"type":"ping","id":1}"#.to_vec())
+        .unwrap();
+    peer.send(Message::Binary(
+        channel::wrap(1, &browsers[0].next_frame().unwrap().unwrap()).into(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    browsers[1]
+        .queue(br#"{"type":"input","id":2,"session":"test","data":"aGk="}"#.to_vec())
+        .unwrap();
+    peer.send(Message::Binary(
+        channel::wrap(2, &browsers[1].next_frame().unwrap().unwrap()).into(),
+    ))
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if !fake.input.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("input waited for another channel's stalled socket write");
+    assert_eq!(fake.input.lock().unwrap()[0].1, b"hi");
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Connected { .. }
+    ));
+    handle.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_host_batch_can_exceed_ten_seconds_when_each_write_makes_progress() {
+    struct SlowWrites {
+        ready: std::pin::Pin<Box<tokio::time::Sleep>>,
+        writes: Arc<AtomicUsize>,
+    }
+    impl tokio::io::AsyncRead for SlowWrites {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+    impl tokio::io::AsyncWrite for SlowWrites {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if std::future::Future::poll(self.ready.as_mut(), cx).is_pending() {
+                return std::task::Poll::Pending;
+            }
+            self.ready
+                .as_mut()
+                .reset(tokio::time::Instant::now() + Duration::from_secs(6));
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    let writes = Arc::new(AtomicUsize::new(0));
+    let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(SlowWrites {
+            ready: Box::pin(tokio::time::sleep(Duration::from_secs(6))),
+            writes: writes.clone(),
+        }) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    let mut relay = Relay::new(socket);
+    for _ in 0..8 {
+        relay
+            .tx
+            .try_send(Write::Frame(Message::Binary(vec![42; 65536].into())))
+            .unwrap();
+    }
+    relay
+        .tx
+        .try_send(Write::Frame(Message::Close(None)))
+        .unwrap();
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(120), &mut relay.task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(writes.load(Ordering::Relaxed) > 1);
+    assert!(started.elapsed() > Duration::from_secs(10));
+}

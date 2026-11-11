@@ -94,6 +94,7 @@ pub struct Machine {
     pub host: HostInfo,
     pub identity: Option<Identity>,
     pub trust: super::trust::Trust,
+    fingerprint: std::sync::OnceLock<Option<String>>,
     pub(super) pairing_generation: u64,
     pub status: RemoteStatus,
     pub saved: Option<Saved>,
@@ -107,13 +108,22 @@ pub struct Machine {
     pub shutting_down: bool,
 }
 impl Machine {
+    pub fn set_identity(&mut self, identity: Option<Identity>) {
+        self.identity = identity;
+        self.fingerprint.take();
+    }
+
     pub fn trust(&self) -> RemoteTrust {
         RemoteTrust {
             fingerprint: self
-                .identity
-                .as_ref()
-                .and_then(|i| i.host_key().ok())
-                .map(|k| fingerprint(&k.public)),
+                .fingerprint
+                .get_or_init(|| {
+                    self.identity
+                        .as_ref()
+                        .and_then(|i| i.host_key().ok())
+                        .map(|k| fingerprint(&k.public))
+                })
+                .clone(),
             pin_set: self.identity.as_ref().is_some_and(|i| i.pin.is_some()),
             pin_locked: self.trust.pin_locked,
             devices: self.trust.devices.clone(),
@@ -363,7 +373,7 @@ impl Machine {
                     }
                     Command::ResetIdentity(identity) => {
                         self.logout(&mut effects);
-                        self.identity = Some(identity);
+                        self.set_identity(Some(identity));
                         self.trust = super::trust::Trust::default();
                         effects.extend([Effect::SaveIdentity, Effect::SaveTrust]);
                     }
@@ -750,7 +760,7 @@ mod tests {
     }
     pub(super) fn command(m: &mut Machine, command: Command, at: DateTime<Utc>) -> Vec<Effect> {
         if matches!(command, Command::Start { .. }) && m.identity.is_none() {
-            m.identity = Some(Identity::generate().unwrap());
+            m.set_identity(Some(Identity::generate().unwrap()));
         }
         m.step(Input::Command(command), at, &mut || 9000).unwrap().0
     }

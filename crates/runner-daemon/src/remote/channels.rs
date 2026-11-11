@@ -23,6 +23,8 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::Message;
 
+pub(super) const MAX_CHANNELS: usize = 16;
+
 pub(super) enum Event {
     Authenticated {
         channel: u32,
@@ -294,7 +296,7 @@ impl Channels {
         if id == 0 || self.entries.contains_key(&id) {
             return Err(Reject::BadHandshake);
         }
-        if self.entries.len() == 16 {
+        if self.entries.len() == MAX_CHANNELS {
             return Err(Reject::Busy);
         }
         let (input, rx) = mpsc::unbounded_channel();
@@ -751,7 +753,12 @@ async fn serve(
                 queued -= Vec::<u8>::len(&message);
                 Some(message)
             } else if let Some(adapter) = &mut adapter {
-                crate::companion::Adapter::next(adapter, records.send_credit() > 0).await?
+                crate::companion::Adapter::next_paced(
+                    adapter,
+                    records.send_credit() > 0,
+                    records.output_paced(Instant::now().into_std()),
+                )
+                .await?
             } else {
                 None
             };
@@ -759,7 +766,10 @@ async fn serve(
                 records.queue(message).map_err(|_| "message too large")?;
             }
         }
-        if let Some(frame) = records.next_frame().map_err(|_| "invalid record")? {
+        if let Some(frame) = records
+            .next_frame_at(Instant::now().into_std())
+            .map_err(|_| "invalid record")?
+        {
             send(tx, id, instance, frame).await?;
             continue;
         }

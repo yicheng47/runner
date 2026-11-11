@@ -2002,6 +2002,7 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                     theme::with_alpha(theme::accent(), 0.4),
                 );
                 assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_some());
+                assert!(visual.debug_bounds("REMOTE_RECONNECTING_PILL").is_none());
             }
             for (state, error, expected) in [
                 ("reconnecting", "", Connection::Reconnecting),
@@ -2031,6 +2032,24 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                     .unwrap();
                 cx.run_until_parked();
                 let mut visual = VisualTestContext::from_window(window.into(), &cx);
+                if expected == Connection::Reconnecting {
+                    let pill = visual.debug_bounds("REMOTE_RECONNECTING_PILL").unwrap();
+                    let viewport = visual.update(|window, _| window.viewport_size());
+                    assert_eq!(pill.size.height, px(32.));
+                    assert!(pill.size.width <= px(600.) && pill.size.width < viewport.width);
+                    crate::theme_snapshot::assert_fill_color(
+                        &mut visual,
+                        "REMOTE_RECONNECTING_PILL",
+                        Some(theme::panel()),
+                    );
+                    crate::theme_snapshot::assert_border(
+                        &mut visual,
+                        "REMOTE_RECONNECTING_PILL",
+                        theme::with_alpha(theme::warning(), 0.4),
+                    );
+                } else {
+                    assert!(visual.debug_bounds("REMOTE_RECONNECTING_PILL").is_none());
+                }
                 crate::theme_snapshot::assert_border(
                     &mut visual,
                     "SIDEBAR_HOST_BUTTON",

@@ -1,6 +1,6 @@
 # Harden remote control routes and cut typing, click and reconnect latency
 
-Tracking issue: [#1263](https://github.com/yicheng47/runner/issues/1263). No design file: this changes no screen. The machinery it changes is walked through in the [remote control note](../tech/remote-control.md), whose section numbers this spec cites as "note §n".
+Tracking issue: [#1263](https://github.com/yicheng47/runner/issues/1263). No new screen. Phase 2 also includes Jason’s separately approved Reconnecting-pill correction using existing theme/toast patterns. The machinery it changes is walked through in the [remote control note](../tech/remote-control.md), whose section numbers this spec cites as "note §n".
 
 Signed off by Jason on 2026-11-11, with the four [decisions](#decisions) below. The spec covers four pull requests, so it lives on `main` and not on one of their branches.
 
@@ -34,7 +34,7 @@ Numbers match the issue. "Client" is the client's `runnerd`, "host" the host's.
 | 10 | No resume: every reconnect sends a full snapshot of every open terminal | `remote/client/terminal.rs`, `reattach` | 3 |
 | 11 | A keystroke is about six frames: `input`, a discarded `result`, the echo, and a `credit` record for each | `companion/mod.rs`, `Adapter::request`; `records.rs`, `handled` | 2, 4 |
 | 12 | Terminal bytes travel as base64 inside JSON | `runner-core/src/companion/mod.rs`, `TerminalBytes` | 4 |
-| 13 | The send window is 512 KiB whatever the link carries, so one pane's flood delays another pane's echo and every reply | `channel/mod.rs`, `INITIAL_CREDIT` | 4 |
+| 13 | The send window is 512 KiB whatever the link carries, so one pane's flood delays another pane's echo and every reply | `channel/mod.rs`, `INITIAL_CREDIT` | 2 |
 | 14 | The whole overview is rebuilt and pushed, ahead of terminal output, on any `session/`, `chat/`, `mission/`, `project/`, `crew/`, `slot/` or `event/appended` event, with no check that it changed | `companion/mod.rs`, `relevant`, `Adapter::changed` | 2 |
 | 15 | Every size step of a window drag is its own `viewport` request, each a blocking resize on the host | `remote/client/mod.rs`, `queue_viewport` | 2 |
 | 16 | Nothing measures keystroke-to-echo time; the ping skips the host's queues by design | `route.rs`, `Latency` | 1 |
@@ -45,7 +45,7 @@ Numbers match the issue. "Client" is the client's `runnerd`, "host" the host's.
 
 ## Scope
 
-Four phases, each its own pull request, each useful without the next. Phases 1 and 2 change no wire format. Phases 3 and 4 add negotiated, additive wire changes; the companion protocol version stays 1.
+Four phases, each its own pull request, each useful without the next. Phase 2 includes sender-local delivery pacing (finding 13), moved here from phase 4 after live flood measurements. Phase 4 contains only quiet input and raw terminal bytes. Phases 1 and 2 change no wire format. Phases 3 and 4 add negotiated, additive wire changes; the companion protocol version stays 1.
 
 Out of scope: a direct or Tailscale route (#954), QUIC, predictive local echo, compression (message lengths are visible to the relay, so compressing secrets beside attacker-influenced text leaks through size), any change to pairing or the Noise patterns' key agreement, any screen, and the relay's internals, which belong to the service's repository.
 
@@ -64,6 +64,10 @@ Jason, 2026-11-11:
 4. **Order and timing.** Phases 1 and 2 first, as they need no host and client to match. Phases 3 and 4 before the iPhone client's protocol work starts. Each phase goes to a claude trio, confirmed at that mission's start.
 
 Decision 2 amended by Jason on 2026-11-11 after code review: the original 64 KiB budget collided with the client protocol's 64 KiB IPC paste chunking (reviewer, 2026-11-11). A later paste chunk could reach the route before the first chunk released its budget, dropping the paste's tail, including its closing bracketed-paste marker. The input budget is therefore `c::MAX_MESSAGE_SIZE` (1 MiB), shared with the existing message cap rather than a new constant. Input is still discarded across a reconnect.
+
+Decision for phase 2 amended on 2026-11-11, approved through the mission operator under Jason’s standing delegation: grant payload-byte credit once either 64 KiB of payload or 64 KiB of handled frame cost is owed, whichever comes first. Tiny messages can otherwise fill the 768 KiB in-flight bound before owing 64 KiB of payload and deadlock two new peers. No wire change or timed grant is added.
+
+Decision for phase 2 amended by Jason on 2026-11-11: move delivery pacing (finding 13) from phase 4 into phase 2. Live QA measured flooded echo of 1,037 ms unthrottled and 1,136 ms capped near 4 Mbit/s, against idle echo of 32/30 ms. Use Phase 2’s 128 KiB / 500 ms rule; the rerun must keep the route connected, typing visibly responsive, and median flooded echo at most about 700 ms. The host’s own delayed terminal processing after `yes` exits is a separate issue, outside this mission. The separately approved Reconnecting-pill fix remains its own commit.
 
 ## Security
 
@@ -141,7 +145,7 @@ The sender keeps a first-in-first-out list of the frames it has sent and not yet
 
 ### Grant credit in batches (11)
 
-`Records::handled` stops forcing a grant after every message. Credit goes out once 64 KiB is owed, as it already does in the middle of a long message. A sender stalls only with no credit at all, when the receiver owes the whole window, so nothing can deadlock, and an older peer accepts any grant up to what it has spent. The test vectors in `channel/vectors/channel.json` are regenerated.
+`Records::handled` stops forcing a grant after every message. Credit still counts payload bytes, but goes out once either 64 KiB of payload or 64 KiB of handled frame cost (frame length plus 64 bytes) is owed, whichever comes first. The frame-cost threshold is necessary because tiny messages can fill the 768 KiB in-flight bound while owing under 64 KiB of payload. A sender can pause at either its byte-credit or its frame-cost bound; in either case the receiver reaches a grant threshold before the sender stops, including in the middle of a message larger than 768 KiB. An older peer accepts any grant up to what it has spent. The test vectors in `channel/vectors/channel.json` are regenerated.
 
 ### Push an overview only when it changed (14)
 
@@ -150,6 +154,10 @@ The adapter hashes each overview it builds, leaving out the per-session status t
 ### Send the newest size only (15)
 
 The client's route keeps one pending `viewport` per terminal and sends the newest when the writer has room, so a drag costs the host one resize per write, not one per step. `takeControl` and `attach` are not coalesced.
+
+### Pace by delivery, not only by bytes (13)
+
+The frame list also records when each frame was sent. While more than 128 KiB of frame cost is unacknowledged and the oldest such frame is at least 500 ms old, the host sends no new terminal output on that channel; pongs, results and pushes still go. Incoming credit removes acknowledged frames, so a paused stream resumes without losing or reordering output. An already-started message completes in record order, and snapshot chunks finish with their matching `resized` before any overflow resync replaces the stream. In-flight data then follows delivery rather than always filling the 512 KiB byte-credit window. This is host-local and changes no wire format or negotiation.
 
 ## Phase 3: faster connect and resume
 
@@ -180,18 +188,13 @@ Wire changes, negotiated.
 
 A message may be a binary envelope instead of JSON: `0x01`, a 4-byte big-endian header length, the JSON header (today's message without `data`), then the raw bytes. JSON messages start with `{`, so the first byte tells them apart. It applies to `output`, `snapshot` and `input`. The host lists `rawTerminal` and sends envelopes to a client that lists it; the client sends raw `input` to a host that lists it. This removes the base64 third from terminal traffic and two copies from the path. It does little for a single keystroke, whose header dominates.
 
-### Pace by delivery, not only by bytes (13)
-
-The frame list from phase 2 also records when each frame was sent. While more than 128 KiB is unacknowledged and the oldest such frame is older than 500 ms, the host sends no terminal output on that channel; pongs, results and pushes still go. In-flight data then tracks what the link delivers in about half a second, so a flood in one pane delays another pane's echo by that much and not by a full window.
-
-Build this last and only if phase 1's echo reading shows the problem: skip it if typing in one pane while another floods stays under 300 ms on a home connection.
 
 ## Compatibility
 
 | Change | New client, older host | Older client, new host |
 | --- | --- | --- |
 | Phase 1 | Works; liveness uses WebSocket pings where the host lacks `ping` | Unaffected |
-| In-flight bound, batched credit | Each end bounds what it sends; grants stay within what an older peer accepts | Same |
+| In-flight bound, batched credit, delivery pacing | Each end bounds what it sends; grants stay within what an older peer accepts; an older host keeps its original byte-credit rule | New host paces locally and accepts the older client’s grants unchanged |
 | `earlyHello` | First connect in today's form; early form after the host lists it; one fallback retry after a downgrade | Host accepts both forms |
 | `resume` | Client sends no `resume`; snapshot as today | Host never receives `resume`; snapshot as today |
 | `quietInput`, `rawTerminal` | Not offered by the host, so not used | Client lists neither, so the host uses neither |
@@ -207,9 +210,9 @@ Build this last and only if phase 1's echo reading shows the problem: skip it if
 Automated, in each phase's pull request:
 
 - **Phase 1.** A request on a live route reads no secret and calls no service, including while `ListAccountHosts` fails; a silent route ends after 15 seconds and reconnects, with and without the host's `ping`; a timed-out request fails alone and its late reply is dropped; reconnect delays stay within their jittered bounds; input queued during a stalled write arrives in order, a healthy 200 KiB paste spanning several IPC frames arrives whole and in order; input past 1 MiB and input across a generation change is discarded with the error; an unmatched `result` is never emitted as an overview; `echo_ms` is reported.
-- **Phase 2.** Input from one channel is read while another channel's write is stalled; a stalled receiver with trickling small messages is paused before the relay's cap; a 1 MiB message still completes under batched credit against a peer running the old grant rule; an unchanged overview is not pushed; a burst of viewports sends the last one.
+- **Phase 2.** Input from one channel is read while another channel's write is stalled; a stalled receiver with trickling small messages is paused before the relay's cap; a 1 MiB message still completes under batched credit against a peer running the old grant rule; an unchanged overview is not pushed; a burst of viewports sends the last one; pacing holds terminal output while pongs, results and pushes continue; output resumes when credit returns; a slow-link simulation keeps a quiet stream’s median echo within about 700 ms beside a flood (the 500 ms age gate plus a grant batch and the link delay), without losing or reordering output.
 - **Phase 3.** Channel vectors for the early form; a replayed first message marks no device connected; fallback to today's form against a host that rejects the payload; resume within the buffer continues with no resync frame; resume past the buffer, after 60 seconds, or for a different device falls back to a snapshot; Revoke, Reset identity and turning remote access off drop lingering streams.
-- **Phase 4.** Golden encodings for the envelope; mixed JSON and envelope traffic on one channel; no `result` for a quiet `input`, an error still delivered; pacing holds terminal output and lets pongs through.
+- **Phase 4.** Golden encodings for the envelope; mixed JSON and envelope traffic on one channel; no `result` for a quiet `input`, an error still delivered.
 
 Live checks, by the trio's `qa`, on two computers signed in to one account. Each is tied to what the phase changes:
 
@@ -221,7 +224,7 @@ Live checks, by the trio's `qa`, on two computers signed in to one account. Each
 | 1 | New: with the service's directory call failing, switch tabs and run an action in an open remote window; both work | The route no longer depends on the directory |
 | 2 | `REMOTE-TERM-02`, resize a remote terminal by dragging | Viewports are coalesced |
 | 2 | `REMOTE-WIN-03`, session states in the remote sidebar | Overview pushes are deduplicated |
-| 2 | New: flood one pane (`yes`) and type in another; typing stays responsive and `echo_ms` is logged | The writer split and credit changes |
+| 2 | New: flood one pane (`yes`) and type in another, unthrottled and near 4 Mbit/s; the route stays connected, typing is visibly responsive, median flooded `echo_ms` is at most about 700 ms, and idle/flooded echo and ping are recorded | Writer split, credit and delivery pacing |
 | 3 | `REMOTE-TERM-06`, pair then open at once, and Reconnect | The handshake carries `hello` |
 | 3 | New: drop the network for 10 seconds with a terminal scrolled up; on return its contents and scroll position are kept, with no repaint | Resume is new |
 | 3 | New: the same against a host on the previous release; the terminal reloads from a snapshot as today | The fallback path |
