@@ -1072,12 +1072,15 @@ fn mission_resume_with(
             Err(error) => {
                 let message = error.to_string();
                 if !is_concurrent_resume_error(&message) {
-                    first_error.get_or_insert((candidate.handle, candidate.session.id, message));
+                    first_error.get_or_insert((candidate.handle, candidate.session.id, error));
                 }
             }
         }
     }
     if let Some((handle, session_id, error)) = first_error {
+        if matches!(error, Error::RuntimeVersionGate(_)) {
+            return Err(error);
+        }
         return Err(Error::msg(format!(
             "mission {id} resume failed for @{handle} (session {session_id}): {error}; resumed session ids: [{}]",
             resumed_session_ids.join(", ")

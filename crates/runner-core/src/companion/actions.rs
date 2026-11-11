@@ -88,6 +88,14 @@ pub enum ActionRequest {
         crew: String,
         order: Vec<String>,
     },
+    RuntimeTaskStart {
+        id: u64,
+        runtime: String,
+    },
+    RuntimeTask {
+        id: u64,
+        runtime: String,
+    },
     Catalog {
         id: u64,
     },
@@ -223,6 +231,7 @@ impl ActionRequest {
             }};
         }
         match kind {
+            "runtimeTaskStart" | "runtimeTask" => fields!(runtime: String => "a string"),
             "role" => fields!(role: String => "a string"),
             "crew" => fields!(crew: String => "a string"),
             "createRole" => {
@@ -302,6 +311,8 @@ impl ActionRequest {
         "updateSlot",
         "removeSlot",
         "reorderSlots",
+        "runtimeTaskStart",
+        "runtimeTask",
         "catalog",
         "usage",
         "folders",
@@ -339,6 +350,7 @@ impl ActionRequest {
             Self::UpdateSlot { id, .. } => *id,
             Self::RemoveSlot { id, .. } => *id,
             Self::ReorderSlots { id, .. } => *id,
+            Self::RuntimeTaskStart { id, .. } | Self::RuntimeTask { id, .. } => *id,
             Self::Catalog { id, .. } => *id,
             Self::Usage { id, .. } => *id,
             Self::Folders { id, .. } => *id,
@@ -377,6 +389,7 @@ impl ActionRequest {
             Self::UpdateSlot { id, .. } => *id = value,
             Self::RemoveSlot { id, .. } => *id = value,
             Self::ReorderSlots { id, .. } => *id = value,
+            Self::RuntimeTaskStart { id, .. } | Self::RuntimeTask { id, .. } => *id = value,
             Self::Catalog { id, .. } => *id = value,
             Self::Usage { id, .. } => *id = value,
             Self::Folders { id, .. } => *id = value,
@@ -516,6 +529,15 @@ pub struct CatalogRole {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogRuntime {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_version: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub below_minimum: bool,
+
     pub name: String,
     pub label: String,
     pub available: bool,

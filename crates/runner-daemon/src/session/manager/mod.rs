@@ -317,6 +317,7 @@ impl SessionState {
 }
 
 pub struct SessionManager {
+    pub(crate) runtime_updates: Mutex<crate::ops::runtime_tasks::UpdateTasks>,
     /// Per-session state. The outer map lock protects membership only;
     /// each session's hot mutable state lives behind its own mutex so
     /// PTY output for one busy session does not block lifecycle work on
@@ -468,6 +469,7 @@ impl SessionManager {
         runtime: Arc<dyn SessionRuntime>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            runtime_updates: Mutex::default(),
             sessions: Mutex::new(HashMap::new()),
             delivery_listeners: Mutex::new(HashMap::new()),
             shell_env,

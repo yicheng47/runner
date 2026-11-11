@@ -208,7 +208,7 @@ pub fn runtime_update_start(
     state: &AppCore,
     spec: crate::session::runtime::SpawnSpec,
     events: Arc<dyn crate::session::manager::SessionEvents>,
-) -> Result<()> {
+) -> Result<std::sync::mpsc::Receiver<Option<i32>>> {
     log::info!(
         "runtime update started: session={} command={} args={:?}",
         spec.session_id,
@@ -305,21 +305,7 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
     let statuses: HashMap<_, _> = statuses
         .runtimes
         .into_iter()
-        .map(|runtime| {
-            let available = matches!(
-                runtime.effective_source,
-                Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
-            );
-            (
-                runtime.name,
-                (
-                    available,
-                    runtime.default_model,
-                    runtime.default_effort,
-                    runtime.effective_command,
-                ),
-            )
-        })
+        .map(|runtime| (runtime.name, runtime))
         .collect();
     let shell_env = state
         .runtime_shell_env
@@ -332,13 +318,22 @@ pub fn runtime_catalog(state: &AppCore) -> Result<Vec<RuntimeCatalogEntry>> {
     Ok(runtime_catalog_options()
         .into_iter()
         .map(|mut runtime| {
-            if let Some((available, default_model, default_effort, command)) =
-                statuses.get(&runtime.name)
-            {
-                runtime.available = *available;
-                runtime.default_model.clone_from(default_model);
-                runtime.default_effort.clone_from(default_effort);
-                if let Some(catalog) = command.as_deref().and_then(|command| {
+            if let Some(status) = statuses.get(&runtime.name) {
+                runtime.available = matches!(
+                    status.effective_source,
+                    Some(RuntimeCommandSource::Detected | RuntimeCommandSource::Override)
+                );
+                runtime.default_model.clone_from(&status.default_model);
+                runtime.default_effort.clone_from(&status.default_effort);
+                runtime
+                    .installed_version
+                    .clone_from(&status.installed_version);
+                runtime
+                    .available_version
+                    .clone_from(&status.available_version);
+                runtime.min_version.clone_from(&status.min_version);
+                runtime.below_minimum = status.below_minimum;
+                if let Some(catalog) = status.effective_command.as_deref().and_then(|command| {
                     discovery.models.catalog(
                         runtime.name,
                         &crate::runtime_status::models::source_with_main(
@@ -392,53 +387,6 @@ fn persistence_error(error: Error) -> OverrideValidationError {
         code: "persistence_failed".into(),
         message: error.to_string(),
     }
-}
-
-pub fn runtime_update_prepare(
-    state: &AppCore,
-    runtime: Runtime,
-    size: (u16, u16),
-) -> Result<runner_core::protocol::terminal::RuntimeUpdateCommand> {
-    let spec = runtime_update_spawn_spec(state, runtime, size)?;
-    let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(state.session_events());
-    state
-        .sessions
-        .prepare_unlisted_terminal(&spec.session_id, size, &state.db, &events)?;
-    Ok(runner_core::protocol::terminal::RuntimeUpdateCommand {
-        session_id: spec.session_id,
-        command: spec.command,
-        args: spec.args,
-        cwd: spec.cwd,
-        env: spec.env,
-        shell_path: spec.shell_path,
-        size,
-    })
-}
-
-pub fn runtime_update_run(
-    state: &AppCore,
-    command: runner_core::protocol::terminal::RuntimeUpdateCommand,
-) -> Result<()> {
-    let spec = crate::session::runtime::SpawnSpec {
-        agent_runtime: None,
-        pending_turn: None,
-        session_id: command.session_id,
-        cwd: command.cwd,
-        command: command.command,
-        args: command.args,
-        env: command.env,
-        mission: false,
-        shim_dir: None,
-        bundled_bin_dir: None,
-        shell_path: command.shell_path,
-        initial_size: Some(command.size),
-    };
-    let id = spec.session_id.clone();
-    let result = runtime_update_start(state, spec, Arc::new(state.session_events()));
-    if result.is_err() {
-        state.sessions.discard_unlisted_terminal(&id);
-    }
-    result
 }
 
 #[cfg(test)]

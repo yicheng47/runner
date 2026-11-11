@@ -68,35 +68,58 @@ impl NativeRoot {
         .detach();
 
         let (runtime_event_tx, mut runtime_event_rx) =
-            futures::channel::mpsc::unbounded::<String>();
+            futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();
         let mut app_events = core.subscribe();
+        let runtime_client = core.clone();
         cx.background_spawn(async move {
             loop {
                 match app_events.recv().await {
                     Ok(event)
                         if matches!(
                             event.name.as_str(),
-                            "runtime/changed" | "usage/updated" | "claude_accounts/changed"
+                            "runtime/changed"
+                                | "runtime/task-changed"
+                                | "usage/updated"
+                                | "claude_accounts/changed"
                         ) =>
                     {
-                        if runtime_event_tx.unbounded_send(event.name).is_err() {
+                        if runtime_event_tx.unbounded_send(event).is_err() {
                             break;
                         }
                     }
-                    Ok(_) | Err(runner_core::protocol::EventError::Lagged(_)) => {}
+                    Err(runner_core::protocol::EventError::Lagged(_)) => {
+                        if let Ok(tasks) = runtime_client.runtime_task_list() {
+                            let event = runner_core::protocol::ClientEvent {
+                                name: "runtime/task-changed".into(),
+                                payload: serde_json::to_value(tasks).unwrap(),
+                            };
+                            if runtime_event_tx.unbounded_send(event).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
                     Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
         })
         .detach();
-        cx.spawn(async move |weak, cx| {
+        cx.spawn_in(window, async move |weak, cx| {
             while let Some(event) = runtime_event_rx.next().await {
-                let mut runtime_changed = event == "runtime/changed";
+                let mut events = vec![event];
                 while let Ok(pending) = runtime_event_rx.try_recv() {
-                    runtime_changed |= pending == "runtime/changed";
+                    events.push(pending);
                 }
+                let runtime_changed = events.iter().any(|event| event.name == "runtime/changed");
                 if weak
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
+                        for event in &events {
+                            if event.name == "runtime/task-changed" {
+                                if let Ok(tasks) = serde_json::from_value(event.payload.clone()) {
+                                    this.apply_agent_tasks(tasks, window, cx);
+                                }
+                            }
+                        }
                         if runtime_changed {
                             this.refresh_start_chat_runtimes(cx);
                             this.refresh_role_form_runtimes(cx);
@@ -105,6 +128,36 @@ impl NativeRoot {
                             this.refresh_agents_pane(cx);
                             this.usage_installed =
                                 crate::surfaces::app_shell::usage_installed(this.core(cx));
+                            let runtimes = this
+                                .core(cx)
+                                .runtime_status_list()
+                                .ok()
+                                .into_iter()
+                                .flat_map(|status| status.runtimes)
+                                .collect::<Vec<_>>();
+                            let supported = runtimes
+                                .iter()
+                                .filter(|runtime| !runtime.below_minimum)
+                                .map(|runtime| runtime.name)
+                                .collect::<Vec<_>>();
+                            this.clear_unblocked_gates(
+                                &surfaces::front_page::FrontPageTarget::Local,
+                                &supported,
+                            );
+                            this.agent_tasks.minimums = runtimes
+                                .into_iter()
+                                .filter(|runtime| runtime.below_minimum)
+                                .filter_map(|runtime| {
+                                    Some((
+                                        runtime.name,
+                                        runner_core::protocol::RuntimeVersionGate {
+                                            runtime: runtime.name,
+                                            installed_version: runtime.installed_version?,
+                                            min_version: runtime.min_version?,
+                                        },
+                                    ))
+                                })
+                                .collect();
                             this.agent_updates =
                                 crate::surfaces::app_shell::agents_with_updates(this.core(cx));
                         }
@@ -295,6 +348,27 @@ impl NativeRoot {
             tab_landed_at: None,
             update_popover: crate::surfaces::update_ui::UpdatePopoverState::new(cx),
             quit_dialog: None,
+            agent_tasks: surfaces::background_tasks::BackgroundTasks {
+                tasks: core.runtime_task_list().unwrap_or_default(),
+                minimums: core
+                    .runtime_status_list()
+                    .ok()
+                    .into_iter()
+                    .flat_map(|status| status.runtimes)
+                    .filter(|runtime| runtime.below_minimum)
+                    .filter_map(|runtime| {
+                        Some((
+                            runtime.name,
+                            runner_core::protocol::RuntimeVersionGate {
+                                runtime: runtime.name,
+                                installed_version: runtime.installed_version?,
+                                min_version: runtime.min_version?,
+                            },
+                        ))
+                    })
+                    .collect(),
+                ..Default::default()
+            },
             agent_update: None,
             fork_confirm: None,
             forking_sessions: HashMap::new(),

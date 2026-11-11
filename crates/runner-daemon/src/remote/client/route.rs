@@ -92,7 +92,10 @@ fn reconnect_delay(attempt: u32) -> Duration {
 }
 
 pub(super) enum Command {
-    Request(c::ClientMessage, oneshot::Sender<Result<serde_json::Value>>),
+    Request(
+        c::ClientMessage,
+        oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
+    ),
     Follow(u64, bool),
     Attach(RemoteTerminal, oneshot::Sender<Result<TerminalAttachment>>),
     Detach(String, u64),
@@ -162,7 +165,7 @@ impl Handle {
     pub async fn request(
         &self,
         message: impl FnOnce(u64) -> c::ClientMessage,
-    ) -> Result<serde_json::Value> {
+    ) -> runner_core::protocol::ClientResult<serde_json::Value> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (reply, receive) = oneshot::channel();
         let message = message(id);
@@ -579,7 +582,7 @@ async fn connect(
 }
 struct Pending {
     subscription: Option<(String, bool)>,
-    reply: oneshot::Sender<Result<serde_json::Value>>,
+    reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
     deadline: Instant,
 }
 pub(super) struct Session {
@@ -726,7 +729,7 @@ impl Session {
     fn request(
         &mut self,
         message: c::ClientMessage,
-        reply: oneshot::Sender<Result<serde_json::Value>>,
+        reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
     ) {
         let Some(id) = message.id() else {
             let _ = reply.send(Err("Unsupported remote request".into()));
@@ -750,7 +753,7 @@ impl Session {
                 );
             }
             Err(e) => {
-                let _ = reply.send(Err(e));
+                let _ = reply.send(Err(e.into()));
             }
         }
     }
@@ -806,7 +809,7 @@ async fn run(
                     match command {
                         Command::Request(message, reply) => {
                             terminals.viewport(&message);
-                            let _ = reply.send(Err(error.message.clone()));
+                            let _ = reply.send(Err(error.message.clone().into()));
                         }
                         Command::Attach(_, reply) => {
                             let _ = reply.send(Err(error.message.clone()));
@@ -965,7 +968,7 @@ async fn run(
                                 }
                                 c::HostMessage::Error(error) => {
                                     if let Some(id) = error.id {
-                                        if let Some(pending) = session.pending.remove(&id) { let _ = pending.reply.send(Err(request_error(&error).into())); }
+                                        if let Some(pending) = session.pending.remove(&id) { let _ = pending.reply.send(Err(runner_core::protocol::ClientError { message: error.version_gate.as_ref().map_or_else(|| request_error(&error).into(), ToString::to_string), version_gate: error.version_gate.clone() })); }
                                         session.attachments.remove(&id);
                                         session.overviews.remove(&id);
                                         terminals.refused(id, "The remote computer refused terminal attachment.");
@@ -1005,7 +1008,7 @@ async fn run(
         if let Err(error) = &outcome {
             *handle.failure.lock().unwrap() = Some(error.clone());
             for (_, pending) in session.pending.drain() {
-                let _ = pending.reply.send(Err(error.clone()));
+                let _ = pending.reply.send(Err(error.clone().into()));
             }
         }
         drop(session);
@@ -1136,7 +1139,7 @@ mod tests {
             Instant::now() + Duration::from_secs(30),
         );
         assert_eq!(
-            receive.await.unwrap().err().unwrap(),
+            receive.await.unwrap().err().unwrap().message,
             "Remote request timed out"
         );
         assert!(other.try_recv().is_err());

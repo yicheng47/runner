@@ -119,3 +119,13 @@ See [Keyboard shortcuts](../reference/keyboard-shortcuts.md) for all defaults an
 Once signed in, choose a computer in the sidebar’s picker; see [Remote access](remote-access.md) to sign in. Chat creation, pane splits and resizing, shell panes, chat lifecycle and sidebar organization use the same controls on that host. Remote missions use the same feed, answer cards, recipient composer, member tabs and terminal drawer. The launcher's crew step lists the host's crews; creating or editing a crew stays on the host. Available actions depend on the host’s version. The command palette searches that computer’s chats and missions; Role and Crew open the host’s read-only lists, with chat and mission launch actions. Creating/editing/deleting roles or crews, Settings and Archived are available after returning to this computer.
 
 The launcher uses the host’s agents and roles and shows its active Claude account. **Change** opens the host’s folder browser; local windows use the OS folder picker. The launcher lists the host’s projects for chats and missions. Launcher recency is shared across projects and windows, with a separate list for this computer and each remote host. Use ↑/↓ and Enter to select a ranked or pinned row; Esc on the default page returns to the previous tab/view; in a split pane it clears a search. Returning to this computer restores its own tabs, selection and sidebar state.
+
+## Background tasks
+
+Agent updates run in the background while the window stays usable. A pill at the bottom-right names the most urgent task and counts the others. Click it to open the task list, which shows versions, the latest output step, progress and actions. Priority is possible input, failure, running, then finished.
+
+The pill's **×** hides it while work continues. It returns when a task may need input or fails; success does not reveal it. **Answer** or **Show output** opens that task's terminal dialog. The dialog never opens automatically, so typing in a chat stays in that chat. **Hide**, Escape and the dialog's close button leave the installer running.
+
+Stop on a running task interrupts its installer and checks the executable. A working executable removes the row; a broken one leaves **Reinstall**. Failures stay with **Retry**, **Show output** and dismissal. When every task succeeds, the result stays for five seconds, then the pill and finished rows clear. Existing agent chats keep their old version until they restart.
+
+The pill and list belong to this computer. A remote computer's update recovery stays with its remote pane and does not join the local list. Tasks are temporary and disappear when Runner's background service restarts.

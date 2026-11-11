@@ -7,11 +7,14 @@ use std::sync::Arc;
 #[error("{message}")]
 pub struct ClientError {
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_gate: Option<super::runtime::RuntimeVersionGate>,
 }
 impl ClientError {
     pub fn msg(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            version_gate: None,
         }
     }
 }
@@ -114,3 +117,14 @@ impl DaemonClient {
 }
 
 pub type ClientResult<T> = Result<T, ClientError>;
+
+impl From<String> for ClientError {
+    fn from(message: String) -> Self {
+        Self::msg(message)
+    }
+}
+impl From<&str> for ClientError {
+    fn from(message: &str) -> Self {
+        Self::msg(message)
+    }
+}

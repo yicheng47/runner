@@ -123,7 +123,13 @@ record!(AgentObservation {
     background
 });
 record!(ProgramStatusEvidence { message });
+record!(StartupError {
+    runtime,
+    message,
+    output
+});
 record!(AgentStatus {
+    startup_error,
     lifecycle,
     observation,
     exit_code,
@@ -515,7 +521,9 @@ record!(RuntimeExecutableStatus {
     state,
     invalid_reason,
     installed_version,
-    available_version
+    available_version,
+    min_version,
+    below_minimum
 });
 variant!(RuntimeRowState => Self::Detected);
 record!(RuntimeStatusResponse { shell, runtimes });
@@ -798,15 +806,7 @@ record!(TerminalMetadata {
     rows,
     controller
 });
-record!(RuntimeUpdateCommand {
-    session_id,
-    command,
-    args,
-    cwd,
-    env,
-    shell_path,
-    size
-});
+
 impl Sample for TerminalController {
     fn sample() -> Self {
         Self::Desktop
@@ -999,3 +999,16 @@ fn optional_catalog_account_preserves_older_requests() {
     ));
     round_trip(Request::usage_set_interval { seconds: 1800 });
 }
+variant!(RuntimeUpdateState => Self::Running);
+record!(RuntimeUpdateTask {
+    id,
+    runtime,
+    from_version,
+    to_version,
+    state,
+    step,
+    message,
+    exit_code,
+    installed_version,
+    running_sessions
+});

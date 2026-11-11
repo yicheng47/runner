@@ -504,3 +504,67 @@ fn early_resume_exit_clears_the_key_only_for_a_confirmed_missing_conversation() 
         assert_eq!(warnings[0].kind, kind);
     }
 }
+
+#[test]
+fn only_an_early_failed_codex_config_exit_gets_startup_recovery() {
+    for (runtime, code, output, classified) in [
+        (
+            "codex",
+            1,
+            "Error loading config.toml: unknown variant `mcp_tool` in `hooks`",
+            true,
+        ),
+        (
+            "codex",
+            0,
+            "Error loading config.toml: already recovered",
+            false,
+        ),
+        ("codex", 1, "Ordinary unrelated output", false),
+        (
+            "pi",
+            1,
+            "Error loading config.toml: unknown variant `mcp_tool`",
+            false,
+        ),
+    ] {
+        let pool = pool_with_schema();
+        let row = crate::repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
+        crate::test_support::insert_session_row(&pool.get().unwrap(), &row).unwrap();
+        let fake = fake_runtime();
+        fake.set_status_exit_code(Some(code));
+        let manager = mgr_with_fake(None, fake.clone());
+        let (session, stream) = fake
+            .spawn(SpawnSpec {
+                session_id: row.id.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        fake.push_output(0, output.as_bytes());
+        fake.close_spawn(0);
+        let mut role = role(runtime, &[]);
+        role.runtime = runtime.into();
+        let data = tempfile::tempdir().unwrap();
+        manager
+            .start_forwarder_thread(
+                row.id.clone(),
+                String::new(),
+                None,
+                session,
+                stream,
+                pool,
+                capture(),
+                role,
+                None,
+                false,
+                None,
+                data.path().into(),
+            )
+            .join()
+            .unwrap();
+        assert_eq!(
+            manager.agent_status(&row.id).startup_error.is_some(),
+            classified
+        );
+    }
+}

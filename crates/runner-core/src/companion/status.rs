@@ -14,6 +14,8 @@ wire_enum!(NeedsYouReason, Unknown, {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_error: Option<crate::protocol::StartupError>,
     pub status: Status,
     pub reason: Option<NeedsYouReason>,
     pub unread: bool,
@@ -48,6 +50,7 @@ impl From<&AgentStatus> for SessionStatus {
         };
         let interrupted_since = agent.interrupted_since.filter(|_| status == Status::Idle);
         Self {
+            startup_error: agent.startup_error.clone(),
             status,
             reason,
             unread: agent.unread_since.is_some(),

@@ -4913,3 +4913,109 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
         assert_eq!(launched(), 1);
     }
 }
+
+#[test]
+fn remote_mission_refusals_keep_resume_and_restart_distinct_through_update() {
+    use crate::surfaces::remote_client::{tests as remote_test, RemoteItem};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for action in ["resume", "restart", "resumeMission"] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        fake.set_features(&[
+            "catalog",
+            "feed",
+            "follow",
+            "unfollow",
+            "answer",
+            "post",
+            "resume",
+            "restart",
+            "resumeMission",
+            "runtimeTaskStart",
+            "runtimeTask",
+        ]);
+        fake.set_overview(serde_json::from_value(serde_json::json!({"projects":[],"tabs":[],"missions":[{"id":"remote-mission","project":null,"title":"Host mission","crew":"Duo","state":"running","pinned":false,"members":[{"handle":"coder","session":"member","lead":false}],"asks":[],"shells":[]}],"sessions":{"member":{"kind":"missionSlot","title":"Member","runtime":"codex","status":"stopped","unread":false}}})).unwrap());
+        fake.queue_result(action, Err(remote_test::update_gate_error()));
+        fake.queue_result("runtimeTaskStart", Ok(remote_test::completed_update()));
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), action);
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let workspace = window
+            .read_with(&cx, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .unwrap()
+                    .mission_workspace
+                    .clone()
+            })
+            .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+        visual.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                if action == "resumeMission" {
+                    workspace.resume_open_mission(window, cx);
+                } else {
+                    workspace.act_on_slot(
+                        "member",
+                        if action == "restart" {
+                            SessionControlKind::Restart
+                        } else {
+                            SessionControlKind::Resume
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            })
+        });
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, cx| {
+                let host = root.front_page_client(cx).target;
+                let gate = root
+                    .agent_tasks
+                    .gates
+                    .get(&(host, "member".into()))
+                    .expect("validated remote refusal reaches recovery");
+                assert_eq!(
+                    gate.action == crate::surfaces::agent_recovery::RecoveryAction::Restart,
+                    action == "restart"
+                );
+            })
+            .unwrap();
+        // Select the slot so its recovery card is shown.
+        visual.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.select_mission_session("member", window, cx)
+            })
+        });
+        visual.run_until_parked();
+        let button = visual
+            .debug_bounds("AGENT_RECOVERY_UPDATE:member")
+            .expect("mission recovery action");
+        visual.simulate_click(button.center(), Default::default());
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("runtimeTaskStart"), 1);
+        if action == "restart" {
+            assert_eq!(fake.request_count("restart"), 2);
+            assert_eq!(fake.request_count("resume"), 0);
+        } else {
+            assert_eq!(
+                fake.request_count("resume"),
+                if action == "resume" { 2 } else { 1 }
+            );
+        }
+    }
+}

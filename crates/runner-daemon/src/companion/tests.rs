@@ -76,6 +76,7 @@ impl Fake {
             return Err(Failure(
                 ErrorCode::UnknownRequest,
                 "The host does not serve that request.",
+                None,
             ));
         }
         self.request_order.lock().unwrap().push(name);
@@ -124,6 +125,7 @@ impl Core for Fake {
             return Err(Failure(
                 ErrorCode::UnknownRequest,
                 "The host does not serve that request.",
+                None,
             ));
         }
         let entries = std::mem::take(&mut *self.appended.lock().unwrap());
@@ -135,7 +137,7 @@ impl Core for Fake {
             gate.recv().unwrap();
         }
         if self.fail_feed_since.load(Ordering::Relaxed) {
-            return Err(Failure(ErrorCode::Failed, "test feed failure"));
+            return Err(Failure(ErrorCode::Failed, "test feed failure", None));
         }
         Ok(feed::Updates {
             cursor: cursor + entries.len() as u64,
@@ -159,6 +161,7 @@ impl Core for Fake {
             return Err(Failure(
                 ErrorCode::UnknownRequest,
                 "The host does not serve that request.",
+                None,
             ));
         }
         self.feed_calls.fetch_add(1, Ordering::Relaxed);
@@ -199,7 +202,7 @@ impl Core for Fake {
             gate.recv().unwrap();
         }
         if fail {
-            return Err(Failure(ErrorCode::Failed, "test overview failure"));
+            return Err(Failure(ErrorCode::Failed, "test overview failure", None));
         }
         Ok(captured.unwrap_or_else(|| self.overview.lock().unwrap().clone()))
     }

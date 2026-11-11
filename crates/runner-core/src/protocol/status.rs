@@ -89,6 +89,8 @@ pub enum Lifecycle {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_error: Option<StartupError>,
     pub lifecycle: Lifecycle,
     pub observation: AgentObservation,
     pub exit_code: Option<i32>,
@@ -139,4 +141,11 @@ mod tests {
         wire.as_object_mut().unwrap().remove("background");
         assert_eq!(wire, old);
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupError {
+    pub runtime: super::Runtime,
+    pub message: String,
+    pub output: String,
 }

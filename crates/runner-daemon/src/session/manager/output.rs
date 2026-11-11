@@ -167,6 +167,8 @@ impl SessionManager {
             let mut drop_streak: u64 = 0;
             let mut drop_total: u64 = 0;
             let mut pending = None;
+            let mut startup_tail = Vec::new();
+            let mut turn_started = false;
             #[cfg(windows)]
             let mut first_turn_pending = true;
             loop {
@@ -228,6 +230,12 @@ impl SessionManager {
                                 Err(_) => break,
                             }
                         }
+                        if started_at.elapsed() < Duration::from_secs(10) {
+                            startup_tail.extend_from_slice(&bytes);
+                            if startup_tail.len() > 8192 {
+                                startup_tail.drain(..startup_tail.len() - 8192);
+                            }
+                        }
                         manager_t.startup_output(
                             &session_id,
                             &stop,
@@ -251,6 +259,7 @@ impl SessionManager {
                         event,
                         feedback: reply,
                     }) => {
+                        turn_started |= has_started_turn(&event);
                         let feedback = manager_t.publish_model_event_for_launch(
                             &session_id,
                             SessionEvent::Agent { event, live: true },
@@ -516,6 +525,23 @@ impl SessionManager {
                 exit_code,
                 final_status == crate::model::SessionStatus::Crashed,
             );
+            if exit_code.is_some_and(|code| code != 0)
+                && !was_killed
+                && elapsed < Duration::from_secs(10)
+                && !turn_started
+            {
+                let output = String::from_utf8_lossy(&startup_tail);
+                if let Some(error) =
+                    crate::runtimes::for_key(&role.runtime).classify_startup_error(&output)
+                {
+                    if let Some(state) = manager_t.session_state(&session_id) {
+                        state.lock().unwrap().model.apply(
+                            SessionEvent::StartupError(error),
+                            super::super::clock::state_now(),
+                        );
+                    }
+                }
+            }
             events.exit(&ExitEvent {
                 session_id: session_id.clone(),
                 mission_id: mission_id.clone(),
@@ -1205,5 +1231,14 @@ impl SessionManager {
             seq,
             bytes: bytes.to_vec(),
         }
+    }
+}
+
+fn has_started_turn(event: &crate::session::state::agent::AgentEvent) -> bool {
+    use crate::session::state::agent::AgentEvent;
+    match event {
+        AgentEvent::TurnStarted | AgentEvent::Working { .. } | AgentEvent::TurnEnded { .. } => true,
+        AgentEvent::Batch { events, .. } => events.iter().any(has_started_turn),
+        _ => false,
     }
 }

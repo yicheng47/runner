@@ -16,7 +16,8 @@ pub(crate) enum LauncherOrigin {
     Remote(Option<RemoteItem>),
 }
 
-struct MissionRequest {
+#[derive(Clone)]
+pub(super) struct MissionRequest {
     crew: String,
     title: String,
     goal: Option<String>,
@@ -333,7 +334,7 @@ impl ChatLauncher {
         let launcher = cx.entity();
         window.defer(cx, move |window, cx| {
             root.update(cx, |root, cx| {
-                root.launch_mission_from_launcher(launcher, request, window, cx)
+                root.launch_mission_from_launcher(launcher, request, false, window, cx)
             });
         });
         cx.notify();
@@ -687,10 +688,11 @@ impl NativeRoot {
             .map(|tab| tab.id.clone())
     }
 
-    fn launch_mission_from_launcher(
+    pub(super) fn launch_mission_from_launcher(
         &mut self,
         launcher: Entity<ChatLauncher>,
         request: MissionRequest,
+        background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -701,7 +703,10 @@ impl NativeRoot {
             });
         };
         let client = launcher.read(cx).client.clone();
-        if client.target != self.front_page_client(cx).target || !client.valid() {
+        if !client.valid()
+            || (client.target != self.front_page_client(cx).target
+                && (!background || client.is_remote()))
+        {
             return release(&launcher, cx);
         }
         let remote_form = if client.is_remote() {
@@ -726,25 +731,29 @@ impl NativeRoot {
         let scope = ProjectScope::or_root(request.project.clone());
         let target = client.target.clone();
         let recent_target = target.clone();
+        let retry_request = request.clone();
         let task = cx.background_spawn(async move {
             let crew = request.crew.clone();
-            let result = client
-                .start_mission(
-                    request.crew,
-                    request.title,
-                    request.goal,
-                    request.project,
-                    request.cwd,
-                    size,
-                )
-                .map_err(|error| error.to_string());
+            let result = client.start_mission(
+                request.crew,
+                request.title,
+                request.goal,
+                request.project,
+                request.cwd,
+                size,
+            );
+            let gate = result
+                .as_ref()
+                .err()
+                .and_then(|error| error.version_gate.clone());
+            let result = result.map_err(|error| error.to_string());
             if result.is_ok() && !crew.is_empty() {
                 record_launcher_crew(&directory, &recent_target, crew);
             }
-            result
+            (result, gate)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let result = task.await;
+            let (result, gate) = task.await;
             let _ = weak.update_in(cx, |root, window, cx| {
                 if let Some((navigation, form)) = remote_form {
                     if !root
@@ -756,11 +765,16 @@ impl NativeRoot {
                 }
                 match result {
                     Ok(mission) => {
-                        if root.front_page_client(cx).target == target {
+                        let reveal = !background || root.update_launcher_visible(&launcher, cx);
+                        if reveal && root.front_page_client(cx).target == target {
                             root.reveal_started_scope(&scope, cx);
                         }
                         root.launchers.retain(|_, cached| cached != &launcher);
-                        if remote_form.is_some() {
+                        if !reveal {
+                            if remote_form.is_none() {
+                                root.refresh_store(StoreRefreshKind::All, cx);
+                            }
+                        } else if remote_form.is_some() {
                             root.remote_client.activate_mission(mission);
                             root.sync_remote_state(cx);
                         } else {
@@ -775,6 +789,15 @@ impl NativeRoot {
                             .filter(|_| error == "Choose an accessible folder on the host.");
                         launcher.update(cx, |launcher, cx| {
                             launcher.pending = None;
+                            if let Some(gate) = gate {
+                                launcher.update_retry = Some(UpdateRetry {
+                                    runtime: gate.runtime,
+                                    gate: Some(gate),
+                                    action: UpdateAction::Mission(retry_request),
+                                    requested: false,
+                                    ready: false,
+                                });
+                            }
                             if let (Some(computer), Some(picker)) =
                                 (folder_error, launcher.folder_picker.clone())
                             {
@@ -1182,7 +1205,10 @@ mod tests {
         }
     }
 
-    struct RefusedMissionStart(runner_daemon::daemon::InProcessTransport);
+    struct RefusedMissionStart(
+        runner_daemon::daemon::InProcessTransport,
+        Option<runner_core::protocol::RuntimeVersionGate>,
+    );
 
     impl runner_core::protocol::Transport for RefusedMissionStart {
         fn call(
@@ -1195,7 +1221,10 @@ mod tests {
             ) {
                 return Ok(
                     runner_core::protocol::Response::mission_start_impl_with_size(Err(
-                        runner_core::protocol::ClientError::msg("bounded start failure"),
+                        runner_core::protocol::ClientError {
+                            message: "bounded start failure".into(),
+                            version_gate: self.1.clone(),
+                        },
                     )),
                 );
             }
@@ -1205,6 +1234,42 @@ mod tests {
         fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
             self.0.subscribe()
         }
+    }
+
+    #[test]
+    fn a_refused_mission_keeps_its_request_for_explicit_update_recovery() {
+        let mut harness = harness();
+        harness.act(|root, window, cx| {
+            root.app_store.update(cx, |store, _| {
+                store.client = runner_core::protocol::DaemonClient::new(std::sync::Arc::new(
+                    RefusedMissionStart(
+                        runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        Some(runner_core::protocol::RuntimeVersionGate {
+                            runtime: Runtime::Codex,
+                            installed_version: "0.147.0".into(),
+                            min_version: "0.149.0".into(),
+                        }),
+                    ),
+                ));
+            });
+            root.reset_launcher_page(cx);
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            active_launcher(root, cx).update(cx, |launcher, cx| {
+                launcher.open_step(Step::Goal(None), window, cx);
+                launcher.start_mission(window, cx);
+            });
+        });
+        harness.act(|root, _, cx| {
+            let launcher = active_launcher(root, cx);
+            let retry = launcher.read(cx).update_retry.as_ref().unwrap();
+            assert!(!retry.requested);
+            assert!(
+                matches!(&retry.action, UpdateAction::Mission(request) if request.crew.is_empty())
+            );
+            assert_eq!(retry.gate.as_ref().unwrap().installed_version, "0.147.0");
+            assert!(root.agent_update.is_none());
+            assert!(root.core(cx).mission_list(None).unwrap().is_empty());
+        });
     }
 
     #[test]
@@ -1227,12 +1292,14 @@ mod tests {
                     });
                     if kind == "mission" {
                         root.app_store.update(cx, |store, _| {
-                            store.client =
-                                runner_core::protocol::DaemonClient::new(std::sync::Arc::new(
-                                    RefusedMissionStart(runner_daemon::daemon::InProcessTransport(
+                            store.client = runner_core::protocol::DaemonClient::new(
+                                std::sync::Arc::new(RefusedMissionStart(
+                                    runner_daemon::daemon::InProcessTransport(
                                         store.test_core.clone(),
-                                    )),
-                                ));
+                                    ),
+                                    None,
+                                )),
+                            );
                         });
                     }
                     root.open_crews(window, cx);

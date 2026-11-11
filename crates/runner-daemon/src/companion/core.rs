@@ -10,8 +10,12 @@ use tokio::sync::broadcast;
 use crate::{events::AppEvent, repo, AppCore};
 
 pub type Result<T> = std::result::Result<T, Failure>;
-#[derive(Debug)]
-pub struct Failure(pub ErrorCode, pub &'static str);
+#[derive(Debug, Clone)]
+pub struct Failure(
+    pub ErrorCode,
+    pub &'static str,
+    pub Option<runner_core::protocol::RuntimeVersionGate>,
+);
 
 pub struct Attachment {
     pub terminal: TerminalAttachment,
@@ -23,36 +27,42 @@ pub trait Core: Send + Sync {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn feed(&self, _: FeedRequest) -> Result<FeedPage> {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn feed_cursor(&self, _: &str) -> Result<u64> {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn feed_since(&self, _: &str, _: u64) -> Result<super::feed::Updates> {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn answer(&self, _: AnswerRequest) -> Result<()> {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn post(&self, _: PostRequest) -> Result<()> {
         Err(Failure(
             ErrorCode::UnknownRequest,
             "The host does not serve that request.",
+            None,
         ))
     }
     fn overview(&self) -> Result<Overview>;
@@ -84,19 +94,32 @@ impl DaemonCore {
     pub(super) fn core(&self) -> Result<std::sync::Arc<AppCore>> {
         self.0
             .upgrade()
-            .ok_or(Failure(ErrorCode::Failed, "The host has stopped."))
+            .ok_or(Failure(ErrorCode::Failed, "The host has stopped.", None))
     }
     fn terminal(&self, session: &str) -> Result<std::sync::Arc<AppCore>> {
         let core = self.core()?;
         let conn = core.db.get().map_err(failed)?;
         let row = repo::session::get_row(&conn, session).map_err(failed)?;
-        if row.is_none() {
-            return Err(Failure(ErrorCode::NotFound, "No session has that id."));
+        let update_task = core
+            .sessions
+            .runtime_updates
+            .lock()
+            .unwrap()
+            .tasks
+            .iter()
+            .any(|task| task.id == session);
+        if row.is_none() && !update_task {
+            return Err(Failure(
+                ErrorCode::NotFound,
+                "No session has that id.",
+                None,
+            ));
         }
-        if !core.sessions.session_live(session) {
+        if !core.sessions.session_live(session) && !update_task {
             return Err(Failure(
                 ErrorCode::NotRunning,
                 "The session has no live terminal.",
+                None,
             ));
         }
         drop(conn);
@@ -107,6 +130,7 @@ pub(super) fn failed(_: impl std::fmt::Display) -> Failure {
     Failure(
         ErrorCode::Failed,
         "The host could not complete the request.",
+        None,
     )
 }
 impl Core for DaemonCore {
@@ -159,9 +183,11 @@ impl Core for DaemonCore {
             terminal,
             resync: Arc::new(move || {
                 let attachment = source.attach().map_err(failed)?;
-                let core = core
-                    .upgrade()
-                    .ok_or(Failure(ErrorCode::Failed, "The host has stopped."))?;
+                let core = core.upgrade().ok_or(Failure(
+                    ErrorCode::Failed,
+                    "The host has stopped.",
+                    None,
+                ))?;
                 core.sessions
                     .browser_attached(&session, attachment.subscriber_id, channel, &core.db)
                     .map_err(failed)?;
@@ -557,6 +583,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
             .get(&id)
             .map(SessionStatus::from)
             .unwrap_or(SessionStatus {
+                startup_error: None,
                 status: Status::Idle,
                 reason: None,
                 unread: false,
@@ -799,11 +826,11 @@ mod tests {
         assert_eq!(Arc::strong_count(&core), 1);
         assert!(matches!(
             Arc::new(DaemonCore(backend.0.clone())).attach("missing", 0, 1),
-            Err(Failure(ErrorCode::NotFound, _))
+            Err(Failure(ErrorCode::NotFound, _, _))
         ));
         assert!(matches!(
             Arc::new(DaemonCore(backend.0.clone())).attach("a", 0, 1),
-            Err(Failure(ErrorCode::NotRunning, _))
+            Err(Failure(ErrorCode::NotRunning, _, _))
         ));
         crate::ops::node::mark_direct_sessions_viewed(&core, &["a".into()]).unwrap();
         assert!(!backend.overview().unwrap().sessions["a"].status.unread);

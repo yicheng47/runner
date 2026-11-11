@@ -362,6 +362,20 @@ impl MissionWorkspace {
         {
             return div().into_any_element();
         }
+        if let (Some(root), Some(runtime)) = (
+            self.shell.upgrade(),
+            runner_core::protocol::Runtime::parse(&session.runtime),
+        ) {
+            if let Some(overlay) = root.read(cx).agent_recovery_overlay(
+                &session.session.id,
+                &session.session.id,
+                runtime,
+                root.downgrade(),
+                cx,
+            ) {
+                return overlay.into_any_element();
+            }
+        }
         let others = self
             .members()
             .iter()

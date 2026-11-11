@@ -197,6 +197,7 @@ impl Sidebar {
                             String::new(),
                             crate::surfaces::remote_client::model::agent_status(
                                 &runner_core::companion::SessionStatus {
+                                    startup_error: None,
                                     status: Status::NeedsYou,
                                     reason: Some(runner_core::companion::NeedsYouReason::Answer),
                                     unread: false,

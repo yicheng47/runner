@@ -191,6 +191,7 @@ pub(crate) enum SessionEvent {
         code: Option<i32>,
         crashed: bool,
     },
+    StartupError(runner_core::protocol::status::StartupError),
     ConversationChanged(PersistKey),
     KeyPersisted(PersistKey),
 }
@@ -819,6 +820,7 @@ impl SessionModel {
                 self.submit_busy = None;
                 self.status.observation.interactions.clear();
             }
+            SessionEvent::StartupError(error) => self.status.startup_error = Some(error),
             SessionEvent::ConversationChanged(report) => effects.persist_key = Some(report),
             SessionEvent::KeyPersisted(report) => {
                 self.key = Some(report);

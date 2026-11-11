@@ -26,6 +26,8 @@ const CLIENT_FIXTURES: &[&str] = &[
     "layout_split",
     "start_chat_role",
     "catalog",
+    "runtime_task_start",
+    "runtime_task",
     "usage",
     "folders",
     "start_chat",
@@ -88,6 +90,7 @@ const HOST_FIXTURES: &[&str] = &[
     "error_unknown_request",
     "error_not_running",
     "error_failed",
+    "error_version_gate",
     "unsupported_version",
     "overview_push",
     "overview_without_sidebar",
@@ -1124,4 +1127,34 @@ fn usage_conversions_preserve_values_and_known_errors() {
         )),
         crate::protocol::usage::UnavailableReason::InvalidResponse
     );
+}
+
+#[test]
+fn update_recovery_wire_preserves_versions_and_startup_errors() {
+    let HostMessage::Error(error) = decode("error_version_gate") else {
+        panic!()
+    };
+    let gate = error.version_gate.unwrap();
+    assert_eq!(gate.runtime, crate::protocol::Runtime::Codex);
+    assert_eq!(gate.installed_version, "0.147.0");
+    assert_eq!(gate.min_version, "0.149.0");
+    let agent = AgentStatus {
+        lifecycle: Lifecycle::Stopped,
+        startup_error: Some(crate::protocol::StartupError {
+            message: "This Codex does not support Runner's hook type.".into(),
+            runtime: crate::protocol::Runtime::Codex,
+            output: "Error loading config.toml: unknown variant mcp_tool".into(),
+        }),
+        ..Default::default()
+    };
+    let status = SessionStatus::from(&agent);
+    let value = serde_json::to_value(&status).unwrap();
+    let decoded: SessionStatus = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.startup_error, agent.startup_error);
+    assert_eq!(decoded.status, Status::Stopped);
+    let old: SessionStatus = serde_json::from_value(json!({
+        "status":"stopped", "reason":null, "unread":false
+    }))
+    .unwrap();
+    assert!(old.startup_error.is_none());
 }

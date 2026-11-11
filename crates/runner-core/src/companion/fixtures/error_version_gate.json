@@ -1,0 +1,11 @@
+{
+  "type": "error",
+  "id": 7,
+  "code": "failed",
+  "message": "This agent needs an update before it can start.",
+  "versionGate": {
+    "runtime": "codex",
+    "installed_version": "0.147.0",
+    "min_version": "0.149.0"
+  }
+}

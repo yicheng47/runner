@@ -9,6 +9,10 @@ fn runtime_with_defaults(
     default_effort: Option<&str>,
 ) -> RuntimeCatalogEntry {
     RuntimeCatalogEntry {
+        installed_version: None,
+        available_version: None,
+        min_version: None,
+        below_minimum: false,
         name: Runtime::Codex,
         capabilities: runner_daemon::ops::runtime::RuntimeCatalogEntry::for_runtime(Runtime::Codex)
             .map(|entry| entry.capabilities)

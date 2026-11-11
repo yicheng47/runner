@@ -92,7 +92,7 @@ impl RemoteHandle {
         &self,
         computer: String,
         request: runner_core::companion::ClientMessage,
-    ) -> Result<runner_core::remote::RemoteResult, String> {
+    ) -> runner_core::protocol::ClientResult<runner_core::remote::RemoteResult> {
         self.client()?.request(computer, request).await
     }
     pub async fn follow(&self, computer: String, owner: u64, follow: bool) -> Result<(), String> {

@@ -42,6 +42,8 @@ pub const FEATURES: &[&str] = &[
     "updateSlot",
     "removeSlot",
     "reorderSlots",
+    "runtimeTaskStart",
+    "runtimeTask",
     "catalog",
     "usage",
     "folders",
@@ -107,7 +109,11 @@ async fn blocking<T: Send + 'static>(
 ) -> core::Result<T> {
     tokio::task::spawn_blocking(move || f(core))
         .await
-        .unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.")))
+        .unwrap_or(Err(Failure(
+            ErrorCode::Failed,
+            "The host worker failed.",
+            None,
+        )))
 }
 
 // One redraw can arrive as several PTY reads. Output following a send waits this long, so that
@@ -714,7 +720,11 @@ impl Adapter {
                 {
                     return self.reply(
                         request.id(),
-                        Err(Failure(ErrorCode::Failed, "Too many actions are pending.")),
+                        Err(Failure(
+                            ErrorCode::Failed,
+                            "Too many actions are pending.",
+                            None,
+                        )),
                     );
                 }
                 if matches!(request, ActionRequest::Fork { .. }) {
@@ -723,7 +733,11 @@ impl Adapter {
                         let id = request.id();
                         let result = tokio::task::spawn_blocking(move || core.action(request))
                             .await
-                            .unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.")));
+                            .unwrap_or(Err(Failure(
+                                ErrorCode::Failed,
+                                "The host worker failed.",
+                                None,
+                            )));
                         (id, result)
                     });
                 } else {
@@ -750,6 +764,7 @@ impl Adapter {
                         Err(Failure(
                             ErrorCode::Failed,
                             "Too many overview requests are pending.",
+                            None,
                         )),
                     );
                 }
@@ -766,7 +781,11 @@ impl Adapter {
                 if self.feed_outstanding >= 8 {
                     return self.reply(
                         message.id().unwrap(),
-                        Err(Failure(ErrorCode::Failed, "Too many requests are pending.")),
+                        Err(Failure(
+                            ErrorCode::Failed,
+                            "Too many requests are pending.",
+                            None,
+                        )),
                     );
                 }
                 self.feed_outstanding += 1;
@@ -833,6 +852,7 @@ impl Adapter {
                     Err(Failure(
                         ErrorCode::BadRequest,
                         "Attach the terminal before sending input.",
+                        None,
                     ))
                 } else {
                     let channel = self.channel;
@@ -865,6 +885,7 @@ impl Adapter {
                 Err(Failure(
                     ErrorCode::UnknownRequest,
                     "The host does not serve that request.",
+                    None,
                 ))
             }
         };
@@ -877,10 +898,13 @@ impl Adapter {
     ) -> Result<(), &'static str> {
         self.push(match result {
             Ok(result) => HostMessage::Result(ResultMessage { id, result }),
-            Err(Failure(code, message)) => HostMessage::Error(ErrorMessage {
+            Err(Failure(code, message, version_gate)) => HostMessage::Error(ErrorMessage {
+                version_gate: version_gate.clone(),
                 id: Some(id),
                 code,
-                message: message.into(),
+                message: version_gate
+                    .as_ref()
+                    .map_or_else(|| message.into(), ToString::to_string),
                 versions: None,
             }),
         })
@@ -915,6 +939,7 @@ impl Adapter {
             Err(Failure(
                 ErrorCode::BadRequest,
                 "Attach the terminal before changing its viewport.",
+                None,
             ))
         };
         self.push(match result {
@@ -922,10 +947,13 @@ impl Adapter {
                 id,
                 result: serde_json::Value::Null,
             }),
-            Err(Failure(code, message)) => HostMessage::Error(ErrorMessage {
+            Err(Failure(code, message, version_gate)) => HostMessage::Error(ErrorMessage {
+                version_gate: version_gate.clone(),
                 id: Some(id),
                 code,
-                message: message.into(),
+                message: version_gate
+                    .as_ref()
+                    .map_or_else(|| message.into(), ToString::to_string),
                 versions: None,
             }),
         })
@@ -1157,7 +1185,7 @@ impl Adapter {
                 self.overview_work = None;
                 let waiters = std::mem::take(&mut self.overview_waiters);
                 let broadcast = std::mem::take(&mut self.overview_broadcast);
-                match result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed."))) {
+                match result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None))) {
                     Ok(OverviewSnapshot { mut overview, statuses, status_revision }) => {
                         if self.status_revision == status_revision { self.status_changes(statuses)?; }
                         for (id, session) in &mut overview.sessions { if let Some(status) = self.statuses.get(id) { session.status = status.clone(); } }
@@ -1173,9 +1201,9 @@ impl Adapter {
                             }
                         }
                     }
-                    Err(Failure(code, message)) => {
+                    Err(Failure(code, message, version_gate)) => {
                         if waiters.is_empty() && self.overview_next.is_empty() { return Err("core unavailable"); }
-                        for id in waiters { self.reply(id, Err(Failure(code.clone(), message)))?; }
+                        for id in waiters { self.reply(id, Err(Failure(code.clone(), message, version_gate.clone())))?; }
                     }
                 }
                 self.last_overview = Some(Instant::now());
@@ -1196,7 +1224,7 @@ impl Adapter {
                 let work = self.request_work.take().unwrap();
                 if work.reserved == 0 { self.feed_outstanding -= 1; }
                 self.cleanup_bytes -= work.reserved;
-                let result = result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.")))
+                let result = result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None)))
                     .map(|reply| match reply {
                         RequestReply::Value(value) => value,
                         RequestReply::Follow(mission, cursor) => {
@@ -1207,19 +1235,19 @@ impl Adapter {
                         RequestReply::Unfollow(mission) => { self.drop_feed(&mission); serde_json::Value::Null }
                     });
                 for id in work.ids {
-                    let result = match &result { Ok(value) => Ok(value.clone()), Err(Failure(code, message)) => Err(Failure(code.clone(), message)) };
+                    let result = match &result { Ok(value) => Ok(value.clone()), Err(Failure(code, message, version_gate)) => Err(Failure(code.clone(), message, version_gate.clone())) };
                     self.reply(id, result)?;
                 }
                 self.start_request();
             }
             result = async { match &mut self.feed_read { Some(read) => (&mut read.work).await, None => std::future::pending().await } } => {
                 let read = self.feed_read.take().unwrap();
-                self.finish_feed_read(read, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed."))))?;
+                self.finish_feed_read(read, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None))))?;
             }
             result = async { match &mut self.action_work { Some((id, work)) => (*id, work.await), None => std::future::pending().await } } => {
                 self.action_work = None;
                 let (id, result) = result;
-                self.reply(id, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed."))))?;
+                self.reply(id, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None))))?;
                 self.start_action();
             }
             result = self.forks.join_next(), if !self.forks.is_empty() => {

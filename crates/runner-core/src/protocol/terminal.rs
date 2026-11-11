@@ -93,17 +93,6 @@ pub struct TerminalPalette {
     pub ansi: [[u8; 3]; 16],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RuntimeUpdateCommand {
-    pub session_id: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub cwd: Option<PathBuf>,
-    pub env: std::collections::BTreeMap<String, String>,
-    pub shell_path: Option<String>,
-    pub size: (u16, u16),
-}
-
 pub trait TerminalLifecycle: Send + Sync {
     fn event(&self, event: super::ClientEvent);
 }

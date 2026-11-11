@@ -1527,6 +1527,10 @@ mod tests {
         runner_core::protocol::runtime_metadata::runtime_list()
             .into_iter()
             .map(|r| RuntimeCatalogEntry {
+                installed_version: None,
+                available_version: None,
+                min_version: None,
+                below_minimum: false,
                 name: r.name,
                 capabilities: runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(
                     r.name,

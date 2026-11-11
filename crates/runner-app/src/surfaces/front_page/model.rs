@@ -368,6 +368,10 @@ impl From<CatalogRole> for RoleChoice {
 
 #[derive(Clone)]
 pub(crate) struct RuntimeChoice {
+    pub(crate) installed_version: Option<String>,
+    pub(crate) available_version: Option<String>,
+    pub(crate) min_version: Option<String>,
+    pub(crate) below_minimum: bool,
     pub(crate) name: runner_core::protocol::model::Runtime,
     pub(crate) display_name: String,
     pub(crate) command: Option<String>,
@@ -382,6 +386,10 @@ pub(crate) struct RuntimeChoice {
 impl From<runner_core::protocol::runtime::RuntimeCatalogEntry> for RuntimeChoice {
     fn from(runtime: runner_core::protocol::runtime::RuntimeCatalogEntry) -> Self {
         Self {
+            installed_version: runtime.installed_version,
+            available_version: runtime.available_version,
+            min_version: runtime.min_version,
+            below_minimum: runtime.below_minimum,
             name: runtime.name,
             display_name: runtime.display_name,
             command: Some(runtime.command),
@@ -407,6 +415,10 @@ impl RuntimeChoice {
             }
         };
         Some(Self {
+            installed_version: runtime.installed_version.clone(),
+            available_version: runtime.available_version.clone(),
+            min_version: runtime.min_version.clone(),
+            below_minimum: runtime.below_minimum,
             name,
             display_name: runtime.label.clone(),
             command: None,

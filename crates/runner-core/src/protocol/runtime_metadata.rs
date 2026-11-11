@@ -192,6 +192,7 @@ pub mod codex {
         ));
         Some(RuntimeCatalog {
             name: Runtime::Codex,
+            min_version: Some("0.149.0"),
             display_name: Runtime::Codex.display_name(),
             command: Runtime::Codex.command().unwrap(),
             capabilities: capabilities(),
@@ -310,6 +311,7 @@ pub mod claude_code {
         ];
         Some(RuntimeCatalog {
             name: Runtime::ClaudeCode,
+            min_version: None,
             display_name: Runtime::ClaudeCode.display_name(),
             command: Runtime::ClaudeCode.command().unwrap(),
             capabilities: capabilities(),
@@ -391,6 +393,7 @@ pub mod antigravity {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Antigravity,
+            min_version: None,
             display_name: Runtime::Antigravity.display_name(),
             command: Runtime::Antigravity.command().unwrap(),
             capabilities: capabilities(),
@@ -480,6 +483,7 @@ pub mod copilot {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Copilot,
+            min_version: None,
             display_name: Runtime::Copilot.display_name(),
             command: Runtime::Copilot.command().unwrap(),
             capabilities: capabilities(),
@@ -552,6 +556,7 @@ pub mod pi {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Pi,
+            min_version: None,
             display_name: Runtime::Pi.display_name(),
             command: Runtime::Pi.command().unwrap(),
             capabilities: capabilities(),
@@ -610,6 +615,7 @@ pub mod trae {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Trae,
+            min_version: None,
             display_name: Runtime::Trae.display_name(),
             command: Runtime::Trae.command().unwrap(),
             capabilities: capabilities(),
@@ -663,6 +669,7 @@ pub mod cursor_agent {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Cursor,
+            min_version: None,
             display_name: Runtime::Cursor.display_name(),
             command: Runtime::Cursor.command().unwrap(),
             capabilities: RuntimeCapabilities::default(),
@@ -731,6 +738,7 @@ pub mod grok {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Grok,
+            min_version: None,
             display_name: Runtime::Grok.display_name(),
             command: Runtime::Grok.command().unwrap(),
             capabilities: RuntimeCapabilities::default(),
@@ -776,6 +784,7 @@ pub mod opencode {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::OpenCode,
+            min_version: None,
             display_name: "OpenCode",
             command: "opencode",
             capabilities: RuntimeCapabilities {

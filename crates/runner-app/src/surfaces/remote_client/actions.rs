@@ -16,7 +16,11 @@ impl RemoteClient {
         if !client.supports(required) {
             return None;
         }
-        let remote = if let Some(remote) = self.workspace.as_mut() {
+        let remote = if client.is_remote() {
+            let remote = self.workspace.as_mut()?;
+            if remote.front_page.target != client.target || !client.valid() {
+                return None;
+            }
             if key.starts_with("layout:") && remote.actions_pending.contains("archive-sessions") {
                 return None;
             }

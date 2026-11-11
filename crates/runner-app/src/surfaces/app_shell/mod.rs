@@ -265,6 +265,7 @@ impl NativeRoot {
             .children(computer_picker)
             .children(computer_pair)
             .children(toast)
+            .children(self.render_background_tasks(cx))
             .children(
                 self.quit_dialog
                     .clone()

@@ -13,11 +13,11 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 | Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files | [workspace.md](workspace.md) | 55 | 6 | 49 |
 | Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 49 | 5 | 44 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
-| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, side panel, installation and updates | [settings.md](settings.md) | 51 | 4 | 47 |
+| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, side panel, installation and updates | [settings.md](settings.md) | 57 | 4 | 53 |
 | Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 14 | 4 | 10 |
-| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 46 | 6 | 40 |
+| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 47 | 6 | 41 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 7 | 0 | 7 |
-| **Total** | | **344** | **44** | **300** |
+| **Total** | | **351** | **44** | **307** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately at `docs/tests/runs/YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same day append a separately identified candidate/attempt block to that file. No run record is needed merely to edit this suite.
 

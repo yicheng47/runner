@@ -55,6 +55,17 @@ struct Latest {
 }
 
 impl VersionDiscovery {
+    #[cfg(test)]
+    pub(crate) fn set_installed(&mut self, runtime: Runtime, command: &str, version: Option<&str>) {
+        self.installed.insert(
+            runtime,
+            Probe {
+                command: command.into(),
+                version: version.map(str::to_owned),
+            },
+        );
+    }
+
     /// The probed version of `command`, if the last probe ran that command.
     pub(crate) fn installed(&self, runtime: Runtime, command: &str) -> Option<&str> {
         self.installed
@@ -211,6 +222,13 @@ fn parse_semver(token: &str) -> Option<Version> {
     })
 }
 
+pub(crate) fn below_minimum(installed: Option<&str>, minimum: Option<&str>) -> bool {
+    match (installed, minimum) {
+        (Some(installed), Some(minimum)) => is_newer(minimum, installed),
+        _ => false,
+    }
+}
+
 /// The first semver-looking token in `--version` output: `2.1.266 (Claude
 /// Code)`, `codex-cli 0.153.4` and `GitHub Copilot CLI 1.0.83.` all yield
 /// one. Output without one yields nothing rather than an error.
@@ -294,6 +312,19 @@ pub(crate) fn probe_now(
         .ok()
         .and_then(|mut state| state.versions.begin_probe(runtime, &command, true))?;
     run_probe(runtime, generation, command, shell_env, discovery, events)
+}
+
+pub(crate) fn starts_now(
+    runtime: Runtime,
+    pool: &DbPool,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+) -> bool {
+    let Some(command) = installed_command(runtime, pool, shell_env, discovery) else {
+        return false;
+    };
+    let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
+    super::models::command_output(&command, &["--version"], &env, PROBE_TIMEOUT).is_some()
 }
 
 fn run_probe(
@@ -1241,4 +1272,25 @@ fn versions_catalog_golden() {
         }
     });
     crate::golden::assert_golden("catalog-versions", serde_json::json!(rows));
+}
+
+#[cfg(test)]
+mod minimum_tests {
+    use super::*;
+    #[test]
+    fn minimum_requires_a_known_installed_version_and_orders_prereleases() {
+        for installed in [
+            None,
+            Some("unknown"),
+            Some("0.149.0"),
+            Some("0.150.0"),
+            Some("v0.149.0+build.1"),
+        ] {
+            assert!(!below_minimum(installed, Some("0.149.0")), "{installed:?}");
+        }
+        for installed in ["0.147.0", "0.148.0", "0.149.0-alpha.1"] {
+            assert!(below_minimum(Some(installed), Some("0.149.0")));
+        }
+        assert!(!below_minimum(Some("0.147.0"), None));
+    }
 }

@@ -345,7 +345,9 @@ jobs:
             arch: aarch64
             package_arch: arm64
     runs-on: ${{ matrix.runner }}
-    container: ubuntu:22.04
+    container:
+      image: ubuntu:22.04
+      options: --dns 1.1.1.1 --dns 1.0.0.1
     timeout-minutes: 120
     env:
       CARGO_BUILD_JOBS: 2
@@ -353,7 +355,9 @@ jobs:
       - name: Bootstrap checkout prerequisites
         run: |
           if [ "$(dpkg --print-architecture)" = amd64 ]; then
-            sed -i 's|http://\(archive\|security\)\.ubuntu\.com/ubuntu|http://azure.archive.ubuntu.com/ubuntu|' /etc/apt/sources.list
+            sed -i -E 's#http://(archive|security)\.ubuntu\.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#' /etc/apt/sources.list
+          elif [ "$(dpkg --print-architecture)" = arm64 ]; then
+            sed -i 's|http://ports\.ubuntu\.com/ubuntu-ports|http://azure.ports.ubuntu.com/ubuntu-ports|' /etc/apt/sources.list
           fi
           echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries
           for attempt in 1 2 3 4 5; do

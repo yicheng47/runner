@@ -8,6 +8,7 @@ use crate::surfaces::front_page::{
     FrontPageClient, FrontPageTarget,
 };
 use gpui::{canvas, Render, SharedString, WeakEntity};
+use runner_core::protocol::Runtime;
 
 mod mission;
 pub(crate) use mission::LauncherOrigin;
@@ -51,7 +52,29 @@ struct Row {
     previously_used: bool,
 }
 
+#[derive(Clone)]
+enum UpdateAction {
+    Chat {
+        key: Option<EntryKey>,
+        pane: Option<PaneKey>,
+        scope: ProjectScope,
+        cwd: Option<String>,
+    },
+    Mission(mission::MissionRequest),
+    Fork(super::super::chat::ForkRequest),
+}
+
+#[derive(Clone)]
+struct UpdateRetry {
+    runtime: Runtime,
+    gate: Option<runner_core::protocol::RuntimeVersionGate>,
+    action: UpdateAction,
+    requested: bool,
+    ready: bool,
+}
+
 pub(crate) struct ChatLauncher {
+    update_retry: Option<UpdateRetry>,
     root: WeakEntity<NativeRoot>,
     client: FrontPageClient,
     pane: Option<PaneKey>,
@@ -400,6 +423,7 @@ impl ChatLauncher {
         let recents = RecentStore::load(&app_data_dir);
         let revisions = root.app_store.read(cx).revisions;
         let mut this = Self {
+            update_retry: None,
             root: root_entity,
             client,
             pane,
@@ -500,6 +524,16 @@ impl ChatLauncher {
                             .iter()
                             .filter_map(RuntimeChoice::remote)
                             .collect();
+                        let supported = this
+                            .runtimes
+                            .iter()
+                            .filter(|runtime| !runtime.below_minimum)
+                            .map(|runtime| runtime.name)
+                            .collect::<Vec<_>>();
+                        let target = this.client.target.clone();
+                        let _ = this.root.update(cx, |root, _| {
+                            root.clear_unblocked_gates(&target, &supported)
+                        });
                         this.crews = mission::host_crews(&catalog);
                         this.settle_goal_crew(cx);
                         this.host_account = catalog
@@ -759,7 +793,9 @@ impl ChatLauncher {
             Choice::Terminal => {
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
-                        root.launch_from_launcher(launcher, None, pane, scope, path, window, cx)
+                        root.launch_from_launcher(
+                            launcher, None, pane, scope, path, false, window, cx,
+                        )
                     })
                 });
             }
@@ -771,7 +807,16 @@ impl ChatLauncher {
                 let cwd = launcher_directory(role, path, self.changed_directory);
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
-                        root.launch_from_launcher(launcher, Some(key), pane, scope, cwd, window, cx)
+                        root.launch_from_launcher(
+                            launcher,
+                            Some(key),
+                            pane,
+                            scope,
+                            cwd,
+                            false,
+                            window,
+                            cx,
+                        )
                     })
                 });
             }
@@ -902,6 +947,10 @@ fn last_use(timestamp: Option<i64>) -> String {
 
 impl Render for ChatLauncher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.update_retry.is_some() {
+            return self.render_update_wait(cx);
+        }
+
         // Opening a tab or closing a dialog parks focus on the window or tab, where the
         // launcher's keys never arrive.
         let reclaim = self.pending.is_none()
@@ -1057,6 +1106,101 @@ impl Render for ChatLauncher {
                                     .text_color(theme::muted())
                                     .child(row.detail),
                             ),
+                    )
+                    .children(
+                        row.runtime
+                            .as_deref()
+                            .and_then(|key| {
+                                self.runtimes
+                                    .iter()
+                                    .find(|runtime| runtime.name.key() == key)
+                            })
+                            .and_then(|runtime| {
+                                if !matches!(row.choice, Choice::Chat(EntryKey::Agent(_))) {
+                                    return None;
+                                }
+                                if runtime.below_minimum {
+                                    return Some(
+                                        div()
+                                            .debug_selector(|| {
+                                                format!("LAUNCHER_UPDATE_NEEDED:{}", row.name)
+                                            })
+                                            .text_size(theme::text_meta())
+                                            .text_color(theme::warning())
+                                            .child(crate::i18n::text("agent_updates.update_needed"))
+                                            .into_any_element(),
+                                    );
+                                }
+                                let latest = runtime.available_version.as_ref()?;
+                                let name = runtime.name;
+                                let root = self.root.clone();
+                                let client = self.client.clone();
+                                let task = root
+                                    .upgrade()
+                                    .and_then(|root| root.read(cx).target_task(&client.target, name).cloned())
+                                    .filter(|task| task.state.active());
+                                let action_label = task.as_ref().map_or(crate::i18n::text("ui.update"), |task| {
+                                    if task.state == runner_core::protocol::RuntimeUpdateState::MayNeedInput {
+                                        crate::i18n::text("agent_updates.answer")
+                                    } else {
+                                        crate::i18n::text("agent_updates.show_output")
+                                    }
+                                });
+                                Some(
+                                    div()
+                                        .id(SharedString::from(format!(
+                                            "launcher-update-action-{name}"
+                                        )))
+                                        .debug_selector(move || format!("LAUNCHER_OPTIONAL_UPDATE:{name}"))
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .on_click(|_, _, cx| cx.stop_propagation())
+                                        .child(
+                                            div()
+                                                .text_size(theme::text_meta())
+                                                .text_color(theme::muted())
+                                                .child(format!(
+                                                    "{} → {latest}",
+                                                    runtime.installed_version.as_deref().unwrap_or(
+                                                        crate::i18n::text("agent_updates.unknown")
+                                                    )
+                                                )),
+                                        )
+                                        .child(
+                                            Button::new(
+                                                SharedString::from(format!(
+                                                    "launcher-update-{name}"
+                                                )),
+                                                action_label,
+                                            )
+                                            .size(runner_app::ui::ButtonSize::Sm)
+                                            .variant(ButtonVariant::Ghost)
+                                            .on_press(
+                                                move |window, cx| {
+                                                    let _ = root.update(cx, |root, cx| {
+                                                        if let Some(task) = &task {
+                                                            root.show_target_task(
+                                                                task.clone(),
+                                                                Some(client.clone()),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        } else {
+                                                            root.start_target_update(
+                                                                client.clone(),
+                                                                name,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    });
+                                                },
+                                            ),
+                                        )
+                                        .into_any_element(),
+                                )
+                            }),
                     )
                     .when(
                         !query.is_empty()
@@ -1252,6 +1396,66 @@ impl Render for ChatLauncher {
                         runner_app::ui::notice_banner(error.clone(), runner_app::ui::Tone::Danger)
                     }))
                     .when(!hide_card, |column| column.child(card))
+                    .children(
+                        self.runtimes
+                            .iter()
+                            .find(|runtime| runtime.below_minimum)
+                            .map(|runtime| {
+                                div()
+                                    .debug_selector(|| "LAUNCHER_VERSION_NOTICE".into())
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(theme::text_ui())
+                                            .text_color(theme::warning())
+                                            .child(crate::i18n::tf(
+                                                "agent_updates.minimum_title",
+                                                &[
+                                                    ("runtime", runtime.display_name.clone()),
+                                                    (
+                                                        "installed",
+                                                        runtime
+                                                            .installed_version
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    ),
+                                                ],
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(theme::text_meta())
+                                            .text_color(theme::muted())
+                                            .child(crate::i18n::tf(
+                                                "agent_updates.minimum_notice",
+                                                &[
+                                                    (
+                                                        "minimum",
+                                                        runtime
+                                                            .min_version
+                                                            .clone()
+                                                            .unwrap_or_default(),
+                                                    ),
+                                                    ("runtime", runtime.display_name.clone()),
+                                                    (
+                                                        "latest",
+                                                        runtime
+                                                            .available_version
+                                                            .clone()
+                                                            .unwrap_or_else(|| {
+                                                                crate::i18n::text(
+                                                                    "agent_updates.latest_version",
+                                                                )
+                                                                .into()
+                                                            }),
+                                                    ),
+                                                ],
+                                            )),
+                                    )
+                            }),
+                    )
                     .when(goal_step, |column| {
                         column.children(self.render_goal_body(cx))
                     }),
@@ -1277,6 +1481,245 @@ impl Render for ChatLauncher {
                 .absolute()
                 .inset_0(),
             )
+    }
+}
+
+impl ChatLauncher {
+    fn render_update_wait(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let retry = self.update_retry.as_ref().unwrap();
+        let task = self.root.upgrade().and_then(|root| {
+            root.read(cx)
+                .target_task(&self.client.target, retry.runtime)
+                .cloned()
+        });
+        let answer = task.as_ref().is_some_and(|task| {
+            task.state == runner_core::protocol::RuntimeUpdateState::MayNeedInput
+        });
+        let waiting = retry.requested && task.as_ref().is_some_and(|task| task.state.active());
+        let output_task = task.clone();
+        let name = retry.runtime.display_name();
+        let title = if waiting {
+            crate::i18n::tf("agent_updates.waiting", &[("runtime", name.into())])
+        } else {
+            crate::i18n::tf("agent_updates.needs_update", &[("runtime", name.into())])
+        };
+        let reason = task
+            .and_then(|task| task.message)
+            .or_else(|| {
+                retry.gate.as_ref().map(|gate| {
+                    crate::i18n::tf(
+                        "agent_updates.minimum_reason",
+                        &[
+                            ("runtime", name.into()),
+                            ("installed", gate.installed_version.clone()),
+                            ("minimum", gate.min_version.clone()),
+                        ],
+                    )
+                })
+            })
+            .unwrap_or_else(|| {
+                crate::i18n::tf("agent_updates.update_to_use", &[("runtime", name.into())])
+            });
+        let root = self.root.clone();
+        let owner = cx.weak_entity();
+        let runtime = retry.runtime;
+        let client = self.client.clone();
+        div().size_full().relative().child(
+            runner_app::ui::SessionOverlay::ended(
+                "launcher-update-wait",
+                reason,
+                move |window, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        if let Some(retry) = &mut view.update_retry {
+                            retry.requested = true;
+                        }
+                        cx.notify();
+                    });
+                    let _ = root.update(cx, |root, cx| {
+                        if answer {
+                            if let Some(task) = &output_task {
+                                root.show_target_task(
+                                    task.clone(),
+                                    Some(client.clone()),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        } else {
+                            root.start_target_update(client.clone(), runtime, window, cx);
+                        }
+                    });
+                },
+                |_, _| {},
+            )
+            .title(title)
+            .primary_debug_selector("LAUNCHER_UPDATE_ACTION")
+            .label(if answer {
+                crate::i18n::text("agent_updates.answer").into()
+            } else {
+                crate::i18n::tf("agent_updates.update_action", &[("runtime", name.into())])
+            })
+            .actions_visible(!waiting || answer, false),
+        )
+    }
+}
+
+impl NativeRoot {
+    pub(crate) fn refresh_remote_agent_versions(
+        &self,
+        client: FrontPageClient,
+        cx: &mut Context<Self>,
+    ) {
+        let target = client.target.clone();
+        let work = cx.background_spawn(async move { client.catalog() });
+        cx.spawn(async move |owner, cx| {
+            let Ok(catalog) = work.await else { return };
+            let _ = owner.update(cx, |root, cx| {
+                let supported = catalog
+                    .runtimes
+                    .iter()
+                    .filter(|runtime| !runtime.below_minimum)
+                    .filter_map(|runtime| Runtime::parse(&runtime.name))
+                    .collect::<Vec<_>>();
+                root.clear_unblocked_gates(&target, &supported);
+                for launcher in root.launchers.values() {
+                    if launcher.read(cx).client.target == target {
+                        launcher.update(cx, |launcher, cx| {
+                            launcher.runtimes = catalog
+                                .runtimes
+                                .iter()
+                                .filter_map(RuntimeChoice::remote)
+                                .collect();
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn show_fork_update(
+        &mut self,
+        gate: runner_core::protocol::RuntimeVersionGate,
+        request: super::super::chat::ForkRequest,
+        launcher: Option<Entity<ChatLauncher>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let launcher = if let Some(launcher) = launcher {
+            launcher
+        } else {
+            if request.client.target != self.front_page_client(cx).target {
+                return;
+            }
+            self.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            self.render_launcher(None, true, window, cx)
+        };
+        launcher.update(cx, |launcher, cx| {
+            launcher.update_retry = Some(UpdateRetry {
+                runtime: gate.runtime,
+                gate: Some(gate),
+                action: UpdateAction::Fork(request),
+                requested: false,
+                ready: false,
+            });
+            launcher.pending = None;
+            cx.notify();
+        });
+    }
+
+    pub(crate) fn update_launcher_visible(
+        &self,
+        launcher: &Entity<ChatLauncher>,
+        cx: &App,
+    ) -> bool {
+        let view = launcher.read(cx);
+        if view.client.target != self.front_page_client(cx).target {
+            return false;
+        }
+        if let Some(pane) = &view.pane {
+            self.front_page_is_chat()
+                && self.front_page_layout().is_some_and(|layout| {
+                    layout.id == pane.tab_id && layout.focused_pane_id == pane.pane_id
+                })
+        } else {
+            self.launcher_page_visible() && self.page_launcher(cx) == Some(launcher)
+        }
+    }
+
+    pub(crate) fn notify_update_launchers(&self, cx: &mut Context<Self>) {
+        for launcher in self.launchers.values() {
+            launcher.update(cx, |_, cx| cx.notify());
+        }
+    }
+    pub(crate) fn retry_gated_launches(
+        &mut self,
+        runtime: Runtime,
+        target: &FrontPageTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for launcher in self.launchers.values() {
+            launcher.update(cx, |view, _| {
+                if &view.client.target == target {
+                    if let Some(retry) = &mut view.update_retry {
+                        if retry.runtime == runtime && retry.requested {
+                            retry.ready = true;
+                        }
+                    }
+                }
+            });
+        }
+        self.drain_ready_launches(window, cx);
+    }
+
+    pub(crate) fn drain_ready_launches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.front_page_client(cx).target;
+        let launchers = self.launchers.values().cloned().collect::<Vec<_>>();
+        for launcher in launchers {
+            let view = launcher.read(cx);
+            let Some(retry) = view.update_retry.as_ref().filter(|retry| retry.ready) else {
+                continue;
+            };
+            if !view.client.valid() || (view.client.is_remote() && view.client.target != current) {
+                continue;
+            }
+            if let UpdateAction::Chat {
+                pane: Some(pane), ..
+            } = &retry.action
+            {
+                let key = format!("{}:{}", computer_key(&view.client.target), pane.tab_id);
+                let blocked = if view.client.is_remote() {
+                    self.launcher_tab_pending(&pane.tab_id, cx)
+                } else {
+                    self.app_store
+                        .read(cx)
+                        .launcher_tabs_pending
+                        .lock()
+                        .unwrap()
+                        .contains_key(&key)
+                };
+                if blocked {
+                    continue;
+                }
+            }
+            let retry = launcher
+                .update(cx, |view, _| view.update_retry.take())
+                .unwrap();
+            match retry.action {
+                UpdateAction::Chat {
+                    key,
+                    pane,
+                    scope,
+                    cwd,
+                } => self.launch_from_launcher(launcher, key, pane, scope, cwd, true, window, cx),
+                UpdateAction::Mission(request) => {
+                    self.launch_mission_from_launcher(launcher, request, true, window, cx)
+                }
+                UpdateAction::Fork(request) => self.retry_agent_fork(request, launcher, window, cx),
+            }
+        }
     }
 }
 
@@ -1318,6 +1761,9 @@ impl NativeRoot {
         let active_layout = self.front_page_layout().cloned();
         self.launchers.retain(|_, entity| {
             let launcher = entity.read(cx);
+            if launcher.update_retry.is_some() && launcher.client.valid() {
+                return true;
+            }
             if launcher.client.target != target {
                 // A reconnect's new launcher takes the page over when it is built.
                 return launcher.pane.is_none()
@@ -1365,14 +1811,15 @@ impl NativeRoot {
         }
         if let Some(launcher) = self
             .launchers
-            .values()
-            .find(|launcher| {
-                let launcher = launcher.read(cx);
-                launcher.client.target == target && launcher.pane == pane
-            })
+            .get(&format!("{target:?}:{pane:?}"))
+            .filter(|launcher| self.update_launcher_visible(launcher, cx))
             .cloned()
         {
-            launcher.update(cx, |launcher, cx| launcher.focus(window, cx));
+            if launcher.read(cx).update_retry.is_some() {
+                self.root_focus.focus(window, cx);
+            } else {
+                launcher.update(cx, |launcher, cx| launcher.focus(window, cx));
+            }
             return true;
         }
         false
@@ -1474,7 +1921,7 @@ impl NativeRoot {
                 ))
             });
             if let Some((pane, scope, cwd)) = input {
-                self.launch_from_launcher(launcher, None, pane, scope, cwd, window, cx);
+                self.launch_from_launcher(launcher, None, pane, scope, cwd, false, window, cx);
             }
             return true;
         }
@@ -1542,6 +1989,16 @@ impl NativeRoot {
                 });
                 self.launchers.insert(key, next.clone());
                 return next;
+            }
+            if launcher
+                .read(cx)
+                .update_retry
+                .as_ref()
+                .is_some_and(|retry| retry.ready)
+            {
+                cx.defer_in(window, |root, window, cx| {
+                    root.drain_ready_launches(window, cx)
+                });
             }
             let computer = self.remote_client.computer().cloned();
             let overrides = self.settings(cx).keymap_overrides.clone();
@@ -1680,7 +2137,10 @@ impl NativeRoot {
         if self.create_modal_open() || self.launcher_start_pending(cx) {
             return;
         }
-        let visible = self.launcher_page_visible();
+        let visible = self.launcher_page_visible()
+            && self
+                .page_launcher(cx)
+                .is_none_or(|launcher| launcher.read(cx).update_retry.is_none());
         let origin = if self.remote_client.is_active() {
             LauncherOrigin::Remote(self.remote_client.active_item().cloned())
         } else {
@@ -1735,10 +2195,21 @@ impl NativeRoot {
     /// an older project, lock and origin. The next page starts fresh.
     pub(crate) fn reset_launcher_page(&mut self, cx: &App) {
         let computer = computer_key(&self.front_page_client(cx).target);
-        self.launchers.retain(|_, launcher| {
-            let launcher = launcher.read(cx);
-            launcher.pane.is_some() || computer_key(&launcher.client.target) != computer
+        let mut waiting = Vec::new();
+        self.launchers.retain(|_, entity| {
+            let launcher = entity.read(cx);
+            if launcher.pane.is_some() || computer_key(&launcher.client.target) != computer {
+                return true;
+            }
+            if launcher.update_retry.is_some() {
+                waiting.push((
+                    format!("update-wait:{:?}", entity.entity_id()),
+                    entity.clone(),
+                ));
+            }
+            false
         });
+        self.launchers.extend(waiting);
     }
 
     fn front_page_project_deleted(&self, project: &str, cx: &App) -> bool {
@@ -1809,6 +2280,46 @@ impl NativeRoot {
         }
     }
 
+    fn reserve_update_pane(
+        &mut self,
+        launcher: &Entity<ChatLauncher>,
+        pane: Option<PaneKey>,
+        scope: &ProjectScope,
+        cx: &mut Context<Self>,
+    ) -> Option<PaneKey> {
+        if pane.is_some() || launcher.read(cx).client.is_remote() {
+            return pane;
+        }
+        let mut layout = PaneLayout::single(None, &[]);
+        layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+        layout.parent_id = scope.project_id().map(str::to_owned);
+        if let Err(error) = launcher
+            .read(cx)
+            .client
+            .launcher_layout(&layout, layout.parent_id.clone())
+        {
+            launcher.update(cx, |view, cx| {
+                view.error = Some(error.to_string());
+                cx.notify();
+            });
+            return None;
+        }
+        let _ = self.reload_tabs(cx);
+        self.tabs.activate(&layout.id);
+        self.set_route(AppRoute::Chat, cx);
+        let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
+        self.launchers.retain(|_, cached| cached != launcher);
+        launcher.update(cx, |view, _| {
+            view.pane = Some(pane.clone());
+            view.initial_project = scope.project_id().map(str::to_owned);
+        });
+        self.launchers.insert(
+            format!("{:?}:{:?}", launcher.read(cx).client.target, Some(&pane)),
+            launcher.clone(),
+        );
+        Some(pane)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn launch_from_launcher(
         &mut self,
@@ -1817,16 +2328,80 @@ impl NativeRoot {
         pane: Option<PaneKey>,
         scope: ProjectScope,
         cwd: Option<String>,
+        background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let client = launcher.read(cx).client.clone();
-        if client.target != self.front_page_client(cx).target || !client.valid() {
+        if !client.valid()
+            || (client.target != self.front_page_client(cx).target
+                && (!background || client.is_remote()))
+        {
+            return;
+        }
+        let gated = key.as_ref().and_then(|key| {
+            let view = launcher.read(cx);
+            let runtime_key = match key {
+                EntryKey::Agent(runtime) => Some(runtime.as_str()),
+                EntryKey::Role(id) => view
+                    .roles
+                    .iter()
+                    .find(|role| role.id == *id)
+                    .map(|role| role.runtime.as_str()),
+            }?;
+            view.runtimes
+                .iter()
+                .find(|runtime| runtime.name.key() == runtime_key && runtime.below_minimum)
+                .map(|runtime| runtime.name)
+        });
+        if let Some(runtime) = gated.filter(|runtime| {
+            !self
+                .target_task(&client.target, *runtime)
+                .is_some_and(|task| {
+                    task.state == runner_core::protocol::RuntimeUpdateState::Succeeded
+                })
+        }) {
+            let pane = self.reserve_update_pane(&launcher, pane, &scope, cx);
+            launcher.update(cx, |view, cx| {
+                view.pending = None;
+                view.update_retry = Some(UpdateRetry {
+                    runtime,
+                    gate: view
+                        .runtimes
+                        .iter()
+                        .find(|entry| entry.name == runtime)
+                        .and_then(|entry| {
+                            Some(runner_core::protocol::RuntimeVersionGate {
+                                runtime,
+                                installed_version: entry.installed_version.clone()?,
+                                min_version: entry.min_version.clone()?,
+                            })
+                        }),
+                    action: UpdateAction::Chat {
+                        key,
+                        pane,
+                        scope,
+                        cwd,
+                    },
+                    requested: true,
+                    ready: false,
+                });
+                cx.notify();
+            });
+            self.start_target_update(client, runtime, window, cx);
             return;
         }
         let has_pane = pane.is_some();
         let mut placement = pane.and_then(|pane| {
-            self.front_page_layout()
+            let layout = if client.is_remote() {
+                self.remote_client.tab_layout(&pane.tab_id)
+            } else {
+                self.tabs
+                    .tabs()
+                    .iter()
+                    .find(|layout| layout.id == pane.tab_id)
+            };
+            layout
                 .filter(|layout| {
                     layout.id == pane.tab_id
                         && layout
@@ -1936,8 +2511,12 @@ impl NativeRoot {
                 (tab_guard, result)
             });
             cx.spawn_in(window, async move |weak, cx| {
-                let (_tab_guard, result) = task.await;
+                let (tab_guard, result) = task.await;
+                drop(tab_guard);
                 let _ = weak.update_in(cx, |root, window, cx| {
+                    cx.defer_in(window, |root, window, cx| {
+                        root.drain_ready_launches(window, cx)
+                    });
                     launcher.update(cx, |launcher, cx| {
                         if !remote || result.is_err() {
                             launcher.pending = None;
@@ -2006,9 +2585,13 @@ impl NativeRoot {
                 .filter(|(entry, _)| entry == &key)
                 .map(|(_, session)| session.clone()),
         };
-        let remote = self
-            .remote_client
-            .prepare_chat_launch(client.clone(), launch.placement.as_ref());
+        let remote = client
+            .is_remote()
+            .then(|| {
+                self.remote_client
+                    .prepare_chat_launch(client.clone(), launch.placement.as_ref())
+            })
+            .flatten();
         if client.is_remote() && remote.is_none() {
             launcher.update(cx, |launcher, cx| {
                 launcher.pending = None;
@@ -2046,8 +2629,44 @@ impl NativeRoot {
             (tab_guard, launch, result)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let (_tab_guard, launch, result) = task.await;
+            let (tab_guard, launch, result) = task.await;
+            drop(tab_guard);
             let _ = weak.update_in(cx, |root, window, cx| {
+                cx.defer_in(window, |root, window, cx| {
+                    root.drain_ready_launches(window, cx)
+                });
+                if let Some(gate) = result
+                    .as_ref()
+                    .err()
+                    .and_then(|error| error.version_gate.clone())
+                {
+                    let pane = root.reserve_update_pane(
+                        &launcher,
+                        launch
+                            .placement
+                            .as_ref()
+                            .map(|(layout, pane)| PaneKey::new(&layout.id, pane)),
+                        &scope,
+                        cx,
+                    );
+                    let retry = UpdateRetry {
+                        runtime: gate.runtime,
+                        gate: Some(gate),
+                        action: UpdateAction::Chat {
+                            key: Some(key.clone()),
+                            pane,
+                            scope: scope.clone(),
+                            cwd: launch.input.cwd.clone(),
+                        },
+                        requested: false,
+                        ready: false,
+                    };
+                    launcher.update(cx, |view, cx| {
+                        view.update_retry = Some(retry);
+                        view.pending = None;
+                        cx.notify();
+                    });
+                }
                 if let Some(action) = remote {
                     if !root.remote_client.settle_chat_launch(&action) {
                         return;
@@ -2086,8 +2705,23 @@ impl NativeRoot {
                         return;
                     }
                     if result.is_ok() {
+                        let visible = root.front_page_is_chat()
+                            && launcher.read(cx).pane.as_ref().map_or_else(
+                                || root.launcher_page_visible(),
+                                |pane| {
+                                    root.front_page_layout().is_some_and(|layout| {
+                                        layout.id == pane.tab_id
+                                            && layout.focused_pane_id == pane.pane_id
+                                    })
+                                },
+                            );
                         root.launchers.retain(|_, cached| cached != &launcher);
-                        root.finish_local_chat_launch(launch.started, result, window, cx);
+                        if background && !visible {
+                            root.refresh_sessions(cx);
+                            let _ = root.reload_tabs(cx);
+                        } else {
+                            root.finish_local_chat_launch(launch.started, result, window, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -2164,7 +2798,7 @@ impl NativeRoot {
             )
         });
         let pane = launcher.read(cx).pane.clone();
-        self.launch_from_launcher(launcher, Some(key), pane, scope, cwd, window, cx);
+        self.launch_from_launcher(launcher, Some(key), pane, scope, cwd, false, window, cx);
     }
 }
 
@@ -2176,6 +2810,10 @@ mod tests {
 
     fn agent() -> RuntimeChoice {
         RuntimeChoice {
+            installed_version: None,
+            available_version: None,
+            min_version: None,
+            below_minimum: false,
             name: Runtime::Codex,
             display_name: "Codex".into(),
             command: Some("codex".into()),
@@ -2199,6 +2837,565 @@ mod tests {
             codex_speed: None,
             working_dir: Some("/role-directory".into()),
         }
+    }
+
+    struct UpdateFixture {
+        inner: runner_daemon::daemon::InProcessTransport,
+        starts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl runner_core::protocol::Transport for UpdateFixture {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> runner_core::protocol::ClientResult<runner_core::protocol::Response> {
+            if matches!(
+                request,
+                runner_core::protocol::Request::runtime_task_start { .. }
+            ) {
+                self.starts
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Ok(runner_core::protocol::Response::runtime_task_start(Err(
+                    runner_core::protocol::ClientError::msg("scratch updater is offline"),
+                )));
+            }
+            if let runner_core::protocol::Request::session_start_runtime_with_speed {
+                cwd, ..
+            } = &request
+            {
+                let conn = self.inner.0.db.get().unwrap();
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM sessions WHERE id LIKE 'updated-chat%'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                let id = if count == 0 {
+                    "updated-chat".to_owned()
+                } else {
+                    format!("updated-chat-{count}")
+                };
+                conn.execute("INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')", [&id]).unwrap();
+                return Ok(
+                    runner_core::protocol::Response::session_start_runtime_with_speed(Ok(
+                        runner_core::protocol::session::StartDirectSessionOutput {
+                            session: runner_core::protocol::session::SpawnedSession {
+                                id,
+                                mission_id: None,
+                                role_id: None,
+                                handle: "codex".into(),
+                                pid: None,
+                            },
+                            project_id: None,
+                            cwd: cwd.clone(),
+                        },
+                    )),
+                );
+            }
+            self.inner.call(request)
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            self.inner.subscribe()
+        }
+    }
+
+    #[test]
+    fn required_updates_mark_only_agents_and_defer_agent_and_role_launch_intents() {
+        for key in [
+            EntryKey::Agent("codex".into()),
+            EntryKey::Role("role".into()),
+        ] {
+            let mut catalog = RuntimeCatalogEntry::for_runtime(Runtime::Codex).unwrap();
+            catalog.available = true;
+            let mut harness =
+                modal_harness(1200., 900., Vec::new(), vec![catalog], ChatMode::Runtime);
+            let starts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut page = None;
+            harness.act(|root, window, cx| {
+                root.start_chat_modal = None;
+                root.app_store.update(cx, |store, _| {
+                    store.client = runner_core::protocol::DaemonClient::new(std::sync::Arc::new(
+                        UpdateFixture {
+                            inner: runner_daemon::daemon::InProcessTransport(
+                                store.test_core.clone(),
+                            ),
+                            starts: starts.clone(),
+                        },
+                    ));
+                });
+                root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+                let launcher = root.render_launcher(None, true, window, cx);
+                launcher.update(cx, |view, cx| {
+                    let mut runtime = agent();
+                    runtime.installed_version = Some("0.147.0".into());
+                    runtime.min_version = Some("0.149.0".into());
+                    runtime.available_version = Some("0.167.0".into());
+                    runtime.below_minimum = true;
+                    view.runtimes = vec![runtime];
+                    view.roles = vec![role()];
+                    cx.notify();
+                });
+                page = Some(launcher);
+            });
+            assert!(harness.bounds("LAUNCHER_UPDATE_NEEDED:Codex").is_some());
+            assert!(harness
+                .bounds("LAUNCHER_UPDATE_NEEDED:Bounded role")
+                .is_none());
+            assert!(harness.bounds("LAUNCHER_VERSION_NOTICE").is_some());
+            let launcher = page.unwrap();
+            harness.act(|root, window, cx| {
+                launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
+                root.launch_from_launcher(launcher.clone(), Some(key.clone()), None, ProjectScope::Root, None, false, window, cx);
+                assert!(!root.launcher_start_pending(cx));
+                assert!(launcher.read(cx).pane.is_some());
+                assert!(root.agent_update.is_none());
+                let retry = launcher.read(cx).update_retry.as_ref().unwrap();
+                assert_eq!(retry.runtime, Runtime::Codex);
+                assert!(retry.requested);
+                assert!(matches!(&retry.action, UpdateAction::Chat { key: Some(saved), .. } if saved == &key));
+                assert_eq!(retry.gate.as_ref().unwrap().min_version, "0.149.0");
+                assert!(root.core(cx).session_list_recent_direct().unwrap().is_empty());
+            });
+            assert_eq!(starts.load(std::sync::atomic::Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
+        use runner_core::protocol::{RuntimeUpdateState, RuntimeUpdateTask};
+        let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let mut waiting = String::new();
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.app_store.update(cx, |store, _| {
+                store.client =
+                    runner_core::protocol::DaemonClient::new(std::sync::Arc::new(UpdateFixture {
+                        inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        starts: Default::default(),
+                    }));
+            });
+            root.reset_launcher_page(cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, _| {
+                let mut runtime = agent();
+                runtime.below_minimum = true;
+                view.runtimes = vec![runtime];
+                view.pending = Some(Choice::Chat(EntryKey::Agent("codex".into())));
+            });
+            root.launch_from_launcher(
+                launcher.clone(),
+                Some(EntryKey::Agent("codex".into())),
+                None,
+                ProjectScope::Root,
+                None,
+                false,
+                window,
+                cx,
+            );
+            waiting = launcher.read(cx).pane.as_ref().unwrap().tab_id.clone();
+            assert!(!root.launcher_start_pending(cx));
+            root.open_new_tab_modal(&NewTab, window, cx);
+            assert!(launcher.read(cx).update_retry.is_some());
+        });
+        let mut focus = None;
+        harness.act(|root, window, cx| {
+            focus = window.focused(cx);
+            assert!(root.launcher_page_visible());
+            root.apply_agent_tasks(
+                vec![RuntimeUpdateTask {
+                    id: "successful-update".into(),
+                    runtime: Runtime::Codex,
+                    state: RuntimeUpdateState::Succeeded,
+                    from_version: Some("0.147.0".into()),
+                    to_version: Some("0.167.0".into()),
+                    installed_version: Some("0.167.0".into()),
+                    step: "Done".into(),
+                    message: None,
+                    exit_code: Some(0),
+                    running_sessions: 0,
+                }],
+                window,
+                cx,
+            );
+        });
+        harness.act(|root, window, cx| {
+            assert!(root.launcher_page_visible());
+            assert_eq!(window.focused(cx), focus);
+            let tab = root
+                .tabs
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == waiting)
+                .unwrap();
+            assert!(tab.contains_session("updated-chat"));
+            assert!(root.agent_update.is_none());
+        });
+    }
+
+    #[test]
+    fn shared_update_queues_both_panes_behind_the_tabs_active_start() {
+        use runner_core::protocol::{RuntimeUpdateState, RuntimeUpdateTask};
+        let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let mut waiting_tab = String::new();
+        let mut guard = None;
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.app_store.update(cx, |store, _| {
+                store.client =
+                    runner_core::protocol::DaemonClient::new(std::sync::Arc::new(UpdateFixture {
+                        inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        starts: Default::default(),
+                    }))
+            });
+            root.reset_launcher_page(cx);
+            root.test_open_empty_tab(window, cx);
+            let mut layout = root.tabs.active().unwrap().clone();
+            layout.split("p1", SplitOrientation::Row).unwrap();
+            root.front_page_client(cx)
+                .launcher_layout(&layout, None)
+                .unwrap();
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate(&layout.id);
+            waiting_tab = layout.id.clone();
+            for leaf in layout.root.leaves() {
+                let pane = PaneKey::new(&layout.id, &leaf.id);
+                let launcher = root.render_launcher(Some(pane.clone()), false, window, cx);
+                launcher.update(cx, |view, _| {
+                    let mut runtime = agent();
+                    runtime.below_minimum = true;
+                    view.runtimes = vec![runtime];
+                });
+                root.launch_from_launcher(
+                    launcher,
+                    Some(EntryKey::Agent("codex".into())),
+                    Some(pane),
+                    ProjectScope::Root,
+                    None,
+                    false,
+                    window,
+                    cx,
+                );
+            }
+            guard = TabStart::begin(
+                root.app_store.read(cx).launcher_tabs_pending.clone(),
+                format!("local:{}", layout.id),
+                layout,
+            );
+            root.apply_agent_tasks(
+                vec![RuntimeUpdateTask {
+                    id: "one-update".into(),
+                    runtime: Runtime::Codex,
+                    state: RuntimeUpdateState::Succeeded,
+                    from_version: None,
+                    to_version: None,
+                    installed_version: Some("0.167.0".into()),
+                    step: "Done".into(),
+                    message: None,
+                    exit_code: Some(0),
+                    running_sessions: 0,
+                }],
+                window,
+                cx,
+            );
+            assert!(root
+                .core(cx)
+                .session_list_recent_direct()
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                root.launchers
+                    .values()
+                    .filter(|view| view
+                        .read(cx)
+                        .update_retry
+                        .as_ref()
+                        .is_some_and(|retry| retry.ready))
+                    .count(),
+                2
+            );
+        });
+        drop(guard);
+        harness.act(|root, window, cx| root.drain_ready_launches(window, cx));
+        harness.act(|root, _, cx| {
+            let tab = root
+                .tabs
+                .tabs()
+                .iter()
+                .find(|tab| tab.id == waiting_tab)
+                .unwrap();
+            assert_eq!(tab.session_ids().len(), 2);
+            assert!(tab.contains_session("updated-chat"));
+            assert!(tab.contains_session("updated-chat-1"));
+            assert_eq!(root.core(cx).session_list_recent_direct().unwrap().len(), 2);
+        });
+    }
+
+    struct DeferredOrigin {
+        base: std::sync::Arc<crate::surfaces::remote_client::tests::Fake>,
+        core: runner_daemon::AppCore,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl runner_core::protocol::Transport for DeferredOrigin {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> runner_core::protocol::ClientResult<runner_core::protocol::Response> {
+            use runner_core::protocol::{Request, Response};
+            use std::sync::atomic::Ordering;
+            if matches!(request, Request::runtime_task_start { .. }) {
+                let mut task: runner_core::protocol::RuntimeUpdateTask = serde_json::from_value(
+                    crate::surfaces::remote_client::tests::completed_update(),
+                )
+                .unwrap();
+                task.state = runner_core::protocol::RuntimeUpdateState::Running;
+                self.base.emit(
+                    "runtime/task-changed",
+                    serde_json::to_value(vec![task.clone()]).unwrap(),
+                );
+                return Ok(Response::runtime_task_start(Ok(task)));
+            }
+            if matches!(
+                request,
+                Request::session_fork { .. } | Request::mission_start_impl_with_size { .. }
+            ) {
+                let attempt = self.calls.fetch_add(1, Ordering::Relaxed);
+                if attempt == 0 {
+                    let error = crate::surfaces::remote_client::tests::update_gate_error();
+                    return Ok(match request {
+                        Request::session_fork { .. } => Response::session_fork(Err(error)),
+                        _ => Response::mission_start_impl_with_size(Err(error)),
+                    });
+                }
+                if matches!(request, Request::session_fork { .. }) {
+                    let conn = self.core.db.get().unwrap();
+                    conn.execute("INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES ('forked-origin', 'stopped', 'codex', 'codex')", []).unwrap();
+                    let layout =
+                        PaneLayout::single(Some("forked-origin"), &["forked-origin".into()]);
+                    runner_daemon::repo::node::create_tab(
+                        &conn,
+                        None,
+                        "Fork result",
+                        1,
+                        &layout.serialize().unwrap(),
+                    )
+                    .unwrap();
+                    return Ok(Response::session_fork(Ok(
+                        runner_core::protocol::session::SpawnedSession {
+                            id: "forked-origin".into(),
+                            mission_id: None,
+                            role_id: None,
+                            handle: "codex".into(),
+                            pid: None,
+                        },
+                    )));
+                }
+            }
+            self.base.call(request)
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            self.base.subscribe()
+        }
+    }
+
+    #[test]
+    fn deferred_mission_and_fork_keep_the_saved_host_and_later_work_focused() {
+        use crate::surfaces::remote_client::tests as remote_test;
+        use std::sync::atomic::Ordering;
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for kind in ["mission", "fork"] {
+            for switch_host in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let mut cx = gpui::TestAppContext::single();
+                let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+                remote_test::enable_front_page(&fake);
+                let core = store.read_with(&cx, |store, _| store.test_core.clone());
+                let trace = std::sync::Arc::new(DeferredOrigin {
+                    base: fake.clone(),
+                    core: core.clone(),
+                    calls: Default::default(),
+                });
+                store.update(&mut cx, |store, _| {
+                    store.client = runner_core::protocol::DaemonClient::new(trace.clone())
+                });
+                let window = remote_test::add_window(&mut cx, &store, temp.path(), kind);
+                window.update(&mut cx, |root, window, cx| {
+                    if kind == "mission" {
+                        root.open_launcher_page(ProjectScope::Root, Step::Goal(None), false, window, cx);
+                        let launcher = root.render_launcher(None, true, window, cx);
+                        launcher.update(cx, |view, cx| view.start_mission(window, cx));
+                    } else {
+                        core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime, agent_command, agent_session_key) VALUES ('origin', 'stopped', 'codex', 'codex', 'key')", []).unwrap();
+                        let mut layout = PaneLayout::single(Some("origin"), &["origin".into()]);
+                        layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+                        root.front_page_client(cx).launcher_layout(&layout, None).unwrap();
+                        root.refresh_sessions(cx);
+                        root.reload_tabs(cx).unwrap();
+                        root.tabs.activate_session("origin");
+                        root.set_route(AppRoute::Chat, cx);
+                        root.fork_chat("origin", window, cx);
+                        root.confirm_fork_chat(window, cx);
+                    }
+                }).unwrap();
+                cx.run_until_parked();
+                assert_eq!(
+                    trace.calls.load(Ordering::Relaxed),
+                    1,
+                    "{kind}: original request reaches the local gate"
+                );
+                let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+                visual.run_until_parked();
+                let update = visual
+                    .debug_bounds("LAUNCHER_UPDATE_ACTION")
+                    .expect("refused origin has recovery action");
+                visual.simulate_click(update.center(), Default::default());
+                visual.run_until_parked();
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        if switch_host {
+                            remote_test::choose_host(root, window, cx);
+                        } else {
+                            root.open_new_tab_modal(&NewTab, window, cx);
+                        }
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                if !switch_host {
+                    let (visible, waiting, old_query, old_goal) = window
+                        .read_with(&visual, |root, cx| {
+                            let visible = root.page_launcher(cx).unwrap().clone();
+                            let waiting = root
+                                .launchers
+                                .iter()
+                                .find(|(key, _)| key.starts_with("update-wait:"))
+                                .unwrap()
+                                .1
+                                .clone();
+                            let old_query = waiting.read(cx).query.read(cx).text().to_owned();
+                            let old_goal = waiting.read(cx).goal.read(cx).text().to_owned();
+                            (visible, waiting, old_query, old_goal)
+                        })
+                        .unwrap();
+                    window
+                        .update(&mut visual, |root, window, cx| {
+                            root.open_this_computer_settings(Some("agents"), window, cx)
+                        })
+                        .unwrap();
+                    visual.run_until_parked();
+                    window
+                        .update(&mut visual, |root, window, cx| {
+                            root.leave_settings(window, cx)
+                        })
+                        .unwrap();
+                    visual.run_until_parked();
+                    window
+                        .update(&mut visual, |root, window, cx| {
+                            assert_eq!(root.page_launcher(cx), Some(&visible));
+                            assert!(visible
+                                .read(cx)
+                                .query
+                                .read(cx)
+                                .focus_handle()
+                                .is_focused(window));
+                        })
+                        .unwrap();
+                    visual.simulate_keystrokes("v i s i b l e");
+                    visual.run_until_parked();
+                    window
+                        .read_with(&visual, |_, cx| {
+                            assert_eq!(visible.read(cx).query.read(cx).text(), "visible");
+                            assert_eq!(waiting.read(cx).query.read(cx).text(), old_query);
+                            assert_eq!(waiting.read(cx).goal.read(cx).text(), old_goal);
+                        })
+                        .unwrap();
+                }
+                let mut before = None;
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        before = Some((
+                            root.front_page_client(cx).target,
+                            root.route.clone(),
+                            window.focused(cx),
+                        ));
+                        let task = serde_json::from_value(remote_test::completed_update()).unwrap();
+                        root.apply_agent_tasks(vec![task], window, cx);
+                    })
+                    .unwrap();
+                visual.run_until_parked();
+                assert_eq!(
+                    trace.calls.load(Ordering::Relaxed),
+                    2,
+                    "{kind} retried exactly once"
+                );
+                assert_eq!(
+                    fake.request_count(if kind == "mission" {
+                        "startMission"
+                    } else {
+                        "fork"
+                    }),
+                    0,
+                    "a local request must never be sent to the selected host"
+                );
+                window
+                    .read_with(&visual, |root, cx| {
+                        let (target, route, _) = before.as_ref().unwrap();
+                        assert_eq!(&root.front_page_client(cx).target, target);
+                        assert_eq!(&root.route, route);
+                    })
+                    .unwrap();
+                window
+                    .update(&mut visual, |_, window, cx| {
+                        assert_eq!(window.focused(cx), before.as_ref().unwrap().2)
+                    })
+                    .unwrap();
+                if kind == "mission" {
+                    assert_eq!(
+                        runner_daemon::ops::mission::mission_list(&core, None)
+                            .unwrap()
+                            .len(),
+                        1
+                    );
+                } else {
+                    assert!(runner_daemon::repo::session::get_row(
+                        &core.db.get().unwrap(),
+                        "forked-origin"
+                    )
+                    .unwrap()
+                    .is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn optional_updates_only_tag_the_agent_row_and_keep_the_launcher_available() {
+        let mut catalog = RuntimeCatalogEntry::for_runtime(Runtime::Codex).unwrap();
+        catalog.available = true;
+        let mut harness = modal_harness(1200., 900., Vec::new(), vec![catalog], ChatMode::Runtime);
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, cx| {
+                let mut runtime = agent();
+                runtime.installed_version = Some("0.166.0".into());
+                runtime.available_version = Some("0.167.0".into());
+                view.runtimes = vec![runtime];
+                view.roles = vec![role()];
+                assert!(view.update_retry.is_none());
+                let (rows, _) = view.rows(cx);
+                assert!(rows
+                    .iter()
+                    .filter(|row| matches!(row.choice, Choice::Chat(_)))
+                    .all(|row| !row.unavailable));
+                cx.notify();
+            });
+        });
+        assert!(harness.bounds("LAUNCHER_OPTIONAL_UPDATE:codex").is_some());
+        assert!(harness
+            .bounds("LAUNCHER_UPDATE_NEEDED:Bounded role")
+            .is_none());
+        assert!(harness.bounds("LAUNCHER_VERSION_NOTICE").is_none());
+        harness.read_root(|root, _| assert!(root.agent_update.is_none()));
     }
 
     #[test]

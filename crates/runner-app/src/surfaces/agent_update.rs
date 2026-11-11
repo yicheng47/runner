@@ -1,6 +1,4 @@
-//! The modal that runs an agent CLI's own update command in a real terminal
-//! over Settings → Agents (#533). Its PTY is an unlisted process in the
-//! session manager: no `sessions` row, so it never shows up as a chat.
+//! An explicitly opened view of a daemon-owned update task's terminal.
 
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -27,14 +25,14 @@ use crate::{theme, NativeRoot};
 
 const PANEL_WIDTH: f32 = 640.;
 const TERMINAL_HEIGHT: f32 = 320.;
-/// How long a running update must stay silent, with its cursor after a
-/// prompt rather than at the start of a line, before the footer says it is
-/// waiting for input.
-const WAITING_AFTER: Duration = Duration::from_secs(2);
-
 type CloseHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 pub(crate) struct AgentUpdateRequest {
+    pub(crate) terminal: Option<(
+        DaemonClient,
+        crate::surfaces::remote_client::transport::AttachmentLifetime,
+    )>,
+    pub(crate) task_id: String,
     pub(crate) runtime: Runtime,
     pub(crate) display_name: String,
     /// Catalog command name (`codex`), for the `codex update` label.
@@ -65,10 +63,8 @@ enum Phase {
 }
 
 impl Phase {
-    /// Stopping npm or brew halfway can break an install, so the modal only
-    /// closes once the process is gone and the outcome is known.
     fn dismissible(&self) -> bool {
-        matches!(self, Self::Succeeded { .. } | Self::Failed(_))
+        true
     }
 }
 
@@ -110,7 +106,10 @@ fn footer(
             )
         },
         Phase::Running if waiting => line(
-            crate::i18n::text("ui.waiting_for_input_in_the_terminal").into(),
+            crate::i18n::tf(
+                "agent_updates.input_warning",
+                &[("runtime", request.display_name.clone())],
+            ),
             FooterTone::Warning,
         ),
         Phase::Running => Footer {
@@ -179,6 +178,7 @@ fn footer(
             footer.lines.push((error.to_owned(), FooterTone::Danger));
         }
     }
+    footer.button = Some(crate::i18n::text("agent_updates.hide"));
     footer
 }
 
@@ -187,13 +187,6 @@ fn exit_message(exit_code: Option<i32>) -> String {
         Some(code) => crate::i18n::tf("format.exited_with_code", &[("code", (code).to_string())]),
         None => crate::i18n::text("ui.the_update_ended_without_an_exit_code").into(),
     }
-}
-
-/// A prompt leaves the cursor after its text; progress output ends its lines.
-/// Runner never reads what the CLI printed, only how long it has been quiet
-/// and where the cursor sits.
-fn waiting_for_input(quiet: Duration, cursor_column: usize) -> bool {
-    quiet >= WAITING_AFTER && cursor_column > 0
 }
 
 /// A first guess at the terminal grid; the element resizes the PTY to the
@@ -232,6 +225,7 @@ pub(crate) struct AgentUpdateDialog {
     terminal_settings_revision: u64,
     _settings: Subscription,
     _tasks: Vec<Task<()>>,
+    cancel: Option<futures::channel::oneshot::Sender<()>>,
 }
 
 impl AgentUpdateDialog {
@@ -275,24 +269,31 @@ impl AgentUpdateDialog {
             terminal_settings_revision,
             _settings: settings,
             _tasks: Vec::new(),
+            cancel: None,
         }
     }
 
-    /// Spawns the update command. Kept out of `new` so a dialog can be built
-    /// without running anything.
+    /// Attach only when the person asks to see or answer the task.
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let client = self.app_store.read(cx).client.clone();
+        let client = self
+            .request
+            .terminal
+            .as_ref()
+            .map(|(client, _)| client.clone())
+            .unwrap_or_else(|| self.app_store.read(cx).client.clone());
         let size = initial_grid(&terminal_style_for(&self.app_store.read(cx).settings, cx));
         let (wake_tx, mut wake_rx) = futures::channel::mpsc::unbounded::<()>();
         let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = wake_tx.unbounded_send(());
         });
+        let (cancel, cancelled) = futures::channel::oneshot::channel();
+        self.cancel = Some(cancel);
         let start = {
             let exit = Arc::clone(&self.exit);
             let input_error = Arc::clone(&self.input_error);
-            let runtime = self.request.runtime;
+            let id = self.request.task_id.clone();
             cx.background_spawn(async move {
-                start_update(client, runtime, size, exit, input_error, waker)
+                start_update(client, id, size, exit, input_error, waker, cancelled)
                     .map_err(|error| error.to_string())
             })
         };
@@ -357,73 +358,38 @@ impl AgentUpdateDialog {
             terminal,
             focus,
         });
-        self.phase = Phase::Running;
         self.tick(cx);
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) {
-        if self.phase == Phase::Running {
-            let exit = self.exit.lock().unwrap().take();
-            if let Some(exit_code) = exit {
-                self.finish(exit_code, cx);
-            } else if let Some(attached) = &self.terminal {
-                let quiet = attached
-                    .terminal
-                    .output_activity()
-                    .last_output_at
-                    .map_or(Duration::ZERO, |at| at.elapsed());
-                let column = attached
-                    .terminal
-                    .term
-                    .lock_unfair()
-                    .grid()
-                    .cursor
-                    .point
-                    .column
-                    .0;
-                self.waiting = waiting_for_input(quiet, column);
-            }
-        }
         cx.notify();
     }
 
-    /// The Agents pane re-probes the version on every exit; a clean exit
-    /// waits for that probe so the footer can name the new version.
-    fn finish(&mut self, exit_code: Option<i32>, cx: &mut Context<Self>) {
-        self.waiting = false;
-        self.phase = if exit_code == Some(0) {
-            Phase::Verifying
-        } else {
-            Phase::Failed(exit_message(exit_code))
+    pub(crate) fn task_id(&self) -> &str {
+        &self.request.task_id
+    }
+
+    pub(crate) fn apply_task(
+        &mut self,
+        task: &runner_core::protocol::RuntimeUpdateTask,
+        cx: &mut Context<Self>,
+    ) {
+        use runner_core::protocol::RuntimeUpdateState as State;
+        self.waiting = task.state == State::MayNeedInput;
+        self.phase = match task.state {
+            State::Succeeded => Phase::Succeeded {
+                version: task.installed_version.clone(),
+                running_sessions: task.running_sessions,
+            },
+            State::Failed | State::BrokenAfterStop => Phase::Failed(
+                task.message
+                    .clone()
+                    .unwrap_or_else(|| exit_message(task.exit_code)),
+            ),
+            State::Verifying => Phase::Verifying,
+            _ => Phase::Running,
         };
-        tracing::info!(
-            "runtime update exited: runtime={} exit_code={exit_code:?}",
-            self.request.runtime
-        );
-        let client = self.app_store.read(cx).client.clone();
-        let runtime = self.request.runtime;
-        let probe = cx.background_spawn(async move {
-            let version = client.runtime_probe_version(runtime).ok().flatten();
-            let running = client
-                .live_session_counts()
-                .ok()
-                .and_then(|counts| counts.get(&runtime).copied())
-                .unwrap_or(0);
-            (version, running)
-        });
-        cx.spawn(async move |this, cx| {
-            let (version, running_sessions) = probe.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.phase == Phase::Verifying {
-                    this.phase = Phase::Succeeded {
-                        version,
-                        running_sessions,
-                    };
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
+        cx.notify();
     }
 
     /// Closing reads this dialog to restore focus, so it waits until the
@@ -594,20 +560,23 @@ impl AgentUpdateDialog {
 
 fn start_update(
     client: DaemonClient,
-    runtime: Runtime,
+    id: String,
     size: (u16, u16),
     exit: Arc<Mutex<Option<Option<i32>>>>,
     input_error: Arc<Mutex<Option<String>>>,
     waker: Arc<dyn Fn() + Send + Sync>,
+    cancelled: futures::channel::oneshot::Receiver<()>,
 ) -> anyhow::Result<Arc<TerminalMirror>> {
     let mut events = client.subscribe();
-    let command = client.runtime_update_prepare(runtime, size)?;
-    let id = command.session_id.clone();
     let terminal = TerminalMirror::attach(client.clone(), id.clone(), Arc::clone(&waker))?;
-    client.runtime_update_run(command)?;
+    terminal.resize(size.0, size.1);
     std::thread::spawn(move || {
         futures::executor::block_on(async move {
-            while let Ok(event) = events.recv().await {
+            use futures::FutureExt;
+            let cancelled = cancelled.fuse();
+            futures::pin_mut!(cancelled);
+            loop {
+                let event = futures::select! { _ = cancelled => break, event = events.recv().fuse() => match event { Ok(event) => event, Err(_) => break } };
                 if let Some(exited) = record_terminal_event(&event, &id, &exit, &input_error) {
                     (waker)();
                     if exited {
@@ -652,6 +621,14 @@ fn record_terminal_event(
     }
 }
 
+impl Drop for AgentUpdateDialog {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
 impl Render for AgentUpdateDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = terminal_style_for(&self.app_store.read(cx).settings, cx);
@@ -666,6 +643,7 @@ impl Render for AgentUpdateDialog {
             self.request.available,
             self.request.command_label()
         );
+        let close = cx.weak_entity();
         let terminal = self.render_terminal(style.clone(), cx);
         let footer = self.render_footer(cx);
         let terminal_background = crate::terminal::element::to_hsla(style.palette.background, 1.);
@@ -683,7 +661,7 @@ impl Render for AgentUpdateDialog {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| this.dismiss(window, cx)),
             )
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
                     this.dismiss(window, cx);
@@ -734,6 +712,15 @@ impl Render for AgentUpdateDialog {
                                             .text_color(theme::muted())
                                             .child(subtitle),
                                     ),
+                            )
+                            .child(
+                                Button::new("agent-update-x", "×")
+                                    .size(ButtonSize::Sm)
+                                    .variant(ButtonVariant::Ghost)
+                                    .on_press(move |window, cx| {
+                                        let _ = close
+                                            .update(cx, |dialog, cx| dialog.dismiss(window, cx));
+                                    }),
                             ),
                     )
                     .child(
@@ -791,6 +778,8 @@ mod tests {
 
     fn request() -> AgentUpdateRequest {
         AgentUpdateRequest {
+            terminal: None,
+            task_id: "update".into(),
             runtime: Runtime::Codex,
             display_name: "Codex".into(),
             command: "codex".into(),
@@ -808,18 +797,18 @@ mod tests {
             Footer {
                 lines: vec![("Running codex update…".into(), FooterTone::Muted)],
                 busy: true,
-                button: None,
+                button: Some(crate::i18n::text("agent_updates.hide")),
             }
         );
         assert_eq!(
             footer(&Phase::Running, true, &request, None),
             Footer {
                 lines: vec![(
-                    "Waiting for input in the terminal.".into(),
+                    "Codex may be waiting for your input. Typing goes to the installer.".into(),
                     FooterTone::Warning
                 )],
                 busy: false,
-                button: None,
+                button: Some(crate::i18n::text("agent_updates.hide")),
             }
         );
         assert_eq!(
@@ -835,7 +824,7 @@ mod tests {
             Footer {
                 lines: vec![("Codex is now 0.155.0.".into(), FooterTone::Text)],
                 busy: false,
-                button: Some("Done"),
+                button: Some(crate::i18n::text("agent_updates.hide")),
             }
         );
         assert_eq!(
@@ -867,22 +856,22 @@ mod tests {
             Footer {
                 lines: vec![("Exited with code 243.".into(), FooterTone::Danger)],
                 busy: false,
-                button: Some("Close"),
+                button: Some(crate::i18n::text("agent_updates.hide")),
             }
         );
         assert!(footer(&Phase::Starting, false, &request, None)
             .button
-            .is_none());
+            .is_some());
         assert!(footer(&Phase::Verifying, false, &request, None)
             .button
-            .is_none());
+            .is_some());
     }
 
     #[test]
-    fn only_a_finished_update_can_be_dismissed() {
-        assert!(!Phase::Starting.dismissible());
-        assert!(!Phase::Running.dismissible());
-        assert!(!Phase::Verifying.dismissible());
+    fn every_update_phase_can_be_hidden() {
+        assert!(Phase::Starting.dismissible());
+        assert!(Phase::Running.dismissible());
+        assert!(Phase::Verifying.dismissible());
         assert!(Phase::Succeeded {
             version: None,
             running_sessions: 0
@@ -955,7 +944,7 @@ mod tests {
             .lines
             .iter()
             .any(|(text, tone)| text.contains("session not found") && *tone == FooterTone::Danger));
-        assert!(footer.button.is_none());
+        assert_eq!(footer.button, Some(crate::i18n::text("agent_updates.hide")));
         assert!(exit.lock().unwrap().is_none());
     }
 
@@ -1007,9 +996,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn escape_hides_a_prompting_update_with_its_attached_terminal_focused() {
+        use gpui::{px, size, TestAppContext, VisualTestContext};
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        let core = cx.update(|cx| store.read(cx).test_core.clone());
+        let client = runner_daemon::daemon::InProcessTransport::client(core.clone());
+        let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("update", (80, 24), &core.db, &events)
+            .unwrap();
+        let mirror = TerminalMirror::attach(client, "update".into(), Arc::new(|| {})).unwrap();
+        let closes = Rc::new(std::cell::Cell::new(0));
+        let counter = Rc::clone(&closes);
+        let window = cx.add_window(|window, cx| {
+            let close: CloseHandler = Rc::new(move |_, _| counter.set(counter.get() + 1));
+            let dialog = cx.new(|cx| AgentUpdateDialog::new(request(), store, close, window, cx));
+            dialog.update(cx, |dialog, cx| {
+                dialog.phase = Phase::Running;
+                dialog.waiting = true;
+                dialog.started(Ok(mirror), window, cx);
+            });
+            Host(dialog)
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |host, window, cx| {
+                assert!(host
+                    .0
+                    .read(cx)
+                    .terminal
+                    .as_ref()
+                    .unwrap()
+                    .focus
+                    .is_focused(window));
+            })
+            .unwrap();
+
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(closes.get(), 1);
+        window
+            .read_with(&visual, |host, cx| {
+                let dialog = host.0.read(cx);
+                assert_eq!(dialog.phase, Phase::Running);
+                assert!(dialog.waiting);
+                assert!(dialog.terminal.is_some());
+                assert!(dialog.input_error.lock().unwrap().is_none());
+            })
+            .unwrap();
+    }
+
     /// Builds the dialog without `start`, so no update process ever runs.
     #[test]
-    fn running_update_ignores_escape_and_the_scrim_and_a_finished_one_closes() {
+    fn running_and_finished_updates_can_hide_with_escape_scrim_and_button() {
         use gpui::{point, px, size, Modifiers, TestAppContext, VisualTestContext};
         let temp = tempfile::tempdir().unwrap();
         let mut cx = TestAppContext::single();
@@ -1050,7 +1095,7 @@ mod tests {
         window.simulate_keystrokes("escape");
         window.simulate_click(point(px(8.), px(8.)), Modifiers::default());
         window.run_until_parked();
-        assert_eq!(closes.get(), 0);
+        assert_eq!(closes.get(), 2);
 
         host.update(&mut window, |dialog, cx| {
             dialog.phase = Phase::Failed(exit_message(Some(1)));
@@ -1059,10 +1104,10 @@ mod tests {
         window.run_until_parked();
         window.simulate_click(point(px(8.), px(8.)), Modifiers::default());
         window.run_until_parked();
-        assert_eq!(closes.get(), 1);
+        assert_eq!(closes.get(), 3);
         window.simulate_keystrokes("escape");
         window.run_until_parked();
-        assert_eq!(closes.get(), 2);
+        assert_eq!(closes.get(), 4);
 
         host.update(&mut window, |dialog, cx| {
             dialog.phase = Phase::Succeeded {
@@ -1075,14 +1120,6 @@ mod tests {
         let done = window.debug_bounds("AGENT_UPDATE_CLOSE").unwrap();
         window.simulate_click(done.center(), Modifiers::default());
         window.run_until_parked();
-        assert_eq!(closes.get(), 3);
-    }
-
-    #[test]
-    fn waiting_needs_silence_and_a_cursor_after_a_prompt() {
-        assert!(!waiting_for_input(Duration::from_millis(500), 10));
-        assert!(!waiting_for_input(Duration::from_secs(5), 0));
-        assert!(waiting_for_input(Duration::from_secs(2), 10));
-        assert_eq!(exit_message(None), "The update ended without an exit code.");
+        assert_eq!(closes.get(), 5);
     }
 }

@@ -324,6 +324,12 @@ impl SessionManager {
         model.set_palette(*self.terminal_palette.lock().unwrap());
         Ok(model)
     }
+    pub(crate) fn terminal_output_sequence(&self, id: &str) -> u64 {
+        self.session_state(id)
+            .map(|state| state.lock().unwrap().output_seq)
+            .unwrap_or(0)
+    }
+
     pub fn terminal_model(&self, id: &str) -> Result<Arc<TerminalModel>> {
         let state = self
             .session_state(id)

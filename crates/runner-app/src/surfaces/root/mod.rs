@@ -312,6 +312,7 @@ pub(crate) struct NativeRoot {
     pub(crate) tab_landed_at: Option<Instant>,
     pub(crate) update_popover: surfaces::update_ui::UpdatePopoverState,
     pub(crate) quit_dialog: Option<Entity<surfaces::quit_dialog::QuitDialog>>,
+    pub(crate) agent_tasks: surfaces::background_tasks::BackgroundTasks,
     pub(crate) agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     pub(crate) fork_confirm: Option<ForkConfirm>,
     pub(crate) forking_sessions: HashMap<String, String>,
@@ -333,7 +334,7 @@ pub(crate) struct NativeRoot {
     pub(crate) usage_anchor: Option<Bounds<Pixels>>,
     pub(crate) usage_installed: Vec<runner_core::protocol::model::Runtime>,
     pub(crate) usage_checked: Option<Vec<runner_core::Runtime>>,
-    /// Agents with a newer version on npm.
+    /// Enabled agents with an update dot the sidebar Settings gear.
     pub(crate) agent_updates: Vec<runner_core::protocol::model::Runtime>,
     pub(crate) runtime_navigation_history: Vec<RuntimeLocation>,
     pub(crate) runtime_navigation_index: Option<usize>,

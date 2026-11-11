@@ -315,7 +315,7 @@ async fn a_slow_action_times_out_without_reconnecting_and_its_late_reply_is_igno
     tokio::time::pause();
     keep_alive(&fixture, 35).await;
     assert_eq!(
-        action.await.unwrap().unwrap_err(),
+        action.await.unwrap().unwrap_err().message,
         "Remote request timed out"
     );
     assert!(route.ready.load(Ordering::Acquire));

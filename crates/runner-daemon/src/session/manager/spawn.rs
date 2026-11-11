@@ -22,7 +22,7 @@ impl SessionManager {
         spec: SpawnSpec,
         pool: &DbPool,
         events: Arc<dyn SessionEvents>,
-    ) -> Result<()> {
+    ) -> Result<std::sync::mpsc::Receiver<Option<i32>>> {
         let session_id = spec.session_id.clone();
         let initial_size = spec.initial_size;
         let spawning = self.shutdown.read().unwrap();
@@ -50,6 +50,7 @@ impl SessionManager {
             pool,
             &events,
         );
+        let (completed, completion) = std::sync::mpsc::channel();
         let manager = Arc::clone(self);
         let forwarder_id = session_id.clone();
         let forwarder = thread::spawn(move || {
@@ -75,17 +76,26 @@ impl SessionManager {
             let _ = manager.runtime.stop(&rt_session);
             manager.take_killed(&forwarder_id);
             let _ = manager.forget_runtime_handle(&forwarder_id, &rt_session);
-            // No row keeps this id's sequence alive for a respawn, so drop
-            // its state outright instead of leaving an entry per update.
-            manager.sessions.lock().unwrap().remove(&forwarder_id);
+            // Finished update tasks keep their terminal until dismissed.
+            let retained = manager
+                .runtime_updates
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .any(|task| task.id == forwarder_id);
+            if !retained {
+                manager.sessions.lock().unwrap().remove(&forwarder_id);
+            }
             events.exit(&ExitEvent {
                 session_id: forwarder_id,
                 mission_id: None,
                 exit_code,
                 success: exit_code == Some(0),
             });
+            let _ = completed.send(exit_code);
         });
         self.install_forwarder(&session_id, forwarder);
-        Ok(())
+        Ok(completion)
     }
 }
