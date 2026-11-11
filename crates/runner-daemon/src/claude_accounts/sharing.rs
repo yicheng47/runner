@@ -463,6 +463,39 @@ pub(crate) fn config_env(
     env
 }
 
+pub(crate) fn account_config_env(
+    pool: &db::DbPool,
+    env: BTreeMap<String, String>,
+    id: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let Some(id) = id else {
+        return Ok(config_env(pool, env));
+    };
+    let state = super::load(pool)?;
+    let account = state
+        .accounts
+        .iter()
+        .find(|account| account.id == id)
+        .ok_or_else(|| Error::msg("unknown Claude Code account"))?;
+    let account = if state.sharing.contains_key(id) {
+        state
+            .accounts
+            .iter()
+            .find(|account| account.id == state.main_id)
+            .ok_or_else(|| Error::msg("missing main Claude Code account"))?
+    } else {
+        account
+    };
+    let mut env = env;
+    env.insert(MAIN_FOLDER.into(), account.folder.clone());
+    env.insert(
+        MAIN_MCP.into(),
+        mcp_path(account).to_string_lossy().into_owned(),
+    );
+    env.insert(MAIN_NATIVE.into(), account.native.to_string());
+    Ok(env)
+}
+
 fn object(path: &Path) -> Result<Value> {
     let value = match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)?,
@@ -700,6 +733,51 @@ mod tests {
         fs::remove_file(path).unwrap();
         #[cfg(windows)]
         fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
+    fn catalog_account_scope_reads_own_folder_and_sharing_reads_main() {
+        let (temp, mut state) = fixture();
+        let main = PathBuf::from(&state.accounts[0].folder);
+        let own = PathBuf::from(&state.accounts[1].folder);
+        for (folder, name) in [(&main, "main-skill"), (&own, "own-skill")] {
+            fs::create_dir_all(folder.join("skills").join(name)).unwrap();
+            fs::write(
+                folder.join("skills").join(name).join("SKILL.md"),
+                format!("---\nname: {name}\n---\n# Skill"),
+            )
+            .unwrap();
+        }
+        let pool = save(&state);
+        let env = account_config_env(&pool, Default::default(), Some("work")).unwrap();
+        let catalog =
+            crate::skills::skill_catalog_with_env(Runtime::ClaudeCode, temp.path(), None, &env)
+                .unwrap();
+        assert_eq!(catalog.roots, [own.join("skills")]);
+        assert_eq!(catalog.entries[0].name, "own-skill");
+        crate::runtimes::adapter(Runtime::ClaudeCode)
+            .toggle_skill_with_env(temp.path(), &catalog.entries[0].path, false, &env)
+            .unwrap()
+            .unwrap();
+        assert!(fs::read_to_string(own.join("settings.json"))
+            .unwrap()
+            .contains("own-skill"));
+        assert!(!fs::read_to_string(main.join("settings.json"))
+            .unwrap()
+            .contains("own-skill"));
+        start(&mut state, "work").unwrap();
+        let pool = save(&state);
+        let env = account_config_env(&pool, Default::default(), Some("work")).unwrap();
+        let catalog =
+            crate::skills::skill_catalog_with_env(Runtime::ClaudeCode, temp.path(), None, &env)
+                .unwrap();
+        assert_eq!(catalog.roots, [main.join("skills")]);
+        assert_eq!(catalog.entries[0].name, "main-skill");
+        assert!(account_config_env(&pool, Default::default(), Some("missing")).is_err());
+        assert_eq!(
+            account_config_env(&pool, Default::default(), None).unwrap(),
+            config_env(&pool, Default::default())
+        );
     }
 
     #[test]

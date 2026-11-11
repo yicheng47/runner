@@ -1666,3 +1666,163 @@ fn linux_pairing_uses_desktop_delivery_and_an_actionable_toast_with_unknown_perm
     visual.run_until_parked();
     assert_eq!(cx.shown_system_notifications().len(), 1);
 }
+
+#[test]
+fn usage_alerts_deduplicate_each_account_window_and_reset_and_hide_five_hours() {
+    let now = chrono::Utc::now();
+    let reset = now + chrono::TimeDelta::hours(5);
+    let usage = |percent, reset| runner_core::protocol::AgentUsage {
+        windows: vec![
+            runner_core::protocol::UsageWindow {
+                name: "Week".into(),
+                used_percent: percent,
+                resets_at: Some(reset),
+            },
+            runner_core::protocol::UsageWindow {
+                name: "5 hours".into(),
+                used_percent: percent,
+                resets_at: Some(reset),
+            },
+        ],
+        updated_at: now,
+    };
+    let mut snapshot = runner_core::protocol::UsageSnapshot::default();
+    snapshot.runtimes.insert(
+        Runtime::ClaudeCode,
+        runner_core::protocol::RuntimeUsage {
+            value: Some(usage(79., reset)),
+            error: None,
+        },
+    );
+    let mut settings = crate::app_settings::AppSettings::default();
+    let mut alerts = UsageAlerts::default();
+    assert!(alerts
+        .collect(&snapshot, "active", &settings, now)
+        .is_empty());
+    snapshot
+        .runtimes
+        .get_mut(&Runtime::ClaudeCode)
+        .unwrap()
+        .value = Some(usage(80., reset));
+    settings.usage.five_hour = false;
+    let first = alerts.collect(&snapshot, "active", &settings, now);
+    assert_eq!(first.len(), 1);
+    assert!(first[0].tag.contains("active:Week"));
+    assert!(alerts
+        .collect(&snapshot, "active", &settings, now)
+        .is_empty());
+    settings.usage.five_hour = true;
+    assert_eq!(alerts.collect(&snapshot, "active", &settings, now).len(), 1);
+    assert_eq!(
+        alerts
+            .collect(&snapshot, "other-active", &settings, now)
+            .len(),
+        2
+    );
+    assert!(alerts
+        .collect(&snapshot, "other-active", &settings, now)
+        .is_empty());
+    snapshot
+        .runtimes
+        .get_mut(&Runtime::ClaudeCode)
+        .unwrap()
+        .value = Some(usage(90., reset + chrono::TimeDelta::days(7)));
+    assert_eq!(alerts.collect(&snapshot, "active", &settings, now).len(), 2);
+    settings.notifications.usage.near_limit = false;
+    assert!(alerts
+        .collect(&snapshot, "third-active", &settings, now)
+        .is_empty());
+}
+
+#[test]
+fn usage_alert_periods_survive_restart_tolerate_reset_jitter_and_prune_expired() {
+    let now = chrono::Utc::now();
+    let reset = now + chrono::TimeDelta::days(7);
+    let mut settings = crate::app_settings::AppSettings::default();
+    let snapshot = |percent, reset| {
+        let mut snapshot = runner_core::protocol::UsageSnapshot::default();
+        snapshot.runtimes.insert(
+            Runtime::Codex,
+            runner_core::protocol::RuntimeUsage {
+                value: Some(runner_core::protocol::AgentUsage {
+                    windows: vec![runner_core::protocol::UsageWindow {
+                        name: "Week".into(),
+                        used_percent: percent,
+                        resets_at: reset,
+                    }],
+                    updated_at: now,
+                }),
+                error: None,
+            },
+        );
+        snapshot
+    };
+    let mut alerts = UsageAlerts::default();
+    assert_eq!(
+        alerts
+            .collect(&snapshot(81., Some(reset)), "", &settings, now)
+            .len(),
+        1
+    );
+    settings.notifications.usage.alerted = alerts.sent;
+    let saved = serde_json::to_string(&settings).unwrap();
+    let restored: crate::app_settings::AppSettings = serde_json::from_str(&saved).unwrap();
+    let mut alerts = UsageAlerts {
+        sent: restored.notifications.usage.alerted.clone(),
+    };
+    for delta in [
+        chrono::TimeDelta::milliseconds(200),
+        chrono::TimeDelta::seconds(30),
+    ] {
+        assert!(alerts
+            .collect(&snapshot(85., Some(reset + delta)), "", &restored, now)
+            .is_empty());
+    }
+    assert!(alerts
+        .collect(
+            &snapshot(85., Some(reset + chrono::TimeDelta::seconds(30))),
+            "",
+            &restored,
+            reset + chrono::TimeDelta::seconds(5)
+        )
+        .is_empty());
+    assert_eq!(
+        alerts
+            .collect(
+                &snapshot(85., Some(reset + chrono::TimeDelta::days(7))),
+                "",
+                &restored,
+                now
+            )
+            .len(),
+        1
+    );
+    assert_eq!(alerts.sent.len(), 1);
+    assert!(alerts
+        .collect(
+            &snapshot(0., None),
+            "",
+            &restored,
+            reset + chrono::TimeDelta::days(8)
+        )
+        .is_empty());
+    assert!(alerts.sent.is_empty());
+    assert_eq!(
+        alerts
+            .collect(&snapshot(85., None), "", &restored, now)
+            .len(),
+        1
+    );
+    assert!(alerts
+        .collect(&snapshot(86., None), "", &restored, now)
+        .is_empty());
+    assert!(alerts
+        .collect(&snapshot(0., None), "", &restored, now)
+        .is_empty());
+    assert_eq!(
+        alerts
+            .collect(&snapshot(85., None), "", &restored, now)
+            .len(),
+        1
+    );
+}

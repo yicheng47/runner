@@ -299,6 +299,7 @@ impl FileLinkEditor {
 pub struct NotificationSettings {
     pub chats: ChatNotifications,
     pub missions: MissionNotifications,
+    pub usage: UsageNotifications,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -330,9 +331,68 @@ pub struct MissionNotifications {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct UsageNotifications {
+    pub near_limit: bool,
+    pub threshold: u8,
+    pub alerted: Vec<UsageAlertPeriod>,
+}
+impl Default for UsageNotifications {
+    fn default() -> Self {
+        Self {
+            near_limit: true,
+            threshold: 80,
+            alerted: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAlertPeriod {
+    pub runtime: runner_core::Runtime,
+    pub account: String,
+    pub window: String,
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UsageSettings {
+    pub sidebar: bool,
+    pub codex: bool,
+    pub claude_code: bool,
+    pub five_hour: bool,
+}
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self {
+            sidebar: true,
+            codex: true,
+            claude_code: true,
+            five_hour: true,
+        }
+    }
+}
+impl UsageSettings {
+    pub fn badge(&self, runtime: runner_core::Runtime) -> bool {
+        self.sidebar
+            && match runtime {
+                runner_core::Runtime::Codex => self.codex,
+                runner_core::Runtime::ClaudeCode => self.claude_code,
+                _ => false,
+            }
+    }
+    pub fn checks(&self, runtime: runner_core::Runtime, alert: bool) -> bool {
+        self.badge(runtime) || alert
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
     pub language: runner_app::i18n::Language,
     pub notifications: NotificationSettings,
+    pub usage: UsageSettings,
     pub app_theme: ThemeIntent,
     pub window_material: runner_app::appearance::WindowMaterial,
     pub light_app_theme: LightTheme,
@@ -410,6 +470,7 @@ impl Default for AppSettings {
         Self {
             language: runner_app::i18n::Language::System,
             notifications: NotificationSettings::default(),
+            usage: UsageSettings::default(),
             app_theme: ThemeIntent::Auto,
             window_material: Default::default(),
             light_app_theme: LightTheme::RunnerLight,
@@ -1667,5 +1728,42 @@ mod notification_tests {
         assert!(json["notifications"]["missions"].get("enabled").is_none());
         let loaded: AppSettings = serde_json::from_str(&saved).unwrap();
         assert_eq!(loaded.notifications, settings.notifications);
+    }
+}
+
+#[test]
+fn usage_preferences_defaults_roundtrip_and_fetching_rules() {
+    let defaults: AppSettings = serde_json::from_str("{}").unwrap();
+    assert!(
+        defaults.usage.sidebar
+            && defaults.usage.codex
+            && defaults.usage.claude_code
+            && defaults.usage.five_hour
+    );
+    assert!(defaults.notifications.usage.near_limit);
+    assert_eq!(defaults.notifications.usage.threshold, 80);
+    let mut settings = defaults;
+    settings.usage.sidebar = false;
+    settings.usage.codex = false;
+    settings.usage.five_hour = false;
+    settings.notifications.usage.near_limit = false;
+    settings.notifications.usage.threshold = 60;
+    let saved: AppSettings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    assert_eq!(saved, settings);
+    for badges in [false, true] {
+        for agent in [false, true] {
+            for alert in [false, true] {
+                let usage = UsageSettings {
+                    sidebar: badges,
+                    codex: agent,
+                    claude_code: agent,
+                    ..Default::default()
+                };
+                for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+                    assert_eq!(usage.checks(runtime, alert), (badges && agent) || alert);
+                }
+            }
+        }
     }
 }

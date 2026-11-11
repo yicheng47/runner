@@ -2,6 +2,7 @@ mod actions;
 mod notices;
 mod sidebar;
 mod usage;
+pub(crate) use sidebar::{sidebar_footer_contents, sidebar_footer_divider};
 
 pub(crate) use usage::*;
 

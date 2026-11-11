@@ -354,8 +354,109 @@ fn visible(cx: &mut App) -> Visible {
     Visible::default()
 }
 
+#[derive(Default)]
+struct UsageAlerts {
+    sent: Vec<crate::app_settings::UsageAlertPeriod>,
+}
+impl UsageAlerts {
+    fn collect(
+        &mut self,
+        snapshot: &runner_core::protocol::UsageSnapshot,
+        active: &str,
+        settings: &crate::app_settings::AppSettings,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Vec<SystemNotification> {
+        const RESET_TOLERANCE_SECONDS: i64 = 60;
+        self.sent.retain(|period| {
+            period
+                .resets_at
+                .is_none_or(|reset| reset + RESET_TOLERANCE_SECONDS > now.timestamp())
+        });
+        if !settings.notifications.usage.near_limit {
+            return Vec::new();
+        }
+        let mut notifications = Vec::new();
+        for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+            if !settings.model_runtimes().contains(&runtime) {
+                continue;
+            }
+            let Some(usage) = snapshot.get(runtime) else {
+                continue;
+            };
+            for window in &usage.windows {
+                let account = if runtime == Runtime::ClaudeCode {
+                    active
+                } else {
+                    ""
+                };
+                let same_window = |period: &crate::app_settings::UsageAlertPeriod| {
+                    period.runtime == runtime
+                        && period.account == account
+                        && period.window == window.name
+                };
+                if window.used_percent < f64::from(settings.notifications.usage.threshold) {
+                    self.sent
+                        .retain(|period| !same_window(period) || period.resets_at.is_some());
+                    continue;
+                }
+                if (!settings.usage.five_hour
+                    && crate::surfaces::app_shell::is_five_hour(&window.name))
+                    || window.resets_at.is_some_and(|reset| reset <= now)
+                {
+                    continue;
+                }
+                let reset = window.resets_at.map(|reset| reset.timestamp());
+                if let Some(previous) = self.sent.iter_mut().find(|period| same_window(period)) {
+                    match (previous.resets_at, reset) {
+                        (Some(previous), Some(next))
+                            if next > previous + RESET_TOLERANCE_SECONDS => {}
+                        (None, Some(next)) => {
+                            previous.resets_at = Some(next);
+                            continue;
+                        }
+                        _ => continue,
+                    }
+                    previous.resets_at = reset;
+                } else {
+                    self.sent.push(crate::app_settings::UsageAlertPeriod {
+                        runtime,
+                        account: account.into(),
+                        window: window.name.clone(),
+                        resets_at: reset,
+                    });
+                }
+                notifications.push(SystemNotification {
+                    tag: format!(
+                        "usage:{}:{account}:{}:{}",
+                        runtime.key(),
+                        window.name,
+                        reset.unwrap_or_default()
+                    )
+                    .into(),
+                    title: crate::i18n::text("usage.near_limit").into(),
+                    body: crate::i18n::tf(
+                        "usage.alert_body",
+                        &[
+                            ("agent", runtime.display_name().to_owned()),
+                            (
+                                "window",
+                                crate::surfaces::app_shell::usage_window_name(&window.name),
+                            ),
+                            ("percent", format!("{:.0}", window.used_percent)),
+                        ],
+                    )
+                    .into(),
+                    actions: Vec::new(),
+                });
+            }
+        }
+        notifications
+    }
+}
+
 struct NotificationController {
     store: Entity<AppStore>,
+    usage_alerts: UsageAlerts,
     revisions: StoreRevisions,
     previous: Option<BTreeMap<String, AgentStatus>>,
     previous_missions: BTreeMap<String, Option<MissionActivityState>>,
@@ -419,6 +520,42 @@ impl NotificationController {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        let system_notification = true;
+        #[cfg(not(target_os = "linux"))]
+        let system_notification = self.permission == Permission::Allowed;
+        let sent = {
+            let store = self.store.read(cx);
+            if system_notification {
+                let previous = self.usage_alerts.sent.clone();
+                for notification in self.usage_alerts.collect(
+                    &store.usage,
+                    &store.claude_accounts.active_id,
+                    &store.settings,
+                    chrono::Utc::now(),
+                ) {
+                    cx.show_system_notification(notification);
+                }
+                (self.usage_alerts.sent != previous).then(|| self.usage_alerts.sent.clone())
+            } else {
+                None
+            }
+        };
+        if let Some(sent) = sent {
+            let store = self.store.clone();
+            cx.defer(move |cx| {
+                store.update(cx, |store, cx| {
+                    store.update_settings(
+                        |settings| {
+                            settings.notifications.usage.alerted = sent;
+                            true
+                        },
+                        true,
+                        cx,
+                    );
+                });
+            });
+        }
         let store = self.store.read(cx);
         let revisions = store.revisions;
         if self.revisions == revisions {
@@ -676,6 +813,9 @@ pub(crate) fn install(cx: &mut App) {
         let statuses = status_snapshot(snapshot);
         NotificationController {
             revisions: snapshot.revisions,
+            usage_alerts: UsageAlerts {
+                sent: snapshot.settings.notifications.usage.alerted.clone(),
+            },
             previous: Some(statuses),
             previous_missions: mission_snapshot(snapshot),
             posted: BTreeMap::new(),
@@ -892,6 +1032,11 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
     if let Some(window) = window {
         let _ = window.update(cx, |root, window, cx| {
             window.activate_window();
+            if tag.starts_with("usage:") {
+                root.open_this_computer_settings(Some("usage"), window, cx);
+                return;
+            }
+
             if target.is_some() && root.remote_client.is_active() {
                 root.remote_client.remember_remote_selection(cx);
                 root.remote_client.disconnect();

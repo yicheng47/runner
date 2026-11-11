@@ -73,9 +73,10 @@ impl AgentsPane {
             } else {
                 self.render_not_installed_page(runtime, cx)
             })
-            .child(self.render_launch(runtime, cx))
+            .children((self.tab == AgentTab::General).then(|| self.render_launch(runtime, cx)))
             .children(
-                (installed && runtime.name == Runtime::ClaudeCode).then(|| self.accounts.clone()),
+                (self.tab == AgentTab::General && installed && runtime.name == Runtime::ClaudeCode)
+                    .then(|| self.accounts.clone()),
             )
             .into_any_element()
     }
@@ -396,85 +397,158 @@ impl AgentsPane {
                             .child(runtime.display_name.clone()),
                     ),
             )
-            .children(
-                catalog
-                    .filter(|entry| !entry.description.is_empty() || !entry.install_url.is_empty())
-                    .map(|entry| {
-                        let description = (!entry.description.is_empty()).then(|| {
-                            runtime_section_caption(
-                                runner_app::ui::select::runtime_description(
-                                    entry.name,
-                                    &entry.description,
+            .children(self.render_tabs(name, cx))
+            .when(self.tab == AgentTab::Skills, |page| {
+                page.child(self.skills.clone())
+            })
+            .when(self.tab == AgentTab::Mcp, |page| {
+                page.child(self.mcp.clone())
+            })
+            .when(self.tab == AgentTab::General, |page| {
+                page.children(
+                    catalog
+                        .filter(|entry| {
+                            !entry.description.is_empty() || !entry.install_url.is_empty()
+                        })
+                        .map(|entry| {
+                            let description = (!entry.description.is_empty()).then(|| {
+                                runtime_section_caption(
+                                    runner_app::ui::select::runtime_description(
+                                        entry.name,
+                                        &entry.description,
+                                    )
+                                    .resolve(),
                                 )
-                                .resolve(),
-                            )
-                            .debug_selector(|| format!("AGENT_DESCRIPTION_{}", runtime.name))
-                        });
-                        let install = (!entry.install_url.is_empty()).then(|| {
-                            let url = entry.install_url.clone();
+                                .debug_selector(|| format!("AGENT_DESCRIPTION_{}", runtime.name))
+                            });
+                            let install = (!entry.install_url.is_empty()).then(|| {
+                                let url = entry.install_url.clone();
+                                div()
+                                    .debug_selector(|| format!("AGENT_INSTALL_{}", runtime.name))
+                                    .child(
+                                        Button::new(
+                                            SharedString::from(format!(
+                                                "agent-install-{}",
+                                                runtime.name
+                                            )),
+                                            crate::i18n::text("ui.install_instructions"),
+                                        )
+                                        .icon("external-link.svg")
+                                        .size(ButtonSize::Sm)
+                                        .variant(ButtonVariant::Ghost)
+                                        .tooltip(entry.install_url.clone())
+                                        .on_press(move |_, cx| cx.open_url(&url)),
+                                    )
+                            });
                             div()
-                                .debug_selector(|| format!("AGENT_INSTALL_{}", runtime.name))
+                                .flex()
+                                .items_center()
+                                .flex_wrap()
+                                .gap_2()
+                                .children(description)
+                                .children(install)
+                        }),
+                )
+                .child(runtime_section_header(
+                    crate::i18n::text("ui.executable"),
+                    None,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .debug_selector(|| format!("AGENT_EXECUTABLE_{name}"))
+                                .min_w_0()
+                                .flex_1()
+                                .children(self.render_browse_field(name, cx)),
+                        )
+                        .children(runtime.override_path.is_some().then(|| {
+                            div()
+                                .debug_selector(|| format!("AGENT_RESET_{name}"))
                                 .child(
                                     Button::new(
-                                        SharedString::from(format!(
-                                            "agent-install-{}",
-                                            runtime.name
-                                        )),
-                                        crate::i18n::text("ui.install_instructions"),
+                                        SharedString::from(format!("agent-reset-{name}")),
+                                        crate::i18n::text("ui.reset"),
                                     )
-                                    .icon("external-link.svg")
-                                    .size(ButtonSize::Sm)
                                     .variant(ButtonVariant::Ghost)
-                                    .tooltip(entry.install_url.clone())
-                                    .on_press(move |_, cx| cx.open_url(&url)),
+                                    .disabled(self.saving.contains(&name))
+                                    .on_press(move |_, cx| {
+                                        pane.update(cx, |this, cx| this.reset_override(name, cx));
+                                    }),
                                 )
-                        });
-                        div()
-                            .flex()
-                            .items_center()
-                            .flex_wrap()
-                            .gap_2()
-                            .children(description)
-                            .children(install)
-                    }),
-            )
-            .child(runtime_section_header(
-                crate::i18n::text("ui.executable"),
-                None,
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .debug_selector(|| format!("AGENT_EXECUTABLE_{name}"))
-                            .min_w_0()
-                            .flex_1()
-                            .children(self.render_browse_field(name, cx)),
-                    )
-                    .children(runtime.override_path.is_some().then(|| {
-                        div()
-                            .debug_selector(|| format!("AGENT_RESET_{name}"))
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("agent-reset-{name}")),
-                                    crate::i18n::text("ui.reset"),
-                                )
-                                .variant(ButtonVariant::Ghost)
-                                .disabled(self.saving.contains(&name))
-                                .on_press(move |_, cx| {
-                                    pane.update(cx, |this, cx| this.reset_override(name, cx));
-                                }),
-                            )
-                    })),
-            )
-            .children(validation.map(|message| {
-                runtime_caption(message.to_owned(), true)
-                    .debug_selector(|| format!("AGENT_VALIDATION_{}", runtime.name))
-            }))
+                        })),
+                )
+                .children(validation.map(|message| {
+                    runtime_caption(message.to_owned(), true)
+                        .debug_selector(|| format!("AGENT_VALIDATION_{}", runtime.name))
+                }))
+            })
             .into_any_element()
+    }
+
+    fn render_tabs(&self, runtime: Runtime, cx: &Context<Self>) -> Option<AnyElement> {
+        let tabs: Vec<_> = [AgentTab::General, AgentTab::Skills, AgentTab::Mcp]
+            .into_iter()
+            .filter(|tab| supports_tab(runtime, *tab))
+            .collect();
+        if tabs.len() == 1 {
+            return None;
+        }
+        Some(
+            div()
+                .flex()
+                .gap_4()
+                .border_b_1()
+                .border_color(theme::border())
+                .children(tabs.into_iter().map(|tab| {
+                    let count = match tab {
+                        AgentTab::Skills => Some(self.skills.read(cx).count()),
+                        AgentTab::Mcp => Some(self.mcp.read(cx).count(cx)),
+                        _ => None,
+                    };
+                    let label = match tab {
+                        AgentTab::General => crate::i18n::text("ui.general"),
+                        AgentTab::Skills => crate::i18n::text("ui.skills"),
+                        AgentTab::Mcp => "MCP",
+                    };
+                    let owner = cx.entity();
+                    let key_owner = owner.clone();
+                    div()
+                        .id(gpui::SharedString::from(format!("agent-tab-{tab:?}")))
+                        .debug_selector(move || format!("AGENT_TAB_{tab:?}"))
+                        .tab_index(0)
+                        .pb_2()
+                        .cursor_pointer()
+                        .text_size(theme::text_body())
+                        .text_color(if self.tab == tab {
+                            theme::text()
+                        } else {
+                            theme::muted()
+                        })
+                        .when(self.tab == tab, |tab| {
+                            tab.border_b_2().border_color(theme::accent())
+                        })
+                        .child(
+                            count.map_or_else(
+                                || label.to_owned(),
+                                |count| format!("{label} {count}"),
+                            ),
+                        )
+                        .on_click(move |_, _, cx| {
+                            owner.update(cx, |this, cx| this.select_tab(tab, cx))
+                        })
+                        .on_key_down(move |event: &gpui::KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                cx.stop_propagation();
+                                key_owner.update(cx, |this, cx| this.select_tab(tab, cx));
+                            }
+                        })
+                }))
+                .into_any_element(),
+        )
     }
 
     pub(super) fn render_runtime_page(
@@ -571,71 +645,81 @@ impl AgentsPane {
                             .debug_selector(|| format!("AGENT_UPDATE_CAPTION_{name}"))
                     })),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(runtime_section_header(
-                        crate::i18n::text("ui.executable"),
-                        None,
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .debug_selector(|| format!("AGENT_EXECUTABLE_{name}"))
-                                    .min_w_0()
-                                    .flex_1()
-                                    .children(self.render_browse_field(name, cx)),
-                            )
-                            .children(presentation.show_reset.then(|| {
-                                Button::new(
-                                    SharedString::from(format!("agent-reset-{name}")),
-                                    crate::i18n::text("ui.reset"),
+            .children(self.render_tabs(name, cx))
+            .when(self.tab == AgentTab::Skills, |page| {
+                page.child(self.skills.clone())
+            })
+            .when(self.tab == AgentTab::Mcp, |page| {
+                page.child(self.mcp.clone())
+            })
+            .when(self.tab == AgentTab::General, |page| {
+                page.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(runtime_section_header(
+                            crate::i18n::text("ui.executable"),
+                            None,
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .debug_selector(|| format!("AGENT_EXECUTABLE_{name}"))
+                                        .min_w_0()
+                                        .flex_1()
+                                        .children(self.render_browse_field(name, cx)),
                                 )
-                                .variant(ButtonVariant::Ghost)
-                                .disabled(saving)
-                                .on_press(move |_, cx| {
-                                    reset_pane.update(cx, |this, cx| this.reset_override(name, cx));
-                                })
-                            })),
-                    )
-                    .child(runtime_section_caption(crate::i18n::text(
-                        "ui.agent_executable_hint",
-                    ))),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(runtime_section_header(
-                        crate::i18n::text("ui.defaults"),
-                        None,
-                    ))
-                    .child(
-                        runtime_property_line(name, "MODEL", crate::i18n::text("ui.model"))
-                            .child(runtime_property_value(runtime_default_value(
-                                runtime.default_model.as_deref(),
-                            )))
-                            .child(div().text_color(theme::muted()).child("·"))
-                            .child(
-                                div()
-                                    .text_color(theme::muted())
-                                    .child(crate::i18n::text("ui.effort")),
-                            )
-                            .child(runtime_property_value(runtime_default_effort_value(
-                                runtime.default_effort.as_deref(),
-                            ))),
-                    )
-                    .child(runtime_section_caption(crate::i18n::text(
-                        "ui.agent_defaults_hint",
-                    ))),
-            )
+                                .children(presentation.show_reset.then(|| {
+                                    Button::new(
+                                        SharedString::from(format!("agent-reset-{name}")),
+                                        crate::i18n::text("ui.reset"),
+                                    )
+                                    .variant(ButtonVariant::Ghost)
+                                    .disabled(saving)
+                                    .on_press(move |_, cx| {
+                                        reset_pane
+                                            .update(cx, |this, cx| this.reset_override(name, cx));
+                                    })
+                                })),
+                        )
+                        .child(runtime_section_caption(crate::i18n::text(
+                            "ui.agent_executable_hint",
+                        ))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(runtime_section_header(
+                            crate::i18n::text("ui.defaults"),
+                            None,
+                        ))
+                        .child(
+                            runtime_property_line(name, "MODEL", crate::i18n::text("ui.model"))
+                                .child(runtime_property_value(runtime_default_value(
+                                    runtime.default_model.as_deref(),
+                                )))
+                                .child(div().text_color(theme::muted()).child("·"))
+                                .child(
+                                    div()
+                                        .text_color(theme::muted())
+                                        .child(crate::i18n::text("ui.effort")),
+                                )
+                                .child(runtime_property_value(runtime_default_effort_value(
+                                    runtime.default_effort.as_deref(),
+                                ))),
+                        )
+                        .child(runtime_section_caption(crate::i18n::text(
+                            "ui.agent_defaults_hint",
+                        ))),
+                )
+            })
             .into_any_element()
     }
 }

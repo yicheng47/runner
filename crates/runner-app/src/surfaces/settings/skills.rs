@@ -194,6 +194,8 @@ pub(crate) struct SkillsPane {
     catalogs: Vec<SkillCatalog>,
     runtime: Runtime,
     runtime_select: Entity<StyledSelect>,
+    scoped: bool,
+    account_select: Entity<StyledSelect>,
     search: Entity<TextField>,
     loading: bool,
     error: Option<String>,
@@ -218,6 +220,20 @@ impl SkillsPane {
                         this.runtime = runtime;
                         cx.notify();
                     });
+                }),
+                cx,
+            )
+            .width(px(200.))
+        });
+        let account_owner = cx.weak_entity();
+        let account_select = cx.new(|cx| {
+            StyledSelect::new(
+                "integration-account",
+                cx.focus_handle(),
+                "",
+                Vec::new(),
+                Rc::new(move |id, _, cx| {
+                    let _ = account_owner.update(cx, |this, cx| this.select_account(id, cx));
                 }),
                 cx,
             )
@@ -252,6 +268,8 @@ impl SkillsPane {
             catalogs: Vec::new(),
             runtime: Runtime::parse("claude-code").unwrap(),
             runtime_select,
+            scoped: false,
+            account_select,
             search,
             loading: false,
             error: None,
@@ -260,17 +278,53 @@ impl SkillsPane {
         }
     }
 
+    pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
+        self.search.read(cx).is_composing() || self.detail.read(cx).editor.read(cx).is_composing()
+    }
+    pub(crate) fn count(&self) -> usize {
+        self.catalogs
+            .iter()
+            .find(|c| c.runtime == self.runtime)
+            .map_or(0, |c| c.entries.len())
+    }
+    pub(crate) fn scope(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        self.scoped = true;
+        self.runtime = runtime;
+        self.search.update(cx, |search, cx| search.reset("", cx));
+        let id = self.app_store.read(cx).claude_accounts.main_id.clone();
+        self.select_account(id, cx);
+    }
+    fn select_account(&mut self, id: String, cx: &mut Context<Self>) {
+        self.catalogs.clear();
+        self.detail.update(cx, |detail, _| {
+            detail.account_id = (!id.is_empty()).then_some(id.clone())
+        });
+        let select = self.account_select.clone();
+        cx.defer(move |cx| select.update(cx, |select, cx| select.set_value(id, cx)));
+        self.refresh(cx);
+        cx.notify();
+    }
+
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading {
             return;
         }
         self.loading = true;
         let core = self.app_store.read(cx).client.clone();
-        let task = cx.background_spawn(async move { core.skill_catalogs().unwrap_or_default() });
+        let account_id = self.detail.read(cx).account_id.clone();
+        let requested_account = account_id.clone();
+        let task = cx.background_spawn(async move {
+            core.skill_catalogs(account_id.as_deref())
+                .unwrap_or_default()
+        });
         cx.spawn(async move |weak, cx| {
             let catalogs = task.await;
             let _ = weak.update(cx, |this, cx| {
                 this.loading = false;
+                if this.detail.read(cx).account_id != requested_account {
+                    this.refresh(cx);
+                    return;
+                }
                 this.runtime_select.update(cx, |select, cx| {
                     select.set_options(
                         catalogs
@@ -399,7 +453,21 @@ impl SkillsPane {
 
 impl Render for SkillsPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let accounts = self.app_store.read(cx).claude_accounts.clone();
+        self.account_select.update(cx, |select, cx| {
+            select.set_options(super::integration_account::options(&accounts), cx)
+        });
+        let shared = (self.runtime == Runtime::ClaudeCode)
+            .then(|| {
+                super::integration_account::shared_note(
+                    &accounts,
+                    self.detail.read(cx).account_id.as_deref(),
+                    false,
+                )
+            })
+            .flatten();
         let owner = cx.entity();
+        let refresh_owner = owner.clone();
         let catalog = self
             .catalogs
             .iter()
@@ -423,23 +491,76 @@ impl Render for SkillsPane {
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                PaneHeader::new(crate::i18n::text("ui.skills"), "").action(
-                    Button::new("skills-refresh", crate::i18n::text("ui.refresh"))
-                        .icon("refresh-cw.svg")
-                        .size(ButtonSize::Sm)
-                        .disabled(self.loading)
-                        .on_press(move |_, cx| owner.update(cx, |this, cx| this.refresh(cx))),
-                ),
-            )
+            .when(!self.scoped, |pane| {
+                pane.child(
+                    PaneHeader::new(crate::i18n::text("ui.skills"), "").action(
+                        Button::new("skills-refresh", crate::i18n::text("ui.refresh"))
+                            .icon("refresh-cw.svg")
+                            .size(ButtonSize::Sm)
+                            .disabled(self.loading)
+                            .on_press(move |_, cx| owner.update(cx, |this, cx| this.refresh(cx))),
+                    ),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(self.runtime_select.clone())
-                    .child(div().flex_1().min_w_0().child(self.search.clone())),
+                    .when(!self.scoped, |row| row.child(self.runtime_select.clone()))
+                    .when(
+                        self.scoped
+                            && self.runtime == Runtime::ClaudeCode
+                            && self.app_store.read(cx).claude_accounts.multiple(),
+                        |row| row.child(self.account_select.clone()),
+                    )
+                    .child(div().flex_1().min_w_0().child(self.search.clone()))
+                    .when(self.scoped, |row| {
+                        row.child(
+                            Button::new("integration-refresh", crate::i18n::text("ui.refresh"))
+                                .icon("refresh-cw.svg")
+                                .size(ButtonSize::Sm)
+                                .on_press(move |_, cx| {
+                                    refresh_owner.update(cx, |this, cx| this.refresh(cx))
+                                }),
+                        )
+                    }),
             )
+            .children(shared.map(|(note, label, id)| {
+                let owner = cx.entity();
+                div()
+                    .debug_selector(|| "INTEGRATION_SHARING_NOTE".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .debug_selector(|| "INTEGRATION_SHARING_TEXT".into())
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .line_height(rems(1.))
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(note),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "INTEGRATION_SHOW_MAIN".into())
+                            .flex_none()
+                            .child(
+                                Button::new("integration-show-main", label)
+                                    .size(ButtonSize::Sm)
+                                    .on_press(move |_, cx| {
+                                        owner.update(cx, |this, cx| {
+                                            this.select_account(id.clone(), cx)
+                                        })
+                                    }),
+                            ),
+                    )
+            }))
             .when_some(catalog, |pane, catalog| {
                 pane.child(
                     div()
@@ -509,6 +630,7 @@ impl OpenSkill {
 }
 
 pub(crate) struct SkillDetail {
+    account_id: Option<String>,
     app_store: Entity<AppStore>,
     skill: Option<OpenSkill>,
     editor: Entity<TextField>,
@@ -563,6 +685,7 @@ impl SkillDetail {
             }
         });
         Self {
+            account_id: None,
             app_store,
             skill: None,
             editor,
@@ -596,15 +719,20 @@ impl SkillDetail {
         self.error = None;
         self.previous_focus = window.focused(cx);
         let core = self.app_store.read(cx).client.clone();
+        let account_id = self.account_id.clone();
         let task = cx.background_spawn(async move {
-            let catalogs = core.skill_catalogs().unwrap_or_default();
+            let catalogs = core
+                .skill_catalogs(account_id.as_deref())
+                .unwrap_or_default();
             let entry = catalogs
                 .iter()
                 .find(|c| c.runtime == runtime)
                 .and_then(|c| c.entries.iter().find(|e| e.path == path))
                 .cloned()
                 .ok_or_else(|| crate::i18n::text("ui.skill_no_longer_catalog").to_owned())?;
-            let read = core.skill_read(runtime, &path).map_err(|e| e.to_string());
+            let read = core
+                .skill_read(runtime, &path, account_id.as_deref())
+                .map_err(|e| e.to_string());
             Ok::<_, String>((OpenSkill::from_read(runtime, entry, read), catalogs))
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -662,10 +790,14 @@ impl SkillDetail {
         self.pending_toggle = Some(path.clone());
         self.error = None;
         let core = self.app_store.read(cx).client.clone();
+        let account_id = self.account_id.clone();
         let task = cx.background_spawn(async move {
-            core.skill_set_global_enabled(runtime, &path, enabled)
+            core.skill_set_global_enabled(runtime, &path, enabled, account_id.as_deref())
                 .map_err(|e| e.to_string())?;
-            Ok::<_, String>(core.skill_catalogs().unwrap_or_default())
+            Ok::<_, String>(
+                core.skill_catalogs(account_id.as_deref())
+                    .unwrap_or_default(),
+            )
         });
         cx.spawn(async move |weak, cx| {
             let result = task.await;
@@ -777,9 +909,10 @@ impl SkillDetail {
         self.error = None;
         self.editor
             .update(cx, |editor, cx| editor.set_disabled(true, cx));
+        let account_id = self.account_id.clone();
         let task = cx.background_spawn(async move {
             let entry = core
-                .skill_save(runtime, &path, &text)
+                .skill_save(runtime, &path, &text, account_id.as_deref())
                 .map_err(|e| e.to_string())?;
             Ok::<_, String>((
                 OpenSkill {
@@ -788,7 +921,8 @@ impl SkillDetail {
                     text,
                     read_error: None,
                 },
-                core.skill_catalogs().unwrap_or_default(),
+                core.skill_catalogs(account_id.as_deref())
+                    .unwrap_or_default(),
             ))
         });
         cx.spawn_in(window, async move |weak, cx| {
@@ -1362,6 +1496,123 @@ mod tests {
                 .child(self.0.clone())
                 .child(self.0.read(cx).detail.clone())
         }
+    }
+
+    #[test]
+    fn sharing_guidance_wraps_and_keeps_show_main_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        store.update(&mut cx, |store, _| {
+            store.claude_accounts = runner_core::protocol::ClaudeAccounts {
+                accounts: vec![
+                    runner_core::protocol::ClaudeAccount {
+                        id: "main".into(),
+                        name: "Personal".into(),
+                        folder: temp.path().join("main").display().to_string(),
+                        native: false,
+                    },
+                    runner_core::protocol::ClaudeAccount {
+                        id: "shared".into(),
+                        name: "Work account with a longer descriptive name".into(),
+                        folder: temp.path().join("shared").display().to_string(),
+                        native: false,
+                    },
+                ],
+                main_id: "main".into(),
+                active_id: "main".into(),
+                sharing: std::collections::BTreeMap::from([(
+                    "shared".into(),
+                    runner_core::protocol::ClaudeAccountSharing {
+                        using_main: true,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+        });
+        let host = cx.add_window(|_, cx| SkillsTestHost(cx.new(|cx| SkillsPane::new(store, cx))));
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        host.update(&mut visual, |host, _, cx| {
+            host.0.update(cx, |pane, cx| {
+                pane.scope(Runtime::ClaudeCode, cx);
+                pane.select_account("shared".into(), cx);
+            })
+        })
+        .unwrap();
+        for rem in [16., 19.2] {
+            host.update(&mut visual, |_, window, _| window.set_rem_size(px(rem)))
+                .unwrap();
+            for width in [640., 900.] {
+                visual.simulate_resize(gpui::size(px(width), px(800.)));
+                visual.run_until_parked();
+                let row = visual.debug_bounds("INTEGRATION_SHARING_NOTE").unwrap();
+                let text = visual.debug_bounds("INTEGRATION_SHARING_TEXT").unwrap();
+                let action = visual.debug_bounds("INTEGRATION_SHOW_MAIN").unwrap();
+                assert!(row.right() <= px(width) + px(1.));
+                assert!(text.size.height > px(rem * 16. / 16.));
+                assert!(text.right() <= action.left());
+                assert!(action.right() <= row.right() + px(1.));
+                assert!(action.top() >= row.top() && action.bottom() <= row.bottom());
+            }
+        }
+    }
+
+    #[test]
+    fn account_picker_keyboard_selection_defers_its_own_value_update() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = gpui::TestAppContext::single();
+        let store = test_store(temp.path(), &mut cx);
+        store.update(&mut cx, |store, _| {
+            store.claude_accounts = runner_core::protocol::ClaudeAccounts {
+                accounts: ["main", "fixture"]
+                    .into_iter()
+                    .map(|id| runner_core::protocol::ClaudeAccount {
+                        id: id.into(),
+                        name: id.into(),
+                        folder: temp.path().join(id).display().to_string(),
+                        native: false,
+                    })
+                    .collect(),
+                main_id: "main".into(),
+                active_id: "main".into(),
+                ..Default::default()
+            };
+        });
+        let host = cx.add_window(|_, cx| SkillsTestHost(cx.new(|cx| SkillsPane::new(store, cx))));
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        host.update(&mut visual, |host, window, cx| {
+            host.0
+                .update(cx, |pane, cx| pane.scope(Runtime::ClaudeCode, cx));
+            host.0
+                .read(cx)
+                .account_select
+                .read(cx)
+                .focus_handle()
+                .focus(window, cx);
+        })
+        .unwrap();
+        visual.run_until_parked();
+        for key in ["space", "down", "enter", "space", "space"] {
+            visual.simulate_keystrokes(key);
+            visual.run_until_parked();
+        }
+        host.read_with(&visual, |host, cx| {
+            let pane = host.0.read(cx);
+            assert_eq!(pane.account_select.read(cx).value(), "fixture");
+            assert_eq!(pane.detail.read(cx).account_id.as_deref(), Some("fixture"));
+        })
+        .unwrap();
+        host.update(&mut visual, |host, _, cx| {
+            host.0
+                .update(cx, |pane, cx| pane.select_account("main".into(), cx))
+        })
+        .unwrap();
+        visual.run_until_parked();
+        host.read_with(&visual, |host, cx| {
+            assert_eq!(host.0.read(cx).account_select.read(cx).value(), "main")
+        })
+        .unwrap();
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::*;
 
 impl NativeRoot {
-    pub(super) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
         div()
             .id("sidebar-settings")

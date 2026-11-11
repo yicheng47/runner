@@ -283,6 +283,76 @@ fn client_paths_with_env(
 pub fn mcp_catalog(home: &Path) -> Result<McpCatalog> {
     mcp_catalog_with_env(home, &Default::default())
 }
+pub(crate) fn account_mcp_env(
+    core: &crate::AppCore,
+    id: Option<&str>,
+    name: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
+    let env = core
+        .runtime_shell_env
+        .read()
+        .map_err(|_| Error::msg("runtime shell environment lock poisoned"))?
+        .vars
+        .clone();
+    let mut env = crate::claude_accounts::sharing::account_config_env(&core.db, env, id)?;
+    if let Some(id) = id {
+        let state = crate::claude_accounts::load(&core.db)?;
+        if let Some(account) = state
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .filter(|_| state.sharing.contains_key(id))
+        {
+            let own = crate::claude_accounts::sharing::mcp_path(account);
+            if name.is_none()
+                || name.is_some_and(|name| {
+                    read_entries_at(&own, McpClientId::ClaudeCode)
+                        .is_ok_and(|entries| entries.contains_key(name))
+                })
+            {
+                env.insert(
+                    crate::claude_accounts::sharing::MAIN_MCP.into(),
+                    own.to_string_lossy().into_owned(),
+                );
+            }
+        }
+    }
+    Ok(env)
+}
+
+pub(crate) fn account_mcp_catalog(
+    core: &crate::AppCore,
+    home: &Path,
+    id: Option<&str>,
+) -> Result<McpCatalog> {
+    let own_env = account_mcp_env(core, id, None)?;
+    let shared_env =
+        crate::claude_accounts::sharing::account_config_env(&core.db, own_env.clone(), id)?;
+    let mut catalog = mcp_catalog_with_env(home, &shared_env)?;
+    if own_env == shared_env {
+        return Ok(catalog);
+    }
+    let own = mcp_catalog_with_env(home, &own_env)?;
+    for entry in own.servers {
+        let Some(slot) = entry
+            .clients
+            .get(&McpClientId::ClaudeCode)
+            .filter(|slot| slot.registered)
+        else {
+            continue;
+        };
+        if let Some(existing) = catalog.servers.iter_mut().find(|s| s.name == entry.name) {
+            existing
+                .clients
+                .insert(McpClientId::ClaudeCode, slot.clone());
+        } else {
+            catalog.servers.push(entry);
+        }
+    }
+    catalog.servers.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(catalog)
+}
+
 pub fn mcp_catalog_with_env(home: &Path, env: &BTreeMap<String, String>) -> Result<McpCatalog> {
     Ok(catalog_at(&client_paths_with_env(home, env)))
 }
@@ -1985,4 +2055,70 @@ fn opencode_v2_mcp_copy_edit_remove_preserves_native_config() {
     assert!(crate::runtimes::opencode::mcp::read(&path)
         .unwrap()
         .contains_key("foreign"));
+}
+
+#[test]
+fn account_mcp_catalog_keeps_own_servers_and_scopes_shared_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = crate::test_support::test_core_in(temp.path().join("data"));
+    let main = temp.path().join("main");
+    let work = temp.path().join("work");
+    for folder in [&main, &work] {
+        std::fs::create_dir_all(folder).unwrap();
+    }
+    std::fs::write(
+        main.join(".claude.json"),
+        r#"{"mcpServers":{"shared":{"command":"main"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        work.join(".claude.json"),
+        r#"{"mcpServers":{"own":{"command":"work"}}}"#,
+    )
+    .unwrap();
+    let mut state = serde_json::json!({"accounts":[{"id":"main","name":"Main","folder":main,"native":false},{"id":"work","name":"Work","folder":work,"native":false}],"main_id":"main","active_id":"main"});
+    crate::db::app_state_set(
+        &core.db.get().unwrap(),
+        "claude_accounts",
+        &state.to_string(),
+    )
+    .unwrap();
+    let own = account_mcp_catalog(&core, temp.path(), Some("work")).unwrap();
+    assert!(own.servers.iter().any(|s| s.name == "own"));
+    assert!(!own.servers.iter().any(|s| s.name == "shared"));
+    state["sharing"] = serde_json::json!({"work":{"main_folder":main,"folder":work,"links":[]}});
+    crate::db::app_state_set(
+        &core.db.get().unwrap(),
+        "claude_accounts",
+        &state.to_string(),
+    )
+    .unwrap();
+    let shared = account_mcp_catalog(&core, temp.path(), Some("work")).unwrap();
+    for name in ["own", "shared"] {
+        assert!(shared
+            .servers
+            .iter()
+            .any(|s| s.name == name && s.clients[&McpClientId::ClaudeCode].registered));
+    }
+    let env = account_mcp_env(&core, Some("work"), Some("own")).unwrap();
+    mcp_edit_server_with_env(
+        temp.path(),
+        &env,
+        McpClientId::ClaudeCode,
+        "own",
+        r#"{"command":"edited"}"#,
+        &[],
+    )
+    .unwrap();
+    assert!(std::fs::read_to_string(work.join(".claude.json"))
+        .unwrap()
+        .contains("edited"));
+    let env = account_mcp_env(&core, Some("work"), Some("shared")).unwrap();
+    mcp_remove_server_with_env(temp.path(), &env, McpClientId::ClaudeCode, "shared").unwrap();
+    assert!(!std::fs::read_to_string(main.join(".claude.json"))
+        .unwrap()
+        .contains("shared"));
+    assert!(std::fs::read_to_string(work.join(".claude.json"))
+        .unwrap()
+        .contains("own"));
 }

@@ -74,10 +74,32 @@ struct UpdateAction {
     caption: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AgentTab {
+    #[default]
+    General,
+    Skills,
+    Mcp,
+}
+
+pub(crate) fn supports_tab(runtime: Runtime, tab: AgentTab) -> bool {
+    match tab {
+        AgentTab::General => true,
+        AgentTab::Skills => runner_core::protocol::runtime_metadata::catalog_for(runtime)
+            .is_some_and(|c| !c.skills_dirs.is_empty()),
+        AgentTab::Mcp => runner_core::protocol::mcp::McpClientId::for_runtime(runtime).is_some(),
+    }
+}
+
 pub(crate) struct AgentsPane {
     shell: WeakEntity<NativeRoot>,
     app_store: Entity<AppStore>,
     selected_runtime: Option<Runtime>,
+    pub(crate) tab: AgentTab,
+    pub(crate) skills: Entity<super::skills::SkillsPane>,
+    pub(crate) mcp: Entity<super::mcp::McpPane>,
+    last_skills: Option<Runtime>,
+    last_mcp: Option<Runtime>,
     accounts: Entity<super::claude_accounts::AccountsSection>,
     status: Option<RuntimeStatusResponse>,
     catalog: Vec<RuntimeCatalogEntry>,
@@ -182,11 +204,39 @@ impl AgentsPane {
 
         let accounts =
             cx.new(|cx| super::claude_accounts::AccountsSection::new(app_store.clone(), cx));
+        let skills = cx.new(|cx| super::skills::SkillsPane::new(app_store.clone(), cx));
+        let mcp = cx.new(|cx| super::mcp::McpPane::new(app_store.clone(), cx));
+        let notice_shell = shell.clone();
+        subscriptions.push(cx.subscribe(
+            &skills.read(cx).detail.clone(),
+            move |_, _, notice: &super::SaveNotice, cx| {
+                let _ = notice_shell.update(cx, |root, cx| {
+                    root.show_toast(notice.message.clone(), notice.tone, cx)
+                });
+            },
+        ));
+        let notice_shell = shell.clone();
+        subscriptions.push(cx.subscribe(
+            &mcp.read(cx).detail.clone(),
+            move |_, _, notice: &super::SaveNotice, cx| {
+                let _ = notice_shell.update(cx, |root, cx| {
+                    root.show_toast(notice.message.clone(), notice.tone, cx)
+                });
+            },
+        ));
+        subscriptions.push(cx.observe(&skills, |_, _, cx| cx.notify()));
+        subscriptions.push(cx.observe(&mcp, |_, _, cx| cx.notify()));
+
         Self {
             shell,
             app_store,
             accounts,
             selected_runtime: None,
+            tab: AgentTab::General,
+            skills,
+            mcp,
+            last_skills: None,
+            last_mcp: None,
             status: None,
             catalog: Vec::new(),
             error: None,
@@ -620,7 +670,9 @@ impl AgentsPane {
     }
 
     pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
-        self.accounts.read(cx).is_composing(cx)
+        self.skills.read(cx).is_composing(cx)
+            || self.mcp.read(cx).is_composing(cx)
+            || self.accounts.read(cx).is_composing(cx)
             || self
                 .overrides
                 .values()
@@ -642,12 +694,46 @@ impl AgentsPane {
         cx.notify();
     }
 
+    pub(crate) fn open_tab(&mut self, tab: AgentTab, cx: &mut Context<Self>) {
+        let last = match tab {
+            AgentTab::Skills => self.last_skills,
+            AgentTab::Mcp => self.last_mcp,
+            _ => None,
+        };
+        let runtime = last
+            .filter(|r| supports_tab(*r, tab))
+            .or_else(|| {
+                Runtime::parse(&self.app_store.read(cx).settings.default_runtime)
+                    .filter(|r| supports_tab(*r, tab))
+            })
+            .or_else(|| Runtime::ALL.into_iter().find(|r| supports_tab(*r, tab)));
+        if let Some(runtime) = runtime {
+            self.open_runtime(runtime, cx);
+            self.select_tab(tab, cx);
+        }
+    }
+    fn select_tab(&mut self, tab: AgentTab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        if let Some(runtime) = self.selected_runtime {
+            match tab {
+                AgentTab::Skills => self.last_skills = Some(runtime),
+                AgentTab::Mcp => self.last_mcp = Some(runtime),
+                _ => {}
+            }
+        }
+        self.reset_scroll(cx);
+        cx.notify();
+    }
+
     pub(crate) fn open_runtime(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
         if runtime == Runtime::ClaudeCode {
             self.accounts
                 .update(cx, |accounts, cx| accounts.refresh(cx));
         }
         self.selected_runtime = Some(runtime);
+        self.tab = AgentTab::General;
+        self.skills.update(cx, |pane, cx| pane.scope(runtime, cx));
+        self.mcp.update(cx, |pane, cx| pane.scope(runtime, cx));
         self.refresh_launch_previews(runtime, cx);
         self.reset_scroll(cx);
         cx.notify();
@@ -659,6 +745,19 @@ mod tests {
     use super::*;
     use gpui::px;
     use runner_core::protocol::runtime::ShellDiscoveryStatus;
+
+    #[test]
+    fn tabs_follow_catalog_support() {
+        for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+            assert!(supports_tab(runtime, AgentTab::General));
+            assert!(supports_tab(runtime, AgentTab::Skills));
+            assert!(supports_tab(runtime, AgentTab::Mcp));
+        }
+        assert!(supports_tab(Runtime::Pi, AgentTab::Skills));
+        assert!(!supports_tab(Runtime::Pi, AgentTab::Mcp));
+        assert!(!supports_tab(Runtime::Shell, AgentTab::Skills));
+        assert!(!supports_tab(Runtime::Shell, AgentTab::Mcp));
+    }
 
     #[test]
     fn no_shell_description_reports_missing_login_shell() {

@@ -985,3 +985,17 @@ record!(RuntimeCommandLine {
 });
 
 variant!(RuntimeCommandNote => Self::ActiveAccount { name: "Work".into() });
+
+#[test]
+fn optional_catalog_account_preserves_older_requests() {
+    let request = Request::skill_catalogs {
+        account_id: Some("work".into()),
+    };
+    round_trip(request);
+    let legacy: Request = serde_json::from_value(serde_json::json!({"skill_catalogs":{}})).unwrap();
+    assert!(matches!(
+        legacy,
+        Request::skill_catalogs { account_id: None }
+    ));
+    round_trip(Request::usage_set_interval { seconds: 1800 });
+}
