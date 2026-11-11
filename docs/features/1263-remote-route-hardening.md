@@ -59,9 +59,11 @@ Left as is, with the reason:
 Jason, 2026-11-11:
 
 1. **A silent route ends itself (finding 2).** #1229 decided that a ping never changes a route, so that a slow reading could not cause a reconnect. That stays true of the latency reading. A separate liveness rule is added: a route that has received nothing for 15 seconds is treated as lost and reconnects.
-2. **Typing during a short write stall is kept, not dropped (finding 5).** Up to 64 KiB of input per route waits in order while a write is slow. It is still discarded, with today's error, when the route reconnects, so nothing is ever typed into a screen the person has not seen.
+2. **Typing during a short write stall is kept, not dropped (finding 5).** Up to 1 MiB of input per route waits in order while a write is slow. It is still discarded, with today's error, when the route reconnects, so nothing is ever typed into a screen the person has not seen.
 3. **Resume costs the host memory (finding 10).** The host keeps the last 256 KiB sent on each attached terminal, and keeps a dropped channel's terminals for 60 seconds so the same device can continue.
 4. **Order and timing.** Phases 1 and 2 first, as they need no host and client to match. Phases 3 and 4 before the iPhone client's protocol work starts. Each phase goes to a claude trio, confirmed at that mission's start.
+
+Decision 2 amended by Jason on 2026-11-11 after code review: the original 64 KiB budget collided with the client protocol's 64 KiB IPC paste chunking (reviewer, 2026-11-11). A later paste chunk could reach the route before the first chunk released its budget, dropping the paste's tail, including its closing bracketed-paste marker. The input budget is therefore `c::MAX_MESSAGE_SIZE` (1 MiB), shared with the existing message cap rather than a new constant. Input is still discarded across a reconnect.
 
 ## Security
 
@@ -105,7 +107,7 @@ Both reconnect delays become half the step plus a random amount up to the other 
 
 The route splits its socket. A writer task owns the sink and takes sealed frames from a bounded queue; the loop seals a frame only when the queue has room, so it keeps reading commands and incoming frames while a write is slow. Frames are sealed in queue order, which is the order Noise's nonces need.
 
-Input moves from the 32-command queue to its own buffer on the route, in arrival order, at most 64 KiB. Input past the cap, and everything buffered when the route's generation changes, is discarded with today's `session/input-error`.
+Input moves from the 32-command queue to its own buffer on the route, in arrival order, at most `c::MAX_MESSAGE_SIZE` (1 MiB). Input past the cap, and everything buffered when the route's generation changes, is discarded with today's `session/input-error`.
 
 ### Track the route's own overview requests (7)
 
@@ -204,7 +206,7 @@ Build this last and only if phase 1's echo reading shows the problem: skip it if
 
 Automated, in each phase's pull request:
 
-- **Phase 1.** A request on a live route reads no secret and calls no service, including while `ListAccountHosts` fails; a silent route ends after 15 seconds and reconnects, with and without the host's `ping`; a timed-out request fails alone and its late reply is dropped; reconnect delays stay within their jittered bounds; input queued during a stalled write arrives in order, input past 64 KiB and input across a generation change is discarded with the error; an unmatched `result` is never emitted as an overview; `echo_ms` is reported.
+- **Phase 1.** A request on a live route reads no secret and calls no service, including while `ListAccountHosts` fails; a silent route ends after 15 seconds and reconnects, with and without the host's `ping`; a timed-out request fails alone and its late reply is dropped; reconnect delays stay within their jittered bounds; input queued during a stalled write arrives in order, a healthy 200 KiB paste spanning several IPC frames arrives whole and in order; input past 1 MiB and input across a generation change is discarded with the error; an unmatched `result` is never emitted as an overview; `echo_ms` is reported.
 - **Phase 2.** Input from one channel is read while another channel's write is stalled; a stalled receiver with trickling small messages is paused before the relay's cap; a 1 MiB message still completes under batched credit against a peer running the old grant rule; an unchanged overview is not pushed; a burst of viewports sends the last one.
 - **Phase 3.** Channel vectors for the early form; a replayed first message marks no device connected; fallback to today's form against a host that rejects the payload; resume within the buffer continues with no resync frame; resume past the buffer, after 60 seconds, or for a different device falls back to a snapshot; Revoke, Reset identity and turning remote access off drop lingering streams.
 - **Phase 4.** Golden encodings for the envelope; mixed JSON and envelope traffic on one channel; no `result` for a quiet `input`, an error still delivered; pacing holds terminal output and lets pongs through.

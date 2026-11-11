@@ -27,6 +27,7 @@ struct Relay {
     tx: mpsc::UnboundedSender<RelayCommand>,
     hosts: StdMutex<Vec<Computer>>,
     listings: AtomicU32,
+    directory_error: AtomicBool,
     opens: AtomicU32,
     writer: Arc<WriteGate>,
 }
@@ -34,6 +35,8 @@ struct Relay {
 struct WriteGate {
     blocked: AtomicBool,
     entered: tokio::sync::Notify,
+    block_reads: AtomicBool,
+    reader: futures_util::task::AtomicWaker,
     waker: futures_util::task::AtomicWaker,
 }
 struct GatedConnection(tokio::io::DuplexStream, Arc<WriteGate>);
@@ -43,6 +46,10 @@ impl tokio::io::AsyncRead for GatedConnection {
         cx: &mut std::task::Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
+        self.1.reader.register(cx.waker());
+        if self.1.block_reads.load(Ordering::Acquire) {
+            return std::task::Poll::Pending;
+        }
         std::pin::Pin::new(&mut self.0).poll_read(cx, buffer)
     }
 }
@@ -76,6 +83,9 @@ impl Service for Relay {
     fn list<'a>(&'a self, _: &'a Context) -> BoxFuture<'a, Result<Vec<Computer>>> {
         Box::pin(async {
             self.listings.fetch_add(1, Ordering::Relaxed);
+            if self.directory_error.load(Ordering::Acquire) {
+                return Err("Could not list computers: resource_exhausted.".into());
+            }
             Ok(self.hosts.lock().unwrap().clone())
         })
     }
@@ -190,6 +200,7 @@ impl Fixture {
                 ..Default::default()
             }]),
             listings: AtomicU32::new(0),
+            directory_error: AtomicBool::new(false),
             opens: AtomicU32::new(0),
             writer: Default::default(),
         });
@@ -229,7 +240,7 @@ impl Fixture {
                                 match channels.open(id, &machine) { Ok(()) => {}, Err(reason) => { sockets.get_mut(&id).unwrap().send(Message::Binary(reason.frame().into())).await.unwrap(); } }
                                 let tx = tx.clone(); tokio::spawn(async move {
                                     while let Some(frame) = stream.next().await {
-                                        match frame { Ok(Message::Binary(bytes)) => { let _ = tx.send(RelayCommand::Frame(id, Some(bytes.to_vec()))); }, _ => break }
+                                        match frame { Ok(Message::Binary(bytes)) => { let _ = tx.send(RelayCommand::Frame(id, Some(bytes.to_vec()))); }, Ok(Message::Ping(_) | Message::Pong(_)) => {}, _ => break }
                                     }
                                     let _ = tx.send(RelayCommand::Frame(id, None));
                                 });
@@ -1051,6 +1062,9 @@ async fn changed_listing_is_not_paired_and_reset_deletes_client_keys() {
     fixture.relay.hosts.lock().unwrap()[0].fingerprint = "changed".into();
     *fixture.client.0.directory.lock().await = None;
     assert!(!fixture.client.computers().await.unwrap()[0].paired);
+    fixture.client.overview("2".into()).await.unwrap();
+    fixture.drop_route().await;
+    tokio::task::yield_now().await;
     assert!(fixture
         .client
         .overview("2".into())
@@ -1178,6 +1192,7 @@ async fn no_pin_locked_pin_and_bad_handshake_are_clear_and_never_retried() {
     let mut saved = Saved::load(fixture.root.path()).unwrap().unwrap();
     saved.host_name = String::new();
     saved.save(fixture.root.path()).unwrap();
+    fixture.client.0.cached.lock().await.context = None;
     assert_eq!(
         fixture
             .client
@@ -1367,6 +1382,7 @@ async fn stored_pin_mismatch_fails_before_connect_and_debug_redacts_private_keys
     key.public = vec![0; 32];
     assert!(!format!("{keys:?}").contains(&private));
     keys.save(fixture.store.as_ref()).unwrap();
+    fixture.client.0.cached.lock().await.keys = None;
     assert!(fixture
         .client
         .computers()
@@ -1838,31 +1854,21 @@ async fn ipc_fixture(
 
 #[tokio::test]
 async fn queued_input_rejections_and_teardown_reach_the_scoped_ipc_error_event() {
-    for failure in ["bytes", "generation", "teardown"] {
-        // Teardown blocks the writer on the overview's write, which a ping must not reach first.
+    for failure in ["bytes", "teardown"] {
         let fixture = Fixture::without_ping().await;
         fixture.pair().await;
         let (_root, _server, ipc) = ipc_fixture(&fixture).await;
         let mut events = ipc.subscribe();
         let route = fixture.client.route("2").await.unwrap();
         match failure {
-            "bytes" => fixture
-                .client
-                .input(
-                    "2".into(),
-                    "session".into(),
-                    vec![b'x'; c::MAX_MESSAGE_SIZE],
+            "bytes" => {
+                fixture.relay.writer.blocked.store(true, Ordering::Release);
+                ipc.input(
+                    &remote::terminal_address("2", "session"),
+                    &vec![b'x'; c::MAX_MESSAGE_SIZE + 64 * 1024],
                 )
-                .await
-                .unwrap(),
-            "generation" => route
-                .tx
-                .try_send(route::Command::Input(
-                    route.generation().wrapping_sub(1),
-                    "session".into(),
-                    b"discarded-generation".to_vec(),
-                ))
-                .unwrap(),
+                .unwrap();
+            }
             _ => {
                 let writer = fixture.relay.writer.clone();
                 writer.blocked.store(true, Ordering::Release);
@@ -1940,8 +1946,7 @@ async fn delayed_actions_survive_the_ipc_and_fork_route_deadlines() {
         );
         if kind == "fork" {
             tokio::time::pause();
-            tokio::time::advance(Duration::from_secs(40)).await;
-            tokio::task::yield_now().await;
+            keep_alive(&fixture, 40).await;
             assert!(!action.is_finished());
             assert!(fixture
                 .client
@@ -2004,14 +2009,12 @@ async fn a_pending_fork_does_not_block_unrelated_ipc_requests_or_reconnect_the_r
         ipc_remote_request(&ipc, request).await;
     }
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(40)).await;
-    tokio::task::yield_now().await;
+    keep_alive(&fixture, 40).await;
     assert!(route.ready.load(Ordering::Acquire));
     assert_eq!(route.generation(), generation);
     assert!(!fork.is_finished());
     ipc_remote_request(&ipc, serde_json::json!({"type":"catalog","id":1})).await;
-    tokio::time::advance(Duration::from_secs(20)).await;
-    tokio::task::yield_now().await;
+    keep_alive(&fixture, 20).await;
     release.send(()).unwrap();
     tokio::time::resume();
     assert_eq!(fork.await.unwrap()["session"], "forked");
@@ -2294,4 +2297,24 @@ async fn pings_do_not_keep_an_idle_route_open() {
         }
     }
     assert!(pongs > 1, "the idle route should have been pinged");
+}
+
+#[path = "robustness_tests.rs"]
+mod robustness_tests;
+
+async fn keep_alive(fixture: &Fixture, seconds: u64) {
+    for _ in 0..seconds.div_ceil(5) {
+        tokio::time::advance(Duration::from_secs(5)).await;
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert!(fixture
+            .client
+            .0
+            .routes
+            .lock()
+            .await
+            .values()
+            .all(|route| route.ready.load(Ordering::Acquire)));
+    }
 }

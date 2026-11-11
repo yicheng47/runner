@@ -69,7 +69,7 @@ fn empty(state: &mut HandshakeState, bytes: &[u8]) -> Result<(), Reject> {
 
 pub struct HostPair {
     noise: HandshakeState,
-    psk: [u8; 32],
+    psk: zeroize::Zeroizing<[u8; 32]>,
 }
 impl HostPair {
     pub fn start(
@@ -84,7 +84,7 @@ impl HostPair {
         }
         let (sid, ya) = (&input[..16], input[16..48].try_into().unwrap());
         let cpace = Cpace::new(pin.as_bytes(), PAIR_PROLOGUE, sid, scalar)?;
-        let isk = cpace.isk(&ya, sid, false, b"", b"")?;
+        let isk = zeroize::Zeroizing::new(cpace.isk(&ya, sid, false, b"", b"")?);
         let mut noise = keys.build(true, false, None)?;
         empty(&mut noise, &input[48..])?;
         let reply = write(&mut noise, Kind::PairReply, &[])?;
@@ -93,7 +93,7 @@ impl HostPair {
         Ok((
             Self {
                 noise,
-                psk: isk[..32].try_into().unwrap(),
+                psk: zeroize::Zeroizing::new(isk[..32].try_into().unwrap()),
             },
             frame(Kind::PairReply, &reply_body),
         ))
@@ -105,7 +105,7 @@ impl HostPair {
             return Err(Reject::BadHandshake);
         }
         self.noise
-            .set_psk(3, &self.psk)
+            .set_psk(3, self.psk.as_ref())
             .map_err(|_| Reject::BadHandshake)?;
         let mut payload = vec![0; input.len()];
         let n = self.noise.read_message(input, &mut payload).map_err(|e| {
@@ -194,9 +194,13 @@ impl BrowserPair {
         if input.len() != 128 {
             return Err(Reject::BadHandshake);
         }
-        let isk = self
-            .cpace
-            .isk(&input[..32].try_into().unwrap(), &self.sid, true, b"", b"")?;
+        let isk = zeroize::Zeroizing::new(self.cpace.isk(
+            &input[..32].try_into().unwrap(),
+            &self.sid,
+            true,
+            b"",
+            b"",
+        )?);
         empty(&mut self.noise, &input[32..])?;
         self.noise
             .set_psk(3, &isk[..32])

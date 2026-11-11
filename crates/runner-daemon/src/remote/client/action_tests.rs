@@ -650,8 +650,7 @@ async fn a_followed_feed_keeps_the_shared_route_alive_without_an_overview_follow
     host.ok(json!({"type":"follow","mission":out.mission.id}))
         .await;
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(61)).await;
-    tokio::task::yield_now().await;
+    super::keep_alive(&host.fixture, 65).await;
     tokio::time::resume();
     host.fixture.client.overview("2".into()).await.unwrap();
     assert_eq!(host.fixture.relay.opens.load(Ordering::Relaxed), 1);
