@@ -222,7 +222,7 @@ impl Terminals {
         }
         Ok(())
     }
-    pub fn refused(&mut self, request: u64) {
+    pub fn refused(&mut self, request: u64, error: &str) {
         let target = self
             .streams
             .iter()
@@ -231,9 +231,7 @@ impl Terminals {
         if let Some(target) = target {
             if let Some(mut stream) = self.streams.remove(&target) {
                 for reply in stream.waiting.drain(..) {
-                    let _ = reply.send(Err(
-                        "The remote computer refused terminal attachment.".into()
-                    ));
+                    let _ = reply.send(Err(error.into()));
                 }
                 for queue in stream.listeners.values() {
                     queue.close();

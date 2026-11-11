@@ -589,12 +589,12 @@ async fn run(
                         log::info!("remote close: {code}");
                         Input::Failure(transport::Failure { retry: remote::close_action(code), message: format!("Remote connection closed ({code})."), code: "unknown".into() })
                     }
-                    Some(Ok(Message::Ping(bytes))) => {
-                        match send_frames(&mut socket, [Message::Pong(bytes)]).await {
-                            Ok(()) => Input::Frame,
-                            Err(failure) => Input::Failure(failure),
+                    Some(Ok(Message::Ping(_))) => {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), socket.as_mut().unwrap().flush()).await {
+                            Ok(Ok(())) => Input::Frame,
+                            _ => Input::Failure(transport::Failure::network()),
                         }
-                    }
+                    },
                     Some(Ok(Message::Binary(bytes))) => {
                         if let (Some(routes), Some((id, frame))) = (&mut channels, runner_core::companion::channel::unwrap(&bytes)) {
                             if !routes.feed(id, frame) { let _ = send_frames(&mut socket, [channels::close_message(id)]).await; }

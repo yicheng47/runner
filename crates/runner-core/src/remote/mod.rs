@@ -56,6 +56,11 @@ pub fn is_weak_pin(pin: &str) -> bool {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(pub String);
+impl Drop for Secret {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[redacted]")
@@ -63,13 +68,14 @@ impl fmt::Debug for Secret {
 }
 
 pub struct HostKey {
-    pub private: Vec<u8>,
+    pub private: zeroize::Zeroizing<Vec<u8>>,
     pub public: Vec<u8>,
 }
 impl HostKey {
     pub fn from_private(encoded: &str) -> Result<Self, &'static str> {
         use snow::resolvers::{CryptoResolver, DefaultResolver};
-        let private = STANDARD.decode(encoded).map_err(|_| "Invalid host key")?;
+        let private =
+            zeroize::Zeroizing::new(STANDARD.decode(encoded).map_err(|_| "Invalid host key")?);
         if private.len() != 32 {
             return Err("Invalid host key");
         }
@@ -86,7 +92,7 @@ impl HostKey {
         let params = "Noise_XX_25519_ChaChaPoly_BLAKE2s".parse()?;
         let key = snow::Builder::new(params).generate_keypair()?;
         Ok(Self {
-            private: key.private,
+            private: zeroize::Zeroizing::new(key.private),
             public: key.public,
         })
     }

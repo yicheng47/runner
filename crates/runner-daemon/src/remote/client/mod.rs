@@ -72,6 +72,29 @@ struct Directory {
     expires: Instant,
     computers: Result<Vec<Computer>>,
 }
+#[derive(Default)]
+struct Cached {
+    identity: (String, Option<String>, bool),
+    context: Option<Context>,
+    keys: Option<ClientKeys>,
+}
+impl Cached {
+    fn synchronize(&mut self, status: &RemoteStatus) -> bool {
+        let identity = (
+            status.origin.clone(),
+            status.host_id.clone(),
+            signed_in(status),
+        );
+        if self.identity == identity {
+            return false;
+        }
+        *self = Self {
+            identity,
+            ..Default::default()
+        };
+        true
+    }
+}
 struct Inner {
     root: PathBuf,
     store: Arc<dyn SecretStore>,
@@ -79,6 +102,7 @@ struct Inner {
     status: watch::Receiver<RemoteStatus>,
     service: tokio::sync::OnceCell<Arc<dyn Service>>,
     directory: Mutex<Option<Directory>>,
+    cached: Mutex<Cached>,
     routes: Mutex<HashMap<String, route::Handle>>,
     pairing: Mutex<()>,
     events: crate::events::EventChannel,
@@ -94,7 +118,7 @@ impl Client {
         events: crate::events::EventChannel,
         cancel: CancellationToken,
     ) -> Self {
-        Self(Arc::new(Inner {
+        let client = Self(Arc::new(Inner {
             root,
             store,
             status,
@@ -103,9 +127,43 @@ impl Client {
             writes: Default::default(),
             service: Default::default(),
             directory: Mutex::new(None),
+            cached: Default::default(),
             routes: Mutex::new(HashMap::new()),
             pairing: Mutex::new(()),
-        }))
+        }));
+        let weak = Arc::downgrade(&client.0);
+        let mut status = client.0.status.clone();
+        let cancel = client.0.cancel.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    changed = status.changed() => if changed.is_err() { break; },
+                }
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                let current = status.borrow_and_update().clone();
+                let changed = inner.cached.lock().await.synchronize(&current);
+                if changed {
+                    for (_, route) in inner.routes.lock().await.drain() {
+                        route.cancel.cancel();
+                    }
+                    *inner.directory.lock().await = None;
+                }
+            }
+        });
+        client
+    }
+    async fn cached(&self) -> tokio::sync::MutexGuard<'_, Cached> {
+        let mut cached = self.0.cached.lock().await;
+        let current = self.0.status.borrow().clone();
+        if cached.synchronize(&current) {
+            for (_, route) in self.0.routes.lock().await.drain() {
+                route.cancel.cancel();
+            }
+        }
+        cached
     }
     async fn service(&self) -> Result<Arc<dyn Service>> {
         self.0
@@ -123,6 +181,10 @@ impl Client {
         let status = self.0.status.borrow().clone();
         if !signed_in(&status) {
             return Err("Sign in to your account first.".into());
+        }
+        let mut cached = self.cached().await;
+        if let Some(context) = &cached.context {
+            return Ok(context.clone());
         }
         let root = self.0.root.clone();
         let store = self.0.store.clone();
@@ -144,26 +206,38 @@ impl Client {
         })
         .await
         .map_err(|_| "Remote credential worker failed")??;
-        if context.origin != status.origin || Some(&context.host_id) != status.host_id.as_ref() {
+        let status = self.0.status.borrow().clone();
+        if !signed_in(&status)
+            || context.origin != status.origin
+            || Some(&context.host_id) != status.host_id.as_ref()
+        {
             return Err("The signed-in computer changed; try again.".into());
         }
+        cached.context = Some(context.clone());
         Ok(context)
     }
     async fn keys(&self) -> Result<ClientKeys> {
+        let mut cached = self.cached().await;
+        if let Some(keys) = &cached.keys {
+            return Ok(keys.clone());
+        }
         let store = self.0.store.clone();
         let writes = self.0.writes.clone();
-        tokio::task::spawn_blocking(move || {
+        let keys = tokio::task::spawn_blocking(move || {
             let _guard = writes.lock().map_err(|_| "Client keys lock failed")?;
             ClientKeys::load(store.as_ref())
         })
         .await
         .map_err(|_| "Client keys worker failed")?
-        .map_err(Into::into)
+        .map_err(String::from)?;
+        cached.keys = Some(keys.clone());
+        Ok(keys)
     }
     async fn update_key(&self, fingerprint: String, key: Option<ClientKey>) -> Result<()> {
+        let mut cached = self.cached().await;
         let store = self.0.store.clone();
         let writes = self.0.writes.clone();
-        tokio::task::spawn_blocking(move || {
+        let keys = tokio::task::spawn_blocking(move || {
             let _guard = writes.lock().map_err(|_| "Client keys lock failed")?;
             let mut keys = ClientKeys::load(store.as_ref())?;
             if let Some(key) = key {
@@ -171,11 +245,14 @@ impl Client {
             } else {
                 keys.0.remove(&fingerprint);
             }
-            keys.save(store.as_ref())
+            keys.save(store.as_ref())?;
+            Ok::<_, &'static str>(keys)
         })
         .await
         .map_err(|_| "Client keys worker failed")?
-        .map_err(Into::into)
+        .map_err(String::from)?;
+        cached.keys = Some(keys);
+        Ok(())
     }
     pub async fn computers(&self) -> Result<Vec<Computer>> {
         let context = self.context().await?;
@@ -221,17 +298,30 @@ impl Client {
     }
     pub async fn forget(&self, id: String) -> Result<()> {
         let _pairing = self.0.pairing.lock().await;
-        let computer = self.computer(&id).await?;
-        if let Some(route) = self.0.routes.lock().await.remove(&computer.fingerprint) {
+        drop(self.cached().await);
+        let fingerprint = self
+            .0
+            .routes
+            .lock()
+            .await
+            .values()
+            .find(|route| route.computer == id && !route.cancel.is_cancelled())
+            .map(|route| route.fingerprint.clone());
+        let fingerprint = match fingerprint {
+            Some(fingerprint) => fingerprint,
+            None => self.computer(&id).await?.fingerprint,
+        };
+        if let Some(route) = self.0.routes.lock().await.remove(&fingerprint) {
             route.cancel.cancel();
         }
-        self.update_key(computer.fingerprint, None).await
+        self.update_key(fingerprint, None).await
     }
     pub async fn reset(&self) -> Result<()> {
         let _pairing = self.0.pairing.lock().await;
         for (_, route) in self.0.routes.lock().await.drain() {
             route.cancel.cancel();
         }
+        let mut cached = self.cached().await;
         let store = self.0.store.clone();
         let writes = self.0.writes.clone();
         tokio::task::spawn_blocking(move || {
@@ -240,7 +330,9 @@ impl Client {
         })
         .await
         .map_err(|_| "Client keys worker failed")?
-        .map_err(Into::into)
+        .map_err(String::from)?;
+        cached.keys = Some(ClientKeys::default());
+        Ok(())
     }
     pub async fn pair(&self, id: String, pin: Secret) -> Result<()> {
         remote::validate_pin_format(&pin.0).map_err(|error| error.message())?;
@@ -291,6 +383,19 @@ impl Client {
         Ok(())
     }
     async fn route(&self, id: &str) -> Result<route::Handle> {
+        drop(self.cached().await);
+        if signed_in(&self.0.status.borrow()) {
+            if let Some(route) = self
+                .0
+                .routes
+                .lock()
+                .await
+                .values()
+                .find(|r| r.computer == id && !r.cancel.is_cancelled())
+            {
+                return Ok(route.clone());
+            }
+        }
         let computer = self.computer(id).await?;
         let context = self.context().await?;
         let mut routes = self.0.routes.lock().await;
