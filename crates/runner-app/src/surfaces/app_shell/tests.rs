@@ -922,7 +922,15 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
 
                 let footer = visual.debug_bounds("SIDEBAR_FOOTER").unwrap();
                 let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+                crate::theme_snapshot::assert_fill_color(&mut visual, "SIDEBAR_USAGE", None);
+                crate::theme_snapshot::assert_border(
+                    &mut visual,
+                    "SIDEBAR_USAGE",
+                    gpui::transparent_black(),
+                );
                 let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+                let host_button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+                assert!((gear.left() - host_button.right() - px(8. * zoom)).abs() < px(1.));
                 let row = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
                 assert!((usage.size.height - px(32. * zoom)).abs() <= px(1.));
                 assert!((gear.size.width - px(32. * zoom)).abs() <= px(1.));
@@ -942,7 +950,7 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                     "SIDEBAR_USAGE_ENTRY_claude-code",
                 ]
                 .map(|id| visual.debug_bounds(id).unwrap());
-                assert_eq!(entries[0].left() - usage.left(), px(10. * zoom));
+                assert_eq!(entries[0].left() - usage.left(), px(10. * zoom + 1.));
                 for pair in entries.windows(2) {
                     assert!(
                         pair[0].right() <= pair[1].left(),

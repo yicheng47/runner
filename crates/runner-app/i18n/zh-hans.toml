@@ -1579,6 +1579,8 @@
 "usage.every_hour" = "1 小时"
 "usage.show_sidebar" = "在侧边栏显示用量"
 "usage.sidebar_hint" = "徽章显示在设置按钮旁。点击可打开用量弹窗。"
+"usage.sidebar_preview" = "侧边栏预览"
+"usage.weekly_usage" = "每周用量"
 "usage.active_account" = "显示当前使用的账号。"
 "usage.subtitle" = "从各自账号读取智能体的用量限额。仅列出提供用量信息的 Claude Code 和 Codex。"
 "usage.sidebar" = "侧边栏"

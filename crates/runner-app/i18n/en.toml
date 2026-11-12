@@ -1579,6 +1579,8 @@
 "usage.every_hour" = "1 hour"
 "usage.show_sidebar" = "Show usage in the sidebar"
 "usage.sidebar_hint" = "Badges sit beside the Settings button. Click one to open the usage popover."
+"usage.sidebar_preview" = "Sidebar preview"
+"usage.weekly_usage" = "Weekly usage"
 "usage.active_account" = "Shows the active account."
 "usage.subtitle" = "Each agent's own usage limits, read from its account. Claude Code and Codex report usage; other agents are not listed."
 "usage.sidebar" = "Sidebar"

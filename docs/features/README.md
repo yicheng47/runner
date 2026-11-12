@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1271 — Compact Usage preview](./1271-usage-preview.md) — the approved compact Sidebar preview and shared styling with the real footer ([#1271](https://github.com/yicheng47/runner/issues/1271)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 - [1150 — Sign out of a Claude Code account](./1150-claude-account-sign-out.md) — Sign out in each signed-in account's ⋯ menu, with a confirmation, for the active and native accounts too ([#1150](https://github.com/yicheng47/runner/issues/1150)).
 - [1165 — Agent CLI version gate and background updates](./1165-agent-cli-version-gate.md) — a minimum Codex version gated at the launcher with a fallback card for rejected launches, an update tag in the launcher, and updates as background tasks with a bottom-right pill instead of a blocking dialog ([#1165](https://github.com/yicheng47/runner/issues/1165)).

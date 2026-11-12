@@ -539,7 +539,7 @@ fn usage_stays_solid_and_settings_gear_opens_usage_in_both_materials() {
 }
 
 #[test]
-fn usage_preview_matches_the_240_pixel_sidebar_reference_at_each_zoom() {
+fn usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card() {
     let temp = tempfile::tempdir().unwrap();
     let mut cx = gpui::TestAppContext::single();
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
@@ -564,11 +564,21 @@ fn usage_preview_matches_the_240_pixel_sidebar_reference_at_each_zoom() {
         root.enter_settings_pane(SettingsPane::Usage, window, cx);
     })
     .unwrap();
-    for zoom in [1., 1.3] {
+    for (width, zoom, sidebar_width, stacked) in [
+        (1440., 1., 240., false),
+        (1440., 1.5, 240., false),
+        (800., 1., 360., true),
+        (800., 1.5, 240., true),
+    ] {
+        visual.simulate_resize(gpui::size(
+            px(width),
+            px(if width == 800. { 600. } else { 1000. }),
+        ));
         store.update(&mut visual, |store, cx| {
             store.update_settings(
                 |s| {
                     s.app_zoom = zoom;
+                    s.sidebar_width = sidebar_width;
                     true
                 },
                 false,
@@ -582,23 +592,112 @@ fn usage_preview_matches_the_240_pixel_sidebar_reference_at_each_zoom() {
         });
         let sample = visual.debug_bounds("USAGE_PREVIEW_SIDEBAR").unwrap();
         let preview = visual.debug_bounds("USAGE_SIDEBAR_PREVIEW").unwrap();
-        let recent = visual.debug_bounds("USAGE_PREVIEW_RECENT").unwrap();
-        let divider = visual.debug_bounds("USAGE_PREVIEW_DIVIDER").unwrap();
+        let label = visual.debug_bounds("USAGE_PREVIEW_LABEL").unwrap();
         let footer = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
         let badges = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
-        let host = visual.debug_bounds("USAGE_PREVIEW_monitor.svg").unwrap();
-        let gear = visual.debug_bounds("USAGE_PREVIEW_settings.svg").unwrap();
+        crate::theme_snapshot::assert_fill_color(&mut visual, "SIDEBAR_USAGE", None);
+        crate::theme_snapshot::assert_border(
+            &mut visual,
+            "SIDEBAR_USAGE",
+            gpui::transparent_black(),
+        );
+        let host = visual.debug_bounds("USAGE_PREVIEW_HOST").unwrap();
+        let gear = visual.debug_bounds("USAGE_PREVIEW_SETTINGS").unwrap();
+        assert!(visual.debug_bounds("USAGE_PREVIEW_RECENT").is_none());
         assert!((sample.size.width - px(240. * zoom)).abs() < px(1.));
-        assert!((sample.center().x - preview.center().x).abs() < px(1.));
-        assert!((recent.size.height - px(30. * zoom)).abs() < px(1.));
+        assert!((sample.size.height - px(56. * zoom)).abs() < px(1.));
         assert!((footer.size.height - px(32. * zoom)).abs() < px(1.));
-        assert!((recent.left() - sample.left() - px(12. * zoom)).abs() < px(1.));
-        assert!((divider.top() - recent.bottom() - px(8. * zoom)).abs() < px(1.));
-        assert!((footer.top() - divider.bottom() - px(8. * zoom)).abs() < px(1.));
+        assert!((footer.left() - sample.left() - px(12. * zoom)).abs() < px(1.));
         assert!((sample.bottom() - footer.bottom() - px(12. * zoom)).abs() < px(1.));
+        assert!(sample.left() >= preview.left() && sample.right() <= preview.right());
+        if stacked {
+            assert!(sample.top() >= label.bottom() + px(24. * zoom - 1.));
+        } else {
+            assert!((sample.center().y - label.center().y).abs() < px(1.));
+            assert!((sample.right() - preview.right() + px(20. * zoom)).abs() < px(1.));
+        }
         assert!((gear.left() - host.right() - px(8. * zoom)).abs() < px(1.));
         assert!(badges.size.width < px(128. * zoom));
         assert!(badges.left() >= footer.left() && gear.right() <= footer.right() + px(1.));
+    }
+}
+
+#[test]
+fn usage_preview_tracks_badges_and_keeps_the_same_footer_anchors() {
+    use runner_core::Runtime;
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let host = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "usage-preview-states".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode];
+        root
+    });
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1200.), px(900.)));
+    let mut anchors = None;
+    for (sidebar, codex, claude) in [
+        (true, true, true),
+        (true, true, false),
+        (true, false, true),
+        (true, false, false),
+        (false, true, true),
+    ] {
+        store.update(&mut visual, |store, cx| {
+            store.update_settings(
+                |s| {
+                    s.usage.sidebar = sidebar;
+                    s.usage.codex = codex;
+                    s.usage.claude_code = claude;
+                    true
+                },
+                false,
+                cx,
+            );
+        });
+        let mut real_usage_width = None;
+        for preview in [false, true] {
+            host.update(&mut visual, |root, window, cx| {
+                if preview {
+                    root.enter_settings_pane(SettingsPane::Usage, window, cx);
+                } else {
+                    root.route = AppRoute::Roles;
+                    cx.notify();
+                }
+            })
+            .unwrap();
+            visual.run_until_parked();
+            let usage = visual.debug_bounds("SIDEBAR_USAGE");
+            assert_eq!(usage.is_some(), sidebar && (codex || claude));
+            for (selector, enabled) in [
+                ("SIDEBAR_USAGE_VALUE_codex", codex),
+                ("SIDEBAR_USAGE_VALUE_claude-code", claude),
+            ] {
+                assert_eq!(visual.debug_bounds(selector).is_some(), sidebar && enabled,);
+            }
+            if preview {
+                assert_eq!(usage.map(|bounds| bounds.size.width), real_usage_width);
+                let sample = visual.debug_bounds("USAGE_PREVIEW_SIDEBAR").unwrap();
+                let host_button = visual.debug_bounds("USAGE_PREVIEW_HOST").unwrap();
+                let gear = visual.debug_bounds("USAGE_PREVIEW_SETTINGS").unwrap();
+                let offsets = (
+                    host_button.left() - sample.left(),
+                    gear.left() - sample.left(),
+                );
+                assert_eq!(*anchors.get_or_insert(offsets), offsets);
+            } else {
+                real_usage_width = usage.map(|bounds| bounds.size.width);
+            }
+        }
     }
 }
 
@@ -630,7 +729,7 @@ fn usage_preview_buttons_never_open_pickers_or_navigate() {
     let anchor = host
         .read_with(&visual, |root, _| root.remote_client.ui.anchor)
         .unwrap();
-    for selector in ["USAGE_PREVIEW_monitor.svg", "USAGE_PREVIEW_settings.svg"] {
+    for selector in ["USAGE_PREVIEW_HOST", "USAGE_PREVIEW_SETTINGS"] {
         let button = visual.debug_bounds(selector).unwrap();
         visual.simulate_click(button.center(), gpui::Modifiers::default());
         visual.simulate_keystrokes("enter");
@@ -1358,6 +1457,7 @@ fn content_scrollbar_starts_below_the_drag_strip_at_the_window_edge() {
                     &self.content_scroll,
                     self.content_scrollbar.clone(),
                     zoom,
+                    px(40. * zoom),
                 ))
         }
     }
