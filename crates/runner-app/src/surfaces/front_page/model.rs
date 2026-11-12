@@ -108,7 +108,7 @@ pub(crate) fn action_pane(node: &PaneNode) -> ActionPane {
     }
 }
 
-fn same_topology(node: &PaneNode, pane: &Pane) -> bool {
+pub(crate) fn same_topology(node: &PaneNode, pane: &Pane) -> bool {
     match (node, pane) {
         (PaneNode::Leaf(leaf), Pane::Leaf { session }) => &leaf.session_id == session,
         (PaneNode::Split(node), Pane::Split { split, a, b, .. }) => {

@@ -48,6 +48,8 @@ pub(crate) struct RemoteWindow {
     pub(crate) drawer_resizing: bool,
     pub(crate) pane_bounds: HashMap<PaneKey, gpui::Size<Pixels>>,
     pub(crate) layout_hints: HashMap<String, PaneLayout>,
+    // Archive can push an empty pane before the collapsed tree arrives.
+    pub(crate) closing_layouts: HashMap<String, PaneLayout>,
     pub(crate) actions_pending: HashSet<String>,
     pub(crate) action_error: Option<String>,
     pub(crate) shell_placement: super::actions::ShellPlacement,
@@ -382,6 +384,7 @@ impl RemoteClient {
             pane_bounds: HashMap::new(),
             layout_hints: HashMap::new(),
             actions_pending: HashSet::new(),
+            closing_layouts: HashMap::new(),
             action_error: None,
             shell_placement: Arc::new(Mutex::new(None)),
             catalog: None,

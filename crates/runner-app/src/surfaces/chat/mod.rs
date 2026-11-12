@@ -6,6 +6,8 @@ mod attachment;
 mod close;
 mod layout;
 
+pub(crate) use close::PaneCloseFocus;
+
 use super::*;
 use runner_core::protocol::project::ProjectScope;
 
@@ -466,10 +468,13 @@ impl NativeRoot {
                     self.session_exit_codes
                         .insert(session_id.clone(), exit_code);
                     self.chat_transitions.remove(&session_id);
-                    self.stopping_sessions.remove(&session_id);
+                    let focus_on_completion = self.stopping_sessions.remove(&session_id)
+                        || self.pending_pane_closes.contains_key(&session_id)
+                        || self.sidebar.read(cx).session_archiving(&session_id);
                     self.refresh_sessions(cx);
                     self.sync_active_chat_detail(cx);
-                    if self.route == AppRoute::Chat {
+                    // A pending stop, close or archive settles focus at completion.
+                    if self.route == AppRoute::Chat && !focus_on_completion {
                         if self
                             .tabs
                             .active()

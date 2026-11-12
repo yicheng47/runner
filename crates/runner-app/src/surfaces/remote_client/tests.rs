@@ -7966,3 +7966,310 @@ fn remote_resume_and_fork_refusals_offer_host_scoped_update_recovery() {
             .unwrap();
     }
 }
+
+#[test]
+fn split_close_completion_restores_remote_keyboard_input_without_stealing_navigation() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for kind in ["shell", "chat", "empty"] {
+        for navigation in ["stay", "sibling", "tab", "input", "late-tab", "late-input"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, _) = fixture(&mut cx, temp.path());
+            enable_front_page(&fake);
+            fake.model_session_removal.store(true, Ordering::SeqCst);
+            let mut data = overview();
+            let mut survivor = data.sessions["s"].clone();
+            survivor.runtime = Some("shell".into());
+            data.sessions.insert("survivor".into(), survivor);
+            if kind == "shell" {
+                data.sessions.get_mut("s").unwrap().runtime = Some("shell".into());
+            }
+            data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+                "split":"row","sizes":[0.5,0.5],
+                "a":{"id":"closing", "session": if kind == "empty" { None } else { Some("s") }},
+                "b":{"id":"surviving", "session":"survivor"}
+            }))
+            .unwrap();
+            let mut other = data.tabs[0].clone();
+            other.id = "other-tab".into();
+            other.panes =
+                serde_json::from_value(serde_json::json!({"id":"other", "session":"survivor"}))
+                    .unwrap();
+            data.tabs.push(other);
+            fake.set_overview(data);
+            let window = add_window(&mut cx, &store, temp.path(), "remote-close-focus");
+            window.update(&mut cx, choose_host).unwrap();
+            cx.run_until_parked();
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            let (closing, surviving) = window
+                .update(&mut visual, |root, _, _| {
+                    let leaves = root.front_page_layout().unwrap().root.leaves();
+                    (leaves[0].id.clone(), leaves[1].id.clone())
+                })
+                .unwrap();
+            window
+                .update(&mut visual, |root, window, cx| {
+                    root.focus_pane(
+                        if navigation == "sibling" {
+                            &surviving
+                        } else {
+                            &closing
+                        },
+                        cx,
+                    );
+                    root.focus_active_terminal(window, cx);
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let mut input_focus = None;
+            window
+                .update(&mut visual, |root, window, cx| {
+                    match kind {
+                        "empty" => root.close_pane(&closing, window, cx),
+                        "shell" => root.close_terminal_pane(&closing, "s", window, cx),
+                        _ => {
+                            root.request_close_chat_pane(&closing, "s", window, cx);
+                            root.confirm_terminal_close(window, cx);
+                        }
+                    }
+                    match navigation {
+                        "tab" => {
+                            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+                            root.focus_active_terminal(window, cx);
+                        }
+                        "input" => {
+                            let find = root.remote_client.workspace().unwrap().terminals
+                                ["survivor"]
+                                .attachment
+                                .terminal_find
+                                .clone();
+                            find.update(cx, |find, cx| find.open(window, cx));
+                            input_focus = window.focused(cx);
+                        }
+                        _ => {}
+                    }
+                })
+                .unwrap();
+            visual.run_until_parked();
+            window
+                .update(&mut visual, |root, window, cx| match navigation {
+                    "late-tab" => {
+                        root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+                        root.focus_active_terminal(window, cx);
+                    }
+                    "late-input" => {
+                        let find = root.remote_client.workspace().unwrap().terminals["survivor"]
+                            .attachment
+                            .terminal_find
+                            .clone();
+                        find.update(cx, |find, cx| find.open(window, cx));
+                        input_focus = window.focused(cx);
+                    }
+                    _ => {}
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let completed_overview = fake.overview.lock().unwrap().clone();
+            fake.set_overview(completed_overview);
+            visual.run_until_parked();
+            window
+                .update(&mut visual, |root, window, cx| {
+                    let layout = root.front_page_layout().unwrap();
+                    assert_eq!(
+                        layout.id,
+                        if matches!(navigation, "tab" | "late-tab") {
+                            "other-tab"
+                        } else {
+                            "remote-tab"
+                        }
+                    );
+                    assert_eq!(layout.root.leaves().len(), 1, "{kind}/{navigation}");
+                    if matches!(navigation, "input" | "late-input") {
+                        assert_eq!(window.focused(cx), input_focus, "{kind}/{navigation}");
+                    } else {
+                        assert!(
+                            root.remote_client.workspace().unwrap().terminals["survivor"]
+                                .attachment
+                                .terminal_focus
+                                .is_focused(window),
+                            "{kind}/{navigation}"
+                        );
+                    }
+                })
+                .unwrap();
+            if !matches!(navigation, "input" | "late-input") {
+                fake.input.lock().unwrap().clear();
+                visual.simulate_keystrokes("x");
+                visual.run_until_parked();
+                assert!(
+                    fake.input
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|(address, bytes)| address.contains("survivor") && bytes == b"x"),
+                    "{kind}/{navigation}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn remote_archive_intermediate_launcher_waits_for_collapse_without_stealing_find_focus() {
+    use crate::surfaces::chat::PaneCloseFocus;
+    use crate::surfaces::front_page::actions::{Completion, WorkspaceAction};
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for navigation in ["stay", "find-before", "find-after"] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        fake.model_session_removal.store(true, Ordering::SeqCst);
+        let mut data = overview();
+        let mut survivor = data.sessions["s"].clone();
+        survivor.runtime = Some("shell".into());
+        data.sessions.insert("survivor".into(), survivor);
+        data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+            "split":"row","sizes":[0.5,0.5],
+            "a":{"session":"s"},"b":{"session":"survivor"}
+        }))
+        .unwrap();
+        fake.set_overview(data);
+        let window = add_window(&mut cx, &store, temp.path(), "intermediate-remote-archive");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        let (focus, action, final_layout, mut input_focus) = window
+            .update(&mut visual, |root, window, cx| {
+                let layout = root.front_page_layout().unwrap().clone();
+                let pane = layout.root.leaves()[0].id.clone();
+                root.focus_pane(&pane, cx);
+                root.focus_active_terminal(window, cx);
+                let focus = PaneCloseFocus::capture(root, window, cx).unwrap();
+                let (action, _) = WorkspaceAction::archive(
+                    root,
+                    vec!["s".into()],
+                    None,
+                    Some(crate::PendingPaneClose {
+                        tab_id: layout.id.clone(),
+                        pane_id: pane,
+                    }),
+                    cx,
+                )
+                .unwrap();
+                let final_layout =
+                    root.remote_client.workspace().unwrap().closing_layouts[&layout.id].clone();
+                if navigation == "find-before" {
+                    let find = root.remote_client.workspace().unwrap().terminals["survivor"]
+                        .attachment
+                        .terminal_find
+                        .clone();
+                    find.update(cx, |find, cx| find.open(window, cx));
+                }
+                (focus, action, final_layout, window.focused(cx))
+            })
+            .unwrap();
+        action
+            .client
+            .archive(runner_core::companion::ActionTarget {
+                kind: runner_core::companion::ActionKind::Session,
+                id: "s".into(),
+            })
+            .unwrap();
+        let intermediate_overview = fake.overview.lock().unwrap().clone();
+        fake.set_overview(intermediate_overview);
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                let layout = root.front_page_layout().unwrap();
+                assert_eq!(layout.root.leaves().len(), 2);
+                assert_eq!(layout.focused_session_id(), None);
+                assert!(
+                    !root.launchers.is_empty(),
+                    "the intermediate launcher must render"
+                );
+                assert_eq!(
+                    window.focused(cx),
+                    input_focus,
+                    "intermediate launcher stole focus: {navigation}"
+                );
+                if navigation == "find-after" {
+                    let find = root.remote_client.workspace().unwrap().terminals["survivor"]
+                        .attachment
+                        .terminal_find
+                        .clone();
+                    find.update(cx, |find, cx| find.open(window, cx));
+                    input_focus = window.focused(cx);
+                }
+            })
+            .unwrap();
+        action
+            .client
+            .layout(&final_layout, final_layout.parent_id.clone())
+            .unwrap();
+        window
+            .update(&mut visual, |root, window, cx| {
+                WorkspaceAction::complete_observed(
+                    root,
+                    action,
+                    Ok::<_, String>(Completion {
+                        layouts: vec![final_layout],
+                        ..Default::default()
+                    }),
+                    |done| done,
+                    |_, _, succeeded, cx| {
+                        assert!(succeeded);
+                        focus.defer_restore(window, cx);
+                    },
+                    cx,
+                );
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                assert!(root.remote_client.pane_close_pending("remote-tab"));
+                assert_eq!(
+                    window.focused(cx),
+                    input_focus,
+                    "acknowledgement focused the interim launcher"
+                );
+            })
+            .unwrap();
+        let final_overview = fake.overview.lock().unwrap().clone();
+        fake.set_overview(final_overview);
+        visual.run_until_parked();
+        window
+            .update(&mut visual, |root, window, cx| {
+                assert!(!root.remote_client.pane_close_pending("remote-tab"));
+                assert_eq!(root.front_page_layout().unwrap().root.leaves().len(), 1);
+                if navigation == "stay" {
+                    assert!(
+                        root.remote_client.workspace().unwrap().terminals["survivor"]
+                            .attachment
+                            .terminal_focus
+                            .is_focused(window)
+                    );
+                } else {
+                    assert_eq!(window.focused(cx), input_focus);
+                }
+            })
+            .unwrap();
+        fake.input.lock().unwrap().clear();
+        visual.simulate_keystrokes("x");
+        visual.run_until_parked();
+        if navigation == "stay" {
+            assert!(fake
+                .input
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(address, bytes)| address.contains("survivor") && bytes == b"x"));
+        } else {
+            assert!(
+                fake.input.lock().unwrap().is_empty(),
+                "Find input reached the terminal"
+            );
+        }
+    }
+}

@@ -231,6 +231,33 @@ impl RemoteClient {
         self.workspace.as_ref()?.layouts.get(id)
     }
 
+    pub(crate) fn pane_closing(&self, pane: &PaneKey) -> bool {
+        self.workspace
+            .as_ref()
+            .and_then(|remote| remote.closing_layouts.get(&pane.tab_id))
+            .is_some_and(|layout| {
+                !layout
+                    .root
+                    .leaves()
+                    .iter()
+                    .any(|leaf| leaf.id == pane.pane_id)
+            })
+    }
+
+    pub(crate) fn track_pane_close(&mut self, layout: &PaneLayout) {
+        self.workspace
+            .as_mut()
+            .unwrap()
+            .closing_layouts
+            .insert(layout.id.clone(), layout.clone());
+    }
+
+    pub(crate) fn pane_close_pending(&self, tab: &str) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|remote| remote.closing_layouts.contains_key(tab))
+    }
+
     pub(crate) fn recently_viewed_tab_layout(&self) -> Option<&PaneLayout> {
         let remote = self.workspace.as_ref()?;
         remote

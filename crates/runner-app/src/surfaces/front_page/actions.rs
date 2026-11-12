@@ -113,6 +113,11 @@ impl WorkspaceAction {
             .map(|draft| format!("layout:{}", draft.id))
             .unwrap_or_else(|| format!("session:{session}"));
         let action = WorkspaceAction::prepare(root, key, &required, cx)?;
+        if client.is_remote() && pane.is_some() {
+            if let Some(draft) = &draft {
+                root.remote_client.track_pane_close(draft);
+            }
+        }
         let session = session.to_owned();
         let operation = move || {
             if shell {
@@ -270,6 +275,13 @@ impl WorkspaceAction {
             .map(|close| format!("layout:{}", close.tab_id))
             .unwrap_or_else(|| "archive-sessions".into());
         let action = WorkspaceAction::prepare(root, key, &required, cx)?;
+        if remote_target {
+            if let Some(close) = &pane_close {
+                if let Some(layout) = layouts.iter().find(|layout| layout.id == close.tab_id) {
+                    root.remote_client.track_pane_close(layout);
+                }
+            }
+        }
         let operation = move || {
             let (removed, error) = client.archive_sessions(plan);
             if remote_target {
