@@ -7,12 +7,12 @@ mod finder;
 mod highlight;
 mod links;
 mod markdown;
+mod open_file;
+mod panel_view;
 pub(crate) mod picker;
 mod syntax;
 mod tabs;
 pub(crate) mod tree;
-mod view;
-mod viewer;
 
 #[cfg(test)]
 mod tests;
@@ -34,8 +34,8 @@ use runner_core::protocol::DaemonClient;
 
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 pub(crate) use links::ShowPreview;
+pub(crate) use panel_view::FilesView;
 use tree::PreparedStatus;
-pub(crate) use view::FilesView;
 
 /// The app's settings; `None` in a test that runs without a store.
 pub(super) fn settings(cx: &App) -> Option<&crate::app_settings::AppSettings> {

@@ -3242,7 +3242,7 @@ fn picking_from_open_in_saves_the_editor_links_fall_back_to() {
 
 #[test]
 fn a_file_path_in_the_root_uses_this_computers_separators() {
-    use super::view::absolute;
+    use super::panel_view::absolute;
     if cfg!(windows) {
         assert_eq!(
             absolute(Path::new("C:/Users/runneradmin/runner"), "src//lib.rs"),
@@ -3772,7 +3772,7 @@ fn files_stands_shown_open_or_closed_among_the_surfaces() {
 fn tick(h: &mut Harness) {
     h.visual
         .executor()
-        .advance_clock(super::viewer::IGNORED_REFRESH);
+        .advance_clock(super::open_file::IGNORED_REFRESH);
     h.settle();
 }
 

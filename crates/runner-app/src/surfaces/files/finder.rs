@@ -12,7 +12,7 @@ use gpui::{
 use runner_app::ui::menu::{popup_layer_positioned, PopupWidth};
 use runner_app::ui::TextField;
 
-use super::view::FilesView;
+use super::panel_view::FilesView;
 use crate::theme;
 
 const FINDER_WIDTH: f32 = 520.;
