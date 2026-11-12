@@ -12,25 +12,11 @@ impl SessionManager {
     pub fn drain_terminal_workers(&self) {
         let states: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
         let mut workers = Vec::new();
-        let mut model_workers = Vec::new();
         for state in states {
             let mut state = state.lock().unwrap();
-            state.finish_companion_terminals();
-            state.terminal_input.take();
-            if let Some(model) = state.terminal.take() {
-                model_workers.extend(model.take_workers());
-            }
-            if let Some(worker) = state.terminal_input_worker.take() {
-                workers.push(worker);
-            }
-            for (_, queue) in state.subscribers.drain(..) {
-                queue.close();
-            }
+            workers.extend(state.release_terminal());
         }
         for worker in workers {
-            let _ = worker.join();
-        }
-        for worker in model_workers {
             let _ = worker.join();
         }
         self.runtime.drain_workers();
@@ -263,13 +249,20 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
     ) -> Result<()> {
-        let retain_terminal = self
-            .runtime_updates
-            .lock()
-            .unwrap()
-            .tasks
-            .iter()
-            .any(|task| task.id == session_id);
+        let retain_terminal = {
+            #[cfg(test)]
+            if let Some(before_read) = self.terminal_retention_read.lock().unwrap().take() {
+                before_read();
+            }
+            self.runtime_updates
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .any(|task| task.id == session_id)
+        };
+        let control = self.terminal_control.lock().unwrap();
+        let mut exited = false;
         // Update tasks retain output until dismissal or their success timeout.
         if let Some(state) = self.session_state(session_id) {
             let gate = state.lock().unwrap().delivery_gate.clone();
@@ -287,14 +280,16 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
-                state.finish_companion_terminals();
-                if !retain_terminal {
-                    state.terminal = None;
-                }
-                state.terminal_input = None;
-                for (_, queue) in state.subscribers.drain(..) {
-                    queue.close();
-                }
+                let workers = if retain_terminal {
+                    state.finish_companion_terminals();
+                    state.terminal_input = None;
+                    for (_, queue) in state.subscribers.drain(..) {
+                        queue.close();
+                    }
+                    state.terminal_input_worker.take().into_iter().collect()
+                } else {
+                    state.release_terminal()
+                };
                 state.model.apply(
                     SessionEvent::Detached { stopped: false },
                     crate::session::clock::state_now(),
@@ -302,8 +297,15 @@ impl SessionManager {
                 state.mission_status_sink = None;
                 drop(state);
                 drop(delivery);
-                self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
+                for worker in workers {
+                    let _ = worker.join();
+                }
+                exited = true;
             }
+        }
+        drop(control);
+        if exited {
+            self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
         }
         self.prune_empty_session_state(session_id);
         Ok(())
