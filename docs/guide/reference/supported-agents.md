@@ -12,7 +12,7 @@ The agent’s page has its enable switch and **Set as default** action, detectio
 
 ### Launch options
 
-Every agent page has a **Launch** card and a read-only **Command** preview. Choose **Chat** or **Mission** to see the command Runner composes, with placeholders for the model, effort and first message. **Copy** copies the displayed command. Claude Code also shows the active account’s `CLAUDE_CONFIG_DIR` when the launch sets it; native-account launches do not add it.
+Every agent page has a **Launch** card and a read-only **Command** preview. Choose **Chat** or **Mission** to see the command Runner composes, with placeholders for the model, effort and first message. **Copy** copies the displayed command, briefly shows a checkmark and **Copied** before returning to **Copy**, and stays disabled when no command preview is available. Claude Code also shows the active account’s `CLAUDE_CONFIG_DIR` when the launch sets it; native-account launches do not add it.
 
 | Option | Agents | Default | Applies to |
 | --- | --- | --- | --- |

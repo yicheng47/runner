@@ -18,6 +18,7 @@ pub struct CopyValueButton {
     copied: bool,
     generation: u64,
     focus_handle: FocusHandle,
+    debug_selector: Option<SharedString>,
 }
 
 impl CopyValueButton {
@@ -36,6 +37,7 @@ impl CopyValueButton {
             copied: false,
             generation: 0,
             focus_handle,
+            debug_selector: None,
         }
     }
 
@@ -47,6 +49,28 @@ impl CopyValueButton {
     pub fn show_when_empty(mut self) -> Self {
         self.show_when_empty = true;
         self
+    }
+
+    pub fn debug_selector(mut self, selector: impl Into<SharedString>) -> Self {
+        self.debug_selector = Some(selector.into());
+        self
+    }
+
+    pub fn is_copied(&self) -> bool {
+        self.copied
+    }
+
+    pub fn value(&self) -> Option<&str> {
+        self.value.as_deref()
+    }
+
+    pub fn reset_copied(&mut self, cx: &mut Context<Self>) {
+        if !self.copied {
+            return;
+        }
+        self.copied = false;
+        self.generation += 1;
+        cx.notify();
     }
 
     pub fn set_value(&mut self, value: Option<String>, cx: &mut Context<Self>) {
@@ -109,11 +133,14 @@ impl Render for CopyValueButton {
         let focused = self.focus_handle.is_focused(window);
         let entity = cx.entity();
         let button = div()
+            .when_some(self.debug_selector.clone(), |button, selector| {
+                button.debug_selector(move || selector.to_string())
+            })
             .id("copy-value-button")
             .group("copy-value-button")
-            .track_focus(&self.focus_handle)
+            .track_focus(&self.focus_handle.clone().tab_stop(available))
             .tab_index(0)
-            .tab_stop(available || labeled)
+            .tab_stop(available)
             .flex_none()
             .flex()
             .items_center()
@@ -135,34 +162,54 @@ impl Render for CopyValueButton {
             .when(!labeled, |button| {
                 button.rounded(rems(4. / 16.)).text_color(theme::faint())
             })
-            .cursor(if available || labeled {
+            .cursor(if available {
                 CursorStyle::PointingHand
             } else {
                 CursorStyle::OperationNotAllowed
             })
-            .opacity(if !available && !labeled { 0.4 } else { 1. })
-            .hover(|button| {
+            .opacity(if available {
+                1.
+            } else if labeled {
+                0.5
+            } else {
+                0.4
+            })
+            .when(available, |button| {
+                button.hover(move |button| {
+                    if labeled {
+                        button
+                            .border_color(theme::border_strong())
+                            .text_color(theme::text())
+                    } else {
+                        button
+                            .bg(theme::with_alpha(theme::border(), 0.6))
+                            .text_color(theme::text())
+                    }
+                })
+            })
+            .focus_visible(move |button| {
                 if labeled {
                     button
                         .border_color(theme::border_strong())
                         .text_color(theme::text())
+                        .shadow(crate::ui::button::focus_ring(theme::border_strong()))
                 } else {
                     button
                         .bg(theme::with_alpha(theme::border(), 0.6))
                         .text_color(theme::text())
                 }
             })
-            .focus_visible(|button| {
-                button
-                    .bg(theme::with_alpha(theme::border(), 0.6))
-                    .text_color(theme::text())
-            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                entity.update(cx, |button, cx| button.copy(cx));
+            .when(available, |button| {
+                button
+                    .on_click(move |event, _, cx| {
+                        cx.stop_propagation();
+                        if !event.is_keyboard() {
+                            entity.update(cx, |button, cx| button.copy(cx));
+                        }
+                    })
+                    .on_key_down(cx.listener(Self::on_key_down))
             })
-            .on_key_down(cx.listener(Self::on_key_down))
             .child(
                 svg()
                     .flex_none()
@@ -173,7 +220,9 @@ impl Render for CopyValueButton {
                     } else {
                         theme::faint()
                     })
-                    .group_hover("copy-value-button", |icon| icon.text_color(theme::text())),
+                    .when(available, |icon| {
+                        icon.group_hover("copy-value-button", |icon| icon.text_color(theme::text()))
+                    }),
             )
             .children(labeled.then(|| {
                 if copied {
@@ -182,6 +231,9 @@ impl Render for CopyValueButton {
                     self.label.clone()
                 }
             }));
+        if labeled {
+            return button.into_any_element();
+        }
         Tooltip::new(
             SharedString::from(format!(
                 "copy-value-tooltip-{}",
@@ -196,5 +248,101 @@ impl Render for CopyValueButton {
         )
         .focus_handle(self.focus_handle.clone())
         .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{
+        InputEvent as _, KeyUpEvent, Keystroke, Modifiers, TestAppContext, VisualTestContext,
+    };
+
+    #[test]
+    fn labeled_copy_button_handles_keyboard_repeats_and_empty_state() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let mut cx = TestAppContext::single();
+        let host = cx.add_window(|window, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("prior".into()));
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            CopyValueButton::new(focus, None, crate::i18n::message("ui.copy"))
+                .labeled()
+                .show_when_empty()
+                .debug_selector("TEST_COPY")
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.run_until_parked();
+
+        let bounds = visual.debug_bounds("TEST_COPY").unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        host.read_with(&visual, |button, cx| {
+            assert!(!button.is_copied());
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("prior")
+            );
+        })
+        .unwrap();
+
+        host.update(&mut visual, |button, window, cx| {
+            button.set_value(Some("codex -m <model>".into()), cx);
+            button.focus_handle.focus(window, cx);
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        let keystroke = Keystroke::parse("enter").unwrap();
+        visual.update(|window, cx| {
+            window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+        });
+        visual.run_until_parked();
+        host.read_with(&visual, |button, cx| {
+            assert!(button.is_copied());
+            assert_eq!(button.generation, 2);
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("codex -m <model>")
+            );
+        })
+        .unwrap();
+
+        visual
+            .executor()
+            .advance_clock(Duration::from_millis(1_000));
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("overwritten".into()));
+        });
+        let bounds = visual.debug_bounds("TEST_COPY").unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+        host.read_with(&visual, |button, cx| {
+            assert!(button.is_copied());
+            assert_eq!(
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref(),
+                Some("codex -m <model>")
+            );
+        })
+        .unwrap();
+
+        visual.executor().advance_clock(Duration::from_millis(600));
+        visual.run_until_parked();
+        host.read_with(&visual, |button, _| assert!(button.is_copied()))
+            .unwrap();
+
+        visual.executor().advance_clock(Duration::from_millis(900));
+        visual.run_until_parked();
+        host.read_with(&visual, |button, _| assert!(!button.is_copied()))
+            .unwrap();
     }
 }

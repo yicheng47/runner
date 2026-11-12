@@ -20,8 +20,8 @@ use gpui::{
 use runner_app::ui::button::spinner;
 
 use runner_app::ui::{
-    Badge, BrowseField, Button, ButtonSize, ButtonVariant, FieldValidation, PaneHeader,
-    SettingsCard, TextField, Toggle, Tone, Tooltip,
+    Badge, BrowseField, Button, ButtonSize, ButtonVariant, CopyValueButton, FieldValidation,
+    PaneHeader, SettingsCard, TextField, Toggle, Tone, Tooltip,
 };
 
 use runner_core::protocol::discovery::DiscoveryOutcome;
@@ -117,6 +117,7 @@ pub(crate) struct AgentsPane {
         HashMap<(Runtime, bool), runner_core::protocol::runtime::RuntimeCommandPreview>,
     mission_preview: bool,
     launch_preview_errors: HashMap<Runtime, String>,
+    launch_copy: Entity<CopyValueButton>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -228,6 +229,16 @@ impl AgentsPane {
         subscriptions.push(cx.observe(&skills, |_, _, cx| cx.notify()));
         subscriptions.push(cx.observe(&mcp, |_, _, cx| cx.notify()));
 
+        let launch_copy = cx.new(|copy_cx| {
+            CopyValueButton::new(
+                copy_cx.focus_handle(),
+                None,
+                crate::i18n::message("ui.copy"),
+            )
+            .labeled()
+            .show_when_empty()
+            .debug_selector("AGENT_LAUNCH_COPY")
+        });
         let tasks = app_store
             .read(cx)
             .client
@@ -258,6 +269,7 @@ impl AgentsPane {
             launch_previews: HashMap::new(),
             mission_preview: false,
             launch_preview_errors: HashMap::new(),
+            launch_copy,
             _subscriptions: subscriptions,
         }
     }
@@ -683,6 +695,7 @@ impl AgentsPane {
 
     pub(crate) fn show_list(&mut self, cx: &mut Context<Self>) {
         self.selected_runtime = None;
+        self.sync_launch_copy(true, cx);
         self.reset_scroll(cx);
         cx.notify();
     }
@@ -706,6 +719,10 @@ impl AgentsPane {
         }
     }
     fn select_tab(&mut self, tab: AgentTab, cx: &mut Context<Self>) {
+        if self.tab != tab {
+            self.launch_copy
+                .update(cx, |copy, copy_cx| copy.reset_copied(copy_cx));
+        }
         self.tab = tab;
         if let Some(runtime) = self.selected_runtime {
             match tab {
@@ -723,10 +740,12 @@ impl AgentsPane {
             self.accounts
                 .update(cx, |accounts, cx| accounts.refresh(cx));
         }
+        let changed = self.selected_runtime != Some(runtime);
         self.selected_runtime = Some(runtime);
         self.tab = AgentTab::General;
         self.skills.update(cx, |pane, cx| pane.scope(runtime, cx));
         self.mcp.update(cx, |pane, cx| pane.scope(runtime, cx));
+        self.sync_launch_copy(changed, cx);
         self.refresh_launch_previews(runtime, cx);
         self.reset_scroll(cx);
         cx.notify();

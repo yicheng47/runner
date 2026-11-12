@@ -1162,3 +1162,163 @@ fn launch_card_switches_follow_the_runtime_table() {
             .is_some());
     }
 }
+
+#[test]
+fn launch_copy_shows_feedback_and_ignores_unavailable_previews() {
+    use gpui::Focusable as _;
+    use runner_core::protocol::runtime::{
+        RuntimeCommandLine, RuntimeCommandNote, RuntimeCommandPreview,
+    };
+    use std::time::Duration;
+
+    let mut cx = gpui::TestAppContext::single();
+    let mut codex = runtime(RuntimeRowState::Detected);
+    codex.name = Runtime::Codex;
+    let mut claude = runtime(RuntimeRowState::Detected);
+    claude.name = Runtime::ClaudeCode;
+    claude.display_name = "Claude Code".into();
+    let (_temp, pane) = test_pane(vec![codex, claude], false, &mut cx);
+    pane.update(&mut cx, |pane, _, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("initial".into()));
+        pane.selected_runtime = Some(Runtime::Codex);
+        cx.notify();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+
+    let copy = window.debug_bounds("AGENT_LAUNCH_COPY").unwrap();
+    window.simulate_click(copy.center(), gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(!pane.launch_copy.read(cx).is_copied());
+        assert_eq!(pane.launch_copy.read(cx).value(), None);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("initial")
+        );
+    })
+    .unwrap();
+
+    pane.update(&mut window, |pane, _, cx| {
+        pane.launch_previews.insert(
+            (Runtime::Codex, false),
+            RuntimeCommandPreview {
+                lines: vec![
+                    RuntimeCommandLine {
+                        command: "codex -m <model>".into(),
+                        note: RuntimeCommandNote::FromChat,
+                        option: None,
+                    },
+                    RuntimeCommandLine {
+                        command: "<first message>".into(),
+                        note: RuntimeCommandNote::FirstTurn,
+                        option: None,
+                    },
+                ],
+            },
+        );
+        pane.launch_previews.insert(
+            (Runtime::Codex, true),
+            RuntimeCommandPreview {
+                lines: vec![RuntimeCommandLine {
+                    command: "codex --ask-for-approval never --sandbox danger-full-access".into(),
+                    note: RuntimeCommandNote::AlwaysInMissions,
+                    option: None,
+                }],
+            },
+        );
+        cx.notify();
+    })
+    .unwrap();
+    window.run_until_parked();
+
+    let copy = window.debug_bounds("AGENT_LAUNCH_COPY").unwrap();
+    window.simulate_click(copy.center(), gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(pane.launch_copy.read(cx).is_copied());
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("codex -m <model>\n<first message>")
+        );
+    })
+    .unwrap();
+
+    window
+        .executor()
+        .advance_clock(Duration::from_millis(1_499));
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(pane.launch_copy.read(cx).is_copied());
+    })
+    .unwrap();
+    window.executor().advance_clock(Duration::from_millis(1));
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(!pane.launch_copy.read(cx).is_copied());
+    })
+    .unwrap();
+
+    window.simulate_click(copy.center(), gpui::Modifiers::default());
+    window.run_until_parked();
+    let mission_tab = window
+        .debug_bounds("AGENT_LAUNCH_TAB_codex_mission")
+        .unwrap();
+    window.simulate_click(mission_tab.center(), gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(!pane.launch_copy.read(cx).is_copied());
+        assert_eq!(
+            pane.launch_copy.read(cx).value(),
+            Some("codex --ask-for-approval never --sandbox danger-full-access")
+        );
+    })
+    .unwrap();
+
+    pane.update(&mut window, |pane, win, cx| {
+        let focus = pane.launch_copy.read(cx).focus_handle(cx);
+        focus.focus(win, cx);
+    })
+    .unwrap();
+    window.run_until_parked();
+    window.simulate_keystrokes("space");
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(pane.launch_copy.read(cx).is_copied());
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("codex --ask-for-approval never --sandbox danger-full-access")
+        );
+    })
+    .unwrap();
+
+    pane.update(&mut window, |pane, _, cx| {
+        pane.selected_runtime = Some(Runtime::ClaudeCode);
+        pane.sync_launch_copy(true, cx);
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("marker".into()));
+        cx.notify();
+    })
+    .unwrap();
+    window.run_until_parked();
+    let copy = window.debug_bounds("AGENT_LAUNCH_COPY").unwrap();
+    window.simulate_click(copy.center(), gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, cx| {
+        assert!(!pane.launch_copy.read(cx).is_copied());
+        assert_eq!(pane.launch_copy.read(cx).value(), None);
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("marker")
+        );
+    })
+    .unwrap();
+}
