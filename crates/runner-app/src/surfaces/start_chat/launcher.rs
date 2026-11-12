@@ -888,6 +888,11 @@ fn claims_focus(root: &NativeRoot, pane: Option<&PaneKey>) -> bool {
         && pane.is_none_or(|pane| {
             root.front_page_layout()
                 .is_some_and(|layout| layout.focused_pane_id == pane.pane_id)
+                && !root
+                    .pending_pane_closes
+                    .values()
+                    .any(|close| close.tab_id == pane.tab_id && close.pane_id == pane.pane_id)
+                && !root.remote_client.pane_closing(pane)
         })
 }
 

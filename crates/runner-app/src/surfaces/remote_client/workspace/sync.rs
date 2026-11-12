@@ -106,6 +106,15 @@ impl RemoteClient {
                 }
                 remote.layouts.insert(tab.id.clone(), layout);
             }
+            remote.closing_layouts.retain(|id, layout| {
+                overview
+                    .tabs
+                    .iter()
+                    .find(|tab| &tab.id == id)
+                    .is_some_and(|tab| {
+                        !crate::surfaces::front_page::model::same_topology(&layout.root, &tab.panes)
+                    })
+            });
         }
         if let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id) {
             let live = remote
@@ -236,6 +245,7 @@ impl RemoteClient {
             remote.delete_project = None;
             *remote.shell_placement.lock().unwrap() = None;
             remote.actions_pending.clear();
+            remote.closing_layouts.clear();
             remote.layout_hints.clear();
             remote.reopen_sessions.clear();
             remote.activate_session = None;

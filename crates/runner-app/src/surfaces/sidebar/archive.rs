@@ -1,3 +1,4 @@
+use crate::surfaces::chat::PaneCloseFocus;
 use crate::surfaces::front_page::actions::WorkspaceAction;
 use runner_core::protocol::model::Runtime;
 
@@ -170,6 +171,11 @@ impl NativeRoot {
             return;
         }
         let remote = self.front_page_client(cx).is_remote();
+        let focus = self
+            .front_page_layout()
+            .and_then(PaneLayout::focused_session_id)
+            .filter(|id| session_ids.iter().any(|session| session == id))
+            .and_then(|_| PaneCloseFocus::capture(self, window, cx));
         let error_target = match source {
             ArchiveAllSource::Chat => ArchiveErrorTarget::Chat,
             ArchiveAllSource::Sidebar => ArchiveErrorTarget::App,
@@ -202,17 +208,22 @@ impl NativeRoot {
         cx.spawn_in(window, async move |weak, cx| {
             let result = task.await;
             let _ = weak.update_in(cx, |root, window, cx| {
-                let Some(result) =
-                    WorkspaceAction::complete(root, action, result, |done| done.completion, cx)
-                else {
+                let Some(result) = WorkspaceAction::complete_observed(
+                    root,
+                    action,
+                    result,
+                    |done| done.completion,
+                    |_, client, succeeded, cx| {
+                        if client.is_remote() && succeeded {
+                            if let Some(focus) = focus.clone() {
+                                focus.defer_restore(window, cx);
+                            }
+                        }
+                    },
+                    cx,
+                ) else {
                     return;
                 };
-                root.sidebar.update(cx, |sidebar, cx| {
-                    for id in &pending_ids {
-                        sidebar.archiving_sessions.remove(id);
-                    }
-                    cx.notify();
-                });
                 let (removed, error) = match result {
                     Ok(done) => (done.removed, done.error),
                     Err(error) => (Vec::new(), Some(error)),
@@ -220,14 +231,20 @@ impl NativeRoot {
                 let root = cx.entity();
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
-                        root.finish_sidebar_archive(
+                        let restore_focus = focus
+                            .as_ref()
+                            .is_some_and(|focus| focus.is_current(root, window, cx));
+                        let refreshed = root.finish_sidebar_archive(
                             pending_ids,
                             removed,
                             error,
                             error_target,
                             window,
                             cx,
-                        )
+                        );
+                        if restore_focus && refreshed {
+                            root.settle_active_tab(window, cx);
+                        }
                     });
                 });
             });
@@ -237,6 +254,10 @@ impl NativeRoot {
 }
 
 impl Sidebar {
+    pub(crate) fn session_archiving(&self, session_id: &str) -> bool {
+        self.archiving_sessions.contains(session_id)
+    }
+
     fn prepare_archive_sessions(
         &mut self,
         session_ids: &[String],
@@ -268,7 +289,13 @@ impl NativeRoot {
         error_target: ArchiveErrorTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
+        self.sidebar.update(cx, |sidebar, cx| {
+            for id in &attempted {
+                sidebar.archiving_sessions.remove(id);
+            }
+            cx.notify();
+        });
         for session_id in &removed {
             self.attached.remove(session_id);
             self.session_exit_codes.remove(session_id);
@@ -279,7 +306,7 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             self.clear_pending_tab_close(&attempted);
             cx.notify();
-            return;
+            return false;
         }
         let refresh_result = (|| -> Result<()> {
             self.refresh_sessions(cx);
@@ -289,9 +316,6 @@ impl NativeRoot {
         })();
         let refresh_ok = refresh_result.is_ok();
         self.clear_pending_tab_close(&attempted);
-        if refresh_ok {
-            self.settle_active_tab(window, cx);
-        }
         let error = archive_error.or_else(|| {
             refresh_result
                 .err()
@@ -303,27 +327,19 @@ impl NativeRoot {
         }
         if refresh_ok {
             for pending in pane_closes {
-                self.close_archived_pane(&pending, window, cx);
+                self.close_archived_pane(&pending, cx);
             }
         }
         cx.notify();
+        refresh_ok
     }
 
     // The archived chat's tab may no longer be the active one, so the
     // collapse targets the layout by id and persists it directly.
-    fn close_archived_pane(
-        &mut self,
-        pending: &PendingPaneClose,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn close_archived_pane(&mut self, pending: &PendingPaneClose, cx: &mut Context<Self>) {
         let Some(mut layout) = pane_close_after_archive(self.tabs.tabs(), pending).cloned() else {
             return;
         };
-        if self.tabs.active_tab_id() == Some(layout.id.as_str()) {
-            self.close_pane(&pending.pane_id, window, cx);
-            return;
-        }
         if !layout.close_pane(&pending.pane_id) {
             return;
         }
@@ -336,5 +352,91 @@ impl NativeRoot {
             self.chat_error = Some(error.to_string().into());
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+    use crate::surfaces::start_chat::{tests::modal_harness, ChatMode};
+
+    #[test]
+    fn archived_pane_launcher_cannot_steal_focus_before_the_close_completion() {
+        for navigate in [false, true] {
+            let mut harness =
+                modal_harness(1400., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+            let mut focus = None;
+            let mut input_focus = None;
+            harness.act(|root, window, cx| {
+                root.start_chat_modal = None;
+                let core = root.app_store.read(cx).test_core.clone();
+                let conn = core.db.get().unwrap();
+                conn.execute("INSERT INTO sessions(id,status,agent_runtime,agent_command) VALUES ('closing','running','codex','codex'),('surviving','running','shell','/bin/sh')", []).unwrap();
+                drop(conn);
+                let events: Arc<dyn runner_daemon::session::manager::SessionEvents> = Arc::new(core.session_events());
+                for id in ["closing", "surviving"] {
+                    core.sessions.prepare_unlisted_terminal(id, (80, 24), &core.db, &events).unwrap();
+                    root.app_store.update(cx, |store, _| store.bridge.attach(id).unwrap());
+                }
+                let mut layout = PaneLayout::single(Some("closing"), &[]);
+                layout.id = "01ARZ3NDEKTSV4RRFFQ69G5FAV".into();
+                let survivor = layout.split("p1", SplitOrientation::Row).unwrap();
+                layout.assign_session(&survivor, "surviving").unwrap();
+                layout.focus_pane("p1");
+                root.core(cx).node_tab_upsert(layout.upsert_input().unwrap()).unwrap();
+                root.refresh_sessions(cx);
+                root.reload_tabs(cx).unwrap();
+                root.tabs.activate(&layout.id);
+                root.route = AppRoute::Chat;
+                root.ensure_active_tab_attached(window, cx).unwrap();
+                root.focus_active_terminal(window, cx);
+                focus = PaneCloseFocus::capture(root, window, cx);
+                root.pending_pane_closes.insert("closing".into(), PendingPaneClose { tab_id: layout.id, pane_id: "p1".into() });
+                if navigate {
+                    let find = root.attached["surviving"].terminal_find.clone();
+                    find.update(cx, |find, cx| find.open(window, cx));
+                }
+                input_focus = window.focused(cx);
+                core.db.get().unwrap().execute("UPDATE sessions SET status = 'stopped' WHERE id = 'closing'", []).unwrap();
+                runner_daemon::ops::session::session_archive(&core, "closing").unwrap();
+                root.refresh_sessions(cx);
+                root.reload_tabs(cx).unwrap();
+            });
+            harness.act(|root, window, cx| {
+                assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 2);
+                assert_eq!(root.tabs.active().unwrap().focused_session_id(), None);
+                assert!(
+                    !root.launchers.is_empty(),
+                    "the intermediate empty pane must render"
+                );
+                assert_eq!(
+                    window.focused(cx),
+                    input_focus,
+                    "intermediate launcher stole focus"
+                );
+                let restore_focus = focus.as_ref().unwrap().is_current(root, window, cx);
+                assert_eq!(restore_focus, !navigate);
+                let refreshed = root.finish_sidebar_archive(
+                    vec!["closing".into()],
+                    vec!["closing".into()],
+                    None,
+                    ArchiveErrorTarget::Chat,
+                    window,
+                    cx,
+                );
+                assert!(refreshed);
+                if restore_focus {
+                    root.settle_active_tab(window, cx);
+                }
+                assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 1);
+            });
+            harness.act(|root, window, cx| {
+                if navigate {
+                    assert_eq!(window.focused(cx), input_focus);
+                } else {
+                    assert!(root.attached["surviving"].terminal_focus.is_focused(window));
+                }
+            });
+        }
     }
 }

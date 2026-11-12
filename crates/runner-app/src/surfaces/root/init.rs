@@ -342,6 +342,7 @@ impl NativeRoot {
             pane_drop: None,
             pane_rename: None,
             _pane_rename_focus_subscription: None,
+            _pane_close_focus_subscription: None,
             terminal_close_confirm: None,
             pending_pane_closes: HashMap::new(),
             pending_tab_close: None,

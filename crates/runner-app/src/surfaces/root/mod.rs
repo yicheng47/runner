@@ -306,6 +306,7 @@ pub(crate) struct NativeRoot {
     pub(crate) pane_drop: Option<(PaneKey, DropSide)>,
     pub(crate) pane_rename: Option<PaneRename>,
     pub(crate) _pane_rename_focus_subscription: Option<Subscription>,
+    pub(crate) _pane_close_focus_subscription: Option<Subscription>,
     pub(crate) terminal_close_confirm: Option<TerminalCloseConfirm>,
     pub(crate) pending_pane_closes: HashMap<String, PendingPaneClose>,
     pub(crate) pending_tab_close: Option<PendingTabClose>,
