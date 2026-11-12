@@ -57,6 +57,7 @@ enum PaletteDestination {
     NewTerminal,
     NewChat,
     NewMission,
+    SwitchSidebarView,
     InstallRunnerCommand,
     UninstallRunnerCommand,
     ShowUpdate,
@@ -152,6 +153,11 @@ fn palette_items(
             "new-mission",
             crate::i18n::text("ui.new_mission"),
             PaletteDestination::NewMission,
+        ),
+        (
+            "switch-sidebar-view",
+            crate::i18n::text("keymap.switch-sidebar-view.title"),
+            PaletteDestination::SwitchSidebarView,
         ),
     ] {
         items.push(PaletteItem {
@@ -360,6 +366,7 @@ fn remote_palette_items(
             PaletteDestination::NewChat => client.supports(&["catalog", "startChat"]),
             PaletteDestination::NewMission => client.supports(&["catalog", "startMission"]),
             PaletteDestination::NewTerminal => client.supports(&["startShell", "layout"]),
+            PaletteDestination::SwitchSidebarView => true,
             _ => false,
         })
         .collect::<Vec<_>>();
@@ -666,6 +673,10 @@ impl CommandPaletteState {
                 }
                 PaletteDestination::NewTerminal => {
                     shell.new_terminal(window, shell_cx);
+                    true
+                }
+                PaletteDestination::SwitchSidebarView => {
+                    shell.switch_sidebar_view(&SwitchSidebarView, window, shell_cx);
                     true
                 }
                 PaletteDestination::InstallRunnerCommand => {
@@ -1037,6 +1048,47 @@ mod tests {
             assert_eq!(filtered[0].destination, destination);
             assert_eq!(filtered[0].kind, PaletteKind::Command);
         }
+    }
+
+    #[test]
+    fn palette_switch_sidebar_view_is_translated_searchable_and_executes() {
+        for locale in [i18n::Locale::English, i18n::Locale::SimplifiedChinese] {
+            i18n::testing::with_locale(locale, || {
+                let items = palette_items(&[], &[], &[], &[], None);
+                for query in [
+                    "switch sidebar view",
+                    i18n::text("keymap.switch-sidebar-view.title"),
+                ] {
+                    let matches = filtered_palette_items(&items, query);
+                    assert_eq!(matches.len(), 1);
+                    assert_eq!(
+                        matches[0].destination,
+                        PaletteDestination::SwitchSidebarView
+                    );
+                    assert_eq!(
+                        matches[0].label,
+                        i18n::text("keymap.switch-sidebar-view.title")
+                    );
+                }
+            });
+        }
+        use crate::surfaces::start_chat::tests::modal_harness;
+        use crate::surfaces::start_chat::ChatMode;
+        let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let palette = harness.read_root(|root, _| root.command_palette.clone());
+        harness.act(|root, _, cx| root.set_sidebar_collapsed(true, true, cx));
+        harness.visual.update(|window, cx| {
+            palette.update(cx, |palette, cx| {
+                palette.open(window, cx);
+                palette.query = "switch sidebar view".into();
+                palette.select(0, window, cx);
+            });
+        });
+        harness.visual.run_until_parked();
+        harness.read_root(|root, cx| {
+            assert!(!root.front_page_sidebar_collapsed());
+            assert!(root.front_page_sidebar().read(cx).active_only(cx));
+        });
     }
 
     #[test]

@@ -83,6 +83,7 @@ mod tests {
     #[derive(Default)]
     struct Host {
         inputs: Mutex<Vec<Vec<u8>>>,
+        observed: Mutex<Vec<runner_core::protocol::terminal::InputEvent>>,
         fail: AtomicBool,
     }
     struct Frames;
@@ -100,7 +101,8 @@ mod tests {
                 Request::terminal_metadata { .. } => {
                     Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
                 }
-                Request::terminal_observe_input { .. } => {
+                Request::terminal_observe_input { input, .. } => {
+                    self.observed.lock().unwrap().push(input);
                     Ok(Response::terminal_observe_input(Ok(())))
                 }
                 _ => Err(ClientError::msg("unexpected request")),
@@ -142,6 +144,138 @@ mod tests {
         )
         .unwrap();
         (host, terminal)
+    }
+
+    struct ShortcutTerminal {
+        terminal: Arc<TerminalMirror>,
+        root_focus: gpui::FocusHandle,
+        terminal_focus: gpui::FocusHandle,
+        switches: usize,
+    }
+
+    impl gpui::Render for ShortcutTerminal {
+        fn render(
+            &mut self,
+            _: &mut gpui::Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            use gpui::prelude::*;
+            gpui::div()
+                .key_context("Root")
+                .track_focus(&self.root_focus)
+                .on_action(
+                    cx.listener(|this, _: &crate::SwitchSidebarView, _, _| this.switches += 1),
+                )
+                .child(
+                    gpui::div()
+                        .key_context("Terminal")
+                        .track_focus(&self.terminal_focus)
+                        .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                            handle_key(&this.terminal, false, &event.keystroke, false, cx).unwrap();
+                        })),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn ctrl_period_routes_to_the_action_or_emits_the_negotiated_terminal_bytes(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::keymap::{self, KeymapOverrides, TerminalCtrlKeys};
+        let (host, terminal) = fixture();
+        let mut ctrl_period = keymap::entry("switch-sidebar-view")
+            .unwrap()
+            .default
+            .clone();
+        ctrl_period.meta = false;
+        ctrl_period.ctrl = true;
+        let overrides = KeymapOverrides::from([("switch-sidebar-view".into(), Some(ctrl_period))]);
+        let window = cx.add_window(|_, cx| ShortcutTerminal {
+            terminal: terminal.clone(),
+            root_focus: cx.focus_handle(),
+            terminal_focus: cx.focus_handle(),
+            switches: 0,
+        });
+        for (seq, output, expected) in [
+            (1, b"\x1b[>1u".as_slice(), b"\x1b[46;5u".as_slice()),
+            (2, b"\x1b[<u".as_slice(), b".".as_slice()),
+        ] {
+            terminal.test_feed(seq, output);
+            for mode in [
+                TerminalCtrlKeys::RunnerFirst,
+                TerminalCtrlKeys::TerminalFirst,
+            ] {
+                cx.update(|cx| keymap::install_bindings(cx, &overrides, mode, false));
+                window
+                    .update(cx, |view, window, cx| view.terminal_focus.focus(window, cx))
+                    .unwrap();
+                cx.run_until_parked();
+                let switches = window.read_with(cx, |view, _| view.switches).unwrap();
+                host.inputs.lock().unwrap().clear();
+                host.observed.lock().unwrap().clear();
+                cx.simulate_keystrokes(window.into(), "ctrl-.");
+                cx.run_until_parked();
+                window
+                    .read_with(cx, |view, _| {
+                        assert_eq!(
+                            view.switches,
+                            switches + usize::from(mode == TerminalCtrlKeys::RunnerFirst)
+                        );
+                    })
+                    .unwrap();
+                if mode == TerminalCtrlKeys::TerminalFirst {
+                    assert_eq!(*host.inputs.lock().unwrap(), [expected.to_vec()]);
+                    use runner_core::protocol::terminal::{InputEvent, InputKind};
+                    use runner_terminal::{
+                        input_state::{InputState, InputTracker},
+                        replay,
+                    };
+                    use std::time::{Duration, Instant};
+                    let expected_kind = if seq == 1 {
+                        InputKind::Navigate
+                    } else {
+                        InputKind::Content { text: ".".into() }
+                    };
+                    let observed = host.observed.lock().unwrap();
+                    assert_eq!(
+                        *observed,
+                        [InputEvent::Key {
+                            kind: expected_kind
+                        }]
+                    );
+                    let start = Instant::now();
+                    let mut term = replay::replay_bytes(80, 24, b"> ");
+                    let mut tracker = InputTracker::new(start);
+                    tracker.initial_observation(start);
+                    tracker.observe_input(&observed[0], start, &term);
+                    replay::feed(&mut term, b".");
+                    tracker.observe_output(start + Duration::from_millis(1), &term);
+                    assert_eq!(
+                        tracker.latest_observation().state,
+                        if seq == 1 {
+                            InputState::Idle
+                        } else {
+                            InputState::Drafting
+                        }
+                    );
+                } else {
+                    assert!(host.inputs.lock().unwrap().is_empty());
+                    assert!(host.observed.lock().unwrap().is_empty());
+                }
+                host.inputs.lock().unwrap().clear();
+                host.observed.lock().unwrap().clear();
+                let switches = window.read_with(cx, |view, _| view.switches).unwrap();
+                window
+                    .update(cx, |view, window, cx| view.root_focus.focus(window, cx))
+                    .unwrap();
+                cx.simulate_keystrokes(window.into(), "ctrl-.");
+                window
+                    .read_with(cx, |view, _| assert_eq!(view.switches, switches + 1))
+                    .unwrap();
+                assert!(host.inputs.lock().unwrap().is_empty());
+                assert!(host.observed.lock().unwrap().is_empty());
+            }
+        }
     }
 
     #[gpui::test]

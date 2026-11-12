@@ -358,6 +358,7 @@ impl NativeRoot {
                     .on_action(cx.listener(Self::toggle_terminal_drawer_action))
             })
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::switch_sidebar_view))
             .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::search_files))
             .on_action(cx.listener(Self::open_settings))

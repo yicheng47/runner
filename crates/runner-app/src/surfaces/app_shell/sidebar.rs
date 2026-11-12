@@ -95,6 +95,15 @@ impl NativeRoot {
         (Some(sidebar.into_any_element()), divider)
     }
 
+    pub(super) fn toggle_sidebar_view(&mut self, cx: &mut Context<Self>) {
+        self.front_page_sidebar().update(cx, |sidebar, cx| {
+            sidebar.clear_sidebar_drag("change-view", cx);
+            sidebar.toggle_active_only(cx);
+        });
+        self.sync_sidebar_shortcut_rows(cx);
+        cx.notify();
+    }
+
     pub(super) fn render_sidebar_brand(
         &self,
         update: Option<runner_app::updater::UpdateState>,
@@ -121,26 +130,7 @@ impl NativeRoot {
                 let owner = cx.entity();
                 move |_, cx| {
                     owner.update(cx, |this, cx| {
-                        this.clear_sidebar_drag("change-view", cx);
-                        if this.remote_client.is_active() {
-                            this.front_page_sidebar()
-                                .update(cx, |sidebar, cx| sidebar.toggle_active_only(cx));
-                            this.sync_sidebar_shortcut_rows(cx);
-                            cx.notify();
-                            return;
-                        }
-                        this.app_store.update(cx, |store, cx| {
-                            store.update_settings(
-                                |settings| {
-                                    settings.sidebar_active_only = !settings.sidebar_active_only;
-                                    true
-                                },
-                                true,
-                                cx,
-                            );
-                        });
-                        this.sync_sidebar_shortcut_rows(cx);
-                        cx.notify();
+                        this.toggle_sidebar_view(cx);
                     });
                 }
             });

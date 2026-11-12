@@ -1017,10 +1017,10 @@ impl TerminalMirror {
         shift: bool,
         key_char: Option<&str>,
     ) -> std::result::Result<bool, ClientError> {
-        let input = InputEvent::Key {
-            kind: crate::mappings::classify_key(key, ctrl, alt, shift, key_char),
-        };
         let mode = *self.term.lock_unfair().mode();
+        let input = InputEvent::Key {
+            kind: crate::mappings::classify_key(mode, key, ctrl, alt, shift, key_char),
+        };
         match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, mode) {
             Some(bytes) => {
                 self.observe_input(&input);

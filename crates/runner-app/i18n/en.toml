@@ -378,6 +378,8 @@
 "keymap.terminal-ctrl-keys.runner-first" = "Runner first"
 "keymap.terminal-ctrl-keys.terminal-first" = "Terminal first"
 "keymap.terminal-ctrl-keys.title" = "Ctrl keys in terminals"
+"keymap.switch-sidebar-view.description" = "Switch between Projects and Active, expanding the sidebar if collapsed."
+"keymap.switch-sidebar-view.title" = "Switch sidebar view"
 "keymap.toggle-sidebar.description" = "Collapse or expand the app sidebar."
 "keymap.toggle-sidebar.title" = "Toggle sidebar"
 "keymap.toggle-terminal-drawer.description" = "Show or hide the active mission's terminal drawer."

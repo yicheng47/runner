@@ -7,6 +7,7 @@ use alacritty_terminal::term::TermMode;
 pub use runner_core::protocol::terminal::InputKind;
 
 pub fn classify_key(
+    mode: TermMode,
     key: &str,
     ctrl: bool,
     alt: bool,
@@ -29,6 +30,9 @@ pub fn classify_key(
     }
     if key == "tab" && !ctrl && !alt && !shift {
         return InputKind::Content { text: "\t".into() };
+    }
+    if key == "." && ctrl && !alt && !shift && !mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
+        return InputKind::Content { text: ".".into() };
     }
     if !ctrl && !alt {
         if let Some(text) = key_char.filter(|text| text.chars().any(|c| !c.is_control())) {
@@ -109,6 +113,8 @@ pub fn encode_key(
                 Some(k.as_bytes()[0].to_ascii_uppercase() - b'@')
             }
             "space" | "@" => Some(0),
+            // Period has no C0 code; legacy terminals leave it unchanged by Ctrl.
+            "." => Some(b'.'),
             "[" => Some(0x1b),
             "\\" => Some(0x1c),
             "]" => Some(0x1d),
@@ -192,8 +198,8 @@ pub fn encode_key(
 /// reading `ESC d` as Alt+D once the protocol is on, and reads `ESC CR` as
 /// Shift+Enter, so these chords cannot keep their legacy bytes. Plain and
 /// shifted text, unmodified Enter/Tab/Backspace and the functional keys keep
-/// their existing encodings. A chord the legacy path leaves to the app stays
-/// unhandled here too.
+/// their existing encodings. Ctrl+Period has no C0 code, but the negotiated
+/// protocol preserves its modifier.
 fn encode_kitty_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
     let modified_named = (alt || shift) && !ctrl;
     let (code, csi_u) = match key {
@@ -207,11 +213,11 @@ fn encode_kitty_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec
             let (Some(c), None) = (chars.next(), chars.next()) else {
                 return None;
             };
-            let ctrl_has_legacy_form =
-                c.is_ascii_alphabetic() || matches!(c, '@' | '[' | '\\' | ']');
+            let ctrl_encodable =
+                c.is_ascii_alphabetic() || matches!(c, '@' | '[' | '\\' | ']' | '.');
             (
                 c.to_ascii_lowercase() as u32,
-                alt || (ctrl && ctrl_has_legacy_form),
+                alt || (ctrl && ctrl_encodable),
             )
         }
     };
@@ -460,37 +466,40 @@ mod tests {
     #[test]
     fn key_classification_separates_submit_content_edit_and_navigation() {
         assert_eq!(
-            classify_key("enter", false, false, false, None),
+            classify_key(TermMode::empty(), "enter", false, false, false, None),
             InputKind::Submit
         );
         assert_eq!(
-            classify_key("enter", false, false, true, None),
+            classify_key(TermMode::empty(), "enter", false, false, true, None),
             InputKind::Content { text: "\n".into() }
         );
         assert_eq!(
-            classify_key("enter", false, true, false, None),
+            classify_key(TermMode::empty(), "enter", false, true, false, None),
             InputKind::Navigate
         );
         assert_eq!(
-            classify_key("x", false, false, false, Some("x")),
+            classify_key(TermMode::empty(), "x", false, false, false, Some("x")),
             InputKind::Content { text: "x".into() }
         );
         for key in ["backspace", "delete"] {
             assert_eq!(
-                classify_key(key, false, false, false, None),
+                classify_key(TermMode::empty(), key, false, false, false, None),
                 InputKind::Edit
             );
         }
         for key in ["h", "u", "w", "k"] {
-            assert_eq!(classify_key(key, true, false, false, None), InputKind::Edit);
+            assert_eq!(
+                classify_key(TermMode::empty(), key, true, false, false, None),
+                InputKind::Edit
+            );
         }
         assert_eq!(
-            classify_key("c", true, false, false, None),
+            classify_key(TermMode::empty(), "c", true, false, false, None),
             InputKind::Cancel
         );
         for key in ["left", "escape", "f1"] {
             assert_eq!(
-                classify_key(key, false, false, false, None),
+                classify_key(TermMode::empty(), key, false, false, false, None),
                 InputKind::Navigate
             );
         }
@@ -628,7 +637,7 @@ mod tests {
                         "{key} ctrl={ctrl} alt={alt} shift={shift} mode={mode:?}"
                     );
                     assert_eq!(
-                        classify_key(key, ctrl, alt, shift, None),
+                        classify_key(TermMode::empty(), key, ctrl, alt, shift, None),
                         InputKind::Navigate
                     );
                 }
@@ -647,11 +656,11 @@ mod tests {
             Some(b"\t".to_vec())
         );
         assert_eq!(
-            classify_key("tab", false, false, true, None),
+            classify_key(TermMode::empty(), "tab", false, false, true, None),
             InputKind::Navigate
         );
         assert_eq!(
-            classify_key("tab", false, false, false, None),
+            classify_key(TermMode::empty(), "tab", false, false, false, None),
             InputKind::Content { text: "\t".into() }
         );
     }
@@ -968,6 +977,45 @@ mod tests {
             ("[", true, false, false, None, "\x1b[91;5u"),
             ("space", true, false, false, None, "\x1b[32;5u"),
         ]);
+    }
+
+    #[test]
+    fn ctrl_period_classification_tracks_only_printable_legacy_input() {
+        for mode in [TermMode::empty(), TermMode::DISAMBIGUATE_ESC_CODES] {
+            assert_eq!(
+                classify_key(mode, ".", true, false, false, Some(".")),
+                if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
+                    InputKind::Navigate
+                } else {
+                    InputKind::Content { text: ".".into() }
+                }
+            );
+            for (alt, shift) in [(true, false), (false, true), (true, true)] {
+                assert_eq!(
+                    classify_key(mode, ".", true, alt, shift, Some(".")),
+                    InputKind::Navigate
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_period_preserves_its_modifier_only_after_kitty_negotiation() {
+        assert_eq!(
+            encode_key(".", true, false, false, Some("."), TermMode::empty()),
+            Some(b".".to_vec())
+        );
+        assert_eq!(
+            encode_key(
+                ".",
+                true,
+                false,
+                false,
+                Some("."),
+                TermMode::DISAMBIGUATE_ESC_CODES
+            ),
+            Some(b"\x1b[46;5u".to_vec())
+        );
     }
 
     #[test]

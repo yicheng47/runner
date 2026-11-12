@@ -259,6 +259,22 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(crate) fn switch_sidebar_view(
+        &mut self,
+        _: &SwitchSidebarView,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+            return;
+        }
+        self.toggle_sidebar_view(cx);
+        self.set_sidebar_collapsed(false, true, cx);
+        self.sidebar_preview_open = false;
+        self.sidebar_preview_peeking = false;
+        cx.notify();
+    }
+
     pub(super) fn toggle_terminal_drawer_action(
         &mut self,
         _: &ToggleTerminalDrawer,

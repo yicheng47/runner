@@ -13,8 +13,8 @@ use crate::{
     NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
     SearchFiles, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
     SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
-    ToggleFullscreen, ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer, ZoomIn, ZoomOut,
-    ZoomReset,
+    SwitchSidebarView, ToggleFullscreen, ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer,
+    ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,6 +225,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.toggle-sidebar.description",
                 scope: KeymapScope::Global,
                 default: default_combo("cmd-s", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "switch-sidebar-view",
+                title_key: "keymap.switch-sidebar-view.title",
+                description_key: "keymap.switch-sidebar-view.description",
+                scope: KeymapScope::Global,
+                default: default_combo("cmd-.", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -1060,7 +1068,7 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
         "new-chat" | "command-palette" | "page-previous" | "page-next" => {
             Some("!TextInput && !Settings && !Terminal")
         }
-        "toggle-sidebar" => Some("!TextInput && !Settings"),
+        "toggle-sidebar" | "switch-sidebar-view" => Some("!TextInput && !Settings"),
         // The open find bar sits beside the terminal, outside its context.
         "find-in-terminal" => Some("Terminal || TerminalFind"),
         _ => entry.scope.context(),
@@ -1187,6 +1195,7 @@ pub(crate) fn install_bindings(
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
                 "search-files" => KeyBinding::new(&binding, SearchFiles, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
+                "switch-sidebar-view" => KeyBinding::new(&binding, SwitchSidebarView, context),
                 "toggle-terminal-drawer" => {
                     KeyBinding::new(&binding, ToggleTerminalDrawer, context)
                 }
@@ -1287,7 +1296,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-        assert_eq!(entries().len(), 35);
+        assert_eq!(entries().len(), 36);
         assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
         assert!(entry("new-window").unwrap().fixed);
         assert!(entry("close-pane").unwrap().fixed);
@@ -1704,7 +1713,7 @@ mod tests {
     fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
         type ExpectedBinding<'a> = (&'a str, &'a str, bool, bool, bool, bool);
         type ExpectedEntry<'a> = (&'a str, &'a [ExpectedBinding<'a>]);
-        let expected: [ExpectedEntry<'_>; 32] = [
+        let expected: [ExpectedEntry<'_>; 33] = [
             (
                 "new-window",
                 &[("shift-cmd-n", "n", true, false, false, true)],
@@ -1721,6 +1730,10 @@ mod tests {
             (
                 "toggle-sidebar",
                 &[("cmd-s", "s", true, false, false, false)],
+            ),
+            (
+                "switch-sidebar-view",
+                &[("cmd-.", ".", true, false, false, false)],
             ),
             (
                 "toggle-terminal-drawer",
@@ -1875,6 +1888,10 @@ mod tests {
             (
                 "toggle-sidebar",
                 key_combo("KeyS", true, false, false, false, None, false),
+            ),
+            (
+                "switch-sidebar-view",
+                key_combo("Period", true, false, false, false, None, false),
             ),
             (
                 "toggle-terminal-drawer",
@@ -2223,6 +2240,7 @@ mod tests {
             ("command-palette", "Ctrl+Shift+P"),
             ("search-files", "Ctrl+Shift+O"),
             ("toggle-sidebar", "Ctrl+B"),
+            ("switch-sidebar-view", "Ctrl+."),
             ("split-pane-right", "Ctrl+Shift+D"),
             ("split-pane-down", "Alt+Shift+D"),
             ("toggle-maximize-pane", "Ctrl+Shift+Enter"),
@@ -2387,9 +2405,10 @@ mod tests {
         let cx = gpui::TestAppContext::single();
         cx.update(|cx| {
             type FreedKey<'a> = (&'a str, &'a [&'a str], &'a [&'a str], &'a dyn gpui::Action);
-            let bare: [FreedKey<'_>; 5] = [
+            let bare: [FreedKey<'_>; 6] = [
                 ("ctrl-n", TERMINAL, SIDEBAR, &NewTab),
                 ("ctrl-b", TERMINAL, SIDEBAR, &ToggleSidebar),
+                ("ctrl-.", TERMINAL, SIDEBAR, &SwitchSidebarView),
                 (
                     "ctrl-[",
                     TERMINAL,
@@ -2444,6 +2463,51 @@ mod tests {
                 &["Root", "TerminalFind", "TextInput"],
                 Some(&FindInTerminal),
             );
+        });
+    }
+
+    #[test]
+    fn switch_sidebar_view_dispatches_defaults_rebinds_and_unbinding() {
+        let entry = entry("switch-sidebar-view").unwrap();
+        assert!(!entry.fixed);
+        assert_eq!(entry.default.code, "Period");
+        assert_eq!(windows_default("cmd-."), "ctrl-.");
+        let default_key = binding_strings(&entry.default)[0].clone();
+        let bare = key_combo("KeyJ", false, true, false, false, None, false);
+        let overrides = KeymapOverrides::from([(entry.id.into(), Some(bare))]);
+        let cx = gpui::TestAppContext::single();
+        cx.update(|cx| {
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            );
+            for stack in [TERMINAL, MISSION_TERMINAL, SIDEBAR] {
+                assert_fires(cx, &default_key, stack, Some(&SwitchSidebarView));
+            }
+            for stack in [&["Root", "TextInput"][..], &["Root", "Settings"]] {
+                assert_fires(cx, &default_key, stack, None);
+            }
+            install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false);
+            assert_fires(cx, &default_key, SIDEBAR, None);
+            assert_fires(cx, "ctrl-j", TERMINAL, Some(&SwitchSidebarView));
+            install_bindings(cx, &overrides, TerminalCtrlKeys::TerminalFirst, false);
+            for stack in [TERMINAL, MISSION_TERMINAL] {
+                assert_fires(cx, "ctrl-j", stack, None);
+            }
+            assert_fires(cx, "ctrl-j", SIDEBAR, Some(&SwitchSidebarView));
+            let unbound = KeymapOverrides::from([(entry.id.into(), None)]);
+            install_bindings(cx, &unbound, TerminalCtrlKeys::RunnerFirst, false);
+            assert_fires(cx, &default_key, SIDEBAR, None);
+            assert_fires(cx, "ctrl-j", SIDEBAR, None);
+            install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            );
+            assert_fires(cx, &default_key, SIDEBAR, Some(&SwitchSidebarView));
         });
     }
 

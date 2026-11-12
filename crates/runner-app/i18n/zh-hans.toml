@@ -378,6 +378,8 @@
 "keymap.terminal-ctrl-keys.runner-first" = "Runner 优先"
 "keymap.terminal-ctrl-keys.terminal-first" = "终端优先"
 "keymap.terminal-ctrl-keys.title" = "终端中的 Ctrl 键"
+"keymap.switch-sidebar-view.description" = "在项目与活动视图之间切换，并展开已收起的侧边栏。"
+"keymap.switch-sidebar-view.title" = "切换侧边栏视图"
 "keymap.toggle-sidebar.description" = "收起或展开应用侧边栏。"
 "keymap.toggle-sidebar.title" = "切换侧边栏"
 "keymap.toggle-terminal-drawer.description" = "显示或隐藏当前任务的终端抽屉。"
