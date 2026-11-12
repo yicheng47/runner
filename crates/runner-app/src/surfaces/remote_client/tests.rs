@@ -7844,6 +7844,27 @@ pub(crate) fn completed_update() -> serde_json::Value {
     .unwrap()
 }
 
+/// Presses and releases where the element is drawn at each step: a frame landing between
+/// reading its bounds and the press can move it, and GPUI drops a click whose press or
+/// release misses its hitbox.
+fn click_drawn(visual: &mut VisualTestContext, selector: &'static str) {
+    let center = |visual: &mut VisualTestContext| {
+        visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"))
+            .center()
+    };
+    let at = center(visual);
+    visual.simulate_mouse_move(at, None, Default::default());
+    visual.run_until_parked();
+    let at = center(visual);
+    visual.simulate_mouse_down(at, MouseButton::Left, Default::default());
+    visual.run_until_parked();
+    let at = center(visual);
+    visual.simulate_mouse_up(at, MouseButton::Left, Default::default());
+    visual.run_until_parked();
+}
+
 #[test]
 fn remote_resume_and_fork_refusals_offer_host_scoped_update_recovery() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
@@ -7888,17 +7909,19 @@ fn remote_resume_and_fork_refusals_offer_host_scoped_update_recovery() {
                 visual.debug_bounds(selector).is_some(),
                 "remote resume must render its update card"
             );
-            let button = visual.debug_bounds(selector).unwrap();
-            visual.simulate_click(button.center(), Default::default());
+            click_drawn(&mut visual, selector);
         } else {
             // The fork refusal is a launcher card using the same stopped-card action.
-            let button = visual
-                .debug_bounds("LAUNCHER_UPDATE_ACTION")
-                .expect("fork update card action");
-            visual.simulate_click(button.center(), Default::default());
+            click_drawn(&mut visual, "LAUNCHER_UPDATE_ACTION");
         }
-        visual.run_until_parked();
-        assert_eq!(fake.request_count("runtimeTaskStart"), 1, "{action}");
+        let chat_error = window
+            .read_with(&visual, |root, _| root.chat_error.clone())
+            .unwrap();
+        assert_eq!(
+            fake.request_count("runtimeTaskStart"),
+            1,
+            "{action}: chat error {chat_error:?}"
+        );
         assert_eq!(
             fake.request_count(action),
             2,
