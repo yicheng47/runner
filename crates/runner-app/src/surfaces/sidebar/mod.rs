@@ -275,6 +275,7 @@ pub(crate) struct Sidebar {
     app_store: Entity<AppStore>,
     front_page: crate::surfaces::front_page::FrontPageClient,
     pub(crate) remote_settings: Option<AppSettings>,
+    remote_sidebar_seed_pending: bool,
     remote_layouts: HashMap<String, PaneLayout>,
     remote_sessions: HashMap<String, SessionDisplay>,
     remote_selection: Option<crate::surfaces::remote_client::RemoteItem>,

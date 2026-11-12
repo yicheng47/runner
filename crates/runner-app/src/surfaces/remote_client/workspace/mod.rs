@@ -295,7 +295,7 @@ impl RemoteClient {
                 .send(Command::Retry(computer.id));
             return false;
         }
-        self.remember_remote_selection(cx);
+        self.remember_remote_selection();
         if let Some(remote) = &self.workspace {
             remote
                 .mission_workspace
@@ -351,14 +351,6 @@ impl RemoteClient {
         let sidebar =
             cx.new(|sidebar_cx| Sidebar::new(shell, self.app_store.clone(), None, sidebar_cx));
         sidebar.update(cx, |sidebar, cx| {
-            sidebar.remote_settings = selection.sidebar_settings.map(|saved| AppSettings {
-                sidebar_active_only: saved.sidebar_active_only,
-                sidebar_collapsed_projects: saved.sidebar_collapsed_projects,
-                sidebar_collapsed_active_groups: saved.sidebar_collapsed_active_groups,
-                sidebar_projects_open: saved.sidebar_projects_open,
-                sidebar_chats_open: saved.sidebar_chats_open,
-                ..self.settings(cx).clone()
-            });
             sidebar.set_front_page_target(front_page.clone(), cx)
         });
         let shell = cx.weak_entity();
@@ -448,7 +440,7 @@ impl RemoteClient {
         window: &mut Window,
         cx: &mut Context<NativeRoot>,
     ) {
-        self.remember_remote_selection(cx);
+        self.remember_remote_selection();
         if let Some(remote) = &self.workspace {
             remote
                 .mission_workspace
@@ -460,14 +452,13 @@ impl RemoteClient {
         cx.notify();
     }
 
-    pub(crate) fn remember_remote_selection(&mut self, cx: &App) {
+    pub(crate) fn remember_remote_selection(&mut self) {
         if let Some(remote) = &self.workspace {
             self.ui.selections.insert(
                 remote.computer.id.clone(),
                 RemoteSelection {
                     active: remote.active.clone(),
                     layouts: remote.layouts.clone(),
-                    sidebar_settings: remote.sidebar.read(cx).remote_settings.clone(),
                 },
             );
         }

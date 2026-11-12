@@ -95,7 +95,6 @@ impl RemoteClient {
 pub(crate) struct RemoteSelection {
     active: Option<RemoteItem>,
     layouts: HashMap<String, PaneLayout>,
-    sidebar_settings: Option<AppSettings>,
 }
 
 pub(crate) struct ClientUi {

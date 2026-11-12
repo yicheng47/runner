@@ -11,17 +11,48 @@ impl Sidebar {
         if self.front_page.target != client.target {
             self.dismiss_transients(cx);
         }
-        if client.is_remote() && self.remote_settings.is_none() {
-            let mut settings = self.app_store.read(cx).settings.clone();
-            settings.sidebar_collapsed_projects.clear();
-            settings.sidebar_collapsed_active_groups.clear();
-            settings.sidebar_collapsed_link_groups.clear();
-            settings.sidebar_projects_open = true;
-            settings.sidebar_chats_open = true;
-            settings.sidebar_active_only = false;
-            self.remote_settings = Some(settings);
-        }
         self.front_page = client;
+        if let crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } =
+            &self.front_page.target
+        {
+            let saved = self
+                .app_store
+                .read(cx)
+                .settings
+                .remote_sidebars
+                .get(computer)
+                .cloned();
+            if self.remote_settings.is_none() {
+                let mut settings = self.app_store.read(cx).settings.clone();
+                saved.clone().unwrap_or_default().apply_to(&mut settings);
+                self.remote_settings = Some(settings);
+                self.remote_sidebar_seed_pending = saved.is_none();
+            }
+            if let Some(saved) = saved.filter(|_| self.remote_sidebar_seed_pending) {
+                saved.apply_to(self.remote_settings.as_mut().unwrap());
+                self.remote_sidebar_seed_pending = false;
+            }
+            if self.remote_sidebar_seed_pending && self.remote_overview(cx).is_some() {
+                let nodes = self.source_nodes(cx);
+                let collapsed_projects = self
+                    .source_projects(cx)
+                    .into_iter()
+                    .filter(|project| {
+                        !nodes.iter().any(|node| {
+                            matches!(node.node_type, NodeType::Tab | NodeType::Mission)
+                                && node.pinned_position.is_none()
+                                && node.parent_id.as_deref() == Some(project.id.as_str())
+                        })
+                    })
+                    .map(|project| project.id)
+                    .collect();
+                self.remote_sidebar_seed_pending = false;
+                self.update_app_settings(cx, true, |settings| {
+                    settings.sidebar_collapsed_projects = collapsed_projects;
+                    true
+                });
+            }
+        }
         cx.notify();
     }
 
