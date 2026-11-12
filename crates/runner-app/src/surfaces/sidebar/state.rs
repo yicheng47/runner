@@ -18,6 +18,7 @@ impl Sidebar {
                 app_store.read(cx).client.clone(),
             ),
             remote_settings: None,
+            remote_sidebar_seed_pending: false,
             remote_layouts: HashMap::new(),
             remote_sessions: HashMap::new(),
             remote_selection: None,
@@ -68,6 +69,28 @@ impl Sidebar {
         if let Some(settings) = self.remote_settings.as_mut() {
             let changed = update(settings);
             if changed {
+                if persist && !self.remote_sidebar_seed_pending {
+                    let view = crate::app_settings::RemoteSidebarSettings::from_settings(settings);
+                    if let crate::surfaces::front_page::FrontPageTarget::Remote {
+                        computer, ..
+                    } = &self.front_page.target
+                    {
+                        let computer = computer.clone();
+                        self.app_store.update(cx, |store, cx| {
+                            store.update_settings(
+                                |settings| {
+                                    if settings.remote_sidebars.get(&computer) == Some(&view) {
+                                        return false;
+                                    }
+                                    settings.remote_sidebars.insert(computer, view);
+                                    true
+                                },
+                                true,
+                                cx,
+                            );
+                        });
+                    }
+                }
                 cx.notify();
             }
             return changed;

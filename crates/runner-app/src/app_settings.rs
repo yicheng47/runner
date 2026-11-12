@@ -387,6 +387,52 @@ impl UsageSettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RemoteSidebarSettings {
+    pub active_only: bool,
+    pub projects_open: bool,
+    pub chats_open: bool,
+    pub collapsed_projects: BTreeSet<String>,
+    pub collapsed_active_groups: BTreeSet<String>,
+    pub collapsed_link_groups: BTreeSet<String>,
+}
+
+impl Default for RemoteSidebarSettings {
+    fn default() -> Self {
+        Self {
+            active_only: false,
+            projects_open: true,
+            chats_open: true,
+            collapsed_projects: BTreeSet::new(),
+            collapsed_active_groups: BTreeSet::new(),
+            collapsed_link_groups: BTreeSet::new(),
+        }
+    }
+}
+
+impl RemoteSidebarSettings {
+    pub(crate) fn from_settings(settings: &AppSettings) -> Self {
+        Self {
+            active_only: settings.sidebar_active_only,
+            projects_open: settings.sidebar_projects_open,
+            chats_open: settings.sidebar_chats_open,
+            collapsed_projects: settings.sidebar_collapsed_projects.clone(),
+            collapsed_active_groups: settings.sidebar_collapsed_active_groups.clone(),
+            collapsed_link_groups: settings.sidebar_collapsed_link_groups.clone(),
+        }
+    }
+
+    pub(crate) fn apply_to(self, settings: &mut AppSettings) {
+        settings.sidebar_active_only = self.active_only;
+        settings.sidebar_projects_open = self.projects_open;
+        settings.sidebar_chats_open = self.chats_open;
+        settings.sidebar_collapsed_projects = self.collapsed_projects;
+        settings.sidebar_collapsed_active_groups = self.collapsed_active_groups;
+        settings.sidebar_collapsed_link_groups = self.collapsed_link_groups;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
@@ -420,6 +466,7 @@ pub struct AppSettings {
     pub sidebar_collapsed_active_groups: BTreeSet<String>,
     /// Collapsed linked groups (#748), by the node id of the tab heading them.
     pub sidebar_collapsed_link_groups: BTreeSet<String>,
+    pub remote_sidebars: BTreeMap<String, RemoteSidebarSettings>,
     pub chat_panel_open: bool,
     pub chat_panel_width: f32,
     pub mission_rail_open: bool,
@@ -496,6 +543,7 @@ impl Default for AppSettings {
             sidebar_collapsed_projects: BTreeSet::new(),
             sidebar_collapsed_active_groups: BTreeSet::new(),
             sidebar_collapsed_link_groups: BTreeSet::new(),
+            remote_sidebars: BTreeMap::new(),
             chat_panel_open: true,
             chat_panel_width: CHAT_PANEL_DEFAULT,
             mission_rail_open: true,
@@ -792,6 +840,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn remote_sidebars_default_for_older_settings_and_partial_views() {
+        let old: AppSettings = serde_json::from_str(r#"{"sidebarProjectsOpen":false}"#).unwrap();
+        assert!(old.remote_sidebars.is_empty());
+        assert!(!old.sidebar_projects_open);
+        let partial: AppSettings =
+            serde_json::from_str(r#"{"remoteSidebars":{"host":{"activeOnly":true}}}"#).unwrap();
+        assert_eq!(
+            partial.remote_sidebars["host"],
+            RemoteSidebarSettings {
+                active_only: true,
+                ..Default::default()
+            }
+        );
+    }
 
     #[test]
     fn language_defaults_migrates_and_persists_intent() {
