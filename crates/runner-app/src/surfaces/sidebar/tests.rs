@@ -3004,3 +3004,139 @@ fn terminal_program_status_reaches_classic_and_active_sidebar_rollups() {
         }
     }
 }
+
+#[test]
+fn switch_sidebar_view_expands_persists_and_refreshes_local_number_rows() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let rows = store.update(&mut cx, |store, cx| {
+        let conn = store.test_core.db.get().unwrap();
+        conn.execute_batch("INSERT INTO sessions (id, status, agent_runtime, agent_command) VALUES ('busy-shell', 'running', 'shell', 'shell'), ('direct-agent', 'running', 'codex', 'codex');").unwrap();
+        let rows = ["busy-shell", "direct-agent"].map(|id| {
+            let layout = PaneLayout::single(Some(id), &[id.into()]);
+            runner_daemon::repo::node::create_tab(&conn, None, id, 0, &layout.serialize().unwrap())
+                .unwrap()
+        });
+        drop(conn);
+        store.refresh_nodes(cx).unwrap();
+        store.refresh_sessions(cx);
+        for id in ["busy-shell", "direct-agent"] {
+            store.session_statuses.insert(id.into(), runner_core::protocol::AgentStatus {
+                lifecycle: runner_core::protocol::Lifecycle::Running,
+                ..Default::default()
+            });
+        }
+        rows
+    });
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "switch-local",
+    );
+    host.update(&mut cx, |root, _, cx| {
+        root.set_sidebar_collapsed(true, true, cx);
+        root.sidebar_preview_open = true;
+        root.sidebar_preview_peeking = true;
+        root.front_page_sidebar().update(cx, |sidebar, _| {
+            sidebar.dragged_id = Some(rows[0].id.clone())
+        });
+    })
+    .unwrap();
+    for active in [true, false] {
+        host.update(&mut cx, |root, window, cx| {
+            root.switch_sidebar_view(&crate::SwitchSidebarView, window, cx);
+            assert!(!root.front_page_sidebar_collapsed());
+            assert!(!root.sidebar_preview_open && !root.sidebar_preview_peeking);
+            let sidebar = root.front_page_sidebar().read(cx);
+            assert_eq!(sidebar.active_only(cx), active);
+            assert!(sidebar.dragged_id.is_none());
+            let expected = if active {
+                [&rows[1].id, &rows[0].id]
+            } else {
+                [&rows[0].id, &rows[1].id]
+            };
+            assert_eq!(
+                sidebar
+                    .numbered_shortcut_rows
+                    .iter()
+                    .map(|row| &row.node_id)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        })
+        .unwrap();
+        let saved = AppSettings::load(&temp.path().join("settings.json")).unwrap();
+        assert_eq!(saved.sidebar_active_only, active);
+        assert!(!saved.sidebar_collapsed);
+    }
+}
+
+#[test]
+fn switch_sidebar_view_expands_only_the_remote_computer_and_syncs_number_rows() {
+    use crate::surfaces::remote_client::tests::{
+        add_window, choose_host, enable_front_page, fixture, overview,
+    };
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let mut data = overview();
+    let mut stopped = data.tabs[0].clone();
+    stopped.id = "stopped-tab".into();
+    stopped.pinned = false;
+    stopped.project = None;
+    stopped.panes = serde_json::from_value(serde_json::json!({"session":"stopped"})).unwrap();
+    data.tabs.push(stopped);
+    let mut session = data.sessions["s"].clone();
+    session.status.status = runner_core::companion::Status::Stopped;
+    session.status.unread = false;
+    session.status.reason = None;
+    data.sessions.insert("stopped".into(), session);
+    fake.set_overview(data);
+    let host = add_window(&mut cx, &store, temp.path(), "switch-remote");
+    host.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let local = store.read_with(&cx, |store, _| {
+        (
+            store.settings.sidebar_active_only,
+            store.settings.sidebar_collapsed,
+        )
+    });
+    for active in [true, false] {
+        host.update(&mut cx, |root, window, cx| {
+            root.set_sidebar_collapsed(true, true, cx);
+            root.front_page_sidebar().update(cx, |sidebar, _| {
+                sidebar.dragged_id = Some("remote-tab".into())
+            });
+            root.switch_sidebar_view(&crate::SwitchSidebarView, window, cx);
+            assert!(!root.front_page_sidebar_collapsed());
+            let sidebar = root.front_page_sidebar().read(cx);
+            assert_eq!(sidebar.active_only(cx), active);
+            assert!(sidebar.dragged_id.is_none());
+            assert_eq!(
+                sidebar.tab_index_by_node.contains_key("stopped-tab"),
+                !active
+            );
+            assert_eq!(sidebar.tab_index_by_node.get("remote-tab"), Some(&1));
+        })
+        .unwrap();
+        assert_eq!(
+            store.read_with(&cx, |store, _| (
+                store.settings.sidebar_active_only,
+                store.settings.sidebar_collapsed
+            )),
+            local
+        );
+        assert_eq!(
+            AppSettings::load(&temp.path().join("settings.json"))
+                .unwrap()
+                .remote_sidebars["host"]
+                .active_only,
+            active
+        );
+    }
+}

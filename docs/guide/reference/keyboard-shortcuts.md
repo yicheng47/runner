@@ -19,6 +19,7 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | Command palette | ⌘K | Ctrl+Shift+P |
 | Search files by name in the side panel's folder | ⇧⌘O | Ctrl+Shift+O |
 | Toggle sidebar | ⌘S | Ctrl+B |
+| Switch sidebar view (Projects / Active) | ⌘. | Ctrl+. |
 | Toggle mission terminal drawer | ⌥F12 | Alt+F12 |
 | Open Settings | ⌘, | Ctrl+, |
 | Previous recently viewed page | ⇧⌘[ | Ctrl+Shift+[ |
@@ -51,7 +52,9 @@ On Windows and Linux, **Ctrl+C** copies when terminal text is selected and clear
 On Windows and Linux, **Settings → Keyboard shortcuts → Ctrl keys in terminals** decides which side gets a bare Ctrl key while a terminal has focus: a chat pane, terminal tab, mission slot, mission drawer or remote terminal.
 
 - **Runner first** (the default) keeps every Runner shortcut working, including in a focused terminal.
-- **Terminal first** sends a shortcut made of Ctrl and one key, without Shift or Alt, to the focused terminal instead. With the default keys this frees **Ctrl+N**, **Ctrl+B**, **Ctrl+[** / **Ctrl+]**, **Ctrl+1–9** and **Ctrl+,**; a shortcut you changed to a bare Ctrl key is freed too. Those rows show an **Outside terminals** tag, and the shortcuts still work everywhere else, such as from the sidebar.
+- **Terminal first** sends a shortcut made of Ctrl and one key, without Shift or Alt, to the focused terminal instead. With the default keys this frees **Ctrl+N**, **Ctrl+B**, **Ctrl+.**, **Ctrl+[** / **Ctrl+]**, **Ctrl+1–9** and **Ctrl+,**; a shortcut you changed to a bare Ctrl key is freed too. Those rows show an **Outside terminals** tag, and the shortcuts still work everywhere else, such as from the sidebar.
+
+With Terminal first, Ctrl+. sends a plain period in legacy terminal programs. Programs that enable Kitty keyboard disambiguation receive Ctrl+. as a distinct key.
 
 Copy with a selection, paste and zoom work in a terminal in both modes. The setting takes effect immediately. macOS has no such setting, because ⌘ shortcuts never reach a terminal.
 

@@ -164,6 +164,7 @@ actions!(
         ToggleMaximizePane,
         ToggleTerminalDrawer,
         ToggleSidebar,
+        SwitchSidebarView,
         ZoomFileIn,
         ZoomFileOut,
         ZoomIn,

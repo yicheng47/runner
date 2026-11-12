@@ -19,6 +19,7 @@ macOS 终端窗格中， **设置 → 终端 → 将 Option 用作 Meta 键（Se
 | 命令面板 | ⌘K | Ctrl+Shift+P |
 | 在侧面板的文件夹中按名称搜索文件 | ⇧⌘O | Ctrl+Shift+O |
 | 切换侧边栏 | ⌘S | Ctrl+B |
+| 切换侧边栏视图（项目 / 活动） | ⌘. | Ctrl+. |
 | 切换任务终端抽屉 | ⌥F12 | Alt+F12 |
 | 打开设置 | ⌘, | Ctrl+, |
 | 上一个最近查看的页面 | ⇧⌘[ | Ctrl+Shift+[ |
@@ -51,7 +52,9 @@ Windows 和 Linux 上，终端有选区时 **Ctrl+C** 复制并清除选区，�
 Windows 和 Linux 上， **设置 → 键盘快捷键 → 终端中的 Ctrl 键（Settings → Keyboard shortcuts → Ctrl keys in terminals）** 决定终端获得焦点时单独的 Ctrl 组合键交给谁。终端包括聊天窗格、终端标签页、任务成员、任务抽屉和远程终端。
 
 - **Runner 优先（Runner first）** （默认）让 Runner 的所有快捷键照常生效，包括在获得焦点的终端中。
-- **终端优先（Terminal first）** 把由 Ctrl 加一个键组成、不含 Shift 或 Alt 的快捷键改为发送给获得焦点的终端。按默认键位，这会让出 **Ctrl+N**、 **Ctrl+B**、 **Ctrl+[** / **Ctrl+]**、 **Ctrl+1–9** 和 **Ctrl+,**；你改成单独 Ctrl 组合的快捷键也会让出。这些行显示 **终端外生效（Outside terminals）** 标签，在侧边栏等其他位置仍然有效。
+- **终端优先（Terminal first）** 把由 Ctrl 加一个键组成、不含 Shift 或 Alt 的快捷键改为发送给获得焦点的终端。按默认键位，这会让出 **Ctrl+N**、 **Ctrl+B**、 **Ctrl+.**、 **Ctrl+[** / **Ctrl+]**、 **Ctrl+1–9** 和 **Ctrl+,**；你改成单独 Ctrl 组合的快捷键也会让出。这些行显示 **终端外生效（Outside terminals）** 标签，在侧边栏等其他位置仍然有效。
+
+在终端优先模式下，Ctrl+. 在传统终端程序中发送普通句点。启用 Kitty 键盘消歧协议的程序会收到独立的 Ctrl+. 按键。
 
 两种模式下，有选区时复制、粘贴和缩放在终端中都有效。设置立即生效。macOS 没有此设置，因为 ⌘ 快捷键不会送入终端。
 

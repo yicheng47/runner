@@ -1390,10 +1390,10 @@ mod tests {
         let overrides = keymap::KeymapOverrides::new();
         let rows = shortcut_rows("", &overrides);
         let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
-        assert_eq!(titles.len(), 30);
+        assert_eq!(titles.len(), 31);
         assert_eq!(titles[0], "New window");
         assert_eq!(
-            titles[27..],
+            titles[28..],
             ["Copy selection", "Paste", "Toggle fullscreen"]
         );
         let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];
@@ -1418,7 +1418,7 @@ mod tests {
         );
         assert_eq!(ShortcutRow::TabSelection.binding_label(&overrides), "⌘1–⌘9");
         assert_eq!(
-            rows[27..]
+            rows[28..]
                 .iter()
                 .map(|row| row.binding_label(&overrides))
                 .collect::<Vec<_>>(),
@@ -1459,6 +1459,7 @@ mod tests {
                         "command-palette",
                         "search-files",
                         "toggle-sidebar",
+                        "switch-sidebar-view",
                         "open-settings",
                         "page-previous",
                         "page-next",
@@ -1529,6 +1530,42 @@ mod tests {
     }
 
     #[test]
+    fn switch_sidebar_view_settings_row_is_editable_and_tracks_its_effective_key() {
+        for locale in [
+            crate::i18n::Locale::English,
+            crate::i18n::Locale::SimplifiedChinese,
+        ] {
+            crate::i18n::testing::with_locale(locale, || {
+                let mut overrides = keymap::KeymapOverrides::new();
+                let entry = keymap::entry("switch-sidebar-view").unwrap();
+                let rows = shortcut_rows(entry.title(), &overrides);
+                assert_eq!(rows, [ShortcutRow::Entry(entry)]);
+                let row = rows[0];
+                assert!(!row.fixed());
+                assert_eq!(ShortcutSection::of(row), ShortcutSection::Navigation);
+                assert_eq!(
+                    row.binding_label(&overrides),
+                    keymap::format_combo(&entry.default)
+                );
+                let mut combo = entry.default.clone();
+                combo.meta = false;
+                combo.ctrl = true;
+                overrides.insert(entry.id.into(), Some(combo.clone()));
+                assert!(row.freed_for_terminal(&overrides));
+                combo.shift = true;
+                overrides.insert(entry.id.into(), Some(combo));
+                assert!(!row.freed_for_terminal(&overrides));
+                overrides.insert(entry.id.into(), None);
+                assert!(!row.freed_for_terminal(&overrides));
+                assert_eq!(
+                    row.binding_label(&overrides),
+                    crate::i18n::text("ui.unassigned")
+                );
+            });
+        }
+    }
+
+    #[test]
     fn outside_terminals_tags_follow_the_effective_binding() {
         let bare = keymap::KeyCombo {
             meta: false,
@@ -1548,7 +1585,13 @@ mod tests {
         assert!(!entry_row("zoom-reset").freed_for_terminal(&overrides));
         assert!(!entry_row("new-mission").freed_for_terminal(&overrides));
         let freed = cfg!(any(windows, target_os = "linux"));
-        for id in ["new-chat", "toggle-sidebar", "open-settings", "pane-next"] {
+        for id in [
+            "new-chat",
+            "toggle-sidebar",
+            "switch-sidebar-view",
+            "open-settings",
+            "pane-next",
+        ] {
             assert_eq!(entry_row(id).freed_for_terminal(&overrides), freed, "{id}");
         }
         assert_eq!(
@@ -1661,6 +1704,7 @@ mod tests {
                 for selector in [
                     "SHORTCUT_OUTSIDE_TERMINALS_new-chat",
                     "SHORTCUT_OUTSIDE_TERMINALS_toggle-sidebar",
+                    "SHORTCUT_OUTSIDE_TERMINALS_switch-sidebar-view",
                     "SHORTCUT_OUTSIDE_TERMINALS_open-settings",
                     "SHORTCUT_OUTSIDE_TERMINALS_select-tab",
                     "SHORTCUT_OUTSIDE_TERMINALS_pane-previous",
