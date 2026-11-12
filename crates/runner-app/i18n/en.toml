@@ -1627,3 +1627,7 @@
 "agent_updates.updated_to" = "{runtime} updated to {version}"
 "agent_updates.updating" = "Updating {runtime}"
 "agent_updates.waiting" = "Starts when {runtime} finishes updating"
+
+"usage.credits_remaining" = "Credits remaining"
+"usage.unlimited" = "Unlimited"
+"usage.unavailable" = "Unavailable"

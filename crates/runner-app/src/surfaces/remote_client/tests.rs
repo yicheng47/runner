@@ -7493,7 +7493,7 @@ fn reconnecting_to_or_leaving_a_host_restores_a_maximized_split() {
 fn host_usage() -> serde_json::Value {
     serde_json::json!({"agents":[
         {"name":"claude-code","value":{"windows":[{"name":"Week","usedPercent":41.,"resetsAt":null}],"updatedAt":"2026-11-09T06:00:00Z"},"error":null},
-        {"name":"codex","value":{"windows":[{"name":"Week","usedPercent":12.,"resetsAt":null}],"updatedAt":"2026-11-09T06:00:00Z"},"error":null},
+        {"name":"codex","value":{"windows":[{"name":"Week","usedPercent":12.,"resetsAt":null}],"credits":{"balance":"1250.75","hasCredits":true,"unlimited":false},"updatedAt":"2026-11-09T06:00:00Z"},"error":null},
         {"name":"future-agent","value":null,"error":"futureReason"}
     ],"refreshing":false,"activeClaudeAccount":"Host Work"})
 }
@@ -7511,6 +7511,11 @@ fn remote_footer_and_readonly_popover_use_the_hosts_usage_and_keep_it_while_disc
             Runtime::Codex,
             runner_core::protocol::usage::RuntimeUsage {
                 value: Some(runner_core::protocol::usage::AgentUsage {
+                    credits: Some(runner_core::protocol::UsageCredits {
+                        balance: Some("9.5".into()),
+                        has_credits: true,
+                        unlimited: false,
+                    }),
                     windows: vec![runner_core::protocol::usage::UsageWindow {
                         name: "Week".into(),
                         used_percent: 88.,
@@ -7560,6 +7565,17 @@ fn remote_footer_and_readonly_popover_use_the_hosts_usage_and_keep_it_while_disc
                 snapshot.get(Runtime::ClaudeCode).unwrap().windows[0].used_percent,
                 41.
             );
+            assert_eq!(
+                snapshot
+                    .get(Runtime::Codex)
+                    .unwrap()
+                    .credits
+                    .as_ref()
+                    .unwrap()
+                    .balance
+                    .as_deref(),
+                Some("1250.75")
+            );
             assert!(!dimmed);
             assert_eq!(root.remote_client.remote_usage(cx).unwrap().2, "Studio");
         })
@@ -7568,6 +7584,7 @@ fn remote_footer_and_readonly_popover_use_the_hosts_usage_and_keep_it_while_disc
     visual.simulate_click(usage.center(), Default::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_some());
+    assert!(visual.debug_bounds("USAGE_CREDITS").is_some());
     assert!(visual.debug_bounds("USAGE_AGENT_SETTINGS").is_none());
     assert!(visual.debug_bounds("USAGE_REFRESH").is_none());
     assert!(visual.debug_bounds("USAGE_REMOTE_ACCOUNT").is_some());
@@ -7584,6 +7601,17 @@ fn remote_footer_and_readonly_popover_use_the_hosts_usage_and_keep_it_while_disc
             .read_with(&visual, |root, cx| {
                 let (snapshot, _, dimmed) = root.sidebar_usage(cx);
                 assert!(dimmed);
+                assert_eq!(
+                    snapshot
+                        .get(Runtime::Codex)
+                        .unwrap()
+                        .credits
+                        .as_ref()
+                        .unwrap()
+                        .balance
+                        .as_deref(),
+                    Some("1250.75")
+                );
                 assert_eq!(
                     snapshot.get(Runtime::Codex).unwrap().windows[0].used_percent,
                     12.

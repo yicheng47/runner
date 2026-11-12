@@ -1,7 +1,9 @@
 use crate::runtime_status::direct_chat_path;
 use crate::session::process::{prepare_headless_fork, ProcessTree};
 use crate::shell_path::LoginShellEnv;
-use crate::usage::{parse_timestamp, percent, UnavailableReason, UsageWindow, FETCH_TIMEOUT};
+use crate::usage::{
+    parse_timestamp, percent, UnavailableReason, UsageReading, UsageWindow, FETCH_TIMEOUT,
+};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -22,7 +24,7 @@ fn parse_codex_window(value: &Value) -> Option<UsageWindow> {
     })
 }
 
-pub(crate) fn parse_codex(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
+pub(crate) fn parse_codex(value: &Value) -> Result<UsageReading, UnavailableReason> {
     let limits = value
         .get("rateLimits")
         .ok_or(UnavailableReason::InvalidResponse)?;
@@ -35,17 +37,21 @@ pub(crate) fn parse_codex(value: &Value) -> Result<Vec<UsageWindow>, Unavailable
         "Week" => 1,
         _ => 2,
     });
-    if windows.is_empty() {
+    let credits = limits
+        .get("credits")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+    if windows.is_empty() && credits.is_none() {
         Err(UnavailableReason::InvalidResponse)
     } else {
-        Ok(windows)
+        Ok(UsageReading { windows, credits })
     }
 }
 
 pub(crate) fn fetch_codex(
     command: &str,
     env: &LoginShellEnv,
-) -> Result<Vec<UsageWindow>, UnavailableReason> {
+) -> Result<UsageReading, UnavailableReason> {
     fetch_codex_with_timeout(command, env, FETCH_TIMEOUT)
 }
 
@@ -53,7 +59,7 @@ pub(crate) fn fetch_codex_with_timeout(
     command: &str,
     env: &LoginShellEnv,
     timeout: Duration,
-) -> Result<Vec<UsageWindow>, UnavailableReason> {
+) -> Result<UsageReading, UnavailableReason> {
     let mut process = Command::new(command);
     process
         .args([

@@ -1112,6 +1112,11 @@ mod tests {
         core.runtime_shell_env.write().unwrap().path = Some(String::new());
         core.usage.set_enabled(vec![Runtime::Codex, Runtime::Pi]);
         let value = AgentUsage {
+            credits: Some(p::UsageCredits {
+                balance: Some("1250.75".into()),
+                has_credits: true,
+                unlimited: false,
+            }),
             windows: vec![UsageWindow {
                 name: "Week".into(),
                 used_percent: 41.,

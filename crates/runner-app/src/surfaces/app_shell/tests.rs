@@ -855,6 +855,7 @@ fn full_weekly_usage_snapshot() -> UsageSnapshot {
                     runtime,
                     runner_core::protocol::usage::RuntimeUsage {
                         value: Some(AgentUsage {
+                            credits: None,
                             windows: vec![UsageWindow {
                                 name: crate::runtime_ui::runtime_ui(runtime).usage_week.into(),
                                 used_percent: 100.,
@@ -1165,6 +1166,7 @@ impl Render for UsagePopoverProbe {
             .into_iter()
             .map(|(runtime, count)| {
                 let usage = AgentUsage {
+                    credits: None,
                     windows: (0..count)
                         .map(|index| UsageWindow {
                             name: format!("Window {index}"),
@@ -1285,6 +1287,7 @@ fn sidebar_usage_uses_weekly_windows() {
             Runtime::ClaudeCode,
             runner_core::protocol::usage::RuntimeUsage {
                 value: Some(AgentUsage {
+                    credits: None,
                     windows: vec![
                         UsageWindow {
                             name: "5 hours".into(),
@@ -1542,4 +1545,146 @@ fn archived_mission_only_leaves_its_open_route() {
         route_after_mission_archived(&open_archived, "mission-1", Some(false), false),
         None
     );
+}
+
+#[test]
+fn credit_values_round_to_whole_credits_and_distinguish_missing_from_zero() {
+    use runner_core::protocol::UsageCredits;
+    assert_eq!(credit_value(None), ("Unavailable".into(), false));
+    for (balance, has_credits, unlimited, expected, available) in [
+        (Some("1250"), true, false, "1,250", true),
+        (Some("1250.750012345678901234"), true, false, "1,251", true),
+        (
+            Some("9007199254740993.00"),
+            true,
+            false,
+            "9,007,199,254,740,993",
+            true,
+        ),
+        (Some("54135.9439300000"), true, false, "54,136", true),
+        (Some("1250.49"), true, false, "1,250", true),
+        (Some("1250.499999999999999999"), true, false, "1,250", true),
+        (Some("1250.5"), true, false, "1,251", true),
+        (Some("999.5"), true, false, "1,000", true),
+        (Some("999999.9999"), true, false, "1,000,000", true),
+        (
+            Some("9007199254740993.5"),
+            true,
+            false,
+            "9,007,199,254,740,994",
+            true,
+        ),
+        (
+            Some("999999999999999999999999999999999999999.5"),
+            true,
+            false,
+            "1,000,000,000,000,000,000,000,000,000,000,000,000,000",
+            true,
+        ),
+        (Some("-1.5"), true, false, "-2", true),
+        (Some("-0.49"), true, false, "0", true),
+        (Some("+000999.5"), true, false, "+1,000", true),
+        (Some("0"), true, false, "0", true),
+        (Some("0.0000"), true, false, "0", true),
+        (None, false, false, "0", true),
+        (Some("1250"), false, true, "Unlimited", true),
+        (None, true, false, "Unavailable", false),
+        (Some("NaN"), false, false, "Unavailable", false),
+        (Some("inf"), true, false, "Unavailable", false),
+        (Some(""), false, false, "Unavailable", false),
+        (Some("12.3e4"), true, false, "123,000", true),
+        (Some("1.235e2"), true, false, "124", true),
+        (Some("4.999999999999999999e-1"), true, false, "0", true),
+        (Some("5e-1"), true, false, "1", true),
+        (Some("5e-2"), true, false, "0", true),
+        (Some("1e+3"), true, false, "1,000", true),
+        (Some("1e"), true, false, "Unavailable", false),
+        (Some("1.2.3"), true, false, "Unavailable", false),
+    ] {
+        let credits = UsageCredits {
+            balance: balance.map(str::to_owned),
+            has_credits,
+            unlimited,
+        };
+        assert_eq!(credit_value(Some(&credits)), (expected.into(), available));
+        let usage = AgentUsage {
+            windows: vec![],
+            credits: Some(credits),
+            updated_at: chrono::Utc::now(),
+        };
+        assert_eq!(weekly_usage_percent(Runtime::Codex, Some(&usage)), None);
+    }
+}
+
+struct CreditSectionProbe {
+    runtime: Runtime,
+    usage: Option<AgentUsage>,
+    error: Option<UnavailableReason>,
+    zoom: f32,
+}
+
+impl Render for CreditSectionProbe {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        window.set_rem_size(px(16. * self.zoom));
+        div().w(px(340. * self.zoom)).p_4().child(usage_section(
+            self.runtime,
+            self.usage.as_ref(),
+            self.error,
+            true,
+            chrono::Utc::now(),
+        ))
+    }
+}
+
+#[test]
+fn shared_credit_row_is_codex_only_and_survives_empty_filtered_windows() {
+    use gpui::{size, TestAppContext, VisualTestContext};
+    use runner_core::protocol::UsageCredits;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        for zoom in [1., 1.5] {
+            for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+                for state in 0..4 {
+                    let mut cx = TestAppContext::single();
+                    let usage = (state != 0).then(|| AgentUsage {
+                        windows: vec![UsageWindow {
+                            name: "5 hours".into(),
+                            used_percent: 12.,
+                            resets_at: None,
+                        }]
+                        .into_iter()
+                        .filter(|window| !is_five_hour(&window.name))
+                        .collect(),
+                        credits: (state != 1).then(|| UsageCredits {
+                            balance: Some("1250.75001234567890".into()),
+                            has_credits: true,
+                            unlimited: false,
+                        }),
+                        updated_at: chrono::Utc::now() - chrono::TimeDelta::minutes(25),
+                    });
+                    let host = cx.add_window(move |_, _| CreditSectionProbe {
+                        runtime,
+                        usage,
+                        error: (state == 3).then_some(UnavailableReason::CodexNoAnswer),
+                        zoom,
+                    });
+                    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                    visual.simulate_resize(size(px(800.), px(600.)));
+                    visual.run_until_parked();
+                    let row = visual.debug_bounds("USAGE_CREDITS");
+                    assert_eq!(row.is_some(), runtime == Runtime::Codex && state != 0);
+                    if let Some(row) = row {
+                        let section = visual.debug_bounds("USAGE_SECTION_codex").unwrap();
+                        assert!(row.size.height > px(0.));
+                        assert!(row.right() <= section.right());
+                        assert!(row.bottom() <= section.bottom());
+                    }
+                }
+            }
+        }
+    }
 }

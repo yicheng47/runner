@@ -19,7 +19,22 @@ const OPEN_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub use runner_core::protocol::usage::UsageWindow;
 
-pub use runner_core::protocol::usage::AgentUsage;
+pub use runner_core::protocol::usage::{AgentUsage, UsageCredits};
+
+#[derive(Debug, PartialEq)]
+pub struct UsageReading {
+    pub windows: Vec<UsageWindow>,
+    pub credits: Option<UsageCredits>,
+}
+
+impl From<Vec<UsageWindow>> for UsageReading {
+    fn from(windows: Vec<UsageWindow>) -> Self {
+        Self {
+            windows,
+            credits: None,
+        }
+    }
+}
 
 pub use runner_core::protocol::usage::UnavailableReason;
 
@@ -485,7 +500,7 @@ impl UsageService {
 
     fn finish_fetch(
         &self,
-        results: Vec<(Runtime, Result<Vec<UsageWindow>, UnavailableReason>)>,
+        results: Vec<(Runtime, Result<UsageReading, UnavailableReason>)>,
         account_results: Vec<(String, Result<Vec<UsageWindow>, UnavailableReason>)>,
         fetched_claude: Option<&str>,
         now: DateTime<Utc>,
@@ -510,7 +525,12 @@ impl UsageService {
                 state.claude_denied.insert(id.clone());
             }
             let entry = state.claude_accounts.entry(id).or_default();
-            apply_result(&mut entry.value, &mut entry.error, result, now);
+            apply_result(
+                &mut entry.value,
+                &mut entry.error,
+                result.map(Into::into),
+                now,
+            );
         }
         if let Some(id) = state
             .active_claude
@@ -534,7 +554,7 @@ fn unexpired(mut usage: AgentUsage, now: DateTime<Utc>) -> Option<AgentUsage> {
     usage
         .windows
         .retain(|window| window.resets_at.is_none_or(|resets_at| resets_at > now));
-    (!usage.windows.is_empty()).then_some(usage)
+    (!usage.windows.is_empty() || usage.credits.is_some()).then_some(usage)
 }
 
 fn refresh_visible_remaining(started: Instant, now: Instant) -> Duration {
@@ -589,19 +609,19 @@ fn refresh_due_with_interval(
 fn apply_result(
     current: &mut Option<AgentUsage>,
     error: &mut Option<UnavailableReason>,
-    result: Result<Vec<UsageWindow>, UnavailableReason>,
+    result: Result<UsageReading, UnavailableReason>,
     now: DateTime<Utc>,
 ) {
     match result {
-        Ok(windows) => {
+        Ok(reading) => {
             *current = Some(AgentUsage {
-                windows,
+                windows: reading.windows,
+                credits: reading.credits,
                 updated_at: now,
             });
             *error = None;
         }
-        Err(reason) if current.is_none() => *error = Some(reason),
-        Err(_) => {}
+        Err(reason) => *error = Some(reason),
     }
 }
 
@@ -709,8 +729,10 @@ mod tests {
 
     #[test]
     fn parses_recorded_answers_by_duration_and_scope() {
-        let codex = serde_json::json!({"rateLimits":{"primary":{"usedPercent":27,"windowDurationMins":10080,"resetsAt":1770000000},"secondary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1770000000}}});
-        let windows = parse_codex(&codex).unwrap();
+        let codex = serde_json::json!({"rateLimits":{"primary":{"usedPercent":27,"windowDurationMins":10080,"resetsAt":1770000000},"secondary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1770000000},"credits":{"balance":"1250.75","hasCredits":true,"unlimited":false}}});
+        let parsed = parse_codex(&codex).unwrap();
+        assert_eq!(parsed.credits.unwrap().balance.as_deref(), Some("1250.75"));
+        let windows = parsed.windows;
         assert_eq!(windows[0].name, "5 hours");
         assert_eq!(windows[1].name, "Week");
         let claude = serde_json::json!({"five_hour":{"utilization":4,"resets_at":"2026-09-23T12:00:00Z"},"seven_day":{"utilization":27},"limits":[{"kind":"weekly_scoped","percent":55,"scope":null},{"kind":"weekly_scoped","percent":80,"scope":{"model":{"display_name":"Fable"}}}]});
@@ -723,7 +745,7 @@ mod tests {
     #[test]
     fn missing_fields_and_unknown_duration() {
         let answer = serde_json::json!({"rateLimits":{"primary":{"usedPercent":14,"windowDurationMins":60},"secondary":{"windowDurationMins":300}}});
-        assert_eq!(parse_codex(&answer).unwrap()[0].name, "60 min");
+        assert_eq!(parse_codex(&answer).unwrap().windows[0].name, "60 min");
         assert_eq!(
             parse_codex(&serde_json::json!({"rateLimits":{"primary":{}}})),
             Err(UnavailableReason::InvalidResponse)
@@ -732,6 +754,46 @@ mod tests {
             parse_claude(&serde_json::json!({"five_hour":{}})),
             Err(UnavailableReason::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn codex_credit_snapshots_include_credits_only_and_unknown_balances() {
+        for (balance, has_credits, unlimited) in [
+            (Some("1250"), true, false),
+            (Some("1250.750012345678901234"), true, false),
+            (Some("0"), false, false),
+            (None, false, false),
+            (Some("1250"), false, true),
+            (None, true, false),
+        ] {
+            let credits = UsageCredits {
+                balance: balance.map(str::to_owned),
+                has_credits,
+                unlimited,
+            };
+            let parsed =
+                parse_codex(&serde_json::json!({"rateLimits": {"credits": credits}})).unwrap();
+            assert!(parsed.windows.is_empty());
+            assert_eq!(parsed.credits, Some(credits));
+        }
+        let missing_balance = parse_codex(&serde_json::json!({"rateLimits": {"credits": {"hasCredits": true, "unlimited": false}}})).unwrap();
+        assert_eq!(missing_balance.credits.unwrap().balance, None);
+        for credits in [Value::Null, serde_json::json!({"balance": "invalid"})] {
+            assert_eq!(
+                parse_codex(&serde_json::json!({"rateLimits": {"credits": credits}})),
+                Err(UnavailableReason::InvalidResponse)
+            );
+        }
+        for credits in [None, Some(Value::Null)] {
+            let mut limits =
+                serde_json::json!({"primary": {"usedPercent": 27, "windowDurationMins": 10080}});
+            if let Some(credits) = credits {
+                limits["credits"] = credits;
+            }
+            let parsed = parse_codex(&serde_json::json!({"rateLimits": limits})).unwrap();
+            assert_eq!(parsed.windows.len(), 1);
+            assert_eq!(parsed.credits, None);
+        }
     }
 
     #[test]
@@ -848,7 +910,7 @@ mod tests {
             Duration::from_secs(5),
         )
         .unwrap();
-        assert_eq!(windows[0].used_percent, 23.);
+        assert_eq!(windows.windows[0].used_percent, 23.);
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "term");
         std::fs::write(&path, b"#!/bin/sh\nread line\nexec sleep 1\n").unwrap();
         assert_eq!(
@@ -922,7 +984,8 @@ mod tests {
                 name: "Week".into(),
                 used_percent: 30.,
                 resets_at: None,
-            }]),
+            }]
+            .into()),
             now,
         );
         apply_result(
@@ -932,7 +995,7 @@ mod tests {
             now + TimeDelta::minutes(1),
         );
         assert_eq!(good.unwrap().updated_at, now);
-        assert_eq!(error, None);
+        assert_eq!(error, Some(UnavailableReason::ClaudeUnreachable));
     }
 }
 
@@ -984,6 +1047,7 @@ mod account_cache_tests {
         core.usage = Arc::new(UsageService::without_fetch());
         let usage = RuntimeUsage {
             value: Some(AgentUsage {
+                credits: None,
                 windows: vec![UsageWindow {
                     name: "Week".into(),
                     used_percent: 31.,
@@ -1024,6 +1088,7 @@ mod account_cache_tests {
         let service = UsageService::without_fetch();
         let usage = |percent| RuntimeUsage {
             value: Some(AgentUsage {
+                credits: None,
                 windows: vec![UsageWindow {
                     name: "Week".into(),
                     used_percent: percent,
@@ -1078,6 +1143,7 @@ mod lkg_tests {
 
     fn usage(windows: Vec<UsageWindow>, updated_at: DateTime<Utc>) -> AgentUsage {
         AgentUsage {
+            credits: None,
             windows,
             updated_at,
         }
@@ -1130,6 +1196,71 @@ mod lkg_tests {
     }
 
     #[test]
+    fn credit_cache_survives_expired_windows_failure_and_successful_replacement() {
+        let core = crate::test_support::test_core();
+        let service = UsageService::without_fetch();
+        let now = Utc::now();
+        let original = now - TimeDelta::minutes(30);
+        let credits = UsageCredits {
+            balance: Some("1250.750012345678901234".into()),
+            has_credits: true,
+            unlimited: false,
+        };
+        let (seq, lkg) = service
+            .finish_fetch(
+                vec![(
+                    Runtime::Codex,
+                    Ok(UsageReading {
+                        windows: vec![window("Week", 27., Some(now - TimeDelta::minutes(1)))],
+                        credits: Some(credits.clone()),
+                    }),
+                )],
+                Vec::new(),
+                None,
+                original,
+            )
+            .unwrap();
+        service.save_lkg(&core.db, seq, &lkg);
+        let service = restarted(&core);
+        let cached = service.snapshot().get(Runtime::Codex).unwrap().clone();
+        assert!(cached.windows.is_empty());
+        assert_eq!(cached.credits, Some(credits));
+        assert_eq!(cached.updated_at, original);
+        assert!(service
+            .finish_fetch(
+                vec![(Runtime::Codex, Err(UnavailableReason::CodexNoAnswer))],
+                Vec::new(),
+                None,
+                now
+            )
+            .is_none());
+        let failed = service.snapshot();
+        assert_eq!(failed.get(Runtime::Codex), Some(&cached));
+        assert_eq!(
+            failed.error(Runtime::Codex),
+            Some(UnavailableReason::CodexNoAnswer)
+        );
+        let (seq, lkg) = service
+            .finish_fetch(
+                vec![(Runtime::Codex, Ok(vec![window("Week", 31., None)].into()))],
+                Vec::new(),
+                None,
+                now,
+            )
+            .unwrap();
+        service.save_lkg(&core.db, seq, &lkg);
+        let recovered = service.snapshot();
+        assert_eq!(recovered.get(Runtime::Codex).unwrap().credits, None);
+        assert_eq!(recovered.get(Runtime::Codex).unwrap().updated_at, now);
+        assert_eq!(recovered.error(Runtime::Codex), None);
+        assert_eq!(
+            restarted(&core).snapshot().get(Runtime::Codex),
+            recovered.get(Runtime::Codex)
+        );
+        assert!(recovered.get(Runtime::ClaudeCode).is_none());
+    }
+
+    #[test]
     fn unreadable_saved_usage_starts_empty() {
         let core = crate::test_support::test_core();
         crate::db::app_state_set(&core.db.get().unwrap(), "usage_lkg", "{not json").unwrap();
@@ -1170,7 +1301,15 @@ mod lkg_tests {
     ) {
         let accounts = crate::claude_accounts::load(&core.db).unwrap();
         let (seq, lkg) = service
-            .finish_fetch(results, account_results, Some(&accounts.active_id), now)
+            .finish_fetch(
+                results
+                    .into_iter()
+                    .map(|(runtime, result)| (runtime, result.map(Into::into)))
+                    .collect(),
+                account_results,
+                Some(&accounts.active_id),
+                now,
+            )
             .unwrap();
         service.save_lkg(&core.db, seq, &lkg);
     }
@@ -1219,8 +1358,14 @@ mod lkg_tests {
             snapshot.get(Runtime::Codex).unwrap().updated_at,
             restored_at
         );
-        assert_eq!(snapshot.error(Runtime::Codex), None);
-        assert_eq!(snapshot.error(Runtime::ClaudeCode), None);
+        assert_eq!(
+            snapshot.error(Runtime::Codex),
+            Some(UnavailableReason::CodexNoAnswer)
+        );
+        assert_eq!(
+            snapshot.error(Runtime::ClaudeCode),
+            Some(UnavailableReason::ClaudeUnreachable)
+        );
 
         fetch_and_save(
             &core,
@@ -1367,7 +1512,7 @@ mod lkg_tests {
         service.select_claude_account("work", true);
         let (_, lkg) = service
             .finish_fetch(
-                vec![(Runtime::ClaudeCode, Ok(windows(50.)))],
+                vec![(Runtime::ClaudeCode, Ok(windows(50.).into()))],
                 Vec::new(),
                 Some("native"),
                 now,
@@ -1399,7 +1544,10 @@ mod lkg_tests {
         let fetch = |percent, at| {
             service
                 .finish_fetch(
-                    vec![(Runtime::Codex, Ok(vec![window("Week", percent, None)]))],
+                    vec![(
+                        Runtime::Codex,
+                        Ok(vec![window("Week", percent, None)].into()),
+                    )],
                     Vec::new(),
                     Some("native"),
                     at,

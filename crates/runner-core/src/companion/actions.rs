@@ -634,6 +634,8 @@ pub struct UsageAgent {
 #[serde(rename_all = "camelCase")]
 pub struct UsageValue {
     pub windows: Vec<UsageWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<crate::protocol::usage::UsageCredits>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -655,6 +657,7 @@ impl From<crate::protocol::usage::AgentUsage> for UsageValue {
     fn from(usage: crate::protocol::usage::AgentUsage) -> Self {
         Self {
             windows: usage.windows.into_iter().map(Into::into).collect(),
+            credits: usage.credits,
             updated_at: usage.updated_at,
         }
     }
@@ -664,6 +667,7 @@ impl From<UsageValue> for crate::protocol::usage::AgentUsage {
     fn from(usage: UsageValue) -> Self {
         Self {
             windows: usage.windows.into_iter().map(Into::into).collect(),
+            credits: usage.credits,
             updated_at: usage.updated_at,
         }
     }

@@ -1672,6 +1672,7 @@ fn usage_alerts_deduplicate_each_account_window_and_reset_and_hide_five_hours() 
     let now = chrono::Utc::now();
     let reset = now + chrono::TimeDelta::hours(5);
     let usage = |percent, reset| runner_core::protocol::AgentUsage {
+        credits: None,
         windows: vec![
             runner_core::protocol::UsageWindow {
                 name: "Week".into(),
@@ -1745,6 +1746,7 @@ fn usage_alert_periods_survive_restart_tolerate_reset_jitter_and_prune_expired()
             Runtime::Codex,
             runner_core::protocol::RuntimeUsage {
                 value: Some(runner_core::protocol::AgentUsage {
+                    credits: None,
                     windows: vec![runner_core::protocol::UsageWindow {
                         name: "Week".into(),
                         used_percent: percent,
@@ -1825,4 +1827,47 @@ fn usage_alert_periods_survive_restart_tolerate_reset_jitter_and_prune_expired()
             .len(),
         1
     );
+}
+
+#[test]
+fn credit_balances_never_generate_percentage_alerts() {
+    use runner_core::protocol::{
+        AgentUsage, RuntimeUsage, UsageCredits, UsageSnapshot, UsageWindow,
+    };
+    let now = chrono::Utc::now();
+    for (balance, unlimited) in [("0", false), ("1250.75", false), ("1000000", true)] {
+        let mut snapshot = UsageSnapshot::default();
+        snapshot.runtimes.insert(
+            Runtime::Codex,
+            RuntimeUsage {
+                value: Some(AgentUsage {
+                    windows: vec![],
+                    credits: Some(UsageCredits {
+                        balance: Some(balance.into()),
+                        has_credits: true,
+                        unlimited,
+                    }),
+                    updated_at: now,
+                }),
+                error: None,
+            },
+        );
+        let settings = crate::app_settings::AppSettings::default();
+        let mut alerts = UsageAlerts::default();
+        assert!(alerts.collect(&snapshot, "", &settings, now).is_empty());
+        snapshot
+            .runtimes
+            .get_mut(&Runtime::Codex)
+            .unwrap()
+            .value
+            .as_mut()
+            .unwrap()
+            .windows
+            .push(UsageWindow {
+                name: "Week".into(),
+                used_percent: 81.,
+                resets_at: None,
+            });
+        assert_eq!(alerts.collect(&snapshot, "", &settings, now).len(), 1);
+    }
 }

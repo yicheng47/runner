@@ -407,6 +407,124 @@ pub(super) fn usage_window_row(
         .into_any_element()
 }
 
+fn grouped_credit_balance(balance: &str) -> Option<String> {
+    let balance = balance.trim();
+    let (mantissa, exponent) = balance
+        .split_once(['e', 'E'])
+        .map_or((balance, None), |(amount, exponent)| {
+            (amount, Some(exponent))
+        });
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    let exponent = exponent.map_or(Some(0), |value| value.parse::<isize>().ok())?;
+    let unsigned = mantissa.strip_prefix(['+', '-']).unwrap_or(mantissa);
+    let sign = &mantissa[..mantissa.len() - unsigned.len()];
+    let (whole, fraction) = unsigned
+        .split_once('.')
+        .map_or((unsigned, None), |(whole, fraction)| {
+            (whole, Some(fraction))
+        });
+    if !digits(whole) || fraction.is_some_and(|value| !digits(value)) {
+        return None;
+    }
+    let coefficient = format!("{whole}{}", fraction.unwrap_or_default());
+    let point = isize::try_from(whole.len()).ok()?.checked_add(exponent)?;
+    let mut rounded = if point > 0 {
+        let point = point as usize;
+        let mut rounded = coefficient.as_bytes()[..point.min(coefficient.len())].to_vec();
+        rounded.resize(point, b'0');
+        rounded
+    } else {
+        vec![b'0']
+    };
+    if point >= 0
+        && coefficient
+            .as_bytes()
+            .get(point as usize)
+            .is_some_and(|digit| *digit >= b'5')
+    {
+        let mut carry = true;
+        for digit in rounded.iter_mut().rev() {
+            if *digit < b'9' {
+                *digit += 1;
+                carry = false;
+                break;
+            }
+            *digit = b'0';
+        }
+        if carry {
+            rounded.insert(0, b'1');
+        }
+    }
+    let first = rounded.iter().position(|digit| *digit != b'0');
+    let rounded = &rounded[first.unwrap_or(rounded.len() - 1)..];
+    let mut grouped = if first.is_some() {
+        sign.to_owned()
+    } else {
+        String::new()
+    };
+    for (index, digit) in rounded.iter().enumerate() {
+        if index > 0 && (rounded.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(char::from(*digit));
+    }
+    Some(grouped)
+}
+
+pub(super) fn credit_value(
+    credits: Option<&runner_core::protocol::UsageCredits>,
+) -> (String, bool) {
+    if let Some(credits) = credits {
+        if credits.unlimited {
+            return (crate::i18n::text("usage.unlimited").into(), true);
+        }
+        if let Some(balance) = credits.balance.as_deref() {
+            if let Some(balance) = grouped_credit_balance(balance) {
+                return (balance, true);
+            }
+        } else if !credits.has_credits {
+            return ("0".into(), true);
+        }
+    }
+    (crate::i18n::text("usage.unavailable").into(), false)
+}
+
+fn credit_row(usage: &AgentUsage) -> AnyElement {
+    let (value, available) = credit_value(usage.credits.as_ref());
+    div()
+        .when(cfg!(test), |row| {
+            row.debug_selector(|| "USAGE_CREDITS".into())
+        })
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .border_t_1()
+        .border_color(theme::border())
+        .pt_2()
+        .text_size(theme::text_meta())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(theme::muted())
+                .child(crate::i18n::text("usage.credits_remaining")),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .text_align(TextAlign::Right)
+                .text_color(if available {
+                    theme::text()
+                } else {
+                    theme::muted()
+                })
+                .when(available, |value| value.font_weight(FontWeight::SEMIBOLD))
+                .child(value),
+        )
+        .into_any_element()
+}
+
 pub(super) fn usage_section(
     runtime: Runtime,
     usage: Option<&AgentUsage>,
@@ -440,6 +558,9 @@ pub(crate) fn usage_section_with_account(
             #[cfg(test)]
             crate::catalog_golden::record(serde_json::json!({"window":window.name,"label":name}));
             rows.push(usage_window_row(runtime, window, &name, now));
+        }
+        if runtime == Runtime::Codex {
+            rows.push(credit_row(usage));
         }
     }
     div()

@@ -1627,3 +1627,7 @@
 "agent_updates.updated_to" = "{runtime} 已更新到 {version}"
 "agent_updates.updating" = "正在更新 {runtime}"
 "agent_updates.waiting" = "{runtime} 更新完成后启动"
+
+"usage.credits_remaining" = "剩余额度"
+"usage.unlimited" = "无限"
+"usage.unavailable" = "暂无数据"

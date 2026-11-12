@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1279 — Codex usage credits](./1279-codex-usage-credits.md) — remaining credit balance in the usage popover and Settings, using the approved separate row ([#1279](https://github.com/yicheng47/runner/issues/1279)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 - [1263 — Remote route hardening](./1263-remote-route-hardening.md) — twenty review findings in the remote control route, fixed in four phases: route robustness and an echo reading, the host's relay loop and flow control, hello inside the handshake with terminal resume, and a leaner data path ([#1263](https://github.com/yicheng47/runner/issues/1263)). Phases 1 and 2 shipped in 0.19.8; phases 3 and 4 remain open.
 

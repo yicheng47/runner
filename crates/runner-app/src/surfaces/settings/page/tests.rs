@@ -814,6 +814,7 @@ fn usage_page_account_picker_follows_refreshed_accounts_and_usage() {
             "work".into(),
             runner_core::protocol::RuntimeUsage {
                 value: Some(runner_core::protocol::AgentUsage {
+                    credits: None,
                     updated_at: chrono::Utc::now(),
                     windows: vec![runner_core::protocol::UsageWindow {
                         name: "Week".into(),
