@@ -215,7 +215,6 @@ struct SessionState {
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
-    next_subscriber_id: u64,
     companion_terminals: Vec<Weak<terminal::CompanionTerminal>>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
@@ -305,6 +304,7 @@ impl SessionState {
             && self.model.is_empty()
             && self.terminal.is_none()
             && self.terminal_input.is_none()
+            && self.terminal_input_worker.is_none()
             && self.subscribers.is_empty()
             && self.mission_status_sink.is_none()
             && self.output_seq == 0
@@ -361,6 +361,8 @@ pub struct SessionManager {
     terminal_control: Mutex<terminal::ControlState>,
     #[cfg(test)]
     wake_baseline_read: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    #[cfg(test)]
+    terminal_retention_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -487,6 +489,8 @@ impl SessionManager {
             terminal_control: Mutex::default(),
             #[cfg(test)]
             wake_baseline_read: Mutex::default(),
+            #[cfg(test)]
+            terminal_retention_read: Mutex::default(),
         })
     }
 

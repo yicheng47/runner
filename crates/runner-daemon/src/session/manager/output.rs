@@ -1135,12 +1135,23 @@ impl SessionManager {
     }
 
     pub fn forget_session_state(&self, session_id: &str) {
+        let _control = self.terminal_control.lock().unwrap();
         if let Some(state) = self.raw_session_state(session_id) {
             let mut state = state.lock().unwrap();
+            if state.handle.is_some() {
+                return;
+            }
+            let workers = state.release_terminal();
             state.output_seq = 0;
             state.last_requested_size = None;
             state.last_requested_size_dirty = false;
             state.pending_resize = None;
+            drop(state);
+            // Worker callbacks acquire the session lock. Finish them before a new
+            // terminal can install, even when a reader still holds the old model.
+            for worker in workers {
+                let _ = worker.join();
+            }
         }
         self.prune_empty_session_state(session_id);
     }

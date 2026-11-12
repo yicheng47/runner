@@ -47,6 +47,7 @@ pub struct ModelOptions {
 
 pub struct TerminalModel {
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
+    stopped: Arc<AtomicBool>,
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     host: Arc<dyn TerminalHost>,
     session_id: String,
@@ -103,6 +104,12 @@ impl TerminalModel {
     pub fn take_workers(&self) -> Vec<thread::JoinHandle<()>> {
         std::mem::take(&mut *self.workers.lock().unwrap())
     }
+    pub fn stop_workers(&self) -> Vec<thread::JoinHandle<()>> {
+        self.stopped.store(true, Ordering::Release);
+        let _ = self.events.send(Event::Wakeup);
+        let _ = self.sync_flush.send(());
+        self.take_workers()
+    }
     pub fn new(
         host: Arc<dyn TerminalHost>,
         session_id: String,
@@ -112,6 +119,7 @@ impl TerminalModel {
     ) -> Result<Arc<Self>> {
         let (events, rx) = mpsc::channel();
         let (sync_flush, sync_flush_requests) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
         let term = Arc::new(FairMutex::new(Term::new(
             term_config(),
             &TermSize::new(cols as usize, rows as usize),
@@ -136,6 +144,7 @@ impl TerminalModel {
         };
         let model = Arc::new(Self {
             workers: Mutex::default(),
+            stopped: Arc::clone(&stopped),
             term: Arc::clone(&term),
             host: Arc::clone(&host),
             session_id: session_id.clone(),
@@ -158,6 +167,7 @@ impl TerminalModel {
             codex_native_attention: options.codex_native_attention,
         });
         let term_for_events = Arc::downgrade(&term);
+        let events_stopped = Arc::clone(&stopped);
         let worker = thread::Builder::new()
             .name(format!("native-term-events-{session_id}"))
             .spawn(move || {
@@ -165,6 +175,9 @@ impl TerminalModel {
                     let _ = host.write_reply(&session_id, bytes);
                 };
                 while let Ok(event) = rx.recv() {
+                    if events_stopped.load(Ordering::Acquire) {
+                        break;
+                    }
                     match event {
                         Event::PtyWrite(text) if text == SCHEME_PROBE_UNSUPPORTED => {
                             let state = if scheme.subscribed.load(Ordering::Relaxed) {
@@ -270,6 +283,9 @@ impl TerminalModel {
             .spawn(move || {
                 while sync_flush_requests.recv().is_ok() {
                     loop {
+                        if stopped.load(Ordering::Acquire) {
+                            return;
+                        }
                         let Some(next) = weak.upgrade().map(|model| model.flush_sync_update())
                         else {
                             return;
@@ -291,6 +307,9 @@ impl TerminalModel {
     }
 
     pub fn feed_output(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
+        if self.stopped.load(Ordering::Acquire) {
+            return None;
+        }
         let now = Instant::now();
         let mut sequence = self.sequence.lock().unwrap();
         if seq <= sequence.last {
@@ -394,6 +413,9 @@ impl TerminalModel {
     /// Callers publish after releasing the tracker, so each publication reports the tracker's
     /// latest observation in order: a delayed caller cannot replace a newer state with its own.
     pub fn publish_input(&self, observation: Option<InputObservation>) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
         if observation.is_none() {
             return;
         }
@@ -459,6 +481,9 @@ impl TerminalModel {
     }
 
     pub fn write_input(&self, bytes: &[u8]) -> Result<()> {
+        if self.stopped.load(Ordering::Acquire) {
+            anyhow::bail!("terminal stopped");
+        }
         self.host.write_input(&self.session_id, bytes)
     }
     pub fn size(&self) -> (u16, u16) {
@@ -613,6 +638,27 @@ mod delivery_tests {
             true
         }
         fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    #[test]
+    fn stopped_workers_join_while_the_model_is_still_retained() {
+        let model = TerminalModel::new(
+            Arc::new(Host::default()),
+            "stopped".into(),
+            80,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, b"\x1b[?2026hbuffered update");
+        let workers = model.stop_workers();
+        assert_eq!(workers.len(), 2);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(model.stop_workers().is_empty());
+        assert!(model.feed_output(2, b"\x1b]10;?\x1b\\").is_none());
+        assert!(model.write_input(b"late input").is_err());
     }
 
     #[test]

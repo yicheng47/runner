@@ -11,6 +11,7 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) {
         let (cols, rows) = initial_size.expect("spawn size must be resolved before handle install");
+        let mut control = self.terminal_control.lock().unwrap();
         let prepared = self.session_state(session_id).and_then(|state| {
             let state = state.lock().unwrap();
             state
@@ -23,10 +24,7 @@ impl SessionManager {
             self.create_terminal(session_id, cols, rows, pool, events)
                 .expect("create session terminal model")
         });
-        let (input, worker) =
-            self.start_terminal_input(session_id, Arc::clone(&terminal), Arc::clone(events));
-        {
-            let mut control = self.terminal_control.lock().unwrap();
+        let previous_worker = {
             let controller = self
                 .inherited_controller(session_id, pool, &mut control)
                 .expect("read terminal control group before handle install");
@@ -45,10 +43,22 @@ impl SessionManager {
             state.last_exit_was_killed = false;
             state.controller = controller;
             state.terminal = Some(terminal);
-            state.terminal_input = Some(input);
-            state.terminal_input_worker = Some(worker);
+            if state.terminal_input.is_none() {
+                let (input, worker) = self.start_terminal_input(
+                    session_id,
+                    Arc::clone(state.terminal.as_ref().unwrap()),
+                    Arc::clone(events),
+                );
+                state.terminal_input = Some(input);
+                state.terminal_input_worker.replace(worker)
+            } else {
+                None
+            }
+        };
+        if let Some(worker) = previous_worker {
+            let _ = worker.join();
         }
-        self.install_handle_with_size_persistence(
+        let spawned = self.install_handle_state(
             session_id,
             handle,
             mission_status_sink,
@@ -66,10 +76,12 @@ impl SessionManager {
                     false
                 }
             },
-            events.as_ref(),
         );
+        drop(control);
+        self.publish_handle_install(&spawned, events.as_ref());
     }
 
+    #[cfg(test)]
     pub(super) fn install_handle_with_size_persistence(
         &self,
         session_id: &str,
@@ -79,6 +91,26 @@ impl SessionManager {
         persist_size: impl FnOnce(u16, u16) -> bool,
         events: &dyn SessionEvents,
     ) {
+        let control = self.terminal_control.lock().unwrap();
+        let spawned = self.install_handle_state(
+            session_id,
+            handle,
+            mission_status_sink,
+            initial_size,
+            persist_size,
+        );
+        drop(control);
+        self.publish_handle_install(&spawned, events);
+    }
+
+    fn install_handle_state(
+        &self,
+        session_id: &str,
+        handle: SessionHandle,
+        mission_status_sink: Option<ForwarderEmitCtx>,
+        initial_size: Option<(u16, u16)>,
+        persist_size: impl FnOnce(u16, u16) -> bool,
+    ) -> SessionSpawnedEvent {
         let initial_size = initial_size.expect("spawn size must be resolved before handle install");
         let mission_id = handle.mission_id.clone();
         let mut terminal_size = initial_size;
@@ -143,16 +175,20 @@ impl SessionManager {
                 terminal.resize(terminal_size.0, terminal_size.1);
             }
         }
-        if let Ok(terminal) = self.terminal_model(session_id) {
-            terminal.publish_initial();
-        }
-        events.spawned(&SessionSpawnedEvent {
+        SessionSpawnedEvent {
             session_id: session_id.to_owned(),
             mission_id,
             cols: terminal_size.0,
             rows: terminal_size.1,
-        });
-        self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Respawned);
+        }
+    }
+
+    fn publish_handle_install(&self, spawned: &SessionSpawnedEvent, events: &dyn SessionEvents) {
+        if let Ok(terminal) = self.terminal_model(&spawned.session_id) {
+            terminal.publish_initial();
+        }
+        events.spawned(spawned);
+        self.notify_delivery_event(&spawned.session_id, router::SessionDeliveryEvent::Respawned);
     }
 
     pub(super) fn install_forwarder(&self, session_id: &str, forwarder: thread::JoinHandle<()>) {
