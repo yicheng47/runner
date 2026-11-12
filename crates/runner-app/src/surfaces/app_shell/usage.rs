@@ -144,7 +144,7 @@ pub(super) fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>)
 /// The runtimes the usage footer and popover show: usage-capable, installed and
 /// enabled in Settings, whether or not they have run a session (#752), in
 /// `Runtime::ALL` order.
-pub(super) fn visible_usage_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
+pub(crate) fn visible_usage_runtimes(installed: &[Runtime], enabled: &[Runtime]) -> Vec<Runtime> {
     Runtime::ALL
         .into_iter()
         .filter(|runtime| {
@@ -205,13 +205,25 @@ pub(crate) fn sidebar_usage_element(
         .when(cfg!(test), |usage| {
             usage.debug_selector(|| "SIDEBAR_USAGE".into())
         })
-        .w_full()
+        .w(px((visible.len() as f32 * 52. + 20.) * zoom))
+        .flex_none()
         .h(px(32. * zoom))
         .flex()
         .items_center()
         .justify_between()
         .px(px(10. * zoom))
         .rounded(px(6. * zoom))
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .hover(|usage| usage.bg(theme::chrome_hover()))
+        .focus_visible(|usage| usage.bg(theme::chrome_hover()))
+        .map(|usage| {
+            #[cfg(test)]
+            let usage = crate::theme_snapshot::record_fill("SIDEBAR_USAGE", usage);
+            #[cfg(test)]
+            let usage = crate::theme_snapshot::record_border("SIDEBAR_USAGE", usage);
+            usage
+        })
         .children(entries)
 }
 

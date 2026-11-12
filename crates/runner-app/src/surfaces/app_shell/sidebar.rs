@@ -270,22 +270,20 @@ impl NativeRoot {
         self.remote_client.sync_usage_popover(self.usage_open, cx);
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
-            let available = (self.front_page_sidebar_width(cx) - 92.) * zoom;
+            let available = (self.front_page_sidebar_width(cx) - 96.) * zoom;
             let trigger = if older_host {
                 sidebar_update_hint_element(available, zoom)
+                    .hover(|button| button.bg(theme::chrome_hover()))
             } else {
-                sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom)
+                sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom).max_w(px(available))
             };
-            let width = (!older_host).then(|| {
-                (visible_usage_runtimes.len() as f32 * 52. + 20.)
-                    .min(self.front_page_sidebar_width(cx) - 92.)
-                    * zoom
-            });
             let trigger = trigger
                 .when(dimmed, |usage| usage.opacity(0.45))
                 .occlude()
                 .cursor_pointer()
-                .hover(|button| button.bg(theme::chrome_hover()))
+                .when(self.usage_open && !older_host, |button| {
+                    button.border_color(theme::muted())
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.usage_open = !this.usage_open;
@@ -298,21 +296,16 @@ impl NativeRoot {
                     }
                     cx.notify();
                 }));
-            div()
-                .relative()
-                .when_some(width, |slot, width| slot.w(px(width)))
-                .flex_none()
-                .child(trigger)
-                .child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, _, cx| {
-                            anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
-                        },
-                    )
-                    .absolute()
-                    .inset_0(),
+            div().relative().flex_none().child(trigger).child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, cx| {
+                        anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
+                    },
                 )
+                .absolute()
+                .inset_0(),
+            )
         });
         let footer = crate::platform_ui::sidebar_section()
             .when(cfg!(test), |footer| {
@@ -326,7 +319,6 @@ impl NativeRoot {
                     self.remote_client.render_host_button(cx),
                     self.render_settings_button(cx),
                     zoom,
-                    4.,
                 )
                 .pt_2()
                 .child({
@@ -494,12 +486,34 @@ impl NativeRoot {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum SidebarFooterControl {
+    Host,
+    Settings,
+}
+
+impl SidebarFooterControl {
+    pub(crate) fn render(self, zoom: f32, color: gpui::Hsla) -> Div {
+        let (icon, size) = match self {
+            Self::Host => ("monitor.svg", 14.),
+            Self::Settings => ("settings.svg", 16.),
+        };
+        div()
+            .flex_none()
+            .size(px(32. * zoom))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_md()
+            .child(svg().path(icon).size(px(size * zoom)).text_color(color))
+    }
+}
+
 pub(crate) fn sidebar_footer_contents(
     usage: Option<AnyElement>,
     host: AnyElement,
     settings: AnyElement,
     zoom: f32,
-    control_gap: f32,
 ) -> Div {
     div()
         .when(cfg!(test), |row| {
@@ -516,7 +530,7 @@ pub(crate) fn sidebar_footer_contents(
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(control_gap * zoom))
+                .gap(px(8. * zoom))
                 .child(host)
                 .child(settings),
         )

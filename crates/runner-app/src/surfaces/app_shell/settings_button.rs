@@ -4,17 +4,12 @@ impl NativeRoot {
     pub(crate) fn render_settings_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let zoom = self.settings(cx).app_zoom;
         let update = update_dot_visible(&self.agent_updates, self.settings(cx));
-        div()
+        SidebarFooterControl::Settings
+            .render(zoom, theme::muted())
             .id("sidebar-settings")
             .debug_selector(|| "SIDEBAR_SETTINGS".into())
             .tab_index(0)
             .relative()
-            .flex_none()
-            .size(px(32. * zoom))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
             .cursor_pointer()
             .occlude()
             .hover(|button| button.bg(theme::chrome_hover()))
@@ -29,12 +24,6 @@ impl NativeRoot {
                     cx.stop_propagation();
                 }
             }))
-            .child(
-                svg()
-                    .path("settings.svg")
-                    .size(px(16. * zoom))
-                    .text_color(theme::muted()),
-            )
             .children(update.then(|| {
                 div()
                     .debug_selector(|| "SIDEBAR_SETTINGS_UPDATE_DOT".into())

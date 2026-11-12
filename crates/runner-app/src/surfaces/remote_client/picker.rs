@@ -67,18 +67,13 @@ impl RemoteClient {
         });
         let open = self.ui.picker_open;
         let owner = cx.weak_entity();
-        let button = div()
+        let button = crate::surfaces::app_shell::SidebarFooterControl::Host
+            .render(zoom, tone.unwrap_or_else(theme::muted))
             .id("sidebar-host-button")
             .debug_selector(|| "SIDEBAR_HOST_BUTTON".into())
             .track_focus(&self.ui.host_focus.clone().tab_stop(true))
             .tab_index(0)
             .relative()
-            .flex_none()
-            .size(px(32. * zoom))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_md()
             .border_1()
             .border_color(tone.map_or(gpui::transparent_black(), |color| {
                 theme::with_alpha(color, 0.4)
@@ -112,12 +107,6 @@ impl RemoteClient {
                     cx.stop_propagation();
                 }
             }))
-            .child(
-                svg()
-                    .path("monitor.svg")
-                    .size(px(16. * zoom))
-                    .text_color(tone.unwrap_or_else(theme::muted)),
-            )
             .children(attention.then(|| {
                 div()
                     .absolute()

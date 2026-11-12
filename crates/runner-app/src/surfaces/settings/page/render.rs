@@ -25,6 +25,15 @@ impl NativeRoot {
                 .collect()
         };
         let content = self.render_settings_pane(cx);
+        // Keep the full-size footer sample when zoom leaves little room for page gutters.
+        let horizontal_padding = if active == SettingsPane::Usage {
+            let preview_width = super::super::usage::USAGE_PREVIEW_WIDTH
+                + 2. * super::super::usage::USAGE_PREVIEW_PADDING;
+            let available = f32::from(window.bounds().size.width) - width - 8. * zoom - 4.;
+            ((available - preview_width * zoom) / 2.).clamp(0., 40. * zoom)
+        } else {
+            40. * zoom
+        };
 
         div()
             .absolute()
@@ -163,6 +172,7 @@ impl NativeRoot {
                         &self.settings_page.content_scroll,
                         self.settings_page.content_scrollbar.clone(),
                         zoom,
+                        px(horizontal_padding),
                     )),
             )
             .child(self.render_sidebar_resize_handle(width, cx))

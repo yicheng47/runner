@@ -676,6 +676,7 @@ fn settings_content_column(
     scroll: &ScrollHandle,
     scrollbar: Entity<Scrollbar>,
     zoom: f32,
+    horizontal_padding: Pixels,
 ) -> impl IntoElement {
     div()
         .relative()
@@ -691,7 +692,7 @@ fn settings_content_column(
                 .overflow_y_scroll()
                 .scrollbar_width(px(0.))
                 .track_scroll(scroll)
-                .px(rems(40. / 16.))
+                .px(horizontal_padding)
                 .pb(rems(64. / 16.))
                 .pt(rems(SETTINGS_CONTENT_TOP / 16.))
                 .children(content.map(|content| {

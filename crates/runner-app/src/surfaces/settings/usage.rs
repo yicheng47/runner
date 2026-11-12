@@ -1,10 +1,16 @@
 use crate::app_settings::UsageSettings;
-use crate::surfaces::app_shell::{is_five_hour, sidebar_usage_element, usage_section_with_account};
+use crate::surfaces::app_shell::{
+    is_five_hour, sidebar_usage_element, usage_section_with_account, visible_usage_runtimes,
+    SidebarFooterControl,
+};
 use crate::{theme, NativeRoot};
 use gpui::prelude::*;
-use gpui::{div, px, svg, AnyElement, Context};
+use gpui::{div, px, AnyElement, Context, FontWeight};
 use runner_app::ui::{Button, ButtonSize, PaneHeader, SettingsCard, SettingsRow, Toggle};
 use runner_core::Runtime;
+
+pub(super) const USAGE_PREVIEW_WIDTH: f32 = 240.;
+pub(super) const USAGE_PREVIEW_PADDING: f32 = 20.;
 
 impl NativeRoot {
     pub(crate) fn render_usage_settings(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -21,11 +27,11 @@ impl NativeRoot {
             &self.usage_installed,
             &self.settings(cx).model_runtimes(),
         );
-        let visible: Vec<_> = runtimes
-            .iter()
-            .copied()
-            .filter(|r| settings.badge(*r))
-            .collect();
+        let visible: Vec<_> =
+            visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+                .into_iter()
+                .filter(|r| settings.badge(*r))
+                .collect();
         let now = chrono::Utc::now();
         let updated = snapshot
             .runtimes
@@ -106,94 +112,62 @@ impl NativeRoot {
             );
         }
         let zoom = self.settings(cx).app_zoom;
-        let preview_usage = (!visible.is_empty()).then(|| {
-            sidebar_usage_element(&snapshot, &visible, zoom)
-                .w(gpui::auto())
-                .flex_none()
-                .justify_start()
-                .gap(px(12. * zoom))
-                .border_1()
-                .border_color(theme::chrome_selected_border())
-                .bg(theme::chrome_selected())
-                .into_any_element()
-        });
-        let (recent, recent_icon) = self
-            .app_store
-            .read(cx)
-            .sessions
-            .first()
-            .map(|session| {
-                (
-                    session
-                        .preferred_title(None)
-                        .unwrap_or_else(|| session.display_name.clone()),
-                    crate::chat_icon::ChatIcon::for_runtime(&session.agent_runtime),
-                )
-            })
-            .unwrap_or_else(|| {
-                (
-                    crate::i18n::text("ui.new_chat").to_owned(),
-                    crate::chat_icon::ChatIcon::for_runtime(&self.settings(cx).default_runtime),
-                )
-            });
+        let preview_usage = (!visible.is_empty())
+            .then(|| sidebar_usage_element(&snapshot, &visible, zoom).into_any_element());
         let preview = div()
             .debug_selector(|| "USAGE_SIDEBAR_PREVIEW".into())
             .w_full()
-            .pt(px(28. * zoom))
-            .rounded_md()
-            .bg(theme::sidebar())
             .flex()
-            .flex_col()
+            .flex_wrap()
             .items_center()
+            .gap(px(24. * zoom))
+            .px(px(USAGE_PREVIEW_PADDING * zoom))
+            .py(px(16. * zoom))
+            .child(
+                div()
+                    .debug_selector(|| "USAGE_PREVIEW_LABEL".into())
+                    .flex_1()
+                    .flex_basis(gpui::auto())
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3. * zoom))
+                    .child(
+                        div()
+                            .text_size(px(13. * zoom))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(crate::i18n::text("usage.sidebar_preview")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12. * zoom))
+                            .text_color(theme::muted())
+                            .child(crate::i18n::text("usage.weekly_usage")),
+                    ),
+            )
             .child(
                 div()
                     .debug_selector(|| "USAGE_PREVIEW_SIDEBAR".into())
-                    .w(px(240. * zoom))
-                    .px(px(12. * zoom))
-                    .pb(px(12. * zoom))
-                    .flex()
-                    .flex_col()
-                    .gap(px(8. * zoom))
-                    .child(
-                        div()
-                            .debug_selector(|| "USAGE_PREVIEW_RECENT".into())
-                            .w_full()
-                            .h(px(30. * zoom))
-                            .px(px(8. * zoom))
-                            .opacity(0.4)
-                            .flex()
-                            .items_center()
-                            .gap(px(8. * zoom))
-                            .child(recent_icon.render(
-                                px(12. * zoom),
-                                recent_icon.color(theme::text(), true),
-                                true,
-                            ))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(13. * zoom))
-                                    .text_color(theme::muted())
-                                    .child(recent),
-                            ),
-                    )
-                    .child(
-                        crate::surfaces::app_shell::sidebar_footer_divider()
-                            .debug_selector(|| "USAGE_PREVIEW_DIVIDER".into()),
-                    )
-                    .child(
-                        crate::surfaces::app_shell::sidebar_footer_contents(
-                            preview_usage,
-                            preview_button("monitor.svg", 14., zoom),
-                            preview_button("settings.svg", 16., zoom),
-                            zoom,
-                            8.,
-                        )
-                        .h(px(32. * zoom)),
-                    ),
+                    .w(px(USAGE_PREVIEW_WIDTH * zoom))
+                    .flex_none()
+                    .p(px(12. * zoom))
+                    .rounded(px(8. * zoom))
+                    .bg(theme::sidebar())
+                    .child(crate::surfaces::app_shell::sidebar_footer_contents(
+                        preview_usage,
+                        SidebarFooterControl::Host
+                            .render(zoom, theme::muted())
+                            .debug_selector(|| "USAGE_PREVIEW_HOST".into())
+                            .into_any_element(),
+                        SidebarFooterControl::Settings
+                            .render(zoom, theme::muted())
+                            .debug_selector(|| "USAGE_PREVIEW_SETTINGS".into())
+                            .into_any_element(),
+                        zoom,
+                    )),
             );
+        sidebar.insert(0, preview.into_any_element());
         let mut account_picker = self.render_claude_usage_picker(cx);
         let cards: Vec<_> = runtimes
             .into_iter()
@@ -256,7 +230,6 @@ impl NativeRoot {
                     .child(super::page::settings_section_heading(crate::i18n::text(
                         "usage.sidebar",
                     )))
-                    .child(preview)
                     .child(SettingsCard::new(sidebar)),
             )
             .child(
@@ -329,23 +302,4 @@ impl NativeRoot {
             )
             .into_any_element()
     }
-}
-
-fn preview_button(icon: &'static str, icon_size: f32, zoom: f32) -> AnyElement {
-    div()
-        .when(cfg!(test), |button| {
-            button.debug_selector(move || format!("USAGE_PREVIEW_{icon}"))
-        })
-        .flex_none()
-        .size(px(32. * zoom))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            svg()
-                .path(icon)
-                .size(px(icon_size * zoom))
-                .text_color(theme::muted()),
-        )
-        .into_any_element()
 }
