@@ -1,5 +1,7 @@
 # pi runtime — implementation plan
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Plan for feature [539](../../../features/archive/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539), milestone 0.11). The spec carries the per-site inventory with a phase per row, the probe evidence and the decisions; this file is the mission sequence and what has landed.
 
 ## Status (2026-09-18)

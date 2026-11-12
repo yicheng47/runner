@@ -1,5 +1,7 @@
 # General `runner` CLI — program record
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Archived after 0.11.0 was tagged on 2026-09-20 (`e9d59aa`, [v0.11.0](https://github.com/yicheng47/runner/releases/tag/v0.11.0)). The `runner` command is the way agents, scripts and people drive Runner; the app installs it on PATH and a `runner` skill into every detected agent's skills root; the MCP integration is gone.
 
 Implementation record for [feature 648](../../../features/archive/648-runner-cli.md) ([#648](https://github.com/yicheng47/runner/issues/648)). The spec says *what*; this directory says *how, in what order, and what has landed*. Same shape as the [role-rename](../604-role-rename/README.md) record: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission table with what reading the code changed and the decisions taken along the way, [impl_log.md](impl_log.md) is the dated log, and the five briefs stay in [`../../briefs/`](../../briefs/).

@@ -1,5 +1,7 @@
 # 706 — Plan usage for Claude Code and Codex
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Tracking issue: [#706](https://github.com/yicheng47/runner/issues/706)
 > Priority: P2, milestone 0.11 (moved from 0.12 on 2026-09-23: Jason wants to use it), so it ships in a 0.11.x patch. Platforms: macOS and Windows.
 > Status: shipped in [0.11.4](https://github.com/yicheng47/runner/releases/tag/v0.11.4) on 2026-09-23; archived 2026-10-01. The original scope and dated decisions follow. Design settled 2026-09-23.

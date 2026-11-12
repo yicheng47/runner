@@ -1,5 +1,7 @@
 # 748 — Link a chat to the missions it starts
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Tracking issue: [#748](https://github.com/yicheng47/runner/issues/748). Priority: P1, milestone 0.19. Platforms: macOS, Windows and Linux.
 > Status: draft, rewritten 2026-11-02 after Jason chose reports typed into the chat. The same day he chose the linked group (option E) for the sidebar, the Agents list (option H) for the Active view and linking by hand, and settled the remaining decisions. The design is signed off and the spec is ready for implementation; see [Decisions](#decisions).
 > Replaces the 2026-10-27 draft, in which the chat heard about its missions only when the person asked (last at `e42ec525`), and the 2026-10-20 side-panel options A–C in the design file; see [Superseded designs](#superseded-designs).

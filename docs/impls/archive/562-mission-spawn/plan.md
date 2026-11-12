@@ -14,7 +14,7 @@ Phase 2's decision 9, split out and shipped first: one mission session's exit or
 
 ### Design
 
-`design/specs/562-mission-spawn.pen`, drawn on 2026-10-12 against the shipped mission workspace (rail cards, feed renderer, avatar seeding) and the shipped Start chat dialog:
+`runner/desktop/specs/archive/562-mission-spawn.pen`, drawn on 2026-10-12 against the shipped mission workspace (rail cards, feed renderer, avatar seeding) and the shipped Start chat dialog:
 
 | Frame | Id | Shows |
 | --- | --- | --- |
@@ -170,7 +170,7 @@ A mission can start with no crew and no roles; roles join one at a time through 
 
 ### Design
 
-`design/specs/562-mission-spawn.pen`, row at y 3400, signed off by Jason on 2026-10-15 (`12bef39f`):
+`runner/desktop/specs/archive/562-mission-spawn.pen`, row at y 3400, signed off by Jason on 2026-10-15 (`12bef39f`):
 
 | Frame | Id | Shows |
 | --- | --- | --- |

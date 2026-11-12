@@ -1,5 +1,7 @@
 # 634 — plan
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 The phases of [feature 634](../../../features/archive/634-file-preview.md) in detail: how each mission lands, what it touches, how it is checked, and the gate before the umbrella reaches `main`. The program's state and its binding decisions are in [README.md](README.md), and the dated log is [impl_log.md](impl_log.md). The spec wins on what a person sees; the design file `runner/desktop/specs/634-file-preview.pen` in `yeelinks_design` wins on how it looks; this plan wins on how it is built and in what order.
 
 ## Shape

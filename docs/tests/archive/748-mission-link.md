@@ -1,5 +1,7 @@
 # #748 mission links — live QA
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 ## Run 1 — macOS, 2026-11-03
 
 **Verdict: Failed, with required checks still Blocked or Skipped.** This candidate delivered no mission reports, never reached Settled, and differed visibly from the approved group design. Active has no per-group collapse by design; the initial F4 failure was withdrawn after the operator correction below. This is a feature run, not a full regression pass. Preserve the actual failures when recording a replacement candidate.

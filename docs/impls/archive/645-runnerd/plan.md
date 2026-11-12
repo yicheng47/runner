@@ -307,7 +307,7 @@ Brief `645-m3-daemon-process.md`. Crew: codex trio. The QA slot runs live checks
 
 ### Mission 1d — lifecycle
 
-Brief `645-m4-lifecycle.md`. Design comes first: the spec's Design list, drawn in `design/specs/645-session-host.pen` and signed off by Jason. Crew: codex trio.
+Brief `645-m4-lifecycle.md`. Design comes first: the spec's Design list, drawn in `runner/desktop/specs/archive/645-session-host.pen` and signed off by Jason. Crew: codex trio.
 
 **Design.**
 

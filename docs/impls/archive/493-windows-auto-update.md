@@ -1,5 +1,7 @@
 # 493 — Automatic updates on Windows
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493). Feature, P2, Windows. Spec: [`docs/features/archive/493-windows-auto-update.md`](../../features/archive/493-windows-auto-update.md). Design: `design/windows-updates.pen` at the time, merged into `design/runner.pen` and `design/specs/archive/493-windows-updates.pen` on 2026-09-19 (frame ids in the private `yeelinks_design` repo’s README). Baseline `main` at `6f2918d` (2026-09-07). Shipped 2026-09-07 in [#499](https://github.com/yicheng47/runner/pull/499) (four reviewed commits plus the rename-aside follow-up) and [#500](https://github.com/yicheng47/runner/pull/500) (dialog layering under the Windows title bar; shell-launched relaunch to escape Redirection Guard, found when the relaunched app could not see Codex's junctioned `bin`), released as 0.8.2. Verified end to end on JASONPC across nightlies 20260907.1425 → 1439 → 1531.
 
 ## What ships

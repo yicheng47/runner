@@ -1,5 +1,7 @@
 # 1204 — Minimal update flow
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Tracking issue: [#1204](https://github.com/yicheng47/runner/issues/1204). Scheduling and priority live on the issue and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
 > Status: design signed off by Jason on 2026-11-06 in `runner/desktop/specs/1204-update-experience.pen` in `yeelinks_design`. Jason weighed writing Runner's own Mac updater on 2026-11-06 and kept Sparkle, since the extra risk wasn't worth it for this redesign, and chose to keep today's Mac update flow. Later that day Jason cut the popover down to the Ready state, so clicking the icon starts the download. Failed and Manual download only open Settings → Updates, and Jason decided the same day that a click does nothing during Downloading, Verifying and Installing. Implemented; the update-install checks below are pending nightly builds.
 

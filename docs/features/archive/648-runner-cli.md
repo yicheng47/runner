@@ -1,5 +1,7 @@
 # 648 — A general `runner` CLI
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Tracking issue: [#648](https://github.com/yicheng47/runner/issues/648)
 > Status: shipped 2026-09-20 in [v0.11.0](https://github.com/yicheng47/runner/releases/tag/v0.11.0) (PRs [#650](https://github.com/yicheng47/runner/pull/650), [#652](https://github.com/yicheng47/runner/pull/652), [#654](https://github.com/yicheng47/runner/pull/654), [#664](https://github.com/yicheng47/runner/pull/664), [#665](https://github.com/yicheng47/runner/pull/665), [#667](https://github.com/yicheng47/runner/pull/667); record [`648-runner-cli/`](../../impls/archive/648-runner-cli/README.md); missions `01M2SW0NRV9W8PTFWR673JZH8S`, `01M2T4KVFBTP3MG9SMVJRG6433`, `01M2W85MNTBMWMTBPXMZJQBQQN`, `01M2YAW36SAP7B8QT8E01J9Q3Y`, `01M2YMFE6BK849GNR1GH3TC682`). The Windows checks and the README screenshot continue as [#668](https://github.com/yicheng47/runner/issues/668).
 > Priority: P1, milestone 0.11. With pi ([539](./539-pi-runtime.md)) it makes 0.11.0; the rest of the milestone ships in 0.11.0 if ready, otherwise in 0.11.x. Platforms: macOS and Windows.

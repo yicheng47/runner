@@ -1,5 +1,7 @@
 # 701 — Desktop notifications when an agent needs you
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Tracking issue: [#701](https://github.com/yicheng47/runner/issues/701)
 > Priority: P2, milestone 0.16 (moved from 0.13 to 0.14 on 2026-10-07, renumbered 0.16 on 2026-10-10). Platforms: macOS and Windows.
 > Decision, 2026-10-13: use the operating system's own notifications, Notification Center on macOS and toast notifications on Windows, posted through GPUI's system notification API. This replaces the 2026-09-22 decision to copy Zed's self-drawn popup window.

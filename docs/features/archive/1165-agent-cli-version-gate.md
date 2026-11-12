@@ -1,5 +1,7 @@
 # 1165 — Agent CLI version gate, update notice and background updates
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#1165](https://github.com/yicheng47/runner/issues/1165). Related: [#803](https://github.com/yicheng47/runner/issues/803) (automatic background updates) builds on the background tasks this spec adds.
 
 Design: `runner/desktop/specs/1165-agent-cli-version-gate.pen` in `yeelinks_design`, signed off on 2026-11-11 (`8e9db8f`), with Jason’s same-day agent-only launcher labels/copy revision saved at `d0068fd`. That revision supersedes B’s former role-row badges; the launch gate and recovery still cover roles. Frames:

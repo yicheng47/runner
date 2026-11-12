@@ -1,5 +1,7 @@
 # Launcher New tab row QA
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Verdict: **PASSED** for the selected macOS feature checks N1–N11 and replacement N12 on the final candidate. QA directly verified the UI checks except N10’s held-Command shortcut pills, which the human explicitly confirmed through Runner. No confirmed product failure or visual mismatch. This is selected feature validation, not a full regression pass.
 
 ## Candidate, environment and authorization

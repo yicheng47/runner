@@ -1,5 +1,7 @@
 # Update agent CLIs from Settings → Agents
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 > Status: shipped in [0.11.5](https://github.com/yicheng47/runner/releases/tag/v0.11.5) on 2026-09-26; archived 2026-10-01. The original scope and dated decisions follow.
 
 Tracking issue: [#533](https://github.com/yicheng47/runner/issues/533). Priority P2. Pencil frames drawn 2026-09-23.

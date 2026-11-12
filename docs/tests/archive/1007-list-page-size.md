@@ -1,5 +1,7 @@
 # 1007 — List page-size validation
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Date: 2026-10-23. Scope: [Roles and Crews pagination](https://github.com/yicheng47/runner/blob/97fc5b901ba2fa45e970f1eaa44f04c876d1d4dd/docs/features/1007-list-page-size.md). Platform: macOS, local Rust CI profile.
 
 Implementation automated-check candidate: then-uncommitted changes on `feat/1007-list-page-size`, based on `0696c9e1bb163052ecd2f90f40b7e9f3f5782010`. SHA-256 of `git diff -- crates/runner-app`: `31361d12392539ed5ee7ed61f0f90aa3d34c478b04aaaa9ece02ff440438725d`. The approved design is `runner/desktop/specs/1007-list-page-size.pen` in the private design repo, committed as `45c085e`: Roles `FQVg3`, Crews `vGI5F`, selector and narrow footer `A0tnE`. The reviewer's committed native candidate is identified below.

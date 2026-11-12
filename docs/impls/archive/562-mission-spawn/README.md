@@ -1,6 +1,6 @@
 # 562 — missions as containers: program record
 
-Implementation record for [feature 562](../../../features/archive/562-mission-spawn.md) ([#562](https://github.com/yicheng47/runner/issues/562), "delegate work to other agents", milestone 0.16). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind every mission. [plan.md](plan.md) has each phase in detail, and [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../../briefs/) as `562-m{n}-{slug}.md`. The design is `design/specs/562-mission-spawn.pen` on `main`, drawn phase by phase.
+Implementation record for [feature 562](../../../features/archive/562-mission-spawn.md) ([#562](https://github.com/yicheng47/runner/issues/562), "delegate work to other agents", milestone 0.16). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind every mission. [plan.md](plan.md) has each phase in detail, and [impl_log.md](impl_log.md) is the dated log. Briefs go in [`../briefs/`](../../briefs/) as `562-m{n}-{slug}.md`. The design is `runner/desktop/specs/archive/562-mission-spawn.pen` on `main`, drawn phase by phase.
 
 ## Status (2026-10-15)
 

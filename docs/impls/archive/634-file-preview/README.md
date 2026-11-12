@@ -1,5 +1,7 @@
 # 634 file preview — program record
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Implementation record for [feature 634](../../../features/archive/634-file-preview.md) ([#634](https://github.com/yicheng47/runner/issues/634)). The spec says *what*; this directory says *how, in what order, and what has landed*. This file is the condensed state and the decisions that bind. [plan.md](plan.md) has the phases, each mission's scope, checks and landing, and the gate before the umbrella reaches `main`; [impl_log.md](impl_log.md) is the dated log. Briefs went in [`docs/impls/briefs/`](https://github.com/yicheng47/runner/tree/523f81843cd3aac1f1a82f3ec97785409b41d171/docs/impls/briefs) as `634-m{n}-{slug}.md`, written on each mission's branch when it starts.
 
 ## Status (2026-11-06)

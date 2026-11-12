@@ -1,5 +1,7 @@
 # #1204 — macOS development-preview QA
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Current verdict: **NO REMAINING MUST-FIX QA ISSUES in the accessible macOS development-preview checks, including the focused icon-click rerun on `72d2ab4d927f58307bdeaa3fe959bffe1c9d18ca`.** Available starts Download, including a double-click that stays in the terminal. Downloading, Verifying and Installing icon clicks do nothing and preserve terminal input; Failed and Manual open Updates, and Ready opens its popover. Earlier unaffected passes are retained with their original candidate attribution below. Tooltip rendering and the listed platform/fixture gaps remain Blocked; keep `needs-live-test`. Cleanup is complete and the QA lock is released.
 
 Earlier multi-state result: no remaining observed must-fix issues on `7a91eff53a4214004cf791e827ea2a07d177df8b`, with its listed limits. That verdict did not cover the later Ready-only contract. The original failures and intermediate reruns remain recorded below as history.

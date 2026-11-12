@@ -1,5 +1,7 @@
 # pi runtime — program record
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Archived after 0.11.0 was tagged on 2026-09-20 (`e9d59aa`, [v0.11.0](https://github.com/yicheng47/runner/releases/tag/v0.11.0)). pi is a first-class runtime beside Claude Code, Codex, GitHub Copilot CLI and TRAE CLI: chats, missions, resume, fork, model discovery, and hook status through a Runner-owned extension.
 
 Implementation record for [feature 539](../../../features/archive/539-pi-runtime.md) ([#539](https://github.com/yicheng47/runner/issues/539)). The spec says *what*, with the per-site inventory and the probe evidence; this directory says *how, in what order, and what has landed*: this file is the condensed state and the decisions that bind, [plan.md](plan.md) is the mission table and the risks, [impl_log.md](impl_log.md) is the dated log, and the two briefs stay in [`../../briefs/`](../../briefs/).

@@ -1,5 +1,7 @@
 # 887 — Active sidebar and sidebar refresh
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#887](https://github.com/yicheng47/runner/issues/887). Jason approved the final sidebar on 2026-10-19 and requested a Codex duo to implement it first. The decisions below supersede the issue's earlier alternatives.
 
 ## Motivation

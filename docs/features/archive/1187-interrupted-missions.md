@@ -1,5 +1,7 @@
 # 1187 — Interrupted missions
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#1187](https://github.com/yicheng47/runner/issues/1187). Design: `runner/desktop/specs/1187-interrupted-missions.pen` in the design repo, signed off by Jason on 2026-11-05: option A (amber pause) in frame `g1uiM1`, the feed line without a Continue button (variant 1) in frame `YoQDv`, and the report and `runner mission show` in frame `jSj1Z`. Option B, option C and the Continue button were not chosen and are not built. Where the design and this spec disagree on visual detail, the design wins; on behaviour, this spec wins.
 
 ## Motivation

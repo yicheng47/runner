@@ -1,5 +1,7 @@
 # Automatic updates on Windows
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#493](https://github.com/yicheng47/runner/issues/493), closed. Shipped in [Runner 0.8.2](https://github.com/yicheng47/runner/releases/tag/v0.8.2) on 2026-09-07 through [#499](https://github.com/yicheng47/runner/pull/499) and [#500](https://github.com/yicheng47/runner/pull/500); archived with the [implementation brief](../../impls/archive/493-windows-auto-update.md). Current behavior is documented in [Windows development](../../arch/windows.md#update-behavior). Two things changed after the first real run and are folded into the text below: the installer renames in-use binaries aside instead of refusing, and every installer launch of Runner goes through the shell to escape Redirection Guard.
 
 ## Motivation

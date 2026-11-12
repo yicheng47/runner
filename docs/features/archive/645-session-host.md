@@ -194,7 +194,7 @@ The Windows PC runs a crew slot for a Mac's mission: OpenSSH Server, `runnerd --
 
 ## Design
 
-Drawn on 2026-10-06 in `design/specs/645-session-host.pen`:
+Drawn on 2026-10-06 in `runner/desktop/specs/archive/645-session-host.pen`:
 
 - The quit dialog: two choices, Keep them running and Stop them, then Cancel and Quit, with "Don't ask again".
 - The "When Runner quits" row in Settings → General, with its menu open.

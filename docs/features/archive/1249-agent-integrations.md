@@ -1,5 +1,7 @@
 # 1249 — Usage settings, and Skills and MCP inside each agent
 
+Historical design recovery (2026-11-12): superseded desktop spec canvases referenced in this record are preserved in `YeelinksCo/yeelinks_design` at revision `4605d1e43ab6835a555fdd3957469a6b55ddaec8`, under `runner/desktop/specs/` (including `archive/`). Their original frame ids resolve there; current product designs are in `runner/desktop/runner.pen`.
+
 Tracking issue: [#1249](https://github.com/yicheng47/runner/issues/1249).
 
 Design: `runner/desktop/specs/1249-agent-integrations.pen` in `yeelinks_design`, signed off on 2026-11-11. Frames: `R5FECK` Claude Code · General, `a7mUO` Claude Code · Skills, `hEc4H` Claude Code · MCP, `UDYTT` Skills with the account menu open, `DdgTC` Skills for an account that uses the main account's settings, `tIls6` Settings · Usage, `fK9QE` Usage with Codex hidden, `KeftC` Usage with the sidebar badges off, `z2dw5B` Usage with the 5-hour limit off, and `L06ZsA` Settings · Notifications with the Usage group. The bottom row (`LOEzL`, `VvFIf`, `s8mYyG`, `S4ZUkV`) is today's UI, for comparison only. The frames win on layout and copy; this spec wins on behavior.
