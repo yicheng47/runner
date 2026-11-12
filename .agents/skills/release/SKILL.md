@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a Runner production release — bump the workspace version, tag vX.Y.Z, let release.yml build the draft for macOS, Windows and Linux, write bilingual release notes (English, with 中文 collapsed in a details block), hand the publish switch to the user, and once the release is live write one Chinese plain-text post for the WeChat group and linux.do and sweep the shipped work's docs
+description: Cut or check a Runner production release, write bilingual release notes, draft Chinese WeChat/linux.do and English Discord posts in the social repo, and sweep shipped docs. Publishing remains the user's action.
 ---
 
 # Release
@@ -25,7 +25,7 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 4. **Watch.** Find the run with `gh run list --workflow release.yml --limit 1 --json databaseId,status,headSha` and `gh run watch <id> --exit-status`. All platform build jobs (including both Linux matrix instances) and the publish job must succeed. On failure, `gh run view <id> --log-failed`, report the failing step, and stop; the tag stays, the draft may be partial.
 5. **Notes.** Follow `notes <version>` below and set them on the draft: `gh release edit v<version> --notes-file <file>`. Do not pass `--draft=false`.
 6. **Report.** The draft URL, every platform asset name, and the reminder that publishing is the user's action. A draft's `untagged-…` URL changes each time it is edited, so link the latest one. After the user publishes, confirm `gh release view v<version> --json isDraft` is `false` before anything that assumes the release is live, then verify `gh api repos/yicheng47/runner/releases/latest --jq .tag_name` is `v<version>` and that `releases/latest/download/appcast.xml` and `appcast-x64.xml` name the new arm64 and x64 DMGs.
-7. **Post.** Once the release is live, follow `post <version>` below.
+7. **Posts.** Once the release is live, follow `post <version>` below to draft both languages and record them in the social repo.
 8. **Sweep.** Then follow `sweep <version>` below.
 
 ## `notes <version>`
@@ -85,7 +85,13 @@ Rules for the 中文 half: translate the meaning, not the words; keep product te
 
 ## `post <version>`
 
-One Chinese plain-text release post for the user to paste into Runner's WeChat user group and its linux.do thread (Jason, 2026-11-05: one post for both, no separate markdown version). It needs the published release (`gh release view v<version> --json isDraft` is `false`), because linux.do turns the release link into a preview card only for a public page. Build it from the published body's 中文 half (`gh release view v<version> --json body`), not from the git log, so the post agrees with the release page:
+Draft two posts: one Chinese plain-text post shared by Runner's WeChat user group and its linux.do thread (Jason, 2026-11-05: one post for both, no separate markdown version), and one English post for Runner's Discord (Jason, 2026-11-12). Record both in `~/repos/yicheng47/social`. Read that repo's `AGENTS.md`, relevant platform README files and voice notes first; check for existing drafts for the version and preserve Jason's edits.
+
+Confirm the release is published (`gh release view v<version> --json isDraft` is `false`), then read its body with `gh release view v<version> --json body`. Build the Chinese post from the 中文 half and the Discord post from the English half so both agree with the release page. Keep the changes users notice; omit issue numbers, internal work and minor polish. Include Nightly changes only when the release is about that channel. Use the published release URL, which linux.do can render as a preview card.
+
+### WeChat / linux.do
+
+Use this plain-text shape, omitting empty sections:
 
 ```text
 【Runner <version> 发布】
@@ -106,10 +112,21 @@ https://github.com/yicheng47/runner/releases/tag/v<version>
 ```
 
 - Plain text only: WeChat renders no markdown, so no `#` headings, `**bold**` or `[links](…)`. Number the items under the ✨ 新功能 and 🛠 问题修复 lines; omit a section that is empty.
-- Shorten each 中文 bullet to one line in plain words, keeping product terms as the app shows them and dropping issue numbers. Keep the changes users notice; drop internal ones and minor polish, which the release page still lists. Leave out Nightly 渠道 unless the release is about it.
+- Shorten each 中文 bullet to one line in plain words, keeping product terms as the app shows them.
 - The release URL sits bare on its own line, which linux.do renders as a card and WeChat as a link.
 
-Write it to `/tmp/runner-v<version>-release-note.zh-CN.txt`, print the same text in the reply inside a `text` fence, and give the file path. Do not post it anywhere; the user does that.
+### Discord
+
+Write a concise English announcement for existing Runner users: version, supported platforms and update path, followed by the notable new features and fixes, the release URL on its own line, and a short invitation for feedback. Light Discord Markdown is fine: a bold title and short bullet lists. Keep the complete post within 2,000 characters so it fits in one ordinary message. Preserve product labels and relevant qualifications from the English release notes; do not add personal anecdotes or promotional claims.
+
+### Save and hand off
+
+- Canonical Chinese draft: `social/references/platforms/wechat/runner-<version>-user-group.md`, shared with linux.do by reference rather than a duplicate post file.
+- Canonical English draft: `social/references/platforms/discord/runner-<version>-release.md`.
+- Follow the existing draft metadata pattern: date, `status: draft`, intended venue(s), language, agent authorship and source release URL, then the copyable post body. Update the platform README indexes and link the shared Chinese draft from `social/linux-do/README.md`. A draft is not evidence of publication; preserve published copy if one already exists.
+- Also export the bodies without metadata to `/tmp/runner-v<version>-release-note.zh-CN.txt` and `/tmp/runner-v<version>-release-note.en.md` for easy copying. The social repo is the durable record; `/tmp` is only a convenience copy.
+- Review the social diff and follow its standing commit/push authorization, preserving unrelated edits. This does not authorize git writes in the Runner repo.
+- Show the requested language in the reply (both when neither is specified), with a `text` fence for Chinese, and link both saved drafts. Do not post to any platform; the user does that.
 
 ## `sweep <version>`
 
