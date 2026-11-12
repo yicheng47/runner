@@ -461,6 +461,7 @@ fn usage_lkg_round_trips_through_app_state() {
     use runner_core::protocol::usage::{AgentUsage, UsageWindow};
     let pool = open_in_memory().unwrap();
     let usage = |percent| AgentUsage {
+        credits: None,
         windows: vec![UsageWindow {
             name: "Week".into(),
             used_percent: percent,

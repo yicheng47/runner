@@ -1105,6 +1105,23 @@ fn an_unknown_usage_error_preserves_the_reply_and_other_agents() {
 }
 
 #[test]
+fn usage_credits_round_trip_over_companion_transport() {
+    let mut result = fixture("result_usage")["result"].clone();
+    let credits =
+        json!({"balance": "1250.750012345678901234", "hasCredits": true, "unlimited": false});
+    result["agents"][0]["value"]["credits"] = credits;
+    let usage: Usage = serde_json::from_value(result.clone()).unwrap();
+    let value = usage.agents[0].value.clone().unwrap();
+    let internal: crate::protocol::usage::AgentUsage = value.clone().into();
+    assert_eq!(
+        internal.credits.as_ref().unwrap().balance.as_deref(),
+        Some("1250.750012345678901234")
+    );
+    assert_eq!(UsageValue::from(internal), value);
+    assert_eq!(serde_json::to_value(usage).unwrap(), result);
+}
+
+#[test]
 fn usage_conversions_preserve_values_and_known_errors() {
     let usage: Usage = serde_json::from_value(fixture("result_usage")["result"].clone()).unwrap();
     let value = usage.agents[0].value.clone().unwrap();

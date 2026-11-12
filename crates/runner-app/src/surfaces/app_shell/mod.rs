@@ -443,6 +443,7 @@ fn usage_ui_catalog_golden() {
     ];
     let now = chrono::DateTime::from_timestamp(1770000000, 0).unwrap();
     let usage = AgentUsage {
+        credits: None,
         updated_at: now,
         windows: ["Week", "5 hours", "Opus · week"]
             .into_iter()

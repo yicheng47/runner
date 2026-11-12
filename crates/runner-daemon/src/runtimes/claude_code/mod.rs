@@ -539,7 +539,7 @@ static USAGE: UsageSource = UsageSource {
         if denied {
             Err(crate::usage::UnavailableReason::KeychainDenied)
         } else {
-            usage::fetch_claude(env)
+            usage::fetch_claude(env).map(Into::into)
         }
     },
 };

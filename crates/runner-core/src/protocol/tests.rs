@@ -138,8 +138,14 @@ record!(AgentStatus {
     unread_since,
     interrupted_since
 });
+record!(UsageCredits {
+    balance,
+    has_credits,
+    unlimited
+});
 record!(AgentUsage {
     windows,
+    credits,
     updated_at
 });
 record!(AutoResumeReport { resumed, errors });

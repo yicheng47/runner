@@ -254,7 +254,7 @@ pub struct UsageSource {
         &str,
         &crate::shell_path::LoginShellEnv,
         bool,
-    ) -> Result<Vec<crate::usage::UsageWindow>, crate::usage::UnavailableReason>,
+    ) -> Result<crate::usage::UsageReading, crate::usage::UnavailableReason>,
 }
 
 pub type SkillState = Box<dyn Fn(&crate::skills::SkillEntry) -> crate::skills::GlobalState>;
