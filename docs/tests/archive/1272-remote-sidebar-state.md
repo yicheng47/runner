@@ -19,7 +19,7 @@ Evidence root: `/private/tmp/1272-qa-8v3fzblm`. Wrappers were `Runner 1272 QA Cl
 
 ## Authorization and method
 
-QA followed the mission's four required checks, the clean-review handoff, the setup/isolation/evidence/cleanup portions of [full-smoke-test.md](full-smoke-test.md), the same-Mac private-home fixture in [1263-p1-route-robustness.md](1263-p1-route-robustness.md), and the local-separation portions of `REMOTE-WIN-02` and `REMOTE-WIN-05` in [the remote suite](regression/remote.md). The pre-execution plan is `plan.md` in the evidence root. QA took the shared lock before wrapper setup and released it after cleanup.
+QA followed the mission's four required checks, the clean-review handoff, the setup/isolation/evidence/cleanup portions of [full-smoke-test.md](../full-smoke-test.md), the same-Mac private-home fixture in [1263-p1-route-robustness.md](../1263-p1-route-robustness.md), and the local-separation portions of `REMOTE-WIN-02` and `REMOTE-WIN-05` in [the remote suite](../regression/remote.md). The pre-execution plan is `plan.md` in the evidence root. QA took the shared lock before wrapper setup and released it after cleanup.
 
 At 02:53:03 UTC Jason approved the concrete client enrollment and explicitly extended approval to the host enrollment and client-to-host pairing without another question, provided each code and fingerprint matched its isolated candidate and no other computer was affected. Both enrollment fingerprints matched their candidate CLI requests before native Chrome approval. Public candidate CLI commands completed fixture enrollment, a disposable host PIN and the pairing. The account computer list was empty before setup and restored to empty afterward. No unrelated computer was operated.
 

@@ -22,7 +22,7 @@ When someone does update, the update dialog (`crates/runner-app/src/surfaces/age
 
 ### 1. Minimum version
 
-- `RuntimeCatalog` (`crates/runner-core/src/protocol/runtime.rs`) gains `min_version: Option<&'static str>`. Codex declares `0.149.0` (confirmed by the [portable CLI probes](../tests/1165-codex-compatibility.md)); every other runtime declares none.
+- `RuntimeCatalog` (`crates/runner-core/src/protocol/runtime.rs`) gains `min_version: Option<&'static str>`. Codex declares `0.149.0` (confirmed by the [portable CLI probes](../../tests/archive/1165-codex-compatibility.md)); every other runtime declares none.
 - The runtime status the app loads carries each runtime's minimum and whether the probed installed version is below it. An unknown installed version (probe not answered, timed out or unparsable) is never below the minimum.
 
 ### 2. Gate at the launch (B)
@@ -105,7 +105,7 @@ Also run a bounded remote refusal → Update → retry check for a chat resume, 
 
 ## Minimum-version decision
 
-The 2026-11-11 [portable CLI probes](../tests/1165-codex-compatibility.md) confirmed the parsing/execution boundary on 0.147.0, 0.148.0 and 0.149.0, with 0.163.0 and 0.164.0 as additional execution probes. Runner's enabled, session-scoped MCP server delivers hooks on 0.149.0 and 0.163.0 without the later cached/dormant-server fix. Keep the minimum at **0.149.0**; see the evidence record for the tested cases and limits.
+The 2026-11-11 [portable CLI probes](../../tests/archive/1165-codex-compatibility.md) confirmed the parsing/execution boundary on 0.147.0, 0.148.0 and 0.149.0, with 0.163.0 and 0.164.0 as additional execution probes. Runner's enabled, session-scoped MCP server delivers hooks on 0.149.0 and 0.163.0 without the later cached/dormant-server fix. Keep the minimum at **0.149.0**; see the evidence record for the tested cases and limits.
 
 ## Implementation evidence
 
@@ -115,7 +115,7 @@ Rebased automated validation on macOS arm64: `cargo test --locked -p runner-core
 
 The catalog golden intentionally adds only Codex's `min_version: 0.149.0`; the new companion goldens cover task requests and the typed refusal. Tests cover required versus optional launcher notices, agent/role launch intent, mission refusal recovery, explicit dialog dismissal/focus, hidden-pill transitions, remote duplicate joining and retained-terminal isolation, in addition to the spec's version/gate/classifier/task-state cases.
 
-`cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings`, its `--features updater` pass, `cargo fmt --all -- --check`, `git diff --check` and `python3 script/check-guide-translations.py` passed. Native UI evidence is recorded separately in the #1165 sections of [the macOS run](../tests/runs/2026-11-11-mac.md); these automated results do not claim Windows, Linux or native-app coverage. The portable Codex compatibility evidence above is separate from UI QA.
+`cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings`, its `--features updater` pass, `cargo fmt --all -- --check`, `git diff --check` and `python3 script/check-guide-translations.py` passed. Native UI evidence is recorded separately in the #1165 sections of [the macOS run](../../tests/runs/2026-11-11-mac.md); these automated results do not claim Windows, Linux or native-app coverage. The portable Codex compatibility evidence above is separate from UI QA.
 
 The reviewed UI delta additionally tests target-validated remote refusal recovery, operation-preserving slot restarts, host-scoped stale-gate removal on a new probe, two deferred panes queued behind a tab reservation, saved mission/fork clients across computer switches, retained later work/focus, visible bounded startup causes and the signed-off pill state presentation. These are in-process app tests; their native equivalents remain selected above.
 
@@ -125,4 +125,4 @@ Jason’s same-day agent-only row revision was drawn and saved at design commit 
 
 Native QA on `86c9aed0` found that Escape did not hide the update dialog when the attached installer terminal had focus (SET-UPDATE-14). A focused-terminal regression reproduced the missed dismissal before the fix. The dialog now captures Escape before terminal input consumes it; the regression and full `runner-app` targets passed (1,410 library tests plus integration targets, with existing ignored cases). QA’s affected-case rerun on `c9654ac7` passed focused-terminal Escape, restored chat typing, same-task reattach and Hide/X; the original failure remains part of the run evidence.
 
-Local native checks found no remaining must-fix issues after the affected retest, but selected coverage remains incomplete. The safe remote-host check/cross-host completion, Windows/Linux native checks and exact busy-tab reservation overlap are unpassed, as [the QA record](../tests/runs/2026-11-11-mac.md) details. Keep PR #1268 draft with `needs-live-test`; the two waiting-tab join/launch observation and automated reservation regression do not establish the exact native overlap.
+Local native checks found no remaining must-fix issues after the affected retest, but selected coverage remains incomplete. The safe remote-host check/cross-host completion, Windows/Linux native checks and exact busy-tab reservation overlap are unpassed, as [the QA record](../../tests/runs/2026-11-11-mac.md) details. Keep PR #1268 draft with `needs-live-test`; the two waiting-tab join/launch observation and automated reservation regression do not establish the exact native overlap.
