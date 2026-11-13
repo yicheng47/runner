@@ -43,17 +43,23 @@ pub(crate) fn seed_project_trust_at(
 ) -> Result<()> {
     let canonical = std::fs::canonicalize(cwd)
         .map_err(|error| Error::msg(format!("realpath {}: {error}", cwd.display())))?;
-    let normalized = normalize_non_canonical(cwd)?;
-    if is_broad_trust_root(&canonical, home) || is_broad_trust_root(&normalized, home) {
+    if is_broad_trust_root(&canonical, home) {
         log::debug!(
             "skipping broad Antigravity trust root: cwd={}",
             cwd.display()
         );
         return Ok(());
     }
+    let normalized = normalize_non_canonical(cwd)?;
+    // Lexical `..` collapsing can diverge from OS path resolution when `cwd`
+    // crosses a symlink, so only trust the normalized spelling if it actually
+    // resolves to the same canonical directory as `cwd`.
+    let include_normalized = normalized != canonical
+        && !is_broad_trust_root(&normalized, home)
+        && std::fs::canonicalize(&normalized).ok().as_ref() == Some(&canonical);
     let normalized_text = normalized.to_string_lossy();
     let canonical_text = canonical.to_string_lossy();
-    let candidates: Vec<&str> = if normalized != canonical {
+    let candidates: Vec<&str> = if include_normalized {
         vec![normalized_text.as_ref(), canonical_text.as_ref()]
     } else {
         vec![canonical_text.as_ref()]
@@ -382,5 +388,50 @@ mod tests {
         std::os::unix::fs::symlink("/", &root_link).unwrap();
         seed_project_trust_at(&root_link, &settings, Some(&real_home)).unwrap();
         assert!(!settings.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_parent_traversal_does_not_seed_home_alias_or_unrelated_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let real_home = temp.path().join("real-home");
+        let child = temp.path().join("other").join("child");
+        let real_project_home_alias = temp.path().join("other").join("home-alias");
+        let real_project_unrelated = temp.path().join("other").join("unrelated");
+        let decoy_unrelated = temp.path().join("unrelated");
+        for dir in [
+            &real_home,
+            &child,
+            &real_project_home_alias,
+            &real_project_unrelated,
+            &decoy_unrelated,
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&child, &link).unwrap();
+        let home_alias = temp.path().join("home-alias");
+        std::os::unix::fs::symlink(&real_home, &home_alias).unwrap();
+
+        let settings = settings_path(&real_home);
+        let cwd_home_alias = link.join("..").join("home-alias");
+        seed_project_trust_at(&cwd_home_alias, &settings, Some(&real_home)).unwrap();
+
+        let cwd_unrelated = link.join("..").join("unrelated");
+        seed_project_trust_at(&cwd_unrelated, &settings, Some(&real_home)).unwrap();
+
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            value[TRUSTED_WORKSPACES],
+            serde_json::json!([
+                std::fs::canonicalize(&real_project_home_alias)
+                    .unwrap()
+                    .to_string_lossy(),
+                std::fs::canonicalize(&real_project_unrelated)
+                    .unwrap()
+                    .to_string_lossy(),
+            ])
+        );
     }
 }
