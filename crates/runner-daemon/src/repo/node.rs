@@ -65,10 +65,8 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<NodeRow>> {
         select_list(COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map([], |row| from_row(row).map_err(de_err))?
-        .collect();
-    rows
+    stmt.query_map([], |row| from_row(row).map_err(de_err))?
+        .collect()
 }
 
 pub fn list_with_repair(conn: &mut Connection) -> rusqlite::Result<Vec<NodeRow>> {
@@ -859,10 +857,8 @@ pub(crate) fn container_tabs(
          ORDER BY position, created_at",
         select_list(COLUMNS)
     ))?;
-    let rows = stmt
-        .query_map([container_id], |row| from_row(row).map_err(de_err))?
-        .collect();
-    rows
+    stmt.query_map([container_id], |row| from_row(row).map_err(de_err))?
+        .collect()
 }
 
 /// Refuse removing a container's tabs while any member session is missing,

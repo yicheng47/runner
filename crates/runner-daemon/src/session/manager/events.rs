@@ -268,14 +268,17 @@ impl CoreSessionEvents {
 
 impl SessionEvents for CoreSessionEvents {
     fn terminal_metadata_changed(&self, id: &str) {
-        if let Some(observer) = self.observer.observer() {
-            observer.updated(&SessionUpdatedEvent {
-                session_id: id.to_owned(),
-                mission_id: None,
-            });
-        } else {
-            self.events
-                .emit("session/updated", &serde_json::json!({"session_id": id}));
+        match self.observer.observer() {
+            Some(observer) => {
+                observer.updated(&SessionUpdatedEvent {
+                    session_id: id.to_owned(),
+                    mission_id: None,
+                });
+            }
+            _ => {
+                self.events
+                    .emit("session/updated", &serde_json::json!({"session_id": id}));
+            }
         }
     }
     fn input_error(&self, id: &str, message: &str) {

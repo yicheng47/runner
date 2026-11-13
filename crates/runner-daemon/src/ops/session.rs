@@ -628,10 +628,8 @@ pub(crate) fn retire_chat_drawers(conn: &mut rusqlite::Connection) -> Result<()>
 pub(crate) fn close_exited_shells(conn: &mut rusqlite::Connection) -> Result<()> {
     let ids = {
         let mut stmt = conn.prepare("SELECT id FROM sessions WHERE mission_id IS NULL AND agent_runtime = 'shell' AND status != 'running' AND resume_on_launch = 0")?;
-        let ids = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        ids
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
     };
     for id in ids {
         close_shell_row(conn, &id)?;

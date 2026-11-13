@@ -91,10 +91,10 @@ mod tests {
 
     #[test]
     fn generates_monotonic_ids() {
-        let gen = UlidGen::new();
-        let mut last = gen.next().unwrap();
+        let generator = UlidGen::new();
+        let mut last = generator.next().unwrap();
         for _ in 0..10_000 {
-            let next = gen.next().unwrap();
+            let next = generator.next().unwrap();
             assert!(next > last, "expected {next} > {last}");
             last = next;
         }
@@ -102,22 +102,22 @@ mod tests {
 
     #[test]
     fn ids_are_26_char_crockford() {
-        let gen = UlidGen::new();
-        let id = gen.next().unwrap();
+        let generator = UlidGen::new();
+        let id = generator.next().unwrap();
         assert_eq!(id.len(), 26);
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]
     fn raise_floor_forces_strict_greater() {
-        let gen = UlidGen::new();
-        let base = gen.next().unwrap();
+        let generator = UlidGen::new();
+        let base = generator.next().unwrap();
         // Pretend another process wrote something far in the future.
         let future_u: u128 =
             ulid::Ulid::from_datetime(SystemTime::now() + std::time::Duration::from_secs(3600))
                 .into();
-        gen.raise_floor(future_u).unwrap();
-        let after = gen.next().unwrap();
+        generator.raise_floor(future_u).unwrap();
+        let after = generator.next().unwrap();
         assert!(
             after > base,
             "next() must return > prior output; got {after} vs {base}"
@@ -131,11 +131,12 @@ mod tests {
 
     #[test]
     fn raise_floor_from_str_parses_crockford() {
-        let gen = UlidGen::new();
+        let generator = UlidGen::new();
         // All-zero ULID: floor is minimum, should be a no-op relative to now.
-        gen.raise_floor_from_str("00000000000000000000000000")
+        generator
+            .raise_floor_from_str("00000000000000000000000000")
             .unwrap();
-        let id = gen.next().unwrap();
+        let id = generator.next().unwrap();
         assert_ne!(id, "00000000000000000000000000");
     }
 
@@ -144,10 +145,10 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let gen = Arc::new(UlidGen::new());
+        let generator = Arc::new(UlidGen::new());
         let mut handles = Vec::new();
         for _ in 0..8 {
-            let g = Arc::clone(&gen);
+            let g = Arc::clone(&generator);
             handles.push(thread::spawn(move || {
                 let mut ids = Vec::with_capacity(500);
                 for _ in 0..500 {

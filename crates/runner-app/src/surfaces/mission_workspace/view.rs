@@ -45,8 +45,7 @@ impl MissionWorkspace {
         area: gpui::Div,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let area = area
-            .id(id)
+        area.id(id)
             .window_control_area(WindowControlArea::Drag)
             .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
             .on_mouse_down_out(cx.listener(|this, _, _, _| {
@@ -64,8 +63,7 @@ impl MissionWorkspace {
                     this.titlebar_drag_armed = true;
                     platform_ui::titlebar_mouse_down(event, window, cx);
                 }),
-            );
-        area
+            )
     }
 
     pub(crate) fn render_mission_workspace(

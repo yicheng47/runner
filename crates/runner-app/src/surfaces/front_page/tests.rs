@@ -410,7 +410,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
     let fake = Arc::new(LocalDispatch::default());
     let client = FrontPageClient::local(DaemonClient::new(fake.clone()));
     macro_rules! dispatch {
-        ($operation:expr, $request:expr) => {{
+        ($operation:expr_2021, $request:expr_2021) => {{
             assert_eq!(
                 $operation.err().unwrap().to_string(),
                 "unchanged daemon error"

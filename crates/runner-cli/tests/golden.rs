@@ -405,7 +405,7 @@ impl Drop for Fixture {
 }
 
 macro_rules! cli_cases {
-    ($($name:ident => $args:expr),+ $(,)?) => {
+    ($($name:ident => $args:expr_2021),+ $(,)?) => {
         fn cases() -> Vec<Vec<&'static str>> {
             vec![$($args),+]
         }
@@ -670,7 +670,7 @@ fn offline_variants(args: Vec<&'static str>, inside: bool, json: bool) -> Vec<Ca
 }
 
 macro_rules! offline_goldens {
-    ($cases:ident, $tests:ident, $inside:literal, $json:literal; $($name:ident => $args:expr),+ $(,)?) => {
+    ($cases:ident, $tests:ident, $inside:literal, $json:literal; $($name:ident => $args:expr_2021),+ $(,)?) => {
         fn $cases() -> Vec<Case> {
             vec![$($args),+].into_iter()
                 .flat_map(|args| offline_variants(args, $inside, $json))

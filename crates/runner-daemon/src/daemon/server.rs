@@ -53,7 +53,9 @@ impl Settings {
     }
 }
 
-pub fn run(config: Config) -> Result<()> {
+/// # Safety
+/// Call during single-threaded startup, before other threads can access the environment.
+pub unsafe fn run(config: Config) -> Result<()> {
     std::fs::create_dir_all(&config.paths.app_data_dir)?;
     let lock = daemon_process::lock_file(&config.paths.app_data_dir)?;
     match lock.try_lock_exclusive() {
@@ -63,7 +65,7 @@ pub fn run(config: Config) -> Result<()> {
         }
         Err(error) => return Err(error.into()),
     }
-    daemon_process::clean_environment(&config.paths.app_data_dir);
+    unsafe { daemon_process::clean_environment(&config.paths.app_data_dir) };
     let _ = runner_core::logging::install(&config.paths.log_dir, "runnerd.log");
     runner_core::logging::startup_banner(
         &runner_core::version::display_version(),

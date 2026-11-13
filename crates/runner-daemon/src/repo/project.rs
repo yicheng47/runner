@@ -15,10 +15,8 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<ProjectRow>> {
         select_list(COLUMNS)
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map([], |row| from_row(row).map_err(de_err))?
-        .collect();
-    rows
+    stmt.query_map([], |row| from_row(row).map_err(de_err))?
+        .collect()
 }
 
 pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<ProjectRow>> {

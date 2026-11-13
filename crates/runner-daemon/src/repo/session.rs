@@ -644,10 +644,8 @@ fn mark_running_for_resume(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<V
                 AND status = 'running' AND {RESUMABLE_AT_QUIT_PREDICATE}
               ORDER BY started_at, id"
         ))?;
-        let rows = stmt
-            .query_map([RESUME_ON_LAUNCH_PENDING], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
+        stmt.query_map([RESUME_ON_LAUNCH_PENDING], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
     };
     Ok(ids)
 }
@@ -655,8 +653,7 @@ fn mark_running_for_resume(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<V
 /// The sessions with launch-resume work queued or in flight.
 pub fn resume_on_launch_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut stmt = conn.prepare("SELECT id FROM sessions WHERE resume_on_launch != 0")?;
-    let ids = stmt.query_map([], |row| row.get(0))?.collect();
-    ids
+    stmt.query_map([], |row| row.get(0))?.collect()
 }
 
 /// Atomically claim the next quit-time stamp outside `excluded`. Excluded

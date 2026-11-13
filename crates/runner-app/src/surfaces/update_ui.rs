@@ -570,7 +570,7 @@ impl NativeRoot {
         state: &UpdateState,
         window: &Window,
         cx: &Context<Self>,
-    ) -> Option<impl IntoElement> {
+    ) -> Option<impl IntoElement + use<>> {
         let icon = update_icon(state)?;
         let tooltip = update_tooltip(state)?;
         *self

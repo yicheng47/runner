@@ -719,13 +719,14 @@ impl NativeRoot {
         } else {
             None
         };
-        let size = if let Some(workspace) = self.remote_client.mission_workspace() {
-            let size = workspace
-                .read(cx)
-                .estimated_mission_terminal_size(window, cx);
-            (size.0.max(20), size.1.max(8))
-        } else {
-            self.estimated_mission_terminal_size(window, cx)
+        let size = match self.remote_client.mission_workspace() {
+            Some(workspace) => {
+                let size = workspace
+                    .read(cx)
+                    .estimated_mission_terminal_size(window, cx);
+                (size.0.max(20), size.1.max(8))
+            }
+            _ => self.estimated_mission_terminal_size(window, cx),
         };
         let directory = self.app_store.read(cx).app_data_dir.clone();
         let scope = ProjectScope::or_root(request.project.clone());
