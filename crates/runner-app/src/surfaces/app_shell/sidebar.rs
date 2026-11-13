@@ -275,7 +275,8 @@ impl NativeRoot {
                 sidebar_update_hint_element(available, zoom)
                     .hover(|button| button.bg(theme::chrome_hover()))
             } else {
-                sidebar_usage_element(&snapshot, &visible_usage_runtimes, zoom).max_w(px(available))
+                sidebar_usage_element(&snapshot, &visible_usage_runtimes, available, zoom)
+                    .max_w(px(available))
             };
             let trigger = trigger
                 .when(dimmed, |usage| usage.opacity(0.45))

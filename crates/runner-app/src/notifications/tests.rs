@@ -1871,3 +1871,83 @@ fn credit_balances_never_generate_percentage_alerts() {
         assert_eq!(alerts.collect(&snapshot, "", &settings, now).len(), 1);
     }
 }
+
+#[test]
+fn usage_alerts_cover_antigravity_pools_hide_five_hours_and_deduplicate_by_reset() {
+    use runner_core::protocol::{AgentUsage, RuntimeUsage, UsageSnapshot, UsageWindow};
+
+    let now = chrono::Utc::now();
+    let week_reset = now + chrono::TimeDelta::days(5);
+    let five_hour_reset = now + chrono::TimeDelta::hours(4);
+    let make_snapshot = |gemini_week, gemini_5h, claude_week, claude_5h, reset_week| {
+        let mut snapshot = UsageSnapshot::default();
+        snapshot.runtimes.insert(
+            Runtime::Antigravity,
+            RuntimeUsage {
+                value: Some(AgentUsage {
+                    credits: None,
+                    windows: vec![
+                        UsageWindow {
+                            name: "Gemini Models · 5 hours used".into(),
+                            used_percent: gemini_5h,
+                            resets_at: Some(five_hour_reset),
+                        },
+                        UsageWindow {
+                            name: "Gemini Models · Week used".into(),
+                            used_percent: gemini_week,
+                            resets_at: Some(reset_week),
+                        },
+                        UsageWindow {
+                            name: "Claude and GPT models · 5 hours used".into(),
+                            used_percent: claude_5h,
+                            resets_at: Some(five_hour_reset),
+                        },
+                        UsageWindow {
+                            name: "Claude and GPT models · Week used".into(),
+                            used_percent: claude_week,
+                            resets_at: Some(reset_week),
+                        },
+                    ],
+                    updated_at: now,
+                }),
+                error: None,
+            },
+        );
+        snapshot
+    };
+
+    let mut settings = crate::app_settings::AppSettings::default();
+    settings.usage.five_hour = false;
+    let mut alerts = UsageAlerts::default();
+
+    let first_snap = make_snapshot(82., 90., 79., 85., week_reset);
+    let weekly_only = alerts.collect(&first_snap, "active", &settings, now);
+    assert_eq!(weekly_only.len(), 1);
+    assert!(weekly_only[0].tag.contains("Gemini Models · Week used"));
+    assert!(alerts
+        .collect(&first_snap, "active", &settings, now)
+        .is_empty());
+
+    settings.usage.five_hour = true;
+    let five_hour_alerts = alerts.collect(&first_snap, "active", &settings, now);
+    assert_eq!(five_hour_alerts.len(), 2);
+    assert!(alerts
+        .collect(&first_snap, "active", &settings, now)
+        .is_empty());
+
+    let second_pool_snap = make_snapshot(82., 90., 88., 85., week_reset);
+    let second_pool = alerts.collect(&second_pool_snap, "active", &settings, now);
+    assert_eq!(second_pool.len(), 1);
+    assert!(second_pool[0]
+        .tag
+        .contains("Claude and GPT models · Week used"));
+
+    let new_period_snap =
+        make_snapshot(82., 90., 88., 85., week_reset + chrono::TimeDelta::days(7));
+    assert_eq!(
+        alerts
+            .collect(&new_period_snap, "active", &settings, now)
+            .len(),
+        2
+    );
+}

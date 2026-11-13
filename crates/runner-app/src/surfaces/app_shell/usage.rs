@@ -112,9 +112,10 @@ pub(super) fn unavailable_line(
     runtime: Runtime,
 ) -> &'static str {
     match reason {
-        Some(UnavailableReason::SignIn) => {
-            crate::i18n::text("ui.sign_in_to_claude_code_to_see_usage")
-        }
+        Some(UnavailableReason::SignIn) => match runtime {
+            Runtime::Antigravity => crate::i18n::text("ui.sign_in_to_antigravity_cli_to_see_usage"),
+            _ => crate::i18n::text("ui.sign_in_to_claude_code_to_see_usage"),
+        },
         Some(UnavailableReason::KeychainDenied) => crate::i18n::text(
             "ui.runner_was_not_allowed_to_read_claude_code_s_sign_in_from_the_keychain",
         ),
@@ -125,6 +126,9 @@ pub(super) fn unavailable_line(
             crate::i18n::text("ui.couldn_t_reach_anthropic")
         }
         Some(UnavailableReason::CodexNoAnswer) => crate::i18n::text("ui.codex_didn_t_answer"),
+        Some(UnavailableReason::AntigravityNoAnswer) => {
+            crate::i18n::text("ui.antigravity_cli_didn_t_answer")
+        }
         Some(UnavailableReason::InvalidResponse) => {
             crate::runtime_ui::runtime_ui(runtime).usage_invalid
         }
@@ -132,7 +136,21 @@ pub(super) fn unavailable_line(
     }
 }
 
+fn is_weekly_pool_window(name: &str) -> bool {
+    let label = name.split_once(" · ").map_or(name, |(_, label)| label);
+    let label = label.strip_suffix(" used").unwrap_or(label);
+    label == "Week"
+}
+
 pub(super) fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<f64> {
+    if crate::runtime_ui::runtime_ui(runtime).usage_groups {
+        return usage?
+            .windows
+            .iter()
+            .filter(|window| is_weekly_pool_window(&window.name))
+            .map(|window| window.used_percent)
+            .reduce(f64::max);
+    }
     let name = crate::runtime_ui::runtime_ui(runtime).usage_week;
     usage?
         .windows
@@ -161,21 +179,108 @@ pub(crate) fn usage_popover_runtimes(installed: &[Runtime], enabled: &[Runtime])
     runtimes
 }
 
+fn estimated_badge_text_width(text: &str) -> f32 {
+    text.chars()
+        .map(|ch| match ch {
+            '0'..='9' => 7.2,
+            '%' | '—' => 10.5,
+            '+' => 7.2,
+            _ => 7.0,
+        })
+        .sum()
+}
+
+fn estimated_entry_width(text: &str) -> f32 {
+    // 12 px runtime mark + 2 px icon-to-% gap + value text
+    14.0 + estimated_badge_text_width(text)
+}
+
+fn select_sidebar_usage_entries(
+    entries: &[(Runtime, Option<f64>, String)],
+    max_width: f32,
+    zoom: f32,
+) -> (Vec<usize>, usize) {
+    const PILL_PAD_X: f32 = 12.0; // 6 px left + 6 px right
+    const BADGE_GAP: f32 = 5.0;
+
+    if entries.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let budget = if zoom > 0.0 {
+        (max_width / zoom).max(0.0)
+    } else {
+        0.0
+    };
+
+    let all_width = PILL_PAD_X
+        + entries
+            .iter()
+            .map(|(_, _, value)| estimated_entry_width(value))
+            .sum::<f32>()
+        + BADGE_GAP * entries.len().saturating_sub(1) as f32;
+    if all_width <= budget {
+        return ((0..entries.len()).collect(), 0);
+    }
+
+    let mut ranked: Vec<usize> = (0..entries.len()).collect();
+    ranked.sort_by(|&a, &b| {
+        let pa = entries[a].1;
+        let pb = entries[b].1;
+        match (pa, pb) {
+            (Some(a_pct), Some(b_pct)) => b_pct.total_cmp(&a_pct).then_with(|| a.cmp(&b)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(&b),
+        }
+    });
+
+    let mut kept_count = 1.min(ranked.len());
+    for count in (1..entries.len()).rev() {
+        let hidden = entries.len() - count;
+        let overflow_label = format!("+{hidden}");
+        let width = PILL_PAD_X
+            + ranked[..count]
+                .iter()
+                .map(|&idx| estimated_entry_width(&entries[idx].2))
+                .sum::<f32>()
+            + estimated_badge_text_width(&overflow_label)
+            + BADGE_GAP * count as f32;
+        if width <= budget {
+            kept_count = count;
+            break;
+        }
+    }
+
+    let hidden = entries.len().saturating_sub(kept_count);
+    (ranked[..kept_count].to_vec(), hidden)
+}
+
 pub(crate) fn sidebar_usage_element(
     snapshot: &UsageSnapshot,
     visible: &[Runtime],
+    max_width: f32,
     zoom: f32,
 ) -> gpui::Stateful<Div> {
-    let entries: Vec<_> = visible
+    let raw_entries: Vec<_> = visible
         .iter()
         .map(|runtime| {
             let usage = snapshot.get(*runtime);
             let percent = weekly_usage_percent(*runtime, usage);
             let value = percent.map_or_else(|| "—".to_owned(), |value| format!("{value:.0}%"));
+            (*runtime, percent, value)
+        })
+        .collect();
+    let (kept_indices, hidden) = select_sidebar_usage_entries(&raw_entries, max_width, zoom);
+
+    let mut children: Vec<AnyElement> = kept_indices
+        .into_iter()
+        .map(|index| {
+            let (runtime, percent, value) = &raw_entries[index];
             let color = percent.map_or(theme::muted(), |value| usage_color(usage_tone([value])));
+            let runtime = *runtime;
             div()
                 .when(cfg!(test), |entry| {
-                    let runtime = *runtime;
                     entry.debug_selector(move || format!("SIDEBAR_USAGE_ENTRY_{}", runtime.key()))
                 })
                 .flex_none()
@@ -189,29 +294,44 @@ pub(crate) fn sidebar_usage_element(
                 .child(
                     div()
                         .when(cfg!(test), |value| {
-                            let runtime = *runtime;
                             value.debug_selector(move || {
                                 format!("SIDEBAR_USAGE_VALUE_{}", runtime.key())
                             })
                         })
                         .text_size(px(11. * zoom))
                         .text_color(color)
-                        .child(value),
+                        .child(value.clone()),
                 )
+                .into_any_element()
         })
         .collect();
+
+    if hidden > 0 {
+        children.push(
+            div()
+                .when(cfg!(test), |overflow| {
+                    overflow.debug_selector(|| "SIDEBAR_USAGE_OVERFLOW".into())
+                })
+                .flex_none()
+                .text_size(px(11. * zoom))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::muted())
+                .child(format!("+{hidden}"))
+                .into_any_element(),
+        );
+    }
+
     div()
         .id("sidebar-usage")
         .when(cfg!(test), |usage| {
             usage.debug_selector(|| "SIDEBAR_USAGE".into())
         })
-        .w(px((visible.len() as f32 * 52. + 20.) * zoom))
         .flex_none()
         .h(px(32. * zoom))
         .flex()
         .items_center()
-        .justify_between()
-        .px(px(10. * zoom))
+        .gap(px(5. * zoom))
+        .px(px(6. * zoom))
         .rounded(px(6. * zoom))
         .border_1()
         .border_color(gpui::transparent_black())
@@ -224,7 +344,7 @@ pub(crate) fn sidebar_usage_element(
             let usage = crate::theme_snapshot::record_border("SIDEBAR_USAGE", usage);
             usage
         })
-        .children(entries)
+        .children(children)
 }
 
 pub(super) fn sidebar_update_hint_element(max_width: f32, zoom: f32) -> gpui::Stateful<Div> {
@@ -320,7 +440,17 @@ pub(super) fn older_host_popover(
 }
 
 pub(crate) fn is_five_hour(name: &str) -> bool {
-    name == "5 hours" || name == "5h" || name == "300 min"
+    let label = name.split_once(" · ").map_or(name, |(_, label)| label);
+    let label = label.strip_suffix(" used").unwrap_or(label);
+    label == "5 hours" || label == "5h" || label == "300 min"
+}
+
+pub(super) fn usage_group_label(group: &str) -> &str {
+    match group {
+        "Gemini Models" => crate::i18n::text("usage.gemini_models"),
+        "Claude and GPT models" => crate::i18n::text("usage.claude_gpt_models"),
+        _ => group,
+    }
 }
 
 pub(super) fn usage_window_label(label: &str) -> String {
@@ -345,7 +475,10 @@ pub(crate) fn usage_window_name(name: &str) -> String {
     } else {
         usage_window_label(label)
     };
-    group.map_or_else(|| label.clone(), |group| format!("{group} · {label}"))
+    group.map_or_else(
+        || label.clone(),
+        |group| format!("{} · {label}", usage_group_label(group)),
+    )
 }
 
 pub(super) fn usage_window_row(
@@ -552,12 +685,41 @@ pub(crate) fn usage_section_with_account(
     );
     let icon = ChatIcon::for_runtime(runtime.key());
     let mut rows = Vec::new();
+    let mut previous_group = None;
     if let Some(usage) = usage {
         for window in &usage.windows {
-            let name = usage_window_name(&window.name);
+            let (group, label) = if ui.usage_groups {
+                window
+                    .name
+                    .split_once(" · ")
+                    .map_or((None, window.name.as_str()), |(group, label)| {
+                        (Some(group), label.strip_suffix(" used").unwrap_or(label))
+                    })
+            } else {
+                (None, window.name.as_str())
+            };
+            let display_label = if ui.usage_groups {
+                usage_window_label(label)
+            } else {
+                usage_window_name(label)
+            };
             #[cfg(test)]
-            crate::catalog_golden::record(serde_json::json!({"window":window.name,"label":name}));
-            rows.push(usage_window_row(runtime, window, &name, now));
+            crate::catalog_golden::record(
+                serde_json::json!({"window":window.name,"group":group,"label":label}),
+            );
+            if let Some(group) = group.filter(|group| Some(*group) != previous_group) {
+                rows.push(
+                    div()
+                        .when(previous_group.is_some(), |heading| heading.pt(px(2.)))
+                        .text_size(theme::text_meta())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::muted())
+                        .child(usage_group_label(group).to_owned())
+                        .into_any_element(),
+                );
+            }
+            previous_group = group;
+            rows.push(usage_window_row(runtime, window, &display_label, now));
         }
         if runtime == Runtime::Codex {
             rows.push(credit_row(usage));
@@ -610,10 +772,31 @@ pub(crate) fn usage_section_with_account(
         )
         .children(
             (usage.is_none() && (reason.is_some() || !refreshing)).then(|| {
-                div()
-                    .text_size(theme::text_body())
-                    .text_color(theme::muted())
-                    .child(unavailable_line(reason, runtime))
+                if runtime == Runtime::Antigravity && reason == Some(UnavailableReason::SignIn) {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(theme::text_body())
+                                .text_color(theme::muted())
+                                .child(unavailable_line(reason, runtime)),
+                        )
+                        .child(
+                            div()
+                                .text_size(theme::text_meta())
+                                .text_color(theme::faint())
+                                .child(crate::i18n::text(
+                                    "ui.run_agy_login_in_a_terminal_runner_won_t_open_login_automatically",
+                                )),
+                        )
+                } else {
+                    div()
+                        .text_size(theme::text_body())
+                        .text_color(theme::muted())
+                        .child(unavailable_line(reason, runtime))
+                }
             }),
         )
         .into_any_element()

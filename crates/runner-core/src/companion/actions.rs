@@ -660,7 +660,8 @@ pub struct UsageWindow {
 super::wire_enum!(UsageUnavailableReason, InvalidResponse, {
     SignIn => "signIn", KeychainDenied => "keychainDenied",
     KeychainUnavailable => "keychainUnavailable", ClaudeUnreachable => "claudeUnreachable",
-    CodexNoAnswer => "codexNoAnswer", InvalidResponse => "invalidResponse",
+    CodexNoAnswer => "codexNoAnswer", AntigravityNoAnswer => "antigravityNoAnswer",
+    InvalidResponse => "invalidResponse",
 });
 
 impl From<crate::protocol::usage::AgentUsage> for UsageValue {
@@ -712,6 +713,7 @@ impl From<crate::protocol::usage::UnavailableReason> for UsageUnavailableReason 
             Reason::KeychainUnavailable => Self::KeychainUnavailable,
             Reason::ClaudeUnreachable => Self::ClaudeUnreachable,
             Reason::CodexNoAnswer => Self::CodexNoAnswer,
+            Reason::AntigravityNoAnswer => Self::AntigravityNoAnswer,
             Reason::InvalidResponse => Self::InvalidResponse,
         }
     }
@@ -725,6 +727,7 @@ impl From<UsageUnavailableReason> for crate::protocol::usage::UnavailableReason 
             UsageUnavailableReason::KeychainUnavailable => Self::KeychainUnavailable,
             UsageUnavailableReason::ClaudeUnreachable => Self::ClaudeUnreachable,
             UsageUnavailableReason::CodexNoAnswer => Self::CodexNoAnswer,
+            UsageUnavailableReason::AntigravityNoAnswer => Self::AntigravityNoAnswer,
             _ => Self::InvalidResponse,
         }
     }

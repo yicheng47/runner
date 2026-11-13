@@ -79,6 +79,7 @@ impl NativeRoot {
             let enabled = match runtime {
                 Runtime::Codex => settings.codex,
                 Runtime::ClaudeCode => settings.claude_code,
+                Runtime::Antigravity => settings.antigravity,
                 _ => false,
             };
             sidebar.push(
@@ -95,6 +96,7 @@ impl NativeRoot {
                                             match runtime {
                                                 Runtime::Codex => s.usage.codex = value,
                                                 Runtime::ClaudeCode => s.usage.claude_code = value,
+                                                Runtime::Antigravity => s.usage.antigravity = value,
                                                 _ => {}
                                             }
                                             true
@@ -102,18 +104,24 @@ impl NativeRoot {
                                     })
                                 }),
                         )
-                        .subtitle(if runtime == Runtime::ClaudeCode {
-                            crate::i18n::text("usage.active_account")
-                        } else {
-                            ""
+                        .subtitle(match runtime {
+                            Runtime::ClaudeCode => crate::i18n::text("usage.active_account"),
+                            Runtime::Antigravity => {
+                                crate::i18n::text("usage.antigravity_highest_pool")
+                            }
+                            _ => "",
                         }),
                     )
                     .into_any_element(),
             );
         }
         let zoom = self.settings(cx).app_zoom;
-        let preview_usage = (!visible.is_empty())
-            .then(|| sidebar_usage_element(&snapshot, &visible, zoom).into_any_element());
+        let preview_available = (USAGE_PREVIEW_WIDTH - 96.) * zoom;
+        let preview_usage = (!visible.is_empty()).then(|| {
+            sidebar_usage_element(&snapshot, &visible, preview_available, zoom)
+                .max_w(px(preview_available))
+                .into_any_element()
+        });
         let preview = div()
             .debug_selector(|| "USAGE_SIDEBAR_PREVIEW".into())
             .w_full()

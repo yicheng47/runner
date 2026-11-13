@@ -617,7 +617,9 @@ fn usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card() {
             assert!((sample.right() - preview.right() + px(20. * zoom)).abs() < px(1.));
         }
         assert!((gear.left() - host.right() - px(8. * zoom)).abs() < px(1.));
-        assert!(badges.size.width < px(128. * zoom));
+        assert!(
+            badges.size.width <= px((super::super::usage::USAGE_PREVIEW_WIDTH - 96.) * zoom + 1.)
+        );
         assert!(badges.left() >= footer.left() && gear.right() <= footer.right() + px(1.));
     }
 }
@@ -639,18 +641,20 @@ fn usage_preview_tracks_badges_and_keeps_the_same_footer_anchors() {
             window,
             cx,
         );
-        root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode];
+        root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
         root
     });
     let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(gpui::size(px(1200.), px(900.)));
     let mut anchors = None;
-    for (sidebar, codex, claude) in [
-        (true, true, true),
-        (true, true, false),
-        (true, false, true),
-        (true, false, false),
-        (false, true, true),
+    for (sidebar, codex, claude, antigravity) in [
+        (true, true, true, true),
+        (true, true, true, false),
+        (true, true, false, true),
+        (true, false, true, false),
+        (true, false, false, true),
+        (true, false, false, false),
+        (false, true, true, true),
     ] {
         store.update(&mut visual, |store, cx| {
             store.update_settings(
@@ -658,6 +662,7 @@ fn usage_preview_tracks_badges_and_keeps_the_same_footer_anchors() {
                     s.usage.sidebar = sidebar;
                     s.usage.codex = codex;
                     s.usage.claude_code = claude;
+                    s.usage.antigravity = antigravity;
                     true
                 },
                 false,
@@ -677,12 +682,13 @@ fn usage_preview_tracks_badges_and_keeps_the_same_footer_anchors() {
             .unwrap();
             visual.run_until_parked();
             let usage = visual.debug_bounds("SIDEBAR_USAGE");
-            assert_eq!(usage.is_some(), sidebar && (codex || claude));
+            assert_eq!(usage.is_some(), sidebar && (codex || claude || antigravity));
             for (selector, enabled) in [
                 ("SIDEBAR_USAGE_VALUE_codex", codex),
                 ("SIDEBAR_USAGE_VALUE_claude-code", claude),
+                ("SIDEBAR_USAGE_VALUE_antigravity", antigravity),
             ] {
-                assert_eq!(visual.debug_bounds(selector).is_some(), sidebar && enabled,);
+                assert_eq!(visual.debug_bounds(selector).is_some(), sidebar && enabled);
             }
             if preview {
                 assert_eq!(usage.map(|bounds| bounds.size.width), real_usage_width);
