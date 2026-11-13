@@ -5,13 +5,13 @@ description: Cut or check a Runner production release, write bilingual release n
 
 # Release
 
-A production release is a `vX.Y.Z` tag on a `main` commit whose workspace version is exactly `X.Y.Z`. `release.yml` builds the signed, notarized macOS DMGs for arm64 and x64, each with its own one-item Sparkle appcast (`appcast.xml` and `appcast-x64.xml`), and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
+A production release is a `vX.Y.Z` tag on a commit whose workspace version is exactly `X.Y.Z`: a `main` commit, or for a [hotfix](#hotfix-version-pr) the tip of a `release/X.Y.Z` branch. `release.yml` builds the signed, notarized macOS DMGs for arm64 and x64, each with its own one-item Sparkle appcast (`appcast.xml` and `appcast-x64.xml`), and the Windows x64 installer with its minisign signature, plus Linux ARM64/x86_64 tar/deb packages, then attaches everything to a **draft** release. Publishing the draft is the user's switch: it moves `releases/latest` and the production Sparkle feed. Contract: `docs/arch/arch.md` §14; nightlies are a separate channel handled by the `nightly` skill.
 
-An explicit request to `run` authorizes the bump commit, the push, the tag, and editing the draft's notes; after the user publishes, it also authorizes the sweep's docs commit and push. An explicit `sweep` request authorizes that commit and push on its own. Nothing in this skill publishes the draft, deletes a release, moves an existing tag, or posts to a forum or social media. Record only observed results.
+An explicit request to `run` authorizes the bump commit, the push, the tag, and editing the draft's notes; after the user publishes, it also authorizes the sweep's docs commit and push. An explicit `hotfix` request authorizes the same, plus the release branch, its worktree, the cherry-picks and pushing the branch. An explicit `sweep` request authorizes that commit and push on its own. Nothing in this skill publishes the draft, deletes a release, moves an existing tag, or posts to a forum or social media. Record only observed results.
 
 ## Usage
 
-`/release [run <version> | notes <version> | post <version> | check <version> | sweep <version>]` — no action means `run`.
+`/release [run <version> | hotfix <version> <pr>… | notes <version> | post <version> | check <version> | sweep <version>]` — no action means `run`.
 
 ## `run <version>`
 
@@ -28,11 +28,21 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 7. **Posts.** Once the release is live, follow `post <version>` below to draft the WeChat/linux.do, Discord and X posts and record all three in the social repo.
 8. **Sweep.** Then follow `sweep <version>` below.
 
+## `hotfix <version> <pr>…`
+
+The exception to releasing from `main`, for when something bad has shipped and `main` holds unreleased work that must not go out with the fix (Jason, 2026-11-13). Every other release is `run`. Each fix lands on `main` first through its own reviewed PR; the hotfix carries those PRs onto the release being patched. A change that only makes sense on the old release, such as a revert that `main` has already moved past, is committed on the branch instead and reviewed like any other fix before it is tagged.
+
+1. **Preflight — stop on any failure and report it.** `<version>` passes the `run` checks, and `<previous>` is the current tag from `gh release list`, the release being patched. Each `<pr>` is merged (`gh pr view <pr> --json state,mergeCommit`) and CI on its merge commit is green (`gh run list --commit <merge> --workflow ci.yaml --json conclusion`). No release run is in flight.
+2. **Branch.** From the root checkout, `git fetch origin && git worktree add .worktrees/release-<version> -b release/<version> v<previous>`. In the worktree, for each PR in merge order, `git cherry-pick -x <merge>^1..<merge>^2`, which brings over the PR's own commits. Stop and report a conflict: the fix depends on work being held back, and a hand-made backport needs its own review.
+3. **Bump.** As `run` step 2, in the worktree, committing on the branch; the worktree builds into its own `target/`. Push with `git push -u origin release/<version>`. CI runs on `release/**` pushes, and `release.yml` waits for that run before it creates the draft.
+4. **Tag and finish.** Tag the branch tip as `run` step 3, then follow `run` steps 4–8 unchanged; the sweep still runs on `main`.
+5. **Afterwards.** `main` keeps its own workspace version, and the next `run` from `main` bumps past `<version>`. Once the release is published, the tag keeps the hotfix commits; ask before removing the worktree and the `release/<version>` branch. A second hotfix before `main` is shippable again branches from this hotfix's tag the same way.
+
 ## `notes <version>`
 
 Release notes are **bilingual**: the full English text first, then the same content in 中文 inside a `<details>` block so the page reads as English-only until a reader expands it (GitHub has no tabs; a collapsed block is the nearest thing, and the in-app updaters open the release page in a browser where it renders). 0.8.3 used a horizontal rule instead; every release since 0.8.4 ships the collapsed form. A draft with only the workflow's one-line stub is not ready to publish.
 
-Source the content from `git log v<previous>..v<version> --no-merges --format='- %s (%h)'` and the closed issues those commits reference. Write for users, not for the repo: what changed for them, in their words, one bullet per change with the issue number at the end. Skip internal work (tests, CI, docs, refactors) unless it changes what users see.
+Source the content from `git log v<previous>..v<version> --no-merges --format='- %s (%h)'` and the closed issues those commits reference. When `<previous>` was a hotfix, `main` reaches it only through the cherry-picks, so use `git log --cherry-pick --right-only --no-merges --format='- %s (%h)' v<previous>...v<version>` to leave out the fixes it already shipped. Write for users, not for the repo: what changed for them, in their words, one bullet per change with the issue number at the end. Skip internal work (tests, CI, docs, refactors) unless it changes what users see.
 
 Structure, both languages:
 
