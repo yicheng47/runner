@@ -221,6 +221,15 @@ pub enum ActionRequest {
         cols: u16,
         rows: u16,
     },
+    LinkMission {
+        id: u64,
+        mission: String,
+        session: String,
+    },
+    UnlinkMission {
+        id: u64,
+        mission: String,
+    },
 }
 
 impl ActionRequest {
@@ -301,7 +310,10 @@ impl ActionRequest {
             "startMission" => {
                 fields!(crew: String => "a string", project: Option<String> => "a string or null", title: String => "a string", goal: Option<String> => "a string or null", cwd: Option<String> => "a string or null", cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer")
             }
-            "stopMission" => fields!(mission: String => "a string"),
+            "stopMission" | "unlinkMission" => fields!(mission: String => "a string"),
+            "linkMission" => {
+                fields!(mission: String => "a string", session: String => "a string")
+            }
             "resumeMission" => {
                 fields!(mission: String => "a string", cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer")
             }
@@ -345,6 +357,8 @@ impl ActionRequest {
         "startMission",
         "stopMission",
         "resumeMission",
+        "linkMission",
+        "unlinkMission",
     ];
     pub fn id(&self) -> u64 {
         match self {
@@ -383,6 +397,8 @@ impl ActionRequest {
             Self::StartMission { id, .. } => *id,
             Self::StopMission { id, .. } => *id,
             Self::ResumeMission { id, .. } => *id,
+            Self::LinkMission { id, .. } => *id,
+            Self::UnlinkMission { id, .. } => *id,
         }
     }
     pub fn set_id(&mut self, value: u64) {
@@ -422,6 +438,8 @@ impl ActionRequest {
             Self::StartMission { id, .. } => *id = value,
             Self::StopMission { id, .. } => *id = value,
             Self::ResumeMission { id, .. } => *id = value,
+            Self::LinkMission { id, .. } => *id = value,
+            Self::UnlinkMission { id, .. } => *id = value,
         }
     }
 }

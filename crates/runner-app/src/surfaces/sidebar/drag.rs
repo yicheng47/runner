@@ -23,8 +23,8 @@ impl Sidebar {
         nodes
     }
 
-    /// A remote window cannot link or unlink (#748): of a mission's drops it
-    /// keeps only those that leave its link as it is.
+    /// A remote window offers link/unlink drops only when the host advertises
+    /// the corresponding companion actions (#1297).
     fn remote_keeps_link(&self, dragged_id: &str, target: &DropTarget, cx: &App) -> bool {
         if !self.front_page.is_remote() || target.kind == DropKind::Project {
             return true;
@@ -33,12 +33,24 @@ impl Sidebar {
         let mission = rows
             .iter()
             .any(|row| matches!(row, SidebarRow::Mission { node, .. } if node.id == dragged_id));
-        !mission
-            || super::link::link_change(
-                target.group.as_deref(),
-                super::link::LinkGroups::of(&rows).head(dragged_id),
-            )
-            .is_none()
+        if !mission {
+            return true;
+        }
+        match super::link::link_change(
+            target.group.as_deref(),
+            super::link::LinkGroups::of(&rows).head(dragged_id),
+        ) {
+            None => true,
+            Some(super::link::LinkChange::Link(_)) => self.front_page.supports(&["linkMission"]),
+            Some(super::link::LinkChange::Unlink) => {
+                self.front_page
+                    .supports(if target.kind == DropKind::Pinned {
+                        &["unlinkMission", "pin"]
+                    } else {
+                        &["unlinkMission"]
+                    })
+            }
+        }
     }
 
     /// The agent chats in a tab, by session.
@@ -193,8 +205,8 @@ impl Sidebar {
         cx.notify();
     }
 
-    /// Whether a dragged mission may link to one of a tab's chats: a local mission
-    /// in the tab's own place (a project, or none) that is not already linked there.
+    /// Whether a dragged mission may link to one of a tab's chats: a mission in
+    /// the tab's own place (a project, or none) that is not already linked there.
     pub(super) fn can_link_drop(
         &self,
         dragged_id: &str,
@@ -202,11 +214,11 @@ impl Sidebar {
         chats: &[(String, String)],
         cx: &App,
     ) -> bool {
-        if self.front_page.is_remote() {
+        if !self.front_page.supports(&["linkMission"]) {
             return false;
         }
-        let store = self.app_store.read(cx);
-        let node = |id: &str| store.nodes.iter().find(|node| node.id == id);
+        let nodes = self.source_nodes(cx);
+        let node = |id: &str| nodes.iter().find(|node| node.id == id);
         let (Some(mission_node), Some(tab_node)) = (node(dragged_id), node(tab_node_id)) else {
             return false;
         };
@@ -215,17 +227,34 @@ impl Sidebar {
         {
             return false;
         }
-        store
+        let already_linked =
+            |session_id: &str| chats.iter().any(|(session, _)| session == session_id);
+        if self.front_page.is_remote() {
+            return self.remote_overview(cx).is_some_and(|overview| {
+                overview
+                    .missions
+                    .iter()
+                    .find(|mission| mission_node.ref_id.as_deref() == Some(mission.id.as_str()))
+                    .is_some_and(|mission| {
+                        !mission
+                            .linked_chat
+                            .as_ref()
+                            .is_some_and(|linked| already_linked(&linked.session_id))
+                    })
+            });
+        }
+        self.app_store
+            .read(cx)
             .missions
             .iter()
             .find(|summary| mission_node.ref_id.as_deref() == Some(summary.mission.id.as_str()))
             .is_some_and(|summary| {
                 summary.mission.archived_at.is_none()
-                    && !summary.mission.linked_chat.as_ref().is_some_and(|linked| {
-                        chats
-                            .iter()
-                            .any(|(session, _)| *session == linked.session_id)
-                    })
+                    && !summary
+                        .mission
+                        .linked_chat
+                        .as_ref()
+                        .is_some_and(|linked| already_linked(&linked.session_id))
             })
     }
 
@@ -249,12 +278,10 @@ impl Sidebar {
         cx: &mut Context<Self>,
     ) {
         let mission_id = self
-            .app_store
-            .read(cx)
-            .nodes
-            .iter()
+            .source_nodes(cx)
+            .into_iter()
             .find(|node| node.id == drop.mission_node)
-            .and_then(|node| node.ref_id.clone());
+            .and_then(|node| node.ref_id);
         let Some(mission_id) = mission_id else {
             return;
         };
@@ -406,7 +433,12 @@ impl Sidebar {
         // the scope's own rows or the pinned rows leaves its chat and takes that
         // place's pin (#748). The link changes before the move, so an unlink's own
         // placement yields to the drop.
-        if target.kind != DropKind::Project && !self.front_page.is_remote() {
+        enum DropLinkStep {
+            Link { mission_id: String, session: String },
+            Unlink { mission_id: String },
+        }
+        let mut link_step = None;
+        if target.kind != DropKind::Project {
             let groups = super::link::LinkGroups::of(&rows);
             let mission_id = node
                 .ref_id
@@ -434,47 +466,68 @@ impl Sidebar {
                             );
                             return;
                         };
-                        if let Err(error) =
-                            self.front_page.link_mission(mission_id, session.clone())
-                        {
-                            self.report_error(error.to_string(), cx);
-                            self.clear_sidebar_drag("drop", cx);
-                            return;
-                        }
+                        link_step = Some(DropLinkStep::Link {
+                            mission_id,
+                            session: session.clone(),
+                        });
                     }
                     Some(super::link::LinkChange::Unlink) => {
-                        let pinned_drop = target.kind == DropKind::Pinned;
-                        if let Err(error) =
-                            self.front_page.unlink_mission(mission_id).and_then(|_| {
-                                if pinned_drop {
-                                    self.front_page.pin(node, true)
-                                } else {
-                                    Ok(())
-                                }
-                            })
-                        {
-                            self.report_error(error.to_string(), cx);
-                            self.clear_sidebar_drag("drop", cx);
-                            return;
-                        }
+                        link_step = Some(DropLinkStep::Unlink { mission_id });
                     }
                     None => {}
                 }
             }
         }
-        let node = node.clone();
+        let pin_node = node.clone();
+        let move_node = node.clone();
         let project = project.cloned();
         let operation = move |client: crate::surfaces::front_page::FrontPageClient| {
             if pinned {
                 client.reorder_pinned(&order)
             } else {
-                client.move_item(&node, project.as_ref(), &order)
+                client.move_item(&move_node, project.as_ref(), &order)
             }
         };
         if self.front_page.is_remote() {
             if let Some(shell) = self.shell.upgrade() {
-                shell.update(cx, |root, cx| {
-                    root.remote_client.remote_action(
+                shell.update(cx, |root, cx| match link_step {
+                    Some(DropLinkStep::Link {
+                        mission_id,
+                        session,
+                    }) => root.remote_client.remote_action(
+                        "sidebar-order".into(),
+                        &["linkMission", feature],
+                        move |client| {
+                            client.link_mission(mission_id, session)?;
+                            operation(client)?;
+                            Ok(Default::default())
+                        },
+                        cx,
+                    ),
+                    Some(DropLinkStep::Unlink { mission_id }) if pinned => {
+                        root.remote_client.remote_action(
+                            "sidebar-order".into(),
+                            &["unlinkMission", "pin", feature],
+                            move |client| {
+                                client.unlink_mission(mission_id)?;
+                                client.pin(&pin_node, true)?;
+                                operation(client)?;
+                                Ok(Default::default())
+                            },
+                            cx,
+                        )
+                    }
+                    Some(DropLinkStep::Unlink { mission_id }) => root.remote_client.remote_action(
+                        "sidebar-order".into(),
+                        &["unlinkMission", feature],
+                        move |client| {
+                            client.unlink_mission(mission_id)?;
+                            operation(client)?;
+                            Ok(Default::default())
+                        },
+                        cx,
+                    ),
+                    None => root.remote_client.remote_action(
                         "sidebar-order".into(),
                         &[feature],
                         move |client| {
@@ -482,11 +535,37 @@ impl Sidebar {
                             Ok(Default::default())
                         },
                         cx,
-                    )
+                    ),
                 });
             }
             self.clear_sidebar_drag("drop", cx);
             return;
+        }
+        match link_step {
+            Some(DropLinkStep::Link {
+                mission_id,
+                session,
+            }) => {
+                if let Err(error) = self.front_page.link_mission(mission_id, session) {
+                    self.report_error(error.to_string(), cx);
+                    self.clear_sidebar_drag("drop", cx);
+                    return;
+                }
+            }
+            Some(DropLinkStep::Unlink { mission_id }) => {
+                if let Err(error) = self.front_page.unlink_mission(mission_id).and_then(|_| {
+                    if pinned {
+                        self.front_page.pin(&pin_node, true)
+                    } else {
+                        Ok(())
+                    }
+                }) {
+                    self.report_error(error.to_string(), cx);
+                    self.clear_sidebar_drag("drop", cx);
+                    return;
+                }
+            }
+            None => {}
         }
         let result = operation(self.front_page.clone());
         match result {

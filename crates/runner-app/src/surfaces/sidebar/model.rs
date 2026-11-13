@@ -94,7 +94,7 @@ impl Sidebar {
             true
         });
     }
-    fn remote_overview(&self, cx: &App) -> Option<runner_core::companion::Overview> {
+    pub(super) fn remote_overview(&self, cx: &App) -> Option<runner_core::companion::Overview> {
         let crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } =
             &self.front_page.target
         else {
@@ -346,8 +346,8 @@ impl Sidebar {
                 self.front_page.supports(&["close", "archive", "layout"])
             }
             SidebarMenuAction::ArchiveMission(_) => self.front_page.supports(&["archive"]),
-            // The companion protocol carries the link but no request to change it.
-            SidebarMenuAction::LinkToChat(_) | SidebarMenuAction::UnlinkMission(_) => false,
+            SidebarMenuAction::LinkToChat(_) => self.front_page.supports(&["linkMission"]),
+            SidebarMenuAction::UnlinkMission(_) => self.front_page.supports(&["unlinkMission"]),
             SidebarMenuAction::StopMission(_) => self.front_page.supports(&["stopMission"]),
             SidebarMenuAction::ResumeMission(_) => self.front_page.supports(&["resumeMission"]),
             SidebarMenuAction::DeleteProject(_) => self.front_page.supports(&["deleteProject"]),

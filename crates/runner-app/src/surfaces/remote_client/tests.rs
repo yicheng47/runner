@@ -170,6 +170,12 @@ impl Fake {
             .map(|feature| (*feature).to_owned())
             .collect();
     }
+    pub(crate) fn without_features(&self, omit: &[&str]) {
+        self.features
+            .lock()
+            .unwrap()
+            .retain(|feature| !omit.contains(&feature.as_str()));
+    }
     pub(crate) fn queue_result(&self, kind: &str, result: Result<serde_json::Value, ClientError>) {
         self.action_results
             .lock()
@@ -5569,6 +5575,8 @@ pub(crate) fn enable_front_page(fake: &Fake) {
         "deleteProject",
         "stopMission",
         "resumeMission",
+        "linkMission",
+        "unlinkMission",
     ]
     .map(str::to_owned)
     .to_vec();

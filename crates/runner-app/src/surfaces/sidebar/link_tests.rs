@@ -1800,136 +1800,750 @@ fn the_mission_header_pins_and_unpins_a_linked_missions_group() {
 }
 
 #[test]
-fn a_remote_window_offers_no_drop_that_would_link_or_unlink() {
+fn a_remote_window_gates_link_and_unlink_drops_on_host_capabilities() {
     use crate::surfaces::remote_client::tests as remote_test;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for capable in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        if !capable {
+            fake.without_features(&["linkMission", "unlinkMission"]);
+        }
+        let mission = |id: &str, linked: bool| {
+            let mut mission = serde_json::json!({"id":id,"project":null,"title":id,"crew":"Duo","state":"running","pinned":false,"members":[],"asks":[],"shells":[]});
+            if linked {
+                mission["linkedChat"] = serde_json::json!({"sessionId":"c","title":"Chat","archived":false,"reports":true});
+            }
+            mission
+        };
+        fake.set_overview(
+            serde_json::from_value(serde_json::json!({
+                "projects":[],
+                "tabs":[
+                    {"id":"chat-tab","project":null,"name":"Chat tab","pinned":false,"panes":{"session":"c"},"shells":[]},
+                    {"id":"pinned-tab","project":null,"name":"Pinned tab","pinned":true,"panes":{"session":"d"},"shells":[]}
+                ],
+                "missions":[mission("linked-a", true), mission("linked-b", true), mission("flat", false)],
+                "sessions":{
+                    "c":{"kind":"chat","title":"Chat","runtime":"codex","status":"working","unread":false},
+                    "d":{"kind":"chat","title":"Pinned","runtime":"codex","status":"working","unread":false}
+                }
+            }))
+            .unwrap(),
+        );
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-link-drops");
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let sidebar = window
+            .read_with(&cx, |root, _| {
+                root.remote_client.workspace().unwrap().sidebar.clone()
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.update(|_, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let rows = sidebar.resolved_sidebar_rows(cx);
+                let groups = LinkGroups::of(&rows);
+                let node = |mission: &str| {
+                    rows.iter()
+                        .find_map(|row| match row {
+                            SidebarRow::Mission { node, summary, .. }
+                                if summary.mission.id == mission =>
+                            {
+                                Some(node.id.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap()
+                };
+                let (a, b, flat) = (node("linked-a"), node("linked-b"), node("flat"));
+                let tab = groups.head(&a).unwrap().to_owned();
+                assert_eq!(groups.missions(&tab), [a.clone(), b.clone()]);
+                let chats = vec![("c".to_owned(), "Chat".to_owned())];
+                assert_eq!(
+                    sidebar.can_link_drop(&flat, &tab, &chats, cx),
+                    capable,
+                    "capable={capable}"
+                );
+                assert!(
+                    !sidebar.can_link_drop(&a, &tab, &chats, cx),
+                    "already linked there"
+                );
+                let own_rows = sidebar
+                    .scope_rows(&rows, None)
+                    .into_iter()
+                    .map(|row| row.node().id.clone())
+                    .filter(|id| groups.head(id).is_none())
+                    .collect::<Vec<_>>();
+                let pinned = rows
+                    .iter()
+                    .filter(|row| row.node().pinned_position.is_some())
+                    .map(|row| row.node().id.clone())
+                    .collect::<Vec<_>>();
+                let mut target = |sidebar: &mut Sidebar,
+                                  dragged: &str,
+                                  kind: DropKind,
+                                  visible: &[String],
+                                  hovered: &str,
+                                  group: Option<String>| {
+                    sidebar.update_row_drop_target(
+                        dragged,
+                        kind,
+                        None,
+                        visible,
+                        hovered,
+                        true,
+                        format!("test:{hovered}"),
+                        group,
+                        cx,
+                    );
+                    sidebar.drop_target.is_some()
+                };
+                let last = own_rows.last().unwrap().clone();
+                assert_eq!(
+                    target(sidebar, &a, DropKind::Leaf, &own_rows, &last, None),
+                    capable,
+                    "drag out of the group (capable={capable})"
+                );
+                assert_eq!(
+                    target(sidebar, &a, DropKind::Pinned, &pinned, &pinned[0], None),
+                    capable,
+                    "drag into the pinned rows (capable={capable})"
+                );
+                let missions = groups.missions(&tab).to_vec();
+                assert_eq!(
+                    target(
+                        sidebar,
+                        &flat,
+                        DropKind::Leaf,
+                        &missions,
+                        &a,
+                        Some(tab.clone())
+                    ),
+                    capable,
+                    "drag into a group (capable={capable})"
+                );
+                assert!(
+                    target(
+                        sidebar,
+                        &a,
+                        DropKind::Leaf,
+                        &missions,
+                        &b,
+                        Some(tab.clone())
+                    ),
+                    "a reorder within the group remains"
+                );
+                assert!(
+                    target(sidebar, &flat, DropKind::Leaf, &own_rows, &last, None),
+                    "and an unlinked mission still reorders"
+                );
+            })
+        });
+    }
+}
+
+#[test]
+fn remote_mission_menus_and_picker_source_follow_host_capabilities_and_project_scope() {
+    use crate::surfaces::remote_client::tests as remote_test;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for capable in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        if !capable {
+            fake.without_features(&["linkMission", "unlinkMission"]);
+        }
+        // Seed a colliding local project and chat in AppStore so the test proves the
+        // remote picker reads only the host overview, never local store rows.
+        store.update(&mut cx, |store, _| {
+            store
+                .projects
+                .push(runner_core::protocol::project::ProjectRow {
+                    id: "proj-a".into(),
+                    name: "Local Colliding Project".into(),
+                    cwd: "/tmp".into(),
+                    position: 0,
+                    created_at: "2026-11-13T00:00:00Z".into(),
+                });
+            let mut local_chat = chat("local-only-chat", "codex");
+            local_chat.project_id = Some("proj-a".into());
+            store.sessions.push(local_chat);
+        });
+        let host_overview: runner_core::companion::Overview =
+            serde_json::from_value(serde_json::json!({
+                "projects":[
+                    {"id":"proj-a","name":"Host Project A"},
+                    {"id":"proj-b","name":"Host Project B"}
+                ],
+                "tabs":[
+                    {
+                        "id":"proj-a-split",
+                        "project":"proj-a",
+                        "name":"Split tab",
+                        "pinned":false,
+                        "panes":{
+                            "split":"column",
+                            "sizes":[0.5, 0.5],
+                            "a":{"session":"chat-1"},
+                            "b":{"split":"row","sizes":[0.5, 0.5],"a":{"session":"shell-1"},"b":{"session":"chat-2"}}
+                        },
+                        "shells":["shell-1"]
+                    },
+                    {
+                        "id":"proj-b-tab",
+                        "project":"proj-b",
+                        "name":"Other project tab",
+                        "pinned":false,
+                        "panes":{"session":"other-chat"},
+                        "shells":[]
+                    },
+                    {
+                        "id":"recents-tab",
+                        "project":null,
+                        "name":"Recents tab",
+                        "pinned":false,
+                        "panes":{"session":"recents-chat"},
+                        "shells":[]
+                    }
+                ],
+                "missions":[
+                    {
+                        "id":"linked-m",
+                        "project":"proj-a",
+                        "title":"Linked mission",
+                        "crew":"Duo",
+                        "state":"running",
+                        "pinned":false,
+                        "linkedChat":{"sessionId":"chat-1","title":"Host Chat 1","archived":false,"reports":true},
+                        "members":[{"handle":"coder","role":"Coder","runtime":"codex","session":"member-1","lead":true,"status":"working","unread":false}],
+                        "asks":[],
+                        "shells":[]
+                    },
+                    {
+                        "id":"flat-m",
+                        "project":"proj-a",
+                        "title":"Flat mission",
+                        "crew":"Duo",
+                        "state":"running",
+                        "pinned":false,
+                        "members":[],
+                        "asks":[],
+                        "shells":[]
+                    }
+                ],
+                "sessions":{
+                    "chat-1":{"kind":"chat","title":"Host Chat 1","runtime":"codex","status":"working","unread":false},
+                    "chat-2":{"kind":"chat","title":"","runtime":"claude","status":"stopped","unread":false},
+                    "shell-1":{"kind":"shell","title":"zsh","status":"working","unread":false},
+                    "member-1":{"kind":"agent","title":"@coder","runtime":"codex","status":"working","unread":false},
+                    "other-chat":{"kind":"chat","title":"Other Project Chat","runtime":"codex","status":"working","unread":false},
+                    "recents-chat":{"kind":"chat","title":"Recents Chat","runtime":"codex","status":"working","unread":false}
+                }
+            }))
+            .unwrap();
+        fake.set_overview(host_overview);
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-link-menus");
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        let sidebar = window
+            .read_with(&cx, |root, _| {
+                root.remote_client.workspace().unwrap().sidebar.clone()
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+        let supported_actions = |visual: &mut VisualTestContext, mission_id: &str| {
+            visual.update(|_, cx| {
+                let s = sidebar.read(cx);
+                let rows = s.resolved_sidebar_rows(cx);
+                let (node, summary) = rows
+                    .into_iter()
+                    .find_map(|row| match row {
+                        SidebarRow::Mission { node, summary, .. }
+                            if summary.mission.id == mission_id =>
+                        {
+                            Some((node, summary))
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                menus::mission_menu_entries(
+                    &node.id,
+                    s.mission_menu_pinned(&node, cx),
+                    &summary.mission.id,
+                    summary.mission.title,
+                    summary.mission.linked_chat.as_ref(),
+                )
+                .into_iter()
+                .filter(|(_, action)| s.menu_action_supported(action, cx))
+                .map(|(_, action)| action)
+                .collect::<Vec<_>>()
+            })
+        };
+
+        let linked_actions = supported_actions(&mut visual, "linked-m");
+        assert_eq!(
+            linked_actions
+                .iter()
+                .any(|a| matches!(a, SidebarMenuAction::LinkToChat(id) if id == "linked-m")),
+            capable
+        );
+        assert_eq!(
+            linked_actions
+                .iter()
+                .any(|a| matches!(a, SidebarMenuAction::UnlinkMission(id) if id == "linked-m")),
+            capable
+        );
+        let flat_actions = supported_actions(&mut visual, "flat-m");
+        assert_eq!(
+            flat_actions
+                .iter()
+                .any(|a| matches!(a, SidebarMenuAction::LinkToChat(id) if id == "flat-m")),
+            capable
+        );
+        assert!(!flat_actions
+            .iter()
+            .any(|a| matches!(a, SidebarMenuAction::UnlinkMission(_))));
+
+        if !capable {
+            continue;
+        }
+
+        visual.update(|window, cx| {
+            sidebar.update(cx, |sidebar, cx| {
+                let choices = sidebar.chat_choices(Some("proj-a"), None, cx);
+                assert_eq!(
+                    choices
+                        .iter()
+                        .map(|c| (c.session_id.as_str(), c.title.as_str(), c.missions))
+                        .collect::<Vec<_>>(),
+                    [("chat-1", "Host Chat 1", 1), ("chat-2", "claude", 0)],
+                    "only direct agent chats in proj-a appear, with host titles and mission counts"
+                );
+                sidebar.open_link_picker(
+                    "flat-m".into(),
+                    None,
+                    None,
+                    super::link::PickerAnchor::Pointer,
+                    window,
+                    cx,
+                );
+            });
+        });
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let placeholder = sidebar.read_with(&visual, |sidebar, cx| {
+            sidebar
+                .link_picker
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .search_placeholder(cx)
+        });
+        assert_eq!(placeholder, "Search chats in Host Project A");
+        assert!(visual.debug_bounds("LINK_PICKER_CHAT chat-1").is_some());
+        assert!(visual.debug_bounds("LINK_PICKER_CHAT chat-2").is_some());
+        assert!(visual.debug_bounds("LINK_PICKER_CHAT shell-1").is_none());
+        assert!(visual.debug_bounds("LINK_PICKER_CHAT member-1").is_none());
+        assert!(visual.debug_bounds("LINK_PICKER_CHAT other-chat").is_none());
+        assert!(visual
+            .debug_bounds("LINK_PICKER_CHAT local-only-chat")
+            .is_none());
+    }
+}
+
+#[test]
+fn remote_link_unlink_and_drag_wait_for_overview_push_and_surface_errors_without_regrouping() {
+    use crate::surfaces::remote_client::tests as remote_test;
+    use runner_core::protocol::ClientError;
+
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
     let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
     remote_test::enable_missions(&fake);
-    let mission = |id: &str, linked: bool| {
-        let mut mission = serde_json::json!({"id":id,"project":null,"title":id,"crew":"Duo","state":"running","pinned":false,"members":[],"asks":[],"shells":[]});
-        if linked {
-            mission["linkedChat"] =
-                serde_json::json!({"sessionId":"c","title":"Chat","archived":false,"reports":true});
-        }
-        mission
-    };
-    fake.set_overview(
+
+    let build_overview = |m1_chat: Option<(&str, &str)>, m2_chat: Option<(&str, &str)>| {
+        let mission_json = |id: &str, linked: Option<(&str, &str)>| {
+            let mut m = serde_json::json!({
+                "id": id,
+                "project": null,
+                "title": id,
+                "crew": "Duo",
+                "state": "running",
+                "pinned": false,
+                "members": [],
+                "asks": [],
+                "shells": []
+            });
+            if let Some((session_id, title)) = linked {
+                m["linkedChat"] = serde_json::json!({
+                    "sessionId": session_id,
+                    "title": title,
+                    "archived": false,
+                    "reports": true
+                });
+            }
+            m
+        };
         serde_json::from_value(serde_json::json!({
-            "projects":[],
-            "tabs":[
-                {"id":"chat-tab","project":null,"name":"Chat tab","pinned":false,"panes":{"session":"c"},"shells":[]},
-                {"id":"pinned-tab","project":null,"name":"Pinned tab","pinned":true,"panes":{"session":"d"},"shells":[]}
+            "projects": [],
+            "tabs": [
+                {
+                    "id": "single-tab",
+                    "project": null,
+                    "name": "Single tab",
+                    "pinned": false,
+                    "panes": {"session": "c1"},
+                    "shells": []
+                },
+                {
+                    "id": "multi-tab",
+                    "project": null,
+                    "name": "Multi tab",
+                    "pinned": false,
+                    "panes": {
+                        "split": "column",
+                        "sizes": [0.5, 0.5],
+                        "a": {"session": "c2"},
+                        "b": {"session": "c3"}
+                    },
+                    "shells": []
+                },
+                {
+                    "id": "pinned-tab",
+                    "project": null,
+                    "name": "Pinned tab",
+                    "pinned": true,
+                    "panes": {"session": "cp"},
+                    "shells": []
+                }
             ],
-            "missions":[mission("linked-a", true), mission("linked-b", true), mission("flat", false)],
-            "sessions":{
-                "c":{"kind":"chat","title":"Chat","runtime":"codex","status":"working","unread":false},
-                "d":{"kind":"chat","title":"Pinned","runtime":"codex","status":"working","unread":false}
+            "missions": [mission_json("m1", m1_chat), mission_json("m2", m2_chat)],
+            "sessions": {
+                "c1": {"kind": "chat", "title": "Chat 1", "runtime": "codex", "status": "working", "unread": false},
+                "c2": {"kind": "chat", "title": "Chat 2", "runtime": "codex", "status": "working", "unread": false},
+                "c3": {"kind": "chat", "title": "Chat 3", "runtime": "claude", "status": "working", "unread": false},
+                "cp": {"kind": "chat", "title": "Pinned Chat", "runtime": "codex", "status": "working", "unread": false}
             }
         }))
-        .unwrap(),
-    );
-    let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-link-drops");
+        .unwrap()
+    };
+
+    fake.set_overview(build_overview(None, Some(("c2", "Chat 2"))));
+    let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-link-actions");
     window
         .update(&mut cx, |root, window, cx| {
             remote_test::choose_host(root, window, cx);
         })
         .unwrap();
     cx.run_until_parked();
+    let local_calls_before = fake.local_call_count();
     let sidebar = window
         .read_with(&cx, |root, _| {
             root.remote_client.workspace().unwrap().sidebar.clone()
         })
         .unwrap();
+    let window_entity = window;
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
-    visual.update(|_, cx| {
-        sidebar.update(cx, |sidebar, cx| {
+
+    let group_head = |visual: &VisualTestContext, mission_id: &str| {
+        sidebar.read_with(visual, |sidebar, cx| {
             let rows = sidebar.resolved_sidebar_rows(cx);
             let groups = LinkGroups::of(&rows);
-            let node = |mission: &str| {
-                rows.iter()
-                    .find_map(|row| match row {
-                        SidebarRow::Mission { node, summary, .. }
-                            if summary.mission.id == mission =>
-                        {
-                            Some(node.id.clone())
-                        }
-                        _ => None,
-                    })
-                    .unwrap()
-            };
-            let (a, b, flat) = (node("linked-a"), node("linked-b"), node("flat"));
-            let tab = groups.head(&a).unwrap().to_owned();
-            assert_eq!(groups.missions(&tab), [a.clone(), b.clone()]);
-            let own_rows = sidebar
-                .scope_rows(&rows, None)
-                .into_iter()
-                .map(|row| row.node().id.clone())
-                .filter(|id| groups.head(id).is_none())
-                .collect::<Vec<_>>();
-            let pinned = rows
+            let node_id = rows
                 .iter()
-                .filter(|row| row.node().pinned_position.is_some())
-                .map(|row| row.node().id.clone())
-                .collect::<Vec<_>>();
-            let mut target = |sidebar: &mut Sidebar,
-                              dragged: &str,
-                              kind: DropKind,
-                              visible: &[String],
-                              hovered: &str,
-                              group: Option<String>| {
-                sidebar.update_row_drop_target(
-                    dragged,
-                    kind,
-                    None,
-                    visible,
-                    hovered,
-                    true,
-                    format!("test:{hovered}"),
-                    group,
-                    cx,
-                );
-                sidebar.drop_target.is_some()
-            };
-            let last = own_rows.last().unwrap().clone();
-            assert!(
-                !target(sidebar, &a, DropKind::Leaf, &own_rows, &last, None),
-                "no drag out of the group"
-            );
-            assert!(
-                !target(sidebar, &a, DropKind::Pinned, &pinned, &pinned[0], None),
-                "no drag into the pinned rows"
-            );
-            let missions = groups.missions(&tab).to_vec();
-            assert!(
-                !target(
-                    sidebar,
-                    &flat,
-                    DropKind::Leaf,
-                    &missions,
-                    &a,
-                    Some(tab.clone())
-                ),
-                "no drag into a group"
-            );
-            assert!(
-                target(
-                    sidebar,
-                    &a,
-                    DropKind::Leaf,
-                    &missions,
-                    &b,
-                    Some(tab.clone())
-                ),
-                "a reorder within the group remains"
-            );
-            assert!(
-                target(sidebar, &flat, DropKind::Leaf, &own_rows, &last, None),
-                "and an unlinked mission still reorders"
-            );
+                .find_map(|row| match row {
+                    SidebarRow::Mission { node, summary, .. }
+                        if summary.mission.id == mission_id =>
+                    {
+                        Some(node.id.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            groups.head(&node_id).map(str::to_owned)
         })
+    };
+    let action_error = |visual: &VisualTestContext| {
+        window_entity
+            .read_with(visual, |root, _| {
+                root.remote_client.workspace().unwrap().action_error.clone()
+            })
+            .unwrap()
+    };
+
+    // 1. Menu LinkToChat -> picker selection sends linkMission, does NOT regroup optimistically,
+    //    and regroups only once the host pushes an updated overview.
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.handle_sidebar_menu_action(
+                SidebarMenuAction::LinkToChat("m1".into()),
+                window,
+                cx,
+            );
+        });
     });
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let c1_row = visual.debug_bounds("LINK_PICKER_CHAT c1").unwrap();
+    visual.simulate_click(c1_row.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+
+    assert_eq!(
+        remote_test::action_trace(&fake, "linkMission"),
+        [serde_json::json!({"id": 0, "type": "linkMission", "mission": "m1", "session": "c1"})]
+    );
+    assert_eq!(
+        group_head(&visual, "m1"),
+        None,
+        "remote sidebar must not optimistically regroup before host overview arrives"
+    );
+    fake.set_overview(build_overview(
+        Some(("c1", "Chat 1")),
+        Some(("c2", "Chat 2")),
+    ));
+    visual.run_until_parked();
+    assert_eq!(
+        group_head(&visual, "m1").as_deref(),
+        Some("single-tab"),
+        "regroups once host overview includes linkedChat"
+    );
+    assert_eq!(action_error(&visual), None);
+
+    // 2. Menu UnlinkMission sends unlinkMission, waits for overview push, then ungroups.
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.handle_sidebar_menu_action(
+                SidebarMenuAction::UnlinkMission("m1".into()),
+                window,
+                cx,
+            );
+        });
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        remote_test::action_trace(&fake, "unlinkMission"),
+        [serde_json::json!({"id": 0, "type": "unlinkMission", "mission": "m1"})]
+    );
+    assert_eq!(
+        group_head(&visual, "m1").as_deref(),
+        Some("single-tab"),
+        "remote sidebar must not optimistically ungroup before host overview arrives"
+    );
+    fake.set_overview(build_overview(None, Some(("c2", "Chat 2"))));
+    visual.run_until_parked();
+    assert_eq!(group_head(&visual, "m1"), None);
+
+    // 3. Drag onto a single-chat row sends linkMission; drag into a multi-chat group opens the
+    //    picker with PendingMove and sends linkMission followed by move.
+    let (m1_node, m2_node) = sidebar.read_with(&visual, |sidebar, cx| {
+        let rows = sidebar.resolved_sidebar_rows(cx);
+        let find = |id: &str| {
+            rows.iter()
+                .find_map(|row| match row {
+                    SidebarRow::Mission { node, summary, .. } if summary.mission.id == id => {
+                        Some(node.id.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        (find("m1"), find("m2"))
+    });
+
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_link_drop(
+                super::link::LinkDrop {
+                    mission_node: m1_node.clone(),
+                    tab_node: "single-tab".into(),
+                    chats: vec![("c1".into(), "Chat 1".into())],
+                },
+                cx,
+            );
+            sidebar.commit_sidebar_drop(&m1_node, window, cx);
+        });
+    });
+    visual.run_until_parked();
+    assert_eq!(remote_test::action_trace(&fake, "linkMission").len(), 2);
+    assert_eq!(
+        remote_test::action_trace(&fake, "linkMission")[1],
+        serde_json::json!({"id": 0, "type": "linkMission", "mission": "m1", "session": "c1"})
+    );
+
+    // Drag `m1` into `multi-tab`'s link group (`m2` is already linked to `c2` in `multi-tab`).
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.update_row_drop_target(
+                &m1_node,
+                DropKind::Leaf,
+                None,
+                std::slice::from_ref(&m2_node),
+                &m2_node,
+                true,
+                "test:multi".into(),
+                Some("multi-tab".into()),
+                cx,
+            );
+            assert!(sidebar.drop_target.is_some());
+            sidebar.commit_sidebar_drop(&m1_node, window, cx);
+            assert!(
+                sidebar.link_picker.is_some(),
+                "dropping into a multi-chat group opens the chat picker"
+            );
+        });
+    });
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+
+    // First verify a rejected linkMission with PendingMove surfaces action_error, skips move,
+    // and leaves grouping untouched.
+    let moves_before_reject = remote_test::action_trace(&fake, "move").len();
+    fake.queue_result(
+        "linkMission",
+        Err(ClientError::msg("The host could not complete the request.")),
+    );
+    let c3_row = visual.debug_bounds("LINK_PICKER_CHAT c3").unwrap();
+    visual.simulate_click(c3_row.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        action_error(&visual).as_deref(),
+        Some("The host could not complete the request.")
+    );
+    assert_eq!(
+        remote_test::action_trace(&fake, "move").len(),
+        moves_before_reject,
+        "a rejected linkMission short-circuits before sending move"
+    );
+    assert_eq!(group_head(&visual, "m1"), None);
+
+    // Now succeed with the multi-chat group drop -> sends linkMission then move.
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.update_row_drop_target(
+                &m1_node,
+                DropKind::Leaf,
+                None,
+                std::slice::from_ref(&m2_node),
+                &m2_node,
+                true,
+                "test:multi".into(),
+                Some("multi-tab".into()),
+                cx,
+            );
+            sidebar.commit_sidebar_drop(&m1_node, window, cx);
+        });
+    });
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let c3_row = visual.debug_bounds("LINK_PICKER_CHAT c3").unwrap();
+    visual.simulate_click(c3_row.center(), gpui::Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(action_error(&visual), None);
+    assert_eq!(
+        remote_test::action_trace(&fake, "linkMission")
+            .last()
+            .unwrap()["session"],
+        "c3"
+    );
+    assert_eq!(
+        remote_test::action_trace(&fake, "move").len(),
+        moves_before_reject + 1
+    );
+
+    // 4. Drag `m2` out of its group: first verify rejected unlinkMission leaves grouping unchanged
+    //    and skips move/pin, then verify accepted drops send unlinkMission + move (and + pin + reorderPinned).
+    fake.queue_result(
+        "unlinkMission",
+        Err(ClientError::msg("Cannot unlink right now.")),
+    );
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let own = vec![
+                "single-tab".to_owned(),
+                "multi-tab".to_owned(),
+                m1_node.clone(),
+            ];
+            sidebar.update_row_drop_target(
+                &m2_node,
+                DropKind::Leaf,
+                None,
+                &own,
+                "single-tab",
+                true,
+                "test:unlink-reject".into(),
+                None,
+                cx,
+            );
+            sidebar.commit_sidebar_drop(&m2_node, window, cx);
+        });
+    });
+    visual.run_until_parked();
+    assert_eq!(
+        action_error(&visual).as_deref(),
+        Some("Cannot unlink right now.")
+    );
+    assert_eq!(
+        remote_test::action_trace(&fake, "move").len(),
+        moves_before_reject + 1,
+        "rejected unlinkMission skips move"
+    );
+    assert_eq!(group_head(&visual, "m2").as_deref(), Some("multi-tab"));
+
+    // Accepted drag out to pinned rows sends unlinkMission, pin, and reorderPinned.
+    let pins_before = remote_test::action_trace(&fake, "pin").len();
+    let reorders_before = remote_test::action_trace(&fake, "reorderPinned").len();
+    visual.update(|window, cx| {
+        sidebar.update(cx, |sidebar, cx| {
+            let pinned = vec!["pinned-tab".to_owned()];
+            sidebar.update_row_drop_target(
+                &m2_node,
+                DropKind::Pinned,
+                None,
+                &pinned,
+                "pinned-tab",
+                true,
+                "test:unlink-pin".into(),
+                None,
+                cx,
+            );
+            sidebar.commit_sidebar_drop(&m2_node, window, cx);
+        });
+    });
+    visual.run_until_parked();
+    assert_eq!(action_error(&visual), None);
+    assert_eq!(
+        remote_test::action_trace(&fake, "unlinkMission")
+            .last()
+            .unwrap()["mission"],
+        "m2"
+    );
+    assert_eq!(
+        remote_test::action_trace(&fake, "pin").len(),
+        pins_before + 1
+    );
+    assert_eq!(
+        remote_test::action_trace(&fake, "reorderPinned").len(),
+        reorders_before + 1
+    );
+    assert_eq!(
+        fake.local_call_count(),
+        local_calls_before,
+        "remote link/unlink operations never call the local daemon"
+    );
 }
 
 #[test]

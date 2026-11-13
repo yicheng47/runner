@@ -306,7 +306,7 @@ impl Sidebar {
         if renaming {
             return base;
         }
-        let link_chats = self.tab_link_chats(&members, &label, cx);
+        let link_chats = self.tab_link_chats(&members, cx);
         self.decorate_draggable_row(
             base,
             &node,
@@ -323,27 +323,15 @@ impl Sidebar {
     }
 
     /// A tab's agent chats by session, each with its title.
-    fn tab_link_chats(
-        &self,
-        members: &[SessionDisplay],
-        label: &str,
-        cx: &App,
-    ) -> Vec<(String, String)> {
+    fn tab_link_chats(&self, members: &[SessionDisplay], cx: &App) -> Vec<(String, String)> {
         members
             .iter()
             .filter(|member| super::link::is_agent_chat(member))
             .map(|member| {
-                let title = member
-                    .local
-                    .as_ref()
-                    .map(|entry| {
-                        session_label_live(
-                            entry,
-                            self.live_title(&member.session_id, cx).as_deref(),
-                        )
-                    })
-                    .unwrap_or_else(|| label.to_owned());
-                (member.session_id.clone(), title)
+                (
+                    member.session_id.clone(),
+                    member.label(self.live_title(&member.session_id, cx).as_deref()),
+                )
             })
             .collect()
     }
@@ -357,7 +345,7 @@ impl Sidebar {
         cx: &App,
     ) -> String {
         let label = tab_label_live(layout, members, |id| self.live_title(id, cx));
-        match self.tab_link_chats(members, &label, cx).as_slice() {
+        match self.tab_link_chats(members, cx).as_slice() {
             [(_, title)] => title.clone(),
             _ => label,
         }
@@ -873,7 +861,10 @@ impl Sidebar {
         after_group: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if !self.front_page.supports(&["move"]) && !self.front_page.supports(&["reorderPinned"]) {
+        if !self.front_page.supports(&["move"])
+            && !self.front_page.supports(&["reorderPinned"])
+            && !self.front_page.supports(&["linkMission"])
+        {
             return row;
         }
         let drag = SidebarNodeDrag::new(node.id.clone(), label.clone(), icon);

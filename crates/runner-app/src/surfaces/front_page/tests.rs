@@ -63,6 +63,8 @@ impl Transport for Fake {
                         "deleteProject",
                         "stopMission",
                         "resumeMission",
+                        "linkMission",
+                        "unlinkMission",
                     ]
                     .map(str::to_owned)
                     .to_vec(),
@@ -164,6 +166,11 @@ fn typed_remote_requests_keep_computer_scope_dimensions_defaults_and_host_paths(
     let mut layout = PaneLayout::single(Some("same-id"), &[]);
     layout.id = "tab".into();
     b.layout(&layout, None).unwrap();
+    assert!(a
+        .link_mission("mission-1".into(), "chat-1".into())
+        .unwrap()
+        .is_none());
+    assert!(b.unlink_mission("mission-1".into()).unwrap().is_none());
     let requests = fake.requests.lock().unwrap();
     assert_eq!(
         requests[5],
@@ -186,8 +193,22 @@ fn typed_remote_requests_keep_computer_scope_dimensions_defaults_and_host_paths(
     assert_eq!(requests[9].1["type"], "restart");
     assert_eq!(requests[10].1["type"], "fork");
     assert_eq!(
-        requests.last().unwrap().1["panes"],
+        requests[14].1["panes"],
         json!({"id":"p1","session":"same-id"})
+    );
+    assert_eq!(
+        requests[15],
+        (
+            "a".into(),
+            json!({"type":"linkMission","id":0,"mission":"mission-1","session":"chat-1"})
+        )
+    );
+    assert_eq!(
+        requests[16],
+        (
+            "b".into(),
+            json!({"type":"unlinkMission","id":0,"mission":"mission-1"})
+        )
     );
     assert!(fake.local.lock().unwrap().is_empty());
 }

@@ -901,6 +901,27 @@ impl DaemonCore {
                 mission_changed(core, None);
                 Ok(json!({"mission":output.mission_id,"sessions":output.resumed_session_ids}))
             }
+            LinkMission {
+                mission, session, ..
+            } => {
+                let mission = ops::mission::link::mission_link(
+                    core,
+                    p::MissionLinkInput {
+                        mission_id: mission,
+                        session_id: session,
+                        no_report: false,
+                        caller_session_id: None,
+                    },
+                )
+                .map_err(failed)?;
+                mission_changed(core, Some(&mission.id));
+                Ok(Value::Null)
+            }
+            UnlinkMission { mission, .. } => {
+                let mission = ops::mission::link::mission_unlink(core, &mission).map_err(failed)?;
+                mission_changed(core, Some(&mission.id));
+                Ok(Value::Null)
+            }
         }
     }
 }
