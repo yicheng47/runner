@@ -11,14 +11,14 @@ Tracking issue: [#1295](https://github.com/yicheng47/runner/issues/1295).
 3. **False `Esc` cancellation**: Raw `Esc` bytes during `Working` inject `LocalCancel` even when `agy` only dismisses UI state or ignores `Esc`.
 4. **Hook & `--add-dir` overhead**: `agy` runs hooks synchronously on every turn and tool call, and `--add-dir antigravity-hooks` adds Runner's internal hooks folder as an extra workspace root, requiring the `#787` `PreInvocation` `ephemeralMessage` cwd workaround.
 
-Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all hook shims, `hooks.json` generation, and `--add-dir antigravity-hooks` at once, aligns with [P0.8](../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
+Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all lifecycle/status hook shims, `.agents/hooks.json` generation, and `--add-dir antigravity-hooks` at once (leaving `#1292`'s `--settings` chat-title callback separate), aligns with [P0.8](../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
 
 ## Scope
 
 ### In scope
 
-1. **Retire Antigravity status hooks**:
-   - Return `status_hooks() -> None` for `Antigravity`, removing `antigravity_status_args` (`--add-dir antigravity-hooks`), `agy_status.rs` hook parsing/installation, and `WORKSPACE_CONTEXT_ENV` (`#787` ephemeral context).
+1. **Retire Antigravity status hooks and Runner-injected `--add-dir` workspaces**:
+   - Return `status_hooks() -> None` and `mission_dir_args() -> Vec::new()` for `Antigravity`, removing `antigravity_status_args` (`--add-dir antigravity-hooks`), `agy_status.rs` hook parsing/installation, `WORKSPACE_CONTEXT_ENV` (`#787` ephemeral context), and the `--add-dir <mission_dir>` mission-bus workspace (missions already run with `--dangerously-skip-permissions` and coordinate through the `runner` CLI, whereas adding Runner's internal bus folder causes `agy` to sort it ahead of later-sorting project `cwd` paths as `Command Working Directory`).
    - Remove `Runtime::Antigravity` from `RuntimeLaunchOption::StatusHooks` (`crates/runner-core/src/protocol/runtime.rs`), Settings launch option copy (`crates/runner-app/src/surfaces/settings/agents/launch.rs`), command previews, and hook-watcher tests.
    - Clean up any previously generated `antigravity-hooks` directory safely on daemon startup/housekeeping without touching user config or `--log-file` capture.
 2. **Keep conversation identity via `LogTail`**:
@@ -77,5 +77,5 @@ Scoped per `AGENTS.md` Test Scope:
 
 - **Lifecycle & rekeying (`RT-LIFE-01`, `RT-LIFE-04`, `RT-LIFE-05`, `RT-LIFE-08`)**: Start an `agy` (`1.5.8+`) direct chat; verify `Working` during tool calls, `Done` -> `Idle` + unread completion indicator on finished turn, clean `Idle` on `Esc` interruption (no false `Response failed` and no spurious `LocalCancel` while dismissed UI leaves turn working), and `/clear` + new turn still rekeys via `LogTail`.
 - **Interactive `blocked` waits**: Trigger real `agy` tool/plan confirmation (`permission`), `ask_user_question` (`question`), and auth/trust (`auth`/`permission`) prompts if safely reproducible; confirm Runner shows **Approval needed** / **Answer needed** / **Needs you** with `msg`, and clears cleanly back to **Working** / **Idle** upon resolution.
-- **Mission & workspace (`RT-START-01`, `RT-START-04` replacement check)**: Start a bounded single-slot Antigravity mission; verify no `--add-dir ...antigravity-hooks` is passed in argv, prompt executes in requested cwd, startup waits cleanly, and `NeedsYou` / `Idle` delivery gates behave properly.
+- **Mission & workspace (`RT-START-01`, `RT-START-04` replacement check)**: Start a bounded single-slot Antigravity mission; verify no Runner `--add-dir` (`antigravity-hooks` or mission-bus directory) is passed in argv, prompt executes in requested cwd, startup waits cleanly, and `NeedsYou` / `Idle` delivery gates behave properly.
 - **Non-regression (`RT-STATUS-14`, `RT-STATUS-15`)**: Spot check a shell tab + Claude Code chat to verify shell-tab OSC 7501 still creates no unread badge and hooked runtimes retain hook precedence.

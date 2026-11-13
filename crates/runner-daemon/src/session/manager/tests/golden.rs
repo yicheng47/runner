@@ -130,7 +130,7 @@ impl Normalizer {
             .map(|_| {
                 matches!(
                     spec.agent_runtime.unwrap(),
-                    Runtime::ClaudeCode | Runtime::Copilot | Runtime::Antigravity
+                    Runtime::ClaudeCode | Runtime::Copilot
                 )
             });
         let rollout = mgr.rollout_capture_context(&spec.session_id).map(|ctx| {
@@ -224,12 +224,7 @@ fn spawn_goldens() {
         .chain(["unknown-runtime"])
     {
         for shape in ["fresh", "blank", "resume", "missing", "hooks-off", "speed"] {
-            if shape == "hooks-off"
-                && !matches!(
-                    key,
-                    "claude-code" | "codex" | "copilot" | "pi" | "antigravity"
-                )
-            {
+            if shape == "hooks-off" && !matches!(key, "claude-code" | "codex" | "copilot" | "pi") {
                 continue;
             }
             if shape == "speed" && key != "codex" {
@@ -265,7 +260,6 @@ fn spawn_goldens() {
             } else {
                 crate::runtimes::copilot::copilot_status::install_plugin(root).unwrap();
                 crate::runtimes::pi::pi_status::install_extension(root).unwrap();
-                crate::runtimes::antigravity::agy_status::install_hooks(root).unwrap();
             }
             insert_role_row(&pool.get().unwrap(), &configured);
             let fake = fake_runtime();

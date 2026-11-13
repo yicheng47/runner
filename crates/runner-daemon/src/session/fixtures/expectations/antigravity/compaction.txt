@@ -1,10 +1,10 @@
 runtime=antigravity name=compaction rules=[2,8] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+100 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  busy@hook [running/working/hook]
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 200
 2400
-2500 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
-2600 status=running/ready/hook outcome="completed" unread_since=1767225602600 completion_armed=false result={"completion_consumed":true,"viewed":false}
+2500 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
+2600 status=running/idle/baseline outcome="completed" unread_since=1767225602600 observation.program_status={"message":null} completion_armed=false result={"completion_consumed":true,"viewed":false}

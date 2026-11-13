@@ -122,6 +122,7 @@ pub(crate) struct PersistKey {
 pub(crate) enum SessionEvent {
     ProgramStatus {
         seq: u64,
+        subseq: usize,
         report: Option<runner_terminal::program_status::Report>,
         live: bool,
     },
@@ -202,6 +203,7 @@ pub(crate) struct Effects {
     pub publication: Option<(SessionActivityState, StatusSource)>,
     pub input_cleared: bool,
     pub completion_consumed: bool,
+    pub program_turn_started: bool,
     pub persist_key: Option<PersistKey>,
 }
 
@@ -247,12 +249,20 @@ pub(crate) struct SessionModel {
     agent: agent::AgentModel,
     codex_attention: Option<HumanInteraction>,
     next_codex_attention: u64,
-    program_status_seq: u64,
+    program_status_authority: bool,
+    program_turn_active: bool,
+    program_status_seq: (u64, usize),
     program_status_wait: Option<(String, HumanInteraction)>,
     next_program_status_wait: u64,
 }
 
 impl SessionModel {
+    pub fn program_status_authority(&self) -> bool {
+        self.program_status_authority
+    }
+    pub fn set_program_status_authority(&mut self, enabled: bool) {
+        self.program_status_authority = enabled;
+    }
     #[cfg(test)]
     pub fn completion_armed(&self) -> bool {
         self.completion_armed
@@ -443,23 +453,34 @@ impl SessionModel {
     pub fn apply(&mut self, event: SessionEvent, now: Now) -> Effects {
         let mut effects = Effects::default();
         match event {
-            SessionEvent::ProgramStatus { seq, report, live } => {
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq,
+                report,
+                live,
+            } => {
                 if !live
-                    || seq <= self.program_status_seq
+                    || seq == 0
+                    || (seq, subseq) <= self.program_status_seq
                     || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error)
                 {
                     return effects;
                 }
-                self.program_status_seq = seq;
+                self.program_status_seq = (seq, subseq);
                 if self.hook_status_armed {
                     return effects;
                 }
                 let Some(report) = report else {
                     self.program_status_wait = None;
+                    self.program_turn_active = false;
                     if self.status.observation.program_status.is_some() {
                         let completion_armed = self.completion_armed;
                         effects = self.apply(SessionEvent::BridgeFailed { live }, now);
-                        self.completion_armed = completion_armed;
+                        self.completion_armed = if self.program_status_authority {
+                            false
+                        } else {
+                            completion_armed
+                        };
                         effects.publication = effects
                             .publication
                             .map(|(state, _)| (state, StatusSource::ProgramStatus));
@@ -467,14 +488,23 @@ impl SessionModel {
                     return effects;
                 };
                 use runner_terminal::program_status::State;
+                let report_state = report.state;
+                let started_turn = match report_state {
+                    State::Working => !std::mem::replace(&mut self.program_turn_active, true),
+                    State::Blocked => false,
+                    State::Idle | State::Done | State::Error | State::Clear => {
+                        self.program_turn_active = false;
+                        false
+                    }
+                };
                 let mut observation = AgentObservation {
-                    activity: if report.state == State::Working {
+                    activity: if report_state == State::Working {
                         Activity::Working
                     } else {
                         Activity::Idle
                     },
                     source: ObservationSource::Baseline,
-                    outcome: match report.state {
+                    outcome: match report_state {
                         State::Done => Some(TurnOutcome::Completed),
                         State::Error => Some(TurnOutcome::Failed),
                         _ => None,
@@ -486,7 +516,7 @@ impl SessionModel {
                     }),
                     ..Default::default()
                 };
-                if report.state == State::Blocked {
+                if report_state == State::Blocked {
                     let reason = match report.kind.as_deref() {
                         Some("permission") => WaitReason::Approval,
                         Some("question") => WaitReason::Answer,
@@ -516,7 +546,14 @@ impl SessionModel {
                 }
                 let completion_armed = self.completion_armed;
                 effects = self.publish_snapshot(observation, live, now);
-                self.completion_armed = completion_armed;
+                if self.program_status_authority {
+                    if report_state == State::Idle {
+                        self.completion_armed = false;
+                    }
+                } else {
+                    self.completion_armed = completion_armed;
+                }
+                effects.program_turn_started = started_turn;
                 effects.publication = effects
                     .publication
                     .map(|(state, _)| (state, StatusSource::ProgramStatus));
@@ -572,7 +609,8 @@ impl SessionModel {
                 self.compaction_failed_since = None;
                 self.agent = Default::default();
                 self.codex_attention = None;
-                self.program_status_seq = 0;
+                self.program_turn_active = false;
+                self.program_status_seq = (0, 0);
                 self.program_status_wait = None;
                 self.baseline_activity = None;
                 self.hook_status_armed = false;
@@ -585,6 +623,7 @@ impl SessionModel {
                     self.status.lifecycle = Lifecycle::Stopped;
                 }
                 self.codex_attention = None;
+                self.program_turn_active = false;
                 self.program_status_wait = None;
                 self.status.observation.program_status = None;
                 self.status.observation.interactions.clear();
@@ -646,6 +685,7 @@ impl SessionModel {
                 effects.agent_feedback = feedback;
             }
             SessionEvent::BridgeFailed { live } => {
+                self.program_turn_active = false;
                 self.program_status_wait = None;
                 self.native_input = None;
                 self.completion_armed = false;
@@ -814,6 +854,7 @@ impl SessionModel {
                 self.status.failed_since = None;
                 self.compaction_failed_since = None;
                 self.codex_attention = None;
+                self.program_turn_active = false;
                 self.program_status_wait = None;
                 self.status.observation.program_status = None;
                 self.hook_status_armed = false;
@@ -873,6 +914,9 @@ impl SessionModel {
             self.completion_armed = true;
         }
         self.hook_status_armed = observation.source == ObservationSource::Hook;
+        if self.hook_status_armed {
+            self.program_turn_active = false;
+        }
         self.status.lifecycle = Lifecycle::Running;
         let old_failed = self.status.observation.outcome == Some(TurnOutcome::Failed);
         let new_failed = observation.outcome == Some(TurnOutcome::Failed);
@@ -959,6 +1003,7 @@ impl SessionModel {
                 return false;
             }
             self.hook_status_armed = true;
+            self.program_turn_active = false;
         }
         if matches!(
             source,

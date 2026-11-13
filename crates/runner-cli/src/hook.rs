@@ -127,13 +127,9 @@ fn command_caller_thread_id(runtime: Runtime, event: &str, payload: &Value) -> O
         .map(str::to_owned)
 }
 
-fn neutral(runtime: &str, event: &str) -> String {
+fn neutral(runtime: &str, _event: &str) -> String {
     match runtime {
-        "codex" => "{}".into(),
-        "antigravity" if event == "PreInvocation" => {
-            std::env::var("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT").unwrap_or_else(|_| "{}".into())
-        }
-        "antigravity" => "{}".into(),
+        "codex" | "antigravity" => "{}".into(),
         _ => String::new(),
     }
 }

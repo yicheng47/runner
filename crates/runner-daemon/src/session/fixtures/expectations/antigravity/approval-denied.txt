@@ -1,13 +1,14 @@
-runtime=antigravity name=approval-denied rules=[] bugs=[] known_wrong=[]
+runtime=antigravity name=approval-denied rules=[6,8] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+100 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  busy@hook [running/working/hook]
-200
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+200 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample approval"} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample approval"}]
 300
-400 result={"gate":"unavailable"}
+400 result={"gate":"human_interaction"}
 500
-600 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=false delivery=["InputQueueDrained","Idle"]
-  idle@hook [running/ready/hook outcome="interrupted"]
-700
+600 delivery=["InputQueueDrained"]
+700 status=running/idle/baseline observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle","ReadinessChanged"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 800 result={"completion_consumed":false,"viewed":false}

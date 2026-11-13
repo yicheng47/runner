@@ -50,7 +50,6 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    crate::runtimes::antigravity::agy_status::install_hooks(app_data.path()).unwrap();
     let project = app_data.path().join("project");
     std::fs::create_dir_all(&project).unwrap();
     let canonical = std::fs::canonicalize(&project).unwrap();
@@ -96,10 +95,9 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     assert_eq!(session_key(&pool, &spawned.id), None);
 
     let log = crate::runtimes::antigravity::agy_capture::log_path(app_data.path(), &spawned.id);
-    let hooks = crate::runtimes::antigravity::agy_status::hooks_dir(app_data.path());
     let settings = crate::runtimes::antigravity::antigravity_settings_args(&[], app_data.path());
     let fresh = fake.last_spawn_spec().unwrap();
-    let mut expected = vec![
+    let expected = vec![
         "--role-flag",
         "--model",
         "gemini-3.1-pro",
@@ -107,26 +105,22 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
         "high",
         "--log-file",
         log.to_str().unwrap(),
+        settings[0].as_str(),
+        settings[1].as_str(),
+        "-i",
+        "persona first turn",
     ];
-    if cfg!(not(windows)) {
-        expected.extend(["--add-dir", hooks.to_str().unwrap()]);
-        assert_eq!(
-            fresh.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
-            crate::runtimes::antigravity::agy_status::workspace_context(&project)
-        );
-        assert_eq!(
-            fresh.env[runner_core::protocol::hook::SESSION_ENV],
-            spawned.id
-        );
-        assert!(
-            uuid::Uuid::parse_str(&fresh.env[runner_core::protocol::hook::GENERATION_ENV]).is_ok()
-        );
-    } else {
-        assert!(!fresh.env.contains_key("RUNNER_ANTIGRAVITY_STATUS_PATH"));
-    }
-    expected.extend([settings[0].as_str(), settings[1].as_str()]);
-    expected.extend(["-i", "persona first turn"]);
     assert_eq!(fresh.args, expected);
+    assert!(!fresh
+        .env
+        .contains_key("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"));
+    assert!(!fresh.env.contains_key("RUNNER_ANTIGRAVITY_STATUS_PATH"));
+    assert!(!fresh
+        .env
+        .contains_key(runner_core::protocol::hook::SESSION_ENV));
+    assert!(!fresh
+        .env
+        .contains_key(runner_core::protocol::hook::GENERATION_ENV));
     assert!(log.parent().unwrap().is_dir());
 
     let key = uuid::Uuid::new_v4().to_string();
@@ -166,13 +160,11 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     })
     .unwrap();
     let resumed_spec = fake.last_spawn_spec().unwrap();
-    if cfg!(not(windows)) {
-        assert_eq!(
-            resumed_spec.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
-            crate::runtimes::antigravity::agy_status::workspace_context(&project)
-        );
-    }
+    assert!(!resumed_spec
+        .env
+        .contains_key("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"));
     let resumed = resumed_spec.args;
+    assert!(!resumed.iter().any(|arg| arg == "--add-dir"));
     assert!(has_arg_pair(&resumed, "--conversation", &key));
     assert!(has_arg_pair(&resumed, "--log-file", log.to_str().unwrap()));
     assert!(has_arg_pair(&resumed, "--settings", &settings[1]));
@@ -231,7 +223,6 @@ fn antigravity_cwd_context_covers_chats_leads_workers_and_resumes_without_changi
     for dir in [&cwd, &user_dir, &bus] {
         std::fs::create_dir_all(dir).unwrap();
     }
-    crate::runtimes::antigravity::agy_status::install_hooks(data.path()).unwrap();
     let mut role = role("agy", &["--role-flag", "--add-dir"]);
     role.runtime = "antigravity".into();
     role.args.push(user_dir.to_string_lossy().into_owned());
@@ -264,9 +255,13 @@ fn antigravity_cwd_context_covers_chats_leads_workers_and_resumes_without_changi
         );
         assert_eq!(spec.cwd.as_deref(), Some(cwd.as_path()));
         assert_eq!(&spec.args[..role.args.len()], &role.args, "{shape}");
+        assert!(
+            !has_arg_pair(&spec.args, "--add-dir", bus.to_str().unwrap()),
+            "{shape}"
+        );
         assert_eq!(
-            has_arg_pair(&spec.args, "--add-dir", bus.to_str().unwrap()),
-            mission,
+            spec.args.iter().filter(|arg| *arg == "--add-dir").count(),
+            1,
             "{shape}"
         );
         assert_eq!(
@@ -282,24 +277,14 @@ fn antigravity_cwd_context_covers_chats_leads_workers_and_resumes_without_changi
             spec.args.windows(2).any(|pair| pair[0] == "--settings"),
             "{shape}"
         );
-        if cfg!(windows) {
-            assert!(!spec
-                .env
-                .contains_key(crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV));
-        } else {
-            assert!(has_arg_pair(
-                &spec.args,
-                "--add-dir",
-                crate::runtimes::antigravity::agy_status::hooks_dir(data.path())
-                    .to_str()
-                    .unwrap()
-            ));
-            assert_eq!(
-                spec.env[crate::runtimes::antigravity::agy_status::WORKSPACE_CONTEXT_ENV],
-                crate::runtimes::antigravity::agy_status::workspace_context(&cwd),
-                "{shape}"
-            );
-        }
+        assert!(!has_arg_pair(
+            &spec.args,
+            "--add-dir",
+            data.path().join("antigravity-hooks").to_str().unwrap()
+        ));
+        assert!(!spec
+            .env
+            .contains_key("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"));
     }
 }
 
@@ -369,11 +354,12 @@ fn antigravity_slot_resume_uses_the_conversation_or_starts_fresh_with_its_turn()
     .unwrap();
     let args = fake.last_spawn_spec().unwrap().args;
     assert!(has_arg_pair(&args, "--conversation", &key));
-    assert!(has_arg_pair(
+    assert!(!has_arg_pair(
         &args,
         "--add-dir",
         mission_dir.to_str().unwrap()
     ));
+    assert!(!args.iter().any(|arg| arg == "--add-dir"));
     assert!(args
         .iter()
         .any(|arg| arg == "--dangerously-skip-permissions"));
@@ -387,11 +373,12 @@ fn antigravity_slot_resume_uses_the_conversation_or_starts_fresh_with_its_turn()
     .unwrap();
     let args = fake.last_spawn_spec().unwrap().args;
     assert!(!args.iter().any(|arg| arg == "--conversation"));
-    assert!(has_arg_pair(
+    assert!(!has_arg_pair(
         &args,
         "--add-dir",
         mission_dir.to_str().unwrap()
     ));
+    assert!(!args.iter().any(|arg| arg == "--add-dir"));
     assert_eq!(
         &args[args.len() - 2..],
         [
@@ -762,4 +749,21 @@ fn antigravity_summary_title_updates_attached_terminal_metadata_and_preferred_ti
 
     crate::ops::session::session_stop(&core, &id).unwrap();
     core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn antigravity_daemon_startup_removes_legacy_hooks_folder() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let hooks_root = app_data.path().join("antigravity-hooks");
+    let agents_dir = hooks_root.join(".agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(agents_dir.join("hooks.json"), "{}").unwrap();
+    std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
+
+    let mgr = mgr_with_fake(None, fake_runtime());
+    mgr.start_runtime_watchers(app_data.path(), pool, capture())
+        .unwrap();
+
+    assert!(!hooks_root.exists());
 }

@@ -1115,6 +1115,7 @@ fn launch_card_switches_follow_the_runtime_table() {
         Runtime::Codex,
         Runtime::ClaudeCode,
         Runtime::Pi,
+        Runtime::Antigravity,
         Runtime::Cursor,
     ] {
         let mut cx = gpui::TestAppContext::single();

@@ -1,11 +1,15 @@
-runtime=antigravity name=question-answered rules=[] bugs=[] known_wrong=[]
+runtime=antigravity name=question-answered rules=[6] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+100 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  busy@hook [running/working/hook]
-200
-300 result={"gate":"unavailable"}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+200 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"answer","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample question"} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"answer","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample question"}]
+250
+300 result={"gate":"human_interaction"}
 400
 500 delivery=["ReadinessChanged"]
-600 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+550 status=running/working/baseline observation.program_status={"message":null} quiescent=true delivery=["ReadinessChanged"]
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+600 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]

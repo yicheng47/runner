@@ -5,7 +5,7 @@ session_status_rows=published
 200 result={"history_exists":false,"missing_reuses_key":false,"missing_resume_on_launch":false}
 2400 status=running/idle/baseline activity="idle" delivery=["SilenceIdle"]
   idle@forwarder [running/idle/baseline]
-2500 status=running/working/hook activity="busy" completion_armed=true
-  busy@hook [running/working/hook]
-2600 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+2500 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+2600 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]

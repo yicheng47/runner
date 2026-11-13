@@ -2,10 +2,8 @@
 {"ms":2200,"event":"tick"}
 {"ms":2300,"event":"input","bytes":"sample"}
 {"ms":2400,"event":"input","bytes":"\r"}
-{"ms":2500,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":2600,"event":"hook","report":{"hook_event_name":"PostToolUse","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":2500,"event":"output","bytes":"\u001b]7501;state=working:app=agy\u0007"}
 {"ms":2700,"event":"output","bytes":"tool output","quiet":true}
 {"ms":4900,"event":"tick"}
-{"ms":5000,"event":"hook","report":{"hook_event_name":"PostInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":5100,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","fullyIdle":true,"error":""}}
+{"ms":5100,"event":"output","bytes":"\u001b]7501;state=done:app=agy\u0007"}
 {"ms":5200,"event":"completion"}

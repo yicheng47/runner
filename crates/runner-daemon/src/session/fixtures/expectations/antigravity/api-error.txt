@@ -6,9 +6,9 @@ session_status_rows=published
 2300 quiescent=false delivery=["InputQueueDrained"]
 2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-2500 status=running/working/hook
-  busy@hook [running/working/hook]
-2600 status=running/ready/hook outcome="failed" failed_since=1767225602600 activity="idle" completion_armed=false delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="failed" failed_since=1767225602600]
+2500 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+2600 status=running/idle/baseline outcome="failed" failed_since=1767225602600 observation.program_status={"message":"sample failure"} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="failed" failed_since=1767225602600 observation.program_status={"message":"sample failure"}]
 2700 result={"completion_consumed":false,"viewed":false}
-2800 status=running/ready/hook outcome="failed"
+2800 status=running/idle/baseline outcome="failed" observation.program_status={"message":"sample failure"}

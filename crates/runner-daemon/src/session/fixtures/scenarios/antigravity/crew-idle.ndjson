@@ -1,6 +1,6 @@
 {"runtime":"antigravity","name":"crew-idle","rules":[9],"bugs":[753],"known_wrong":[],"pending_turn":false}
 {"ms":2200,"event":"tick"}
-{"ms":2300,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","fullyIdle":true,"error":""}}
+{"ms":2300,"event":"output","bytes":"\u001b]7501;state=idle:app=agy\u0007"}
 {"ms":4500,"event":"tick"}
 {"ms":4600,"event":"composer","state":"idle"}
 {"ms":4700,"event":"reserve"}

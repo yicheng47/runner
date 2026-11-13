@@ -137,10 +137,7 @@ mod tests {
                             | Runtime::Copilot
                             | Runtime::Pi
                             | Runtime::OpenCode
-                    ) || (matches!(
-                        runtime,
-                        Runtime::Antigravity | Runtime::Cursor | Runtime::Grok
-                    ) && !windows),
+                    ) || (matches!(runtime, Runtime::Cursor | Runtime::Grok) && !windows),
                     "{runtime:?} windows={windows}"
                 );
             }

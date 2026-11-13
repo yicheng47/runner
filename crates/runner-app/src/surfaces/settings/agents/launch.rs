@@ -37,7 +37,6 @@ fn switch_copy(
                 Runtime::ClaudeCode => "On: --settings {\"hooks\":{…}}",
                 Runtime::Pi => "On: -e <Runner status extension>",
                 Runtime::Copilot => "On: --plugin-dir <Runner status plugin>",
-                Runtime::Antigravity => "On: --add-dir <Runner hooks folder>",
                 Runtime::OpenCode => "On: OPENCODE_CLI_CONFIG_CONTENT=<Runner status plugin>",
                 _ => "On: <Runner status hooks>",
             },

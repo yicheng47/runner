@@ -6,8 +6,8 @@ session_status_rows=published
 2300 quiescent=false delivery=["InputQueueDrained"]
 2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-2500 status=running/working/hook
-  busy@hook [running/working/hook]
+2500 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 4700
 4800 status=running/idle/baseline activity="idle" completion_armed=false delivery=["Idle"]
   idle@baseline [running/idle/baseline]

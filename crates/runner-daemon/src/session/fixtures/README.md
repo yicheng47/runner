@@ -14,7 +14,7 @@ The four `input-*` scenarios feed composer traces pinned byte-for-byte to #794's
 
 ## Coverage
 
-All five runtimes have first turn, tool use, approval approved/denied, question answered, Esc during reply/tool, Ctrl+C, approve then cancel, API error, compaction, clear/new then resume, missing history, relaunch, idle crew delivery, typed draft then delivery and synthetic bridge failure scenarios. Codex and Antigravity currently publish no approval/question snapshot; their scenarios preserve that limitation through PTY and local-input evidence. Antigravity has no compaction hook. Codex and Copilot ignore `ErrorOccurred`; their API-error scenarios preserve that limitation. Copilot compaction settles through the subsequent Stop rather than PostCompact. These are evidence boundaries of the current adapters, not new synthesized semantic events.
+All five runtimes have first turn, tool use, approval approved/denied, question answered, Esc during reply/tool, Ctrl+C, approve then cancel, API error, compaction, clear/new then resume, missing history, relaunch, idle crew delivery, typed draft then delivery and synthetic bridge failure scenarios. Codex currently publishes no approval/question snapshot; its scenarios preserve that limitation through PTY and local-input evidence. Antigravity uses native OSC 7501 program status (`working`, `blocked` with `permission`/`question`, `done`, `error`, `idle`) parsed through `TerminalModel` without status hooks or a separate compaction detail. Codex and Copilot ignore `ErrorOccurred`; their API-error scenarios preserve that limitation. Copilot compaction settles through the subsequent Stop rather than PostCompact. These are evidence boundaries of the current adapters, not new synthesized semantic events.
 
 | Rule | Scenarios |
 | --- | --- |
@@ -23,7 +23,7 @@ All five runtimes have first turn, tool use, approval approved/denied, question 
 | 3: bridge fallback and fresh title | `bridge-failure`, `bridge-before-evidence`, Codex `title-authority` |
 | 4: legacy interrupt and provisional Esc | Claude `legacy-input-escape`, `legacy-input-interrupt` (explicit manager seam); native cancels separately use watcher evidence |
 | 5: submit, typing suppression and draft gate | `first-turn`, `draft-delivery`, Claude `animated-composer`, recorded `input-*` traces |
-| 6: interactions and delivery release | Claude, Copilot and pi `approval-*`, `question-answered`, `approve-cancel` |
+| 6: interactions and delivery release | Claude, Copilot, pi and Antigravity `approval-*`, `question-answered`, `approve-cancel` |
 | 7: failure timestamp and compaction | `api-error`, `compaction`, Claude `failure-compaction` and `failure-compaction-unviewed` |
 | 8: completion and unread | `first-turn`, `tool-turn`, `api-error`, `compaction`, cancels |
 | 9: router wake | `crew-idle` |

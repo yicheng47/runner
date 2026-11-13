@@ -3,8 +3,8 @@ session_status_rows=published
 2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned","SilenceIdle"]
   busy@spawn [running/working/baseline]
   idle@forwarder [running/idle/baseline]
-2300 status=running/ready/hook outcome="completed"
-  idle@hook [running/ready/hook outcome="completed"]
+2300 status=running/idle/baseline observation.program_status={"message":null}
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 4500
 4600
 4700 quiescent=false delivery=["InputQueueDrained"]

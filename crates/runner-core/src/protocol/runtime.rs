@@ -42,7 +42,6 @@ impl RuntimeLaunchOption {
                         | Runtime::Copilot
                         | Runtime::OpenCode
                 ) || (runtime == Runtime::Grok && !cfg!(windows))
-                    || (runtime == Runtime::Antigravity && cfg!(target_os = "macos"))
             }
         }
     }

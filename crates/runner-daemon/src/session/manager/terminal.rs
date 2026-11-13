@@ -389,6 +389,16 @@ impl SessionManager {
         let binding = session_terminal_binding(&conn, id)?;
         drop(conn);
         let started_at = Arc::new(Mutex::new(binding.started_at));
+        let program_status_authority = binding.runtime.is_some_and(|runtime| {
+            crate::runtimes::adapter(runtime)
+                .status_semantics()
+                .program_status_authority
+        });
+        self.session_state_or_insert(id)
+            .lock()
+            .unwrap()
+            .model
+            .set_program_status_authority(program_status_authority);
         let host = Arc::new(Host {
             manager: Arc::downgrade(self),
             pool: pool.clone(),

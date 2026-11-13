@@ -30,6 +30,7 @@ pub struct StatusSemantics {
     pub batch_feedback: bool,
     pub startup_ready_batch: bool,
     pub native_attention: bool,
+    pub program_status_authority: bool,
     pub interruption_ends_invocation: bool,
     pub reject_events_after_interruption: bool,
     pub reject_completions_after_outcome: bool,

@@ -1029,6 +1029,7 @@ fn program(
     model.apply(
         SessionEvent::ProgramStatus {
             seq,
+            subseq: 0,
             report: state.map(|state| runner_terminal::program_status::Report {
                 state,
                 id: String::new(),
@@ -1079,6 +1080,219 @@ fn program_status_maps_work_waits_and_outcomes_without_completion_attention() {
     program(&mut model, 7, None);
     assert!(model.completion_armed());
     assert!(model.status().observation.program_status.is_none());
+}
+
+#[test]
+fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt_error_or_clear() {
+    use runner_terminal::program_status::{Report, State as P};
+    let mut model = SessionModel::default();
+    model.set_program_status_authority(true);
+
+    let emit = |model: &mut SessionModel,
+                seq: u64,
+                state: Option<P>,
+                kind: Option<&str>,
+                msg: Option<&str>| {
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                report: state.map(|state| Report {
+                    state,
+                    id: String::new(),
+                    kind: kind.map(str::to_owned),
+                    progress: None,
+                    app: Some("agy".into()),
+                    title: None,
+                    message: msg.map(str::to_owned),
+                }),
+                live: true,
+            },
+            now(),
+        )
+    };
+
+    // Pre-turn auth/trust Blocked -> Working counts as starting a turn once; mid-turn Blocked -> Working does not re-increment.
+    let pre_wait = emit(
+        &mut model,
+        1,
+        Some(P::Blocked),
+        Some("auth"),
+        Some("Sign in"),
+    );
+    assert!(!pre_wait.program_turn_started);
+    let started = emit(&mut model, 2, Some(P::Working), None, None);
+    assert!(started.program_turn_started);
+    assert!(model.completion_armed());
+    assert_eq!(model.activity(), Some(SessionActivityState::Busy));
+
+    for (seq, kind, expected_reason, msg) in [
+        (3, "permission", WaitReason::Approval, "Allow bash?"),
+        (4, "question", WaitReason::Answer, "Which branch?"),
+        (5, "auth", WaitReason::Unknown, "Sign in required"),
+    ] {
+        let wait = emit(&mut model, seq, Some(P::Blocked), Some(kind), Some(msg));
+        assert!(!wait.program_turn_started);
+        assert!(model.completion_armed(), "{kind} wait preserves completion");
+        assert!(model.status().observation.needs_you());
+        assert_eq!(
+            model.status().observation.interactions[0].reason,
+            expected_reason
+        );
+        assert_eq!(
+            model
+                .status()
+                .observation
+                .program_status
+                .as_ref()
+                .unwrap()
+                .message
+                .as_deref(),
+            Some(msg)
+        );
+    }
+
+    let resumed = emit(&mut model, 6, Some(P::Working), None, None);
+    assert!(
+        !resumed.program_turn_started,
+        "mid-turn Blocked -> Working must not count a second turn"
+    );
+    assert!(model.completion_armed());
+    assert!(!model.status().observation.needs_you());
+
+    let done = emit(&mut model, 7, Some(P::Done), None, None);
+    assert_eq!(
+        done.publication,
+        Some((SessionActivityState::Idle, StatusSource::ProgramStatus))
+    );
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(model.completion_armed());
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, now())
+            .completion_consumed
+    );
+    assert!(!model.completion_armed());
+
+    // Working -> Idle (Esc interrupt) disarms completion without TurnOutcome::Interrupted or Failed.
+    assert!(emit(&mut model, 8, Some(P::Working), None, None).program_turn_started);
+    assert!(model.completion_armed());
+    emit(&mut model, 9, Some(P::Idle), None, None);
+    assert!(!model.completion_armed());
+    assert_eq!(model.status().observation.activity, Activity::Idle);
+    assert_eq!(model.status().observation.outcome, None);
+    assert_eq!(model.status().failed_since, None);
+
+    // Working -> Error disarms completion and records Failed.
+    assert!(emit(&mut model, 10, Some(P::Working), None, None).program_turn_started);
+    assert!(model.completion_armed());
+    emit(&mut model, 11, Some(P::Error), None, Some("Quota exceeded"));
+    assert!(!model.completion_armed());
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+
+    // Working -> clear disarms completion under both Idle and Busy output baselines,
+    // so a subsequent Forwarder Idle never fabricates an unread completion without Done.
+    for baseline in [SessionActivityState::Idle, SessionActivityState::Busy] {
+        let mut cleared = SessionModel::default();
+        cleared.set_program_status_authority(true);
+        transition(&mut cleared, baseline, StatusSource::Forwarder);
+        emit(&mut cleared, 1, Some(P::Working), None, None);
+        assert!(cleared.completion_armed());
+        emit(&mut cleared, 2, None, None, None);
+        assert!(
+            !cleared.completion_armed(),
+            "clear must leave completion disarmed under {baseline:?} baseline"
+        );
+        assert!(cleared.status().observation.program_status.is_none());
+        assert!(
+            !cleared
+                .apply(SessionEvent::TakeCompletion, now())
+                .completion_consumed
+        );
+        transition(
+            &mut cleared,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        assert!(!cleared.completion_armed());
+        assert!(
+            !cleared
+                .apply(SessionEvent::TakeCompletion, now())
+                .completion_consumed
+        );
+    }
+
+    // Multiple reports sharing one chunk seq (increasing subseq) are accepted in order,
+    // while stale or duplicate (seq, subseq) pairs are ignored.
+    let mut coalesced = SessionModel::default();
+    coalesced.set_program_status_authority(true);
+    let first = coalesced.apply(
+        SessionEvent::ProgramStatus {
+            seq: 5,
+            subseq: 0,
+            report: Some(Report {
+                state: P::Working,
+                id: String::new(),
+                kind: None,
+                progress: None,
+                app: Some("agy".into()),
+                title: None,
+                message: None,
+            }),
+            live: true,
+        },
+        now(),
+    );
+    assert!(first.program_turn_started);
+    assert!(coalesced.completion_armed());
+    let second = coalesced.apply(
+        SessionEvent::ProgramStatus {
+            seq: 5,
+            subseq: 1,
+            report: Some(Report {
+                state: P::Done,
+                id: String::new(),
+                kind: None,
+                progress: None,
+                app: Some("agy".into()),
+                title: None,
+                message: None,
+            }),
+            live: true,
+        },
+        now(),
+    );
+    assert_eq!(
+        second.publication,
+        Some((SessionActivityState::Idle, StatusSource::ProgramStatus))
+    );
+    assert!(coalesced.completion_armed());
+    let stale = coalesced.apply(
+        SessionEvent::ProgramStatus {
+            seq: 5,
+            subseq: 0,
+            report: Some(Report {
+                state: P::Idle,
+                id: String::new(),
+                kind: None,
+                progress: None,
+                app: Some("agy".into()),
+                title: None,
+                message: None,
+            }),
+            live: true,
+        },
+        now(),
+    );
+    assert!(stale.publication.is_none());
+    assert!(coalesced.completion_armed());
 }
 
 #[test]
