@@ -112,32 +112,49 @@ fn antigravity_conversation_probe_reads_the_global_store() {
 }
 
 #[test]
-fn antigravity_model_and_effort_come_only_from_catalog_pairs() {
+fn antigravity_model_and_effort_respect_catalog_and_dynamic_models() {
     let args = |model: Option<&str>, effort: Option<&str>| {
         model_effort_args(Runtime::Antigravity.key(), model, effort)
     };
     assert_eq!(
-        args(Some("gemini-3.1-pro"), Some("high")),
-        ["--model", "gemini-3.1-pro", "--effort", "high"]
+        args(Some("gemini-4-hydrogen"), Some(" XHigh ")),
+        ["--model", "gemini-4-hydrogen", "--effort", "xhigh"]
     );
     assert_eq!(
         args(Some("gemini-3.8-flash"), Some(" Medium ")),
         ["--model", "gemini-3.8-flash", "--effort", "medium"]
     );
-    // gemini-3.1-pro has no medium; agy would silently run its default.
     assert_eq!(
-        args(Some("gemini-3.1-pro"), Some("medium")),
-        ["--model", "gemini-3.1-pro"]
+        args(Some("claude-opus-5-5"), Some("high")),
+        ["--model", "claude-opus-5-5", "--effort", "high"]
     );
-    for model in [
-        "claude-sonnet-4-6",
-        "claude-opus-4-6-thinking",
-        "gpt-oss-120b-medium",
-        "custom-model",
-    ] {
-        assert_eq!(args(Some(model), Some("high")), ["--model", model]);
+    assert_eq!(
+        args(Some("gpt-oss-120b"), Some("medium")),
+        ["--model", "gpt-oss-120b", "--effort", "medium"]
+    );
+    // gemini-4-carbon has no xhigh/max; orchestrators take no --effort.
+    assert_eq!(
+        args(Some("gemini-4-carbon"), Some("xhigh")),
+        ["--model", "gemini-4-carbon"]
+    );
+    assert_eq!(
+        args(Some("gemini-pro-orchestrator"), Some("high")),
+        ["--model", "gemini-pro-orchestrator"]
+    );
+    // Leveled model IDs carry their own effort; passing --effort conflicts on mismatch.
+    for leveled in ["gemini-4-hydrogen-xhigh", "gpt-oss-120b-medium"] {
+        assert_eq!(args(Some(leveled), Some("low")), ["--model", leveled]);
     }
-    // Never --effort without --model: it would apply to agy's default.
+    // Discovered or custom base models forward valid effort levels, while invalid levels drop.
+    assert_eq!(
+        args(Some("custom-model"), Some("xhigh")),
+        ["--model", "custom-model", "--effort", "xhigh"]
+    );
+    assert_eq!(
+        args(Some("custom-model"), Some("ultra")),
+        ["--model", "custom-model"]
+    );
+    // Never --effort without --model: agy errors without a model that supports it.
     assert!(args(None, Some("high")).is_empty());
     assert!(args(Some("  "), Some("low")).is_empty());
     assert!(args(None, None).is_empty());

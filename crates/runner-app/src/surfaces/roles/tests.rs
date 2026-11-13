@@ -148,6 +148,61 @@ fn default_role_model_offers_efforts_and_filters_known_capabilities() {
 }
 
 #[test]
+fn antigravity_effort_needs_launch_model_and_inherits_role_model_in_slot_overrides() {
+    let antigravity = RuntimeCatalogEntry::for_runtime(Runtime::Antigravity).unwrap();
+    let runtimes = std::slice::from_ref(&antigravity);
+    let create_values = |model| {
+        super::logic::create_role_effort_options(runtimes, "antigravity", model)
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(create_values(""), [""]);
+    assert_eq!(
+        create_values("gemini-4-hydrogen"),
+        ["", "low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(create_values("gemini-pro-orchestrator"), [""]);
+    assert_eq!(create_values("gemini-4-hydrogen-xhigh"), [""]);
+    assert_eq!(create_values("gpt-oss-120b-medium"), [""]);
+    assert_eq!(
+        create_values("custom-agy-model"),
+        ["", "low", "medium", "high", "xhigh", "max"]
+    );
+
+    let now = chrono::Utc::now();
+    let mut role = runner_core::protocol::model::Role {
+        id: "agy-role".into(),
+        handle: "agy".into(),
+        display_name: "Agy".into(),
+        runtime: "antigravity".into(),
+        command: "agy".into(),
+        args: Vec::new(),
+        working_dir: None,
+        system_prompt: None,
+        env: Default::default(),
+        model: Some("gemini-4-hydrogen".into()),
+        effort: None,
+        codex_speed: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let slot_values = |role: &runner_core::protocol::model::Role, override_model: &str| {
+        super::logic::effort_options(runtimes, "antigravity", role, true, override_model)
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        slot_values(&role, ""),
+        ["", "low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(slot_values(&role, "gemini-pro-orchestrator"), [""]);
+    role.model = None;
+    assert_eq!(slot_values(&role, ""), [""]);
+}
+
+#[test]
 fn prompt_meta_counts_lines_and_size() {
     use super::logic::prompt_meta;
 

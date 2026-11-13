@@ -920,4 +920,49 @@ pub(super) mod tests {
             });
         }
     }
+
+    #[test]
+    fn antigravity_effort_follows_model_support_and_disables_for_leveled_or_blank_model() {
+        let mut antigravity =
+            runner_core::protocol::runtime::RuntimeCatalogEntry::for_runtime(Runtime::Antigravity)
+                .unwrap();
+        antigravity.available = true;
+        let mut modal = modal_harness(
+            1200.,
+            1000.,
+            vec![test_role("plain-agy", "antigravity")],
+            vec![antigravity],
+            ChatMode::Role,
+        );
+        let effort_disabled = |modal: &ModalHarness| {
+            modal.read(|modal, cx| modal.effort_select.read(cx).is_disabled())
+        };
+        // Blank role model with no launch model disables Effort.
+        assert_eq!(modal.effort_choice(), ("default".into(), false));
+        assert!(effort_disabled(&modal));
+
+        // Base model enables only its supported effort levels.
+        modal.type_model("gemini-4-hydrogen");
+        assert_eq!(modal.effort_choice(), ("default".into(), false));
+        assert!(!effort_disabled(&modal));
+        modal.choose(StartChatSelection::Effort, "xhigh");
+        assert_eq!(modal.effort_choice(), ("xhigh".into(), true));
+        assert!(!effort_disabled(&modal));
+
+        // Switching to a model that does not support xhigh resets effort cleanly.
+        modal.type_model("gemini-4-carbon");
+        assert_eq!(modal.effort_choice(), ("default".into(), false));
+        assert!(!effort_disabled(&modal));
+
+        // Models without efforts or leveled IDs disable Effort without offering conflicting choices.
+        for model in [
+            "gemini-pro-orchestrator",
+            "gemini-4-hydrogen-xhigh",
+            "gpt-oss-120b-medium",
+        ] {
+            modal.type_model(model);
+            assert_eq!(modal.effort_choice(), ("default".into(), false), "{model}");
+            assert!(effort_disabled(&modal), "{model}");
+        }
+    }
 }

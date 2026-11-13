@@ -912,6 +912,182 @@ fn non_codex_slot_override_hides_speed() {
 }
 
 #[test]
+fn antigravity_slot_override_follows_effective_model_efforts() {
+    let mut page = crew_page_harness("crew-slot-antigravity-efforts");
+    let blank_role = page.role("agy-blank", Runtime::Antigravity);
+    runner_daemon::ops::role::role_update(
+        &page.core,
+        &blank_role.id,
+        runner_daemon::ops::role::UpdateRoleInput {
+            model: Some(None),
+            effort: Some(None),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let hydrogen_role = page.role("agy-hydrogen", Runtime::Antigravity);
+    runner_daemon::ops::role::role_update(
+        &page.core,
+        &hydrogen_role.id,
+        runner_daemon::ops::role::UpdateRoleInput {
+            model: Some(Some("gemini-4-hydrogen".into())),
+            effort: Some(Some("high".into())),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let crew = page.crew("AgyPair", None, &["agy-blank", "agy-hydrogen"]);
+    page.open_crew(&crew);
+
+    // Slot inheriting a blank Antigravity role model disables effort override until a model is set.
+    let slots = page.slots(&crew);
+    let blank_slot = slots[0].slot.id.clone();
+    let hydrogen_slot = slots[1].slot.id.clone();
+    page.update(|root, window, cx| {
+        root.toggle_slot_popup(blank_slot, gpui::Bounds::default(), window, cx)
+    });
+    page.update(|_, _, cx| cx.notify());
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    let (model, blank_disabled) = page
+        .host
+        .update(&mut page.visual, |root, _, cx| {
+            let form = root
+                .crew_surfaces
+                .editor
+                .popup
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .unwrap();
+            (
+                form.model.clone(),
+                form.effort_select.read(cx).is_disabled(),
+            )
+        })
+        .unwrap();
+    assert!(blank_disabled);
+
+    page.update(|_, _, cx| model.update(cx, |input, cx| input.set_text("gemini-4-hydrogen", cx)));
+    page.visual.run_until_parked();
+    let with_model_disabled = page
+        .host
+        .update(&mut page.visual, |root, _, cx| {
+            root.crew_surfaces
+                .editor
+                .popup
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .unwrap()
+                .effort_select
+                .read(cx)
+                .is_disabled()
+        })
+        .unwrap();
+    assert!(!with_model_disabled);
+
+    // Selecting xhigh on gemini-4-hydrogen and switching to a model that drops or disables
+    // it clears form.effort and updates disabled state and saved slot_override.
+    for (target_model, expected_disabled) in [
+        ("gemini-4-carbon", false),
+        ("gemini-4-hydrogen-low", true),
+        ("gemini-pro-orchestrator", true),
+        ("", true),
+    ] {
+        page.update(|_, _, cx| {
+            model.update(cx, |input, cx| input.set_text("gemini-4-hydrogen", cx))
+        });
+        page.visual.run_until_parked();
+        page.click("STYLED_SELECT_slot-override-effort");
+        page.click("STYLED_SELECT_OPTION_4");
+        assert_eq!(
+            page.read(|root| root
+                .crew_surfaces
+                .editor
+                .popup
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .unwrap()
+                .effort
+                .clone()),
+            "xhigh"
+        );
+        page.update(|_, _, cx| model.update(cx, |input, cx| input.set_text(target_model, cx)));
+        page.visual.run_until_parked();
+        let (effort, selected, disabled) = page
+            .host
+            .update(&mut page.visual, |root, _, cx| {
+                let form = root
+                    .crew_surfaces
+                    .editor
+                    .popup
+                    .as_ref()
+                    .unwrap()
+                    .edit
+                    .as_ref()
+                    .unwrap();
+                (
+                    form.effort.clone(),
+                    form.effort_select
+                        .read(cx)
+                        .selected()
+                        .unwrap()
+                        .value
+                        .clone(),
+                    form.effort_select.read(cx).is_disabled(),
+                )
+            })
+            .unwrap();
+        assert_eq!(effort, "", "target={target_model}");
+        assert_eq!(selected, "", "target={target_model}");
+        assert_eq!(disabled, expected_disabled, "target={target_model}");
+    }
+
+    page.click("CREW_SLOT_OVERRIDE_SAVE");
+    let saved_blank = page.slots(&crew)[0].clone();
+    assert_eq!(saved_blank.slot.model_override, None);
+    assert_eq!(saved_blank.slot.effort_override, None);
+
+    // Save gemini-4-carbon with high override, then verify xhigh on inherited hydrogen clears
+    // cleanly if reset via model override.
+    page.update(|root, window, cx| {
+        root.toggle_slot_popup(hydrogen_slot.clone(), gpui::Bounds::default(), window, cx)
+    });
+    page.update(|_, _, cx| cx.notify());
+    page.click("CREW_SLOT_EDIT_OVERRIDES");
+    let inherited_disabled = page
+        .host
+        .update(&mut page.visual, |root, _, cx| {
+            root.crew_surfaces
+                .editor
+                .popup
+                .as_ref()
+                .unwrap()
+                .edit
+                .as_ref()
+                .unwrap()
+                .effort_select
+                .read(cx)
+                .is_disabled()
+        })
+        .unwrap();
+    assert!(!inherited_disabled);
+    page.click("STYLED_SELECT_slot-override-effort");
+    page.click("STYLED_SELECT_OPTION_4");
+    page.click("CREW_SLOT_OVERRIDE_SAVE");
+    let saved_inherited = page.slots(&crew)[1].clone();
+    assert_eq!(saved_inherited.slot.model_override, None);
+    assert_eq!(
+        saved_inherited.slot.effort_override.as_deref(),
+        Some("xhigh")
+    );
+}
+
+#[test]
 fn popup_has_no_lead_action_and_remove_targets_its_slot() {
     use gpui::Bounds;
 

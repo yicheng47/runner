@@ -177,7 +177,7 @@ pub(crate) fn role_edit_runtime_options(
 }
 
 /// The effort choices for a runtime and model. A slot's blank choice inherits
-/// the role's effort while it runs the role's own runtime.
+/// the role's model and effort while it runs the role's own runtime.
 pub(crate) fn effort_options(
     runtimes: &[RuntimeCatalogEntry],
     runtime: &str,
@@ -186,12 +186,14 @@ pub(crate) fn effort_options(
     model: &str,
 ) -> Vec<SelectOption> {
     runtime_entry(runtimes, runtime)
-        .map(|runtime| {
-            if edits_slot {
-                runtime.efforts_for_model(model)
-            } else {
-                role_model_efforts(runtime, model)
-            }
+        .map(|entry| {
+            let effective_model =
+                if edits_slot && model.trim().is_empty() && runtime == role.runtime {
+                    role.model.as_deref().unwrap_or_default()
+                } else {
+                    model
+                };
+            role_model_efforts(entry, effective_model)
         })
         .unwrap_or_default()
         .iter()
@@ -249,7 +251,11 @@ fn role_model_efforts(runtime: &RuntimeCatalogEntry, model: &str) -> Vec<Runtime
         model
     };
     if model.trim().is_empty() {
-        runtime.efforts.clone()
+        if runtime.capabilities.effort_needs_launch_model {
+            runtime.efforts_for_model("")
+        } else {
+            runtime.efforts.clone()
+        }
     } else {
         runtime.efforts_for_model(model)
     }

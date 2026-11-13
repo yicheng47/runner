@@ -616,6 +616,7 @@ impl NativeRoot {
             })
         });
         let model_value = slot.slot.model_override.clone().unwrap_or_default();
+        let last_model = model_value.trim().to_owned();
         let model = cx.new(move |input_cx| {
             TextField::new(input_cx.focus_handle(), model_value, "", true)
                 .placeholder_as_value(true)
@@ -667,7 +668,15 @@ impl NativeRoot {
             .min_menu_width(px(POPUP_FIELD_WIDTH))
         });
         let subscriptions = vec![cx.observe(&model, |this, _, cx| {
-            this.sync_slot_effort_choices(cx);
+            let preserve_stored = if let Some(form) = this.slot_override_form() {
+                let current = form.model.read(cx).text().trim().to_owned();
+                let changed = current != form.last_model;
+                form.last_model = current;
+                !changed
+            } else {
+                return;
+            };
+            this.sync_slot_effort_choices(preserve_stored, cx);
         })];
         let focus = runtime_select.read(cx).focus_handle();
         let Some(popup) = self.crew_surfaces.editor.popup.as_mut() else {
@@ -678,6 +687,7 @@ impl NativeRoot {
             runtime: runtime_override,
             runtime_select,
             model,
+            last_model,
             model_field,
             effort,
             effort_select,
@@ -694,7 +704,7 @@ impl NativeRoot {
             _subscriptions: subscriptions,
         });
         self.sync_slot_model_choices(cx);
-        self.sync_slot_effort_choices(cx);
+        self.sync_slot_effort_choices(true, cx);
         focus.focus(window, cx);
         cx.notify();
     }
@@ -732,7 +742,7 @@ impl NativeRoot {
 
     /// Keeps the effort choices in step with the picked runtime and model.
     /// Runs from the model field's observer, so it must not touch the model.
-    fn sync_slot_effort_choices(&mut self, cx: &mut Context<Self>) {
+    fn sync_slot_effort_choices(&mut self, preserve_stored: bool, cx: &mut Context<Self>) {
         let Some(slot) = self.popup_slot() else {
             return;
         };
@@ -756,13 +766,17 @@ impl NativeRoot {
             Some(blank) => *blank = blank.clone().with_label(inherited),
             None => options.insert(0, SelectOption::new("", inherited)),
         }
-        // A stored effort the catalog does not list stays chosen rather than
-        // being dropped on the next save.
         if !options.iter().any(|option| option.value == form.effort) {
-            options.push(SelectOption::new(
-                form.effort.clone(),
-                runner_app::ui::select::effort_label(&form.effort, &form.effort),
-            ));
+            if preserve_stored && !form.effort.is_empty() {
+                // Keep a stored override on open/catalog refresh so opening the
+                // popup does not drop it; model edits clear unsupported choices.
+                options.push(SelectOption::new(
+                    form.effort.clone(),
+                    runner_app::ui::select::effort_label(&form.effort, &form.effort),
+                ));
+            } else {
+                form.effort.clear();
+            }
         }
         let effort = form.effort.clone();
         form.effort_select.update(cx, |select, select_cx| {
@@ -798,11 +812,13 @@ impl NativeRoot {
         let runtime = effective(&next);
         // A new runtime starts from its own model and effort; pinning or
         // unpinning the role's own runtime keeps them.
-        if runtime != effective(&form.runtime) {
+        let runtime_changed = runtime != effective(&form.runtime);
+        if runtime_changed {
             form.effort.clear();
             form.speed = None;
             form.speed_select
                 .update(cx, |select, select_cx| select.set_value("", select_cx));
+            form.last_model.clear();
             form.model
                 .update(cx, |input, input_cx| input.reset("", input_cx));
         }
@@ -814,7 +830,7 @@ impl NativeRoot {
         }
         self.request_model_catalog(&runtime, cx);
         self.sync_slot_model_choices(cx);
-        self.sync_slot_effort_choices(cx);
+        self.sync_slot_effort_choices(!runtime_changed, cx);
     }
 
     fn reset_slot_override_runtime(&mut self, cx: &mut Context<Self>) {
@@ -833,7 +849,7 @@ impl NativeRoot {
         if let Some(form) = self.slot_override_form() {
             form.effort.clear();
         }
-        self.sync_slot_effort_choices(cx);
+        self.sync_slot_effort_choices(true, cx);
     }
 
     fn reset_slot_override_speed(&mut self, cx: &mut Context<Self>) {
@@ -887,7 +903,7 @@ impl NativeRoot {
             select.set_options(options, select_cx)
         });
         self.sync_slot_model_choices(cx);
-        self.sync_slot_effort_choices(cx);
+        self.sync_slot_effort_choices(true, cx);
     }
 
     fn cancel_slot_override_edit(&mut self, cx: &mut Context<Self>) {

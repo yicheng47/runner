@@ -684,11 +684,9 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let args = fake.last_spawn_spec().unwrap().args;
         assert_chat_has_no_permission_flags(&args);
         assert!(has_arg_pair(&args, "--model", "test-model"));
-        // agy takes `--effort` only with a catalog model that lists the level.
         let effort = match runtime {
-            "claude-code" | "copilot" => Some(("--effort", "high")),
+            "claude-code" | "copilot" | "antigravity" => Some(("--effort", "high")),
             "pi" => Some(("--thinking", "high")),
-            "antigravity" => None,
             _ => Some(("-c", "model_reasoning_effort=high")),
         };
         let has_effort = |args: &[String]| match effort {
