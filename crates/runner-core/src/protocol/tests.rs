@@ -976,6 +976,167 @@ impl Sample for files::FileContent {
     }
 }
 
+impl Sample for changes::ChangesTarget {
+    fn sample() -> Self {
+        Self::Commit("abc1234".into())
+    }
+}
+impl Sample for changes::CommitSummary {
+    fn sample() -> Self {
+        Self {
+            id: Sample::sample(),
+            short_id: Sample::sample(),
+            subject: Sample::sample(),
+            author: Sample::sample(),
+            date: Sample::sample(),
+            parent_count: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::ChangesCommits {
+    fn sample() -> Self {
+        Self {
+            checkout_top: Sample::sample(),
+            branch: Sample::sample(),
+            head_commit: Sample::sample(),
+            base: Sample::sample(),
+            commits: Sample::sample(),
+            total: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::DiffCounts {
+    fn sample() -> Self {
+        Self::Lines {
+            added: 3,
+            removed: 1,
+        }
+    }
+}
+impl Sample for changes::ChangedFile {
+    fn sample() -> Self {
+        Self {
+            path: "src/样例.rs".into(),
+            status: files::FileStatus::Renamed {
+                from: "src/旧.rs".into(),
+            },
+            counts: Sample::sample(),
+            old_blob_id: Sample::sample(),
+            new_blob_id: Sample::sample(),
+            viewed: true,
+            changed_since_viewed: false,
+        }
+    }
+}
+impl Sample for changes::ChangesTotals {
+    fn sample() -> Self {
+        Self {
+            files: 1,
+            viewed: 1,
+            added: 3,
+            removed: 1,
+        }
+    }
+}
+impl Sample for changes::ChangesFiles {
+    fn sample() -> Self {
+        Self {
+            checkout_top: Sample::sample(),
+            files: Sample::sample(),
+            totals: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::ModeChange {
+    fn sample() -> Self {
+        Self {
+            old: "100644".into(),
+            new: "100755".into(),
+        }
+    }
+}
+impl Sample for changes::DiffOp {
+    fn sample() -> Self {
+        Self::Added { count: 2 }
+    }
+}
+impl Sample for changes::DiffHunk {
+    fn sample() -> Self {
+        Self {
+            header: "@@ -1,2 +1,4 @@ fn demo()".into(),
+            old_start: 1,
+            old_lines: 2,
+            new_start: 1,
+            new_lines: 4,
+            ops: vec![
+                changes::DiffOp::Context { count: 1 },
+                changes::DiffOp::Removed { count: 1 },
+                changes::DiffOp::Added { count: 3 },
+            ],
+        }
+    }
+}
+impl Sample for changes::DiffBody {
+    fn sample() -> Self {
+        Self::Text {
+            old: crate::companion::TerminalBytes(b"old\n".to_vec()),
+            new: crate::companion::TerminalBytes(b"new\n".to_vec()),
+            hunks: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::ChangesDiff {
+    fn sample() -> Self {
+        Self {
+            path: "src/样例.rs".into(),
+            status: files::FileStatus::Renamed {
+                from: "src/旧.rs".into(),
+            },
+            counts: Sample::sample(),
+            old_blob_id: Sample::sample(),
+            new_blob_id: Sample::sample(),
+            mode_change: Sample::sample(),
+            conflicted: false,
+            body: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::ChangesViewed {
+    fn sample() -> Self {
+        Self {
+            checkout_top: Sample::sample(),
+            path: "src/样例.rs".into(),
+            old_blob_id: Sample::sample(),
+            new_blob_id: Sample::sample(),
+            viewed: true,
+        }
+    }
+}
+
+#[test]
+fn changes_variants_cross_json() {
+    round_trip(changes::ChangesTarget::Uncommitted);
+    round_trip(changes::ChangesTarget::Commit("deadbeef".into()));
+    round_trip(changes::DiffCounts::Binary);
+    round_trip(changes::DiffBody::Binary {
+        old_size: Some(12),
+        new_size: None,
+    });
+    round_trip(changes::DiffBody::TooLarge {
+        old_size: Some(11_000_000),
+        new_size: Some(20),
+    });
+    round_trip(changes::DiffBody::ModeOnly {
+        old_mode: "100644".into(),
+        new_mode: "100755".into(),
+    });
+    round_trip(changes::DiffBody::Submodule {
+        old_commit: Some("abc".into()),
+        new_commit: Some("def".into()),
+    });
+    round_trip(changes::ChangesViewed::sample());
+}
+
 impl Sample for RuntimeLaunchOptions {
     fn sample() -> Self {
         Self::default()

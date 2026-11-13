@@ -2,7 +2,7 @@ use super::mcp::*;
 use super::runtime::{RuntimeCommandPreview, RuntimeLaunchOption};
 use super::terminal::*;
 use super::*;
-use super::{agent_skill, command, files};
+use super::{agent_skill, changes, command, files};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
@@ -207,6 +207,10 @@ macro_rules! daemon_api {
         files_watch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.watch(0, root) };
         files_unwatch(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> () [false] => |core: &crate::AppCore, root: PathBuf| { core.files.unwatch(0, &root); Ok(()) };
         files_recent_folders() -> Vec<PathBuf> [false] => |core: &crate::AppCore| { crate::files::recent_folders(core) };
+        changes_commits(root: &std::path::Path => PathBuf = { root.to_path_buf() }) -> changes::ChangesCommits [false] => |core: &crate::AppCore, root: PathBuf| { crate::files::changes_commits(core, &root) };
+        changes_files(root: &std::path::Path => PathBuf = { root.to_path_buf() }, target: &changes::ChangesTarget => changes::ChangesTarget = { target.clone() }) -> changes::ChangesFiles [false] => |core: &crate::AppCore, root: PathBuf, target: changes::ChangesTarget| { crate::files::changes_files(core, &root, &target) };
+        changes_diff(root: &std::path::Path => PathBuf = { root.to_path_buf() }, target: &changes::ChangesTarget => changes::ChangesTarget = { target.clone() }, path: &str => String = { path.to_owned() }) -> changes::ChangesDiff [false] => |core: &crate::AppCore, root: PathBuf, target: changes::ChangesTarget, path: String| { crate::files::changes_diff(core, &root, &target, &path) };
+        changes_set_viewed(root: &std::path::Path => PathBuf = { root.to_path_buf() }, target: &changes::ChangesTarget => changes::ChangesTarget = { target.clone() }, path: &str => String = { path.to_owned() }, old_blob_id: Option<&str> => Option<String> = { old_blob_id.map(str::to_owned) }, new_blob_id: Option<&str> => Option<String> = { new_blob_id.map(str::to_owned) }, viewed: bool => bool = { viewed }) -> () [false] => |core: &crate::AppCore, root: PathBuf, target: changes::ChangesTarget, path: String, old_blob_id: Option<String>, new_blob_id: Option<String>, viewed: bool| { crate::files::changes_set_viewed(core, &root, &target, &path, old_blob_id.as_deref(), new_blob_id.as_deref(), viewed) };
 
         session_clipboard_file_paths() -> Vec<String> [false] => |_core: &crate::AppCore| { Ok(crate::ops::session::session_clipboard_file_paths()) };
         session_details() -> BTreeMap<String, DirectSessionEntry> [false] =>
