@@ -243,14 +243,12 @@ impl AgentsPane {
     ) -> Option<AnyElement> {
         if let Some(task) = self.tasks.iter().find(|task| task.runtime == runtime.name) {
             use runner_core::protocol::RuntimeUpdateState as State;
-            let task = task.clone();
-            let shell = self.shell.clone();
-            let retry_shell = shell.clone();
             let name = task.runtime;
             let answer = task.state == State::MayNeedInput;
             let failed = matches!(task.state, State::Failed | State::BrokenAfterStop);
+            let broken = task.state == State::BrokenAfterStop;
             let caption = if answer || failed {
-                super::super::super::background_tasks::label(&task)
+                super::super::super::background_tasks::label(task)
             } else if task.state.active() {
                 crate::i18n::tf(
                     "agent_updates.settings_updating",
@@ -280,9 +278,9 @@ impl AgentsPane {
                     .flex()
                     .flex_col()
                     .items_end()
-                    .gap_1()
                     .child(
                         div()
+                            .debug_selector(|| format!("AGENT_TASK_CAPTION_{name}"))
                             .text_size(theme::text_meta())
                             .text_color(if answer {
                                 theme::warning()
@@ -293,44 +291,26 @@ impl AgentsPane {
                             })
                             .child(caption),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .children(failed.then(|| {
-                                Button::new(
-                                    SharedString::from(format!("agent-task-retry-{name}")),
-                                    if task.state == State::BrokenAfterStop {
-                                        crate::i18n::text("agent_updates.reinstall")
-                                    } else {
-                                        crate::i18n::text("ui.retry")
-                                    },
-                                )
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Secondary)
-                                .on_press(move |_, cx| {
-                                    let _ = retry_shell
-                                        .update(cx, |root, cx| root.start_agent_update(name, cx));
-                                })
-                            }))
-                            .child(
-                                Button::new(
-                                    SharedString::from(format!("agent-task-output-{}", task.id)),
-                                    if answer {
-                                        crate::i18n::text("agent_updates.answer")
-                                    } else {
-                                        crate::i18n::text("agent_updates.show_output")
-                                    },
-                                )
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Ghost)
-                                .on_press(move |window, cx| {
-                                    let _ = shell.update(cx, |root, cx| {
-                                        root.show_agent_task(task.clone(), window, cx)
-                                    });
-                                }),
-                            ),
-                    )
+                    .when(failed, |el| {
+                        let shell = self.shell.clone();
+                        el.gap_1().child(
+                            Button::new(
+                                SharedString::from(format!("agent-task-retry-{name}")),
+                                if broken {
+                                    crate::i18n::text("agent_updates.reinstall")
+                                } else {
+                                    crate::i18n::text("ui.retry")
+                                },
+                            )
+                            .debug_selector(format!("AGENT_TASK_RETRY_{name}"))
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(move |_, cx| {
+                                let _ =
+                                    shell.update(cx, |root, cx| root.start_agent_update(name, cx));
+                            }),
+                        )
+                    })
                     .into_any_element(),
             );
         }
