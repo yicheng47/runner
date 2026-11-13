@@ -9,6 +9,8 @@ pub(super) struct StartupDelivery {
     /// A direct chat's gate holds only reports to it (#748); it has no inbox.
     pub(super) reports_only: bool,
     hooks: bool,
+    program_status: bool,
+    seen_working: bool,
     pending_turn: bool,
     started: Instant,
     first_output: Option<Instant>,
@@ -23,6 +25,8 @@ impl StartupDelivery {
             runtime: runtime.to_owned(),
             reports_only: false,
             hooks,
+            program_status: false,
+            seen_working: false,
             pending_turn,
             started: now,
             first_output: None,
@@ -61,6 +65,7 @@ impl StartupDelivery {
 
     pub(super) fn bridge_failed(&mut self) {
         self.hooks = false;
+        self.program_status = false;
         self.working = false;
     }
 
@@ -68,17 +73,31 @@ impl StartupDelivery {
         &mut self,
         observation: &super::super::status::AgentObservation,
     ) -> bool {
-        if observation.source != ObservationSource::Hook {
-            return false;
+        if observation.source == ObservationSource::Hook {
+            if self.reports_only {
+                self.hooks = true;
+            }
+            self.working = observation.activity == Activity::Working || observation.needs_you();
+            return self.hooks
+                && !self.working
+                && matches!(observation.activity, Activity::Idle | Activity::Ready)
+                && (!self.pending_turn || observation.outcome.is_some());
         }
-        if self.reports_only {
-            self.hooks = true;
+        if observation.program_status.is_some() {
+            self.program_status = true;
+            if observation.activity == Activity::Working {
+                self.seen_working = true;
+            }
+            self.working = observation.activity == Activity::Working || observation.needs_you();
+            return !self.working
+                && observation.activity == Activity::Idle
+                && (!self.pending_turn || observation.outcome.is_some() || self.seen_working);
         }
-        self.working = observation.activity == Activity::Working || observation.needs_you();
-        self.hooks
-            && !self.working
-            && matches!(observation.activity, Activity::Idle | Activity::Ready)
-            && (!self.pending_turn || observation.outcome.is_some())
+        if self.program_status {
+            self.program_status = false;
+            self.working = false;
+        }
+        false
     }
 
     pub(super) fn output(&mut self, bytes: &[u8], now: Instant) {
@@ -90,6 +109,7 @@ impl StartupDelivery {
 
     pub(super) fn output_settled(&self, now: Instant) -> bool {
         !self.hooks
+            && !self.program_status
             && !self.working
             && self.first_output.is_some_and(|first| {
                 now.duration_since(first.max(self.started)) >= STARTUP_OUTPUT_GRACE

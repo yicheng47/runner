@@ -6,12 +6,12 @@ session_status_rows=published
 2300 quiescent=false delivery=["InputQueueDrained"]
 2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-2500 status=running/working/hook
-  busy@hook [running/working/hook]
-2600 status=error/working/hook exit_code=1 error_since=1767225602600 activity=null completion_armed=false quiescent=false delivery=["Exited"]
+2500 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+2600 status=error/working/baseline exit_code=1 error_since=1767225602600 activity=null completion_armed=false quiescent=false delivery=["Exited"]
 2700
 2725
 2750
 2775 result={"completion_consumed":false,"viewed":false}
 2800 result={"gate":"unavailable"}
-2900 status=error/working/hook exit_code=1
+2900 status=error/working/baseline exit_code=1

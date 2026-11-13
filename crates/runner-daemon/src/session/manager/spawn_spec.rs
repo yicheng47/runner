@@ -724,12 +724,7 @@ fn command_lines(
             i += count;
             continue;
         }
-        if arg == "-e"
-            || arg == "--plugin-dir"
-            || (runtime == Runtime::Antigravity
-                && arg == "--add-dir"
-                && !code.contains("<mission folder>"))
-        {
+        if arg == "-e" || arg == "--plugin-dir" {
             note = if mission {
                 Note::AlwaysInMissions
             } else if options.status_hooks {
@@ -891,6 +886,42 @@ mod launch_preview_tests {
                 .join(" "),
             args.join(" ")
         );
+
+        for mission in [false, true] {
+            let agy_preview = core.sessions.command_preview(
+                Runtime::Antigravity,
+                "agy",
+                mission,
+                RuntimeLaunchOptions::default(),
+                root.path(),
+                BTreeMap::new(),
+            );
+            let agy_text = agy_preview
+                .lines
+                .iter()
+                .map(|line| line.command.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let normalized_agy = agy_text.replace('\\', "/");
+            assert!(
+                normalized_agy
+                    .contains("--log-file <Runner data>/antigravity/logs/<session id>.log"),
+                "{agy_text}"
+            );
+            assert!(
+                !agy_text.contains("antigravity-hooks"),
+                "legacy hooks workspace must not appear in preview: {agy_text}"
+            );
+            assert!(agy_preview.lines.iter().all(|line| {
+                line.option
+                    != Some(runner_core::protocol::runtime::RuntimeLaunchOption::StatusHooks)
+                    && line.note != runner_core::protocol::runtime::RuntimeCommandNote::StatusHooks
+            }));
+            assert!(!agy_text.contains("--add-dir"), "{agy_text}");
+            if mission {
+                assert!(agy_text.contains("--dangerously-skip-permissions"));
+            }
+        }
     }
 
     #[test]

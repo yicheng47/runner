@@ -205,25 +205,78 @@ fn antigravity_settings_inject_title_hook_across_launches_and_respect_role_setti
 }
 
 #[test]
-fn antigravity_status_args_require_the_installed_hooks_folder() {
+fn antigravity_uses_program_status_without_status_hooks() {
+    let adapter = Antigravity;
+    assert!(adapter.status_hooks().is_none());
+    assert!(adapter.status_semantics().program_status_authority);
+    assert!(!adapter.startup_delivery_uses_hooks(false));
+    assert!(!adapter.startup_delivery_uses_hooks(true));
+}
+
+#[test]
+fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
     let root = tempfile::tempdir().unwrap();
-    assert!(antigravity_status_args_for(Runtime::Antigravity.key(), root.path()).is_empty());
-    crate::runtimes::antigravity::agy_status::install_hooks(root.path()).unwrap();
-    let args = antigravity_status_args_for(Runtime::Antigravity.key(), root.path());
-    if cfg!(windows) {
-        assert!(args.is_empty(), "agy hook status is macOS-only");
-    } else {
-        assert_eq!(
-            args,
-            [
-                "--add-dir".to_owned(),
-                crate::runtimes::antigravity::agy_status::hooks_dir(root.path())
-                    .to_string_lossy()
-                    .into_owned(),
-            ]
+    let hooks_root = root.path().join("antigravity-hooks");
+    let agents_dir = hooks_root.join(".agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(agents_dir.join("hooks.json"), "{}").unwrap();
+    std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
+
+    let active_log = agy_capture::log_path(root.path(), "active-session");
+    std::fs::create_dir_all(active_log.parent().unwrap()).unwrap();
+    std::fs::write(&active_log, "keep\n").unwrap();
+
+    remove_legacy_hooks_dir(root.path());
+
+    assert!(!hooks_root.exists());
+    assert!(active_log.is_file());
+
+    // Unexpected user files inside antigravity-hooks are preserved while known Runner files go.
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(agents_dir.join("hooks.json"), "{}").unwrap();
+    std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
+    let extra = hooks_root.join("keep.txt");
+    std::fs::write(&extra, "user note").unwrap();
+    remove_legacy_hooks_dir(root.path());
+    assert!(!agents_dir.exists());
+    assert!(!hooks_root.join("report.sh").exists());
+    assert!(extra.is_file());
+    std::fs::remove_file(&extra).unwrap();
+    std::fs::remove_dir(&hooks_root).unwrap();
+
+    #[cfg(unix)]
+    {
+        let target = tempfile::tempdir().unwrap();
+        let target_agents = target.path().join(".agents");
+        std::fs::create_dir_all(&target_agents).unwrap();
+        let target_hooks = target_agents.join("hooks.json");
+        std::fs::write(&target_hooks, "{}").unwrap();
+        std::os::unix::fs::symlink(target.path(), &hooks_root).unwrap();
+        remove_legacy_hooks_dir(root.path());
+        assert!(target_hooks.is_file(), "must not follow symlinks");
+        assert!(hooks_root
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_file(&hooks_root).unwrap();
+
+        // Intermediate .agents symlink inside a real antigravity-hooks directory must not be followed.
+        std::fs::create_dir_all(&hooks_root).unwrap();
+        std::os::unix::fs::symlink(&target_agents, &agents_dir).unwrap();
+        std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
+        remove_legacy_hooks_dir(root.path());
+        assert!(
+            target_hooks.is_file(),
+            "must not follow intermediate .agents symlink"
         );
+        assert!(agents_dir
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!hooks_root.join("report.sh").exists());
     }
-    assert!(antigravity_status_args_for(Runtime::Copilot.key(), root.path()).is_empty());
 }
 
 #[test]
@@ -417,20 +470,10 @@ fn antigravity_permissions_roundtrip_and_strip_every_go_spelling() {
         strip_permission_flags(Runtime::ClaudeCode.key(), &claude),
         claude
     );
-    assert_eq!(
-        mission_bus_sandbox_args(
-            runtime.map(Runtime::key).unwrap_or(""),
-            Some(Path::new("/tmp/mission"))
-        ),
-        ["--add-dir", "/tmp/mission"]
-    );
+    assert!(mission_bus_sandbox_args(
+        runtime.map(Runtime::key).unwrap_or(""),
+        Some(Path::new("/tmp/mission"))
+    )
+    .is_empty());
     assert!(mission_bus_sandbox_args(runtime.map(Runtime::key).unwrap_or(""), None).is_empty());
-}
-
-fn antigravity_status_args_for(key: &str, data: &Path) -> Vec<String> {
-    if key == Runtime::Antigravity.key() {
-        antigravity_status_args(data)
-    } else {
-        Vec::new()
-    }
 }

@@ -346,3 +346,213 @@ fn tui_transcript_markers_preserve_native_work_and_wait_until_shell_return() {
         router::DeliveryReadiness::Ready { .. }
     ));
 }
+
+#[test]
+fn antigravity_program_status_records_completion_only_on_done() {
+    let core = crate::test_support::test_core();
+    let id = "agy-program-attention";
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'antigravity')",
+            [id],
+        )
+        .unwrap();
+    install_test_session_handle(&core.sessions, id);
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let terminal = core
+        .sessions
+        .create_terminal(id, 80, 24, &core.db, &events)
+        .unwrap();
+    let state = core.sessions.session_state(id).unwrap();
+    state.lock().unwrap().terminal = Some(terminal);
+    let ingest = |bytes: &[u8]| {
+        core.sessions
+            .ingest_output_chunk(id, None, bytes, events.as_ref())
+    };
+    let clear_unread = || {
+        crate::repo::session_attention::mark_viewed(
+            &core.db.get().unwrap(),
+            id,
+            "2026-11-13T00:00:00Z",
+        )
+        .unwrap();
+        state
+            .lock()
+            .unwrap()
+            .model
+            .apply(SessionEvent::Viewed, crate::session::clock::state_now());
+    };
+
+    // Working -> Blocked -> Working -> Done records unread completion once.
+    ingest(b"\x1b]7501;state=working:app=agy\x07");
+    assert_eq!(core.sessions.agent_status(id).unread_since, None);
+    ingest(b"\x1b]7501;state=blocked:kind=permission:msg=QWxsb3c/\x07");
+    assert!(core.sessions.agent_status(id).observation.needs_you());
+    assert_eq!(core.sessions.agent_status(id).unread_since, None);
+    ingest(b"\x1b]7501;state=working:app=agy\x07");
+    ingest(b"\x1b]7501;state=done:app=agy\x07");
+    assert!(core.sessions.agent_status(id).unread_since.is_some());
+    assert!(
+        crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()]).unwrap()
+    );
+
+    clear_unread();
+
+    // Keypress / TUI redraw emitting state=idle after Done does not re-trigger completion.
+    ingest(b"\x1b]7501;state=idle:app=agy\x07");
+    assert_eq!(core.sessions.agent_status(id).unread_since, None);
+
+    // Working -> Idle (Esc interrupt) does NOT record unread completion.
+    ingest(b"\x1b]7501;state=working:app=agy\x07");
+    ingest(b"\x1b]7501;state=idle:app=agy\x07");
+    assert_eq!(core.sessions.agent_status(id).unread_since, None);
+    assert!(
+        !crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()]).unwrap()
+    );
+
+    // Working -> Error does NOT record unread completion, and sets failed_since.
+    ingest(b"\x1b]7501;state=working:app=agy\x07");
+    ingest(b"\x1b]7501;state=error:app=agy\x07");
+    assert_eq!(core.sessions.agent_status(id).unread_since, None);
+    assert!(core.sessions.agent_status(id).failed_since.is_some());
+    clear_unread();
+
+    // Working -> clear followed by Forwarder Idle does NOT record unread completion
+    // under either an Idle or Busy output baseline.
+    for baseline in [SessionActivityState::Idle, SessionActivityState::Busy] {
+        core.sessions.publish_direct_activity(
+            id,
+            baseline,
+            StatusSource::Forwarder,
+            events.as_ref(),
+        );
+        ingest(b"\x1b]7501;state=working:app=agy\x07");
+        ingest(b"\x1b]7501;state=clear\x07");
+        core.sessions.publish_direct_activity(
+            id,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+            events.as_ref(),
+        );
+        assert_eq!(
+            core.sessions.agent_status(id).unread_since,
+            None,
+            "clear under {baseline:?} baseline must not record unread completion"
+        );
+        assert!(
+            !crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()])
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn antigravity_coalesced_and_split_program_status_chunks_preserve_completion_and_turns() {
+    for coalesced in [false, true] {
+        let core = crate::test_support::test_core();
+        let id = if coalesced {
+            "agy-coalesced"
+        } else {
+            "agy-split"
+        };
+        core.db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'antigravity')",
+                [id],
+            )
+            .unwrap();
+        install_test_session_handle(&core.sessions, id);
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let terminal = core
+            .sessions
+            .create_terminal(id, 80, 24, &core.db, &events)
+            .unwrap();
+        let state = core.sessions.session_state(id).unwrap();
+        state.lock().unwrap().terminal = Some(terminal);
+
+        let emit_sequence = |chunks: &[&[u8]]| {
+            if coalesced {
+                let joined = chunks.concat();
+                core.sessions
+                    .ingest_output_chunk(id, None, &joined, events.as_ref());
+            } else {
+                for chunk in chunks {
+                    core.sessions
+                        .ingest_output_chunk(id, None, chunk, events.as_ref());
+                }
+            }
+        };
+        let clear_unread = || {
+            crate::repo::session_attention::mark_viewed(
+                &core.db.get().unwrap(),
+                id,
+                "2026-11-13T00:00:00Z",
+            )
+            .unwrap();
+            state
+                .lock()
+                .unwrap()
+                .model
+                .apply(SessionEvent::Viewed, crate::session::clock::state_now());
+        };
+
+        // 1. Working -> Done in one chunk vs split chunks increments turn_started and records completion.
+        emit_sequence(&[
+            b"\x1b]7501;state=working:app=agy\x07",
+            b"\x1b]7501;state=done:app=agy\x07",
+        ]);
+        assert_eq!(
+            core.sessions.delivery_snapshot(id).unwrap().turn_started,
+            1,
+            "coalesced={coalesced}"
+        );
+        assert!(
+            core.sessions.agent_status(id).unread_since.is_some(),
+            "Working -> Done must record completion (coalesced={coalesced})"
+        );
+        assert_eq!(
+            core.sessions.agent_status(id).observation.outcome,
+            Some(TurnOutcome::Completed)
+        );
+        clear_unread();
+
+        // 2. Working -> Done -> Idle in one chunk vs split chunks still records completion on Done
+        // and settles cleanly to plain Idle.
+        emit_sequence(&[
+            b"\x1b]7501;state=working:app=agy\x07",
+            b"\x1b]7501;state=done:app=agy\x07",
+            b"\x1b]7501;state=idle:app=agy\x07",
+        ]);
+        assert_eq!(
+            core.sessions.delivery_snapshot(id).unwrap().turn_started,
+            2,
+            "coalesced={coalesced}"
+        );
+        assert!(
+            core.sessions.agent_status(id).unread_since.is_some(),
+            "Done -> Idle in same chunk must preserve unread completion (coalesced={coalesced})"
+        );
+        assert_eq!(core.sessions.agent_status(id).observation.outcome, None);
+        clear_unread();
+
+        // 3. Working -> Idle in one chunk vs split chunks increments turn_started once and never records completion.
+        emit_sequence(&[
+            b"\x1b]7501;state=working:app=agy\x07",
+            b"\x1b]7501;state=idle:app=agy\x07",
+        ]);
+        assert_eq!(
+            core.sessions.delivery_snapshot(id).unwrap().turn_started,
+            3,
+            "coalesced={coalesced}"
+        );
+        assert_eq!(
+            core.sessions.agent_status(id).unread_since,
+            None,
+            "Working -> Idle must not record completion (coalesced={coalesced})"
+        );
+    }
+}

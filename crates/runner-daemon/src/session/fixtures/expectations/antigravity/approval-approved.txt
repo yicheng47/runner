@@ -1,14 +1,19 @@
-runtime=antigravity name=approval-approved rules=[] bugs=[] known_wrong=[]
+runtime=antigravity name=approval-approved rules=[6] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/working/hook activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
+100 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true quiescent=true key=null delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  busy@hook [running/working/hook]
-200
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+200 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample approval"} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600200}] observation.program_status={"message":"Sample approval"}]
 300
-400 result={"gate":"unavailable"}
+400 result={"gate":"human_interaction"}
 500
 600 delivery=["ReadinessChanged"]
-700 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+650 status=running/working/baseline observation.program_status={"message":null} quiescent=true delivery=["ReadinessChanged"]
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+700 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
 800 quiescent=false result={"gate":"ready"}
 900 quiescent=true delivery=["DeliveryFinished"]
+2700 quiescent=false result={"gate":"ready"}
+2800 quiescent=true delivery=["DeliveryFinished"]

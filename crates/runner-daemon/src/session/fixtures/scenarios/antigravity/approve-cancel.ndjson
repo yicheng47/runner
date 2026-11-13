@@ -1,7 +1,9 @@
-{"runtime":"antigravity","name":"approve-cancel","rules":[],"bugs":[],"known_wrong":[],"evidence":"The current Antigravity hook catalog has no approval, question or compaction event; PTY output and local inputs pin the unchanged semantic limitation."}
-{"ms":100,"event":"hook","report":{"hook_event_name":"PreInvocation","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":200,"event":"hook","report":{"hook_event_name":"PostToolUse","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"runtime":"antigravity","name":"approve-cancel","rules":[6,8],"bugs":[],"known_wrong":[],"evidence":"Approving an OSC 7501 permission wait resumes state=working; cancelling with Escape returns to state=idle and disarms completion."}
+{"ms":100,"event":"output","bytes":"\u001b]7501;state=working:app=agy\u0007"}
+{"ms":200,"event":"output","bytes":"\u001b]7501;state=blocked:kind=permission:app=agy:msg=U2FtcGxlIGFwcHJvdmFs\u0007"}
 {"ms":300,"event":"output","bytes":"Sample approval"}
 {"ms":400,"event":"input","bytes":"\r"}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=agy\u0007"}
 {"ms":500,"event":"input","bytes":"\u001b"}
+{"ms":550,"event":"output","bytes":"\u001b]7501;state=idle:app=agy\u0007"}
 {"ms":600,"event":"completion"}

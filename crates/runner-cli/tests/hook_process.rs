@@ -16,7 +16,6 @@ fn command_failures_are_neutral_without_autostart() {
     let root = tempfile::tempdir().unwrap();
     for payload in [b"{".as_slice(), b"{}"] {
         for provider in ["codex", "claude-code", "copilot", "antigravity"] {
-            let context = r#"{"injectSteps":[{"type":"user","text":"fixture workspace"}]}"#;
             let mut child = Command::new(env!("CARGO_BIN_EXE_runner-agent-cli"))
                 .args([
                     "hook",
@@ -29,7 +28,6 @@ fn command_failures_are_neutral_without_autostart() {
                 .env(hook::ENDPOINT_ENV, root.path().join("absent.sock"))
                 .env(hook::SESSION_ENV, "absent")
                 .env(hook::GENERATION_ENV, "old")
-                .env("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT", context)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -41,9 +39,7 @@ fn command_failures_are_neutral_without_autostart() {
             assert!(result.stderr.is_empty());
             assert_eq!(
                 String::from_utf8(result.stdout).unwrap().trim(),
-                if provider == "antigravity" {
-                    context
-                } else if provider == "codex" {
+                if matches!(provider, "codex" | "antigravity") {
                     "{}"
                 } else {
                     ""

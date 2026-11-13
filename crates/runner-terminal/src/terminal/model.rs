@@ -66,7 +66,7 @@ pub struct TerminalModel {
     cwd_reports: Option<Mutex<CwdReports>>,
     live_cwd: Mutex<Option<PathBuf>>,
     program_status: Mutex<crate::program_status::Parser>,
-    pending_program_status: Mutex<Option<(u64, Option<crate::program_status::Report>)>>,
+    pending_program_status: Mutex<Vec<(u64, Option<crate::program_status::Report>)>>,
     codex_native_attention: bool,
 }
 
@@ -351,7 +351,10 @@ impl TerminalModel {
                 crate::program_status::Event::Query => queries.push((end, None)),
                 crate::program_status::Event::Changed(report) => {
                     if !self.codex_native_attention {
-                        *self.pending_program_status.lock().unwrap() = Some((seq, report));
+                        self.pending_program_status
+                            .lock()
+                            .unwrap()
+                            .push((seq, report));
                     }
                 }
                 crate::program_status::Event::Shell(_) => {}
@@ -422,18 +425,22 @@ impl TerminalModel {
         self.publish_input(Some(self.initial_observation));
     }
 
+    pub fn take_program_statuses(&self) -> Vec<(u64, Option<crate::program_status::Report>)> {
+        std::mem::take(&mut *self.pending_program_status.lock().unwrap())
+    }
+
     pub fn take_program_status(&self) -> Option<(u64, Option<crate::program_status::Report>)> {
-        self.pending_program_status.lock().unwrap().take()
+        self.take_program_statuses().pop()
     }
 
     pub fn clear_program_status(&self) {
         *self.program_status.lock().unwrap() = Default::default();
-        *self.pending_program_status.lock().unwrap() = None;
+        self.pending_program_status.lock().unwrap().clear();
     }
 
     pub fn invalidate_program_status(&self) {
         self.program_status.lock().unwrap().invalidate_records();
-        *self.pending_program_status.lock().unwrap() = None;
+        self.pending_program_status.lock().unwrap().clear();
     }
 
     /// Callers publish after releasing the tracker, so each publication reports the tracker's
@@ -1197,5 +1204,36 @@ mod clipboard_tests {
             assert!(host.stores.lock().unwrap().is_empty());
             assert!(host.replies.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn program_status_preserves_ordered_transitions_within_a_single_chunk() {
+        use crate::program_status::State;
+        let model = TerminalModel::new(
+            Arc::new(Host::default()),
+            "coalesced-status".into(),
+            80,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(
+            1,
+            b"\x1b]7501;state=working:app=agy\x07\x1b]7501;state=done:app=agy\x07\x1b]7501;state=idle:app=agy\x07",
+        );
+        let states = model
+            .take_program_statuses()
+            .into_iter()
+            .map(|(seq, report)| (seq, report.map(|report| report.state)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                (1, Some(State::Working)),
+                (1, Some(State::Done)),
+                (1, Some(State::Idle)),
+            ]
+        );
+        assert!(model.take_program_statuses().is_empty());
     }
 }

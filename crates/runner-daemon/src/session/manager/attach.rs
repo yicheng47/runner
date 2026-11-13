@@ -144,6 +144,13 @@ impl SessionManager {
                 .filter(|startup| !startup.reports_only)
                 .map(|startup| startup.runtime.clone())
                 .unwrap_or_default();
+            if let Some(startup) = &handle.startup {
+                state.model.set_program_status_authority(
+                    crate::runtimes::for_key(&startup.runtime)
+                        .status_semantics()
+                        .program_status_authority,
+                );
+            }
             state.handle = Some(handle);
             state
                 .model

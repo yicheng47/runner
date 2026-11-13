@@ -115,18 +115,20 @@ fn watcher(
     routes: &Arc<crate::session::hook_queue::HookRoutes>,
     home: &Path,
     generation: &str,
-) -> Box<dyn HookWatcher> {
+) -> Option<Box<dyn HookWatcher>> {
     use crate::runtimes::{
-        antigravity::agy_status::AgyStatusWatcher, claude_code::claude_status::ClaudeStatusWatcher,
-        codex::codex_status::CodexStatusWatcher, copilot::copilot_status::CopilotStatusWatcher,
-        pi::pi_status::PiStatusWatcher,
+        claude_code::claude_status::ClaudeStatusWatcher, codex::codex_status::CodexStatusWatcher,
+        copilot::copilot_status::CopilotStatusWatcher, pi::pi_status::PiStatusWatcher,
     };
+    if runtime == "antigravity" {
+        return None;
+    }
     let receiver = routes.register(
         Runtime::parse(runtime).unwrap(),
         ID.into(),
         generation.into(),
     );
-    match runtime {
+    Some(match runtime {
         "claude-code" => Box::new(ClaudeStatusWatcher::from_receiver(receiver)),
         "codex" => Box::new(CodexStatusWatcher::from_receiver(receiver)),
         "copilot" => Box::new(CopilotStatusWatcher::from_receiver(
@@ -134,8 +136,51 @@ fn watcher(
             home.join(".copilot"),
         )),
         "pi" => Box::new(PiStatusWatcher::from_receiver(receiver)),
-        "antigravity" => Box::new(AgyStatusWatcher::from_receiver(receiver)),
         _ => panic!("unknown scenario runtime {runtime}"),
+    })
+}
+
+struct ReplayTerminalHost;
+
+impl runner_terminal::terminal::TerminalHost for ReplayTerminalHost {
+    fn write_input(&self, _: &str, _: &[u8]) -> runner_terminal::terminal::HostResult<()> {
+        Ok(())
+    }
+    fn write_reply(&self, _: &str, _: &[u8]) -> runner_terminal::terminal::HostResult<()> {
+        Ok(())
+    }
+    fn report_input_state(&self, _: &str, _: InputObservation) {}
+    fn set_live_title(&self, _: &str, _: &str) -> runner_terminal::terminal::HostResult<()> {
+        Ok(())
+    }
+    fn resize(&self, _: &str, _: u16, _: u16) -> runner_terminal::terminal::HostResult<()> {
+        Ok(())
+    }
+    fn is_local_host(&self, _: &str) -> bool {
+        true
+    }
+    fn clipboard_store(&self, _: &str, _: runner_terminal::terminal::ClipboardTarget, _: &str) {}
+}
+
+fn attach_replay_program_terminal(manager: &SessionManager) {
+    let terminal = runner_terminal::terminal::TerminalModel::new(
+        Arc::new(ReplayTerminalHost),
+        ID.to_owned(),
+        DEFAULT_PTY_SIZE.0,
+        DEFAULT_PTY_SIZE.1,
+        runner_terminal::terminal::ModelOptions {
+            agent: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let state = manager.session_state_or_insert(ID);
+    let mut state = state.lock().unwrap();
+    state.model.set_program_status_authority(true);
+    if let Some(previous) = state.terminal.replace(terminal) {
+        for worker in previous.stop_workers() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -310,7 +355,7 @@ fn replay(path: &Path) -> Value {
     let mut spawn_generation = 1;
     let mut generation = format!("spawn-{spawn_generation}");
     let mut current_start = START.to_owned();
-    let mut watcher = Some(watcher(&header.runtime, &routes, &home, &generation));
+    let mut watcher = watcher(&header.runtime, &routes, &home, &generation);
     let fake = fake_runtime();
     let manager = mgr_with_fake(None, fake);
     let events = capture();
@@ -338,6 +383,9 @@ fn replay(path: &Path) -> Value {
     let mut token = None;
     with_conversation_home(&home, || {
         clock::at(start, EPOCH, || {
+            if header.runtime == "antigravity" {
+                attach_replay_program_terminal(&manager);
+            }
             install_replay_handle(&manager, &conn, events.as_ref(), &log);
             manager.publish_mission_activity(
                 ID,
@@ -353,6 +401,14 @@ fn replay(path: &Path) -> Value {
                 let mut transition = None;
                 match step.event {
                     Event::Output { bytes, quiet } => {
+                        if header.runtime == "antigravity" {
+                            manager.ingest_output_chunk(
+                                ID,
+                                Some("scenario-mission"),
+                                bytes.as_bytes(),
+                                events.as_ref(),
+                            );
+                        }
                         transition = detector.on_output_event_at(bytes.as_bytes(), quiet, now)
                     }
                     Event::Tick => transition = detector.tick_event_at(now),
@@ -502,7 +558,10 @@ fn replay(path: &Path) -> Value {
                             params![ID, current_start],
                         )
                         .unwrap();
-                        watcher = Some(self::watcher(&header.runtime, &routes, &home, &generation));
+                        watcher = self::watcher(&header.runtime, &routes, &home, &generation);
+                        if header.runtime == "antigravity" {
+                            attach_replay_program_terminal(&manager);
+                        }
                         install_replay_handle(&manager, &conn, events.as_ref(), &log);
                         detector = IdleDetector::with_adapter_at(
                             Duration::from_secs(2),
@@ -619,6 +678,13 @@ fn replay(path: &Path) -> Value {
             });
         }
     });
+    if let Some(state) = manager.session_state(ID) {
+        if let Some(terminal) = state.lock().unwrap().terminal.take() {
+            for worker in terminal.stop_workers() {
+                let _ = worker.join();
+            }
+        }
+    }
     let rows = log
         .read_from(0)
         .unwrap()

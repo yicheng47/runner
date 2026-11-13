@@ -5,11 +5,11 @@ session_status_rows=published
 200
 2400 status=running/idle/baseline activity="idle" delivery=["SilenceIdle"]
   idle@forwarder [running/idle/baseline]
-2500 status=running/ready/hook outcome="completed"
-  idle@hook [running/ready/hook outcome="completed"]
+2500 status=running/idle/baseline observation.program_status={"message":null}
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 2600 quiescent=false delivery=["InputQueueDrained"]
 2700 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
-  busy@input-submit [running/ready/hook outcome="completed"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
 2800 key="22222222-2222-4222-8222-222222222222" result={"key_written":true}
 2900
 3000 result={"key_written":false}

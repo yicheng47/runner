@@ -330,17 +330,8 @@ pub(super) fn hook_report_command(
             runtime.key()
         )
     } else {
-        let fallback = if runtime == Runtime::Antigravity {
-            if event == "PreInvocation" {
-                "{ if [ -n \"$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT\" ]; then printf '%s\\n' \"$RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT\"; else printf '{}\\n'; fi; }"
-            } else {
-                "printf '{}\\n'"
-            }
-        } else {
-            ":"
-        };
         format!(
-            "{} hook report --runtime {} --event {event} 2>/dev/null || {fallback}",
+            "{} hook report --runtime {} --event {event} 2>/dev/null || :",
             crate::session::launch::shell_quote(&executable),
             runtime.key()
         )

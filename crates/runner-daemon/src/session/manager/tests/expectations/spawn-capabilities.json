@@ -43,7 +43,7 @@
   },
   {
     "runtime": "antigravity",
-    "hooks_unix": true,
+    "hooks_unix": false,
     "hooks_windows": false,
     "launch_gate": false,
     "markers": [

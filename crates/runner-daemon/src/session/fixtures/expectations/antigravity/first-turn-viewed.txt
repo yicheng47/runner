@@ -10,11 +10,11 @@ session_status_rows=published
 4600 quiescent=false delivery=["InputQueueDrained"]
 4700 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-4800 status=running/working/hook
-  busy@hook [running/working/hook]
+4800 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 4900
 7100
-7200 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+7200 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
 7300 completion_armed=false result={"completion_consumed":true,"viewed":true}
 7400

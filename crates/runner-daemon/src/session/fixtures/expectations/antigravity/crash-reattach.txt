@@ -10,28 +10,26 @@ session_status_rows=published
 4600 quiescent=false delivery=["InputQueueDrained"]
 4700 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-4800 status=running/working/hook
-  busy@hook [running/working/hook]
+4800 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 4900
 7100
-7200 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
-7300 status=running/ready/hook outcome="completed" unread_since=1767225607300 completion_armed=false result={"completion_consumed":true,"viewed":false}
-7400 status=running/working/hook unread_since=1767225607300 activity="busy" completion_armed=true
-  busy@hook [running/working/hook unread_since=1767225607300]
+7200 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
+7300 status=running/idle/baseline outcome="completed" unread_since=1767225607300 observation.program_status={"message":null} completion_armed=false result={"completion_consumed":true,"viewed":false}
+7400 status=running/working/baseline unread_since=1767225607300 observation.program_status={"message":null} activity="busy" completion_armed=true
+  busy@program-status [running/working/baseline unread_since=1767225607300 observation.program_status={"message":null}]
 7500 quiescent=false delivery=["InputQueueDrained"]
 7600
-7700 status=running/ready/hook outcome="failed" failed_since=1767225607700 unread_since=1767225607300 activity="idle" completion_armed=false delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="failed" failed_since=1767225607700 unread_since=1767225607300]
+7700 status=running/idle/baseline outcome="failed" failed_since=1767225607700 unread_since=1767225607300 observation.program_status={"message":"sample failure"} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="failed" failed_since=1767225607700 unread_since=1767225607300 observation.program_status={"message":"sample failure"}]
 7800 result={"gate":"drafting","composer_visible":true}
-7900 status=error/ready/hook outcome="failed" exit_code=1 error_since=1767225607900 unread_since=1767225607300 activity=null delivery=["Exited"]
+7900 status=error/idle/baseline outcome="failed" exit_code=1 error_since=1767225607900 unread_since=1767225607300 activity=null delivery=["Exited"]
 8000 status=running/working/baseline unread_since=1767225607300 activity="busy" quiescent=true delivery=["Respawned"]
   busy@spawn [running/working/baseline unread_since=1767225607300]
-8100
 8200 result={"key_written":false}
-8300 status=running/working/hook unread_since=1767225607300 completion_armed=true
-  busy@hook [running/working/hook unread_since=1767225607300]
-8400
+8300 status=running/working/baseline unread_since=1767225607300 observation.program_status={"message":null} completion_armed=true
+  busy@program-status [running/working/baseline unread_since=1767225607300 observation.program_status={"message":null}]
 8500 result={"gate":"unavailable"}
 8600
-8700 status=running/working/hook
+8700 status=running/working/baseline observation.program_status={"message":null}

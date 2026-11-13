@@ -1,4 +1,4 @@
-runtime=antigravity name=escape-reply rules=[] bugs=[783] known_wrong=[]
+runtime=antigravity name=escape-reply rules=[8] bugs=[783] known_wrong=[]
 session_status_rows=published
 2200 status=running/idle/baseline activity="idle" completion_armed=false quiescent=true key=null delivery=["Respawned","SilenceIdle"]
   busy@spawn [running/working/baseline]
@@ -6,8 +6,9 @@ session_status_rows=published
 2300 quiescent=false delivery=["InputQueueDrained"]
 2400 status=running/working/baseline activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
   busy@input-submit [running/working/baseline]
-2500 status=running/working/hook
-  busy@hook [running/working/hook]
-2600 status=running/ready/hook outcome="interrupted" activity="idle" completion_armed=false quiescent=false delivery=["InputQueueDrained","Idle"]
-  idle@hook [running/ready/hook outcome="interrupted"]
+2500 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+2600 quiescent=false delivery=["InputQueueDrained"]
+2650 status=running/idle/baseline observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 2700 result={"completion_consumed":false,"viewed":false}

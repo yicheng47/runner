@@ -535,12 +535,12 @@ impl SessionManager {
                 SessionEvent::ProgramStatus { live, .. } => *live = is_live,
                 _ => {}
             }
-            let turn_started = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));
+            let agent_turn = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));
             let prompted = matches!(&event, SessionEvent::Agent { event, live: true }
                 if session.delivery_line.as_deref().is_some_and(|line| agent_prompted(event, line)));
             let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
             let effects = session.model.apply(event, super::super::clock::state_now());
-            if turn_started && effects.agent_feedback.accepted {
+            if (agent_turn && effects.agent_feedback.accepted) || effects.program_turn_started {
                 session.turn_started = session.turn_started.wrapping_add(1);
                 session.delivery_prompted |= prompted;
             }

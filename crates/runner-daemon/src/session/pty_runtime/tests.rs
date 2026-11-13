@@ -1362,53 +1362,6 @@ fn copilot_hook_runtime_uses_shared_reporter_interrupt_and_bridge_fallback() {
 
 #[test]
 #[cfg(unix)]
-fn antigravity_escape_releases_working_without_a_stop_hook() {
-    use super::super::status::{Activity, TurnOutcome};
-
-    let rt = PtyRuntime::new();
-    let mut spawn = spec("agy-interrupt", "/bin/cat", &[]);
-    spawn.agent_runtime = Some(crate::model::Runtime::Antigravity);
-    spawn.env.insert(GENERATION_ENV.into(), "current".into());
-    let (session, stream) = rt.spawn(spawn).unwrap();
-
-    admit_hook(
-        &rt,
-        "agy-interrupt",
-        crate::model::Runtime::Antigravity,
-        "PreInvocation",
-        serde_json::json!({}),
-    );
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        assert!(Instant::now() < deadline, "missing agy Working hook");
-        if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
-            stream.recv_status_timeout(Duration::from_millis(50))
-        {
-            assert_eq!(value.activity, Activity::Working);
-            break;
-        }
-    }
-
-    rt.send_bytes(&session, b"\x1b").unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "agy remained Working after Escape"
-        );
-        if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
-            stream.recv_status_timeout(Duration::from_millis(50))
-        {
-            assert_eq!(value.activity, Activity::Ready);
-            assert_eq!(value.outcome, Some(TurnOutcome::Interrupted));
-            break;
-        }
-    }
-    rt.stop(&session).unwrap();
-}
-
-#[test]
-#[cfg(unix)]
 fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
     use super::super::status::{Activity, TurnOutcome};
     let rt = PtyRuntime::new();

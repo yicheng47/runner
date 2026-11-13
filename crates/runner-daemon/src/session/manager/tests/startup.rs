@@ -198,7 +198,6 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         Runtime::Codex,
         Runtime::Copilot,
         Runtime::Pi,
-        Runtime::Antigravity,
     ] {
         let fixture = StartupFixture::new();
         fixture.queue("join broadcast before process launch");
@@ -242,25 +241,9 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         fixture.manager.kill("session").unwrap();
         fixture.fake.inputs.lock().unwrap().clear();
         fixture.queue("task before resume");
-        let resume = fixture.launch(runtime.key(), false, now);
+        let _resume = fixture.launch(runtime.key(), false, now);
         fixture.held();
-        if runtime == Runtime::Antigravity {
-            fixture
-                .manager
-                .startup_output("session", &resume.stop_flag(), b"resumed prompt", now);
-            fixture.manager.release_settled_startup(
-                "session",
-                &resume.stop_flag(),
-                now + Duration::from_secs(10),
-            );
-            fixture.manager.note_forwarder_transition(
-                "session",
-                SessionActivityState::Idle,
-                StatusSource::Forwarder,
-            );
-        } else {
-            fixture.event(runtime, AgentEvent::StartupReady);
-        }
+        fixture.event(runtime, AgentEvent::StartupReady);
         fixture.submitted();
     }
 }
@@ -2264,4 +2247,289 @@ fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
         assert!(!gate.output_settled(now + Duration::from_secs(1)));
         assert!(gate.output_settled(now + Duration::from_secs(11)));
     }
+}
+
+#[test]
+fn antigravity_startup_holds_for_program_status_and_falls_back_to_output_grace() {
+    for coalesced in [false, true] {
+        for terminal_end in [
+            b"\x1b]7501;state=done:app=agy\x07".as_slice(),
+            b"\x1b]7501;state=error:app=agy\x07".as_slice(),
+            b"\x1b]7501;state=idle:app=agy\x07".as_slice(),
+        ] {
+            let fixture = StartupFixture::new();
+            fixture.queue("queued before launch");
+            let now = Instant::now();
+            let output = fixture.launch(Runtime::Antigravity.key(), true, now);
+            let launch = output.stop_flag();
+            let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+            let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+            let terminal = fixture
+                .manager
+                .create_terminal("session", 80, 24, &pool, &events)
+                .unwrap();
+            fixture
+                .manager
+                .session_state("session")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .terminal = Some(terminal);
+            fixture
+                .manager
+                .session_state("session")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .set_program_status_authority(true);
+
+            let emit = |bytes: &[u8]| {
+                fixture
+                    .manager
+                    .startup_output("session", &launch, bytes, now);
+                fixture.manager.ingest_output_chunk(
+                    "session",
+                    Some("mission"),
+                    bytes,
+                    events.as_ref(),
+                );
+            };
+
+            // Initial Idle before first turn runs must keep pending_turn held past output grace.
+            emit(b"\x1b]7501;state=idle:app=agy\x07");
+            fixture.manager.release_settled_startup(
+                "session",
+                &launch,
+                now + Duration::from_secs(60),
+            );
+            fixture.held();
+
+            // Startup auth/trust Blocked must also hold past output grace.
+            emit(b"\x1b]7501;state=blocked:kind=auth:msg=U2lnbiBpbg\x07");
+            fixture.manager.release_settled_startup(
+                "session",
+                &launch,
+                now + Duration::from_secs(120),
+            );
+            fixture.held();
+
+            if coalesced {
+                // Coalesced Working -> Done/Error/Idle in a single PTY chunk still records seen_working,
+                // increments turn_started once, and releases StartupDelivery immediately.
+                let mut combined = b"\x1b]7501;state=working:app=agy\x07".to_vec();
+                combined.extend_from_slice(terminal_end);
+                emit(&combined);
+            } else {
+                emit(b"\x1b]7501;state=working:app=agy\x07");
+                fixture.manager.release_settled_startup(
+                    "session",
+                    &launch,
+                    now + Duration::from_secs(3600),
+                );
+                fixture.held();
+
+                // First turn ending (Done, Error, or post-Working Idle interrupt) releases deterministically.
+                emit(terminal_end);
+            }
+            assert_eq!(
+                fixture
+                    .manager
+                    .delivery_snapshot("session")
+                    .unwrap()
+                    .turn_started,
+                1,
+                "coalesced={coalesced}"
+            );
+            fixture.submitted();
+        }
+    }
+
+    // Resume / blank chat (pending_turn = false): holds on Blocked, releases immediately on Idle.
+    {
+        let fixture = StartupFixture::new();
+        fixture.queue("queued before resume");
+        let now = Instant::now();
+        let output = fixture.launch(Runtime::Antigravity.key(), false, now);
+        let launch = output.stop_flag();
+        let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+        let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+        let terminal = fixture
+            .manager
+            .create_terminal("session", 80, 24, &pool, &events)
+            .unwrap();
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        fixture.manager.ingest_output_chunk(
+            "session",
+            Some("mission"),
+            b"\x1b]7501;state=blocked:kind=auth\x07",
+            events.as_ref(),
+        );
+        fixture
+            .manager
+            .release_settled_startup("session", &launch, now + Duration::from_secs(60));
+        fixture.held();
+
+        fixture.manager.ingest_output_chunk(
+            "session",
+            Some("mission"),
+            b"\x1b]7501;state=idle:app=agy\x07",
+            events.as_ref(),
+        );
+        fixture.submitted();
+    }
+
+    // Older agy fallback (no OSC 7501): releases once STARTUP_OUTPUT_GRACE + Idle silence settle.
+    {
+        let fixture = StartupFixture::new();
+        fixture.queue("queued for older agy");
+        let now = Instant::now();
+        let output = fixture.launch(Runtime::Antigravity.key(), true, now);
+        let launch = output.stop_flag();
+        fixture
+            .manager
+            .startup_output("session", &launch, b"Antigravity banner", now);
+        fixture
+            .manager
+            .release_settled_startup("session", &launch, now + Duration::from_secs(2));
+        fixture.held();
+        fixture
+            .manager
+            .release_settled_startup("session", &launch, now + Duration::from_secs(11));
+        fixture.manager.note_forwarder_transition(
+            "session",
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        fixture.submitted();
+    }
+}
+
+#[test]
+fn antigravity_program_status_confirms_delivery_turn_start_and_holds_needs_you() {
+    let fixture = StartupFixture::new();
+    let now = Instant::now();
+    let _output = fixture.launch(Runtime::Antigravity.key(), false, now);
+    let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
+    let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
+    let terminal = fixture
+        .manager
+        .create_terminal("session", 80, 24, &pool, &events)
+        .unwrap();
+    fixture
+        .manager
+        .session_state("session")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = Some(terminal);
+    fixture
+        .manager
+        .session_state("session")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .model
+        .set_program_status_authority(true);
+
+    let emit = |bytes: &[u8]| {
+        fixture
+            .manager
+            .ingest_output_chunk("session", Some("mission"), bytes, events.as_ref());
+    };
+
+    emit(b"\x1b]7501;state=idle:app=agy\x07");
+    let initial_turns = fixture
+        .manager
+        .delivery_snapshot("session")
+        .unwrap()
+        .turn_started;
+
+    // Pre-turn Idle -> Blocked(auth/permission) -> Working holds NeedsYou during the wait
+    // and still counts the first Working as starting a turn once resolved.
+    emit(b"\x1b]7501;state=blocked:kind=auth:msg=U2lnbiBpbg\x07");
+    assert_eq!(
+        fixture.manager.delivery_readiness("session"),
+        crate::router::DeliveryReadiness::NeedsYou
+    );
+    assert_eq!(
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .turn_started,
+        initial_turns
+    );
+
+    emit(b"\x1b]7501;state=working:app=agy\x07");
+    let first_turn = fixture
+        .manager
+        .delivery_snapshot("session")
+        .unwrap()
+        .turn_started;
+    assert_eq!(first_turn, initial_turns + 1);
+
+    // Mid-turn progress and Blocked -> Working resumptions within the same turn do not re-increment.
+    emit(b"\x1b]7501;state=working:progress=50:app=agy\x07");
+    assert_eq!(
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .turn_started,
+        first_turn
+    );
+
+    emit(b"\x1b]7501;state=blocked:kind=permission:msg=QWxsb3c/\x07");
+    assert_eq!(
+        fixture.manager.delivery_readiness("session"),
+        crate::router::DeliveryReadiness::NeedsYou
+    );
+    assert_eq!(
+        fixture.manager.reserve_delivery("session").unwrap(),
+        DeliveryReservation::HumanInteraction
+    );
+
+    emit(b"\x1b]7501;state=working:app=agy\x07");
+    assert_eq!(
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .turn_started,
+        first_turn
+    );
+
+    emit(b"\x1b]7501;state=done:app=agy\x07");
+    assert!(matches!(
+        fixture.manager.delivery_readiness("session"),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    ));
+
+    // Done -> Blocked(auth) -> Working on a subsequent routed turn also increments turn_started once.
+    emit(b"\x1b]7501;state=blocked:kind=auth:msg=UmUtYXV0aA\x07");
+    assert_eq!(
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .turn_started,
+        first_turn
+    );
+    emit(b"\x1b]7501;state=working:app=agy\x07");
+    assert_eq!(
+        fixture
+            .manager
+            .delivery_snapshot("session")
+            .unwrap()
+            .turn_started,
+        first_turn + 1
+    );
 }
