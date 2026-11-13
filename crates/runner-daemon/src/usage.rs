@@ -1269,6 +1269,74 @@ mod lkg_tests {
         assert!(service.snapshot().runtimes.is_empty());
     }
 
+    #[test]
+    fn antigravity_preserves_lkg_on_error_and_drops_only_expired_pool_windows() {
+        let core = crate::test_support::test_core();
+        let service = UsageService::without_fetch();
+        let now = Utc::now();
+        let original = now - TimeDelta::minutes(20);
+        let (seq, lkg) = service
+            .finish_fetch(
+                vec![(
+                    Runtime::Antigravity,
+                    Ok(vec![
+                        window(
+                            "Gemini Models · 5 hours used",
+                            18.,
+                            Some(now - TimeDelta::minutes(1)),
+                        ),
+                        window(
+                            "Gemini Models · Week used",
+                            48.,
+                            Some(now + TimeDelta::days(5)),
+                        ),
+                        window(
+                            "Claude and GPT models · Week used",
+                            82.,
+                            Some(now + TimeDelta::days(5)),
+                        ),
+                    ]
+                    .into()),
+                )],
+                Vec::new(),
+                None,
+                original,
+            )
+            .unwrap();
+        service.save_lkg(&core.db, seq, &lkg);
+
+        assert!(service
+            .finish_fetch(
+                vec![(Runtime::Antigravity, Err(UnavailableReason::SignIn))],
+                Vec::new(),
+                None,
+                now,
+            )
+            .is_none());
+        let after_error = service.snapshot();
+        let cached = after_error.get(Runtime::Antigravity).unwrap();
+        assert_eq!(cached.windows.len(), 3);
+        assert_eq!(cached.updated_at, original);
+        assert_eq!(
+            after_error.error(Runtime::Antigravity),
+            Some(UnavailableReason::SignIn)
+        );
+
+        let restarted = restarted(&core).snapshot();
+        let kept = restarted.get(Runtime::Antigravity).unwrap();
+        assert_eq!(
+            kept.windows
+                .iter()
+                .map(|w| w.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Gemini Models · Week used",
+                "Claude and GPT models · Week used",
+            ]
+        );
+        assert_eq!(kept.updated_at, original);
+    }
+
     fn week(percent: f64, updated_at: DateTime<Utc>) -> AgentUsage {
         usage(vec![window("Week", percent, None)], updated_at)
     }

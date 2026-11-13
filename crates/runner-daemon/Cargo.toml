@@ -79,4 +79,4 @@ alacritty_terminal = "0.26"
 runner-terminal = { path = "../runner-terminal", features = ["test-support"] }
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console"] }

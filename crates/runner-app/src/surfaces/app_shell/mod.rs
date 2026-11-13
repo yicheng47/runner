@@ -444,20 +444,27 @@ fn usage_ui_catalog_golden() {
         Some(UnavailableReason::KeychainUnavailable),
         Some(UnavailableReason::ClaudeUnreachable),
         Some(UnavailableReason::CodexNoAnswer),
+        Some(UnavailableReason::AntigravityNoAnswer),
         Some(UnavailableReason::InvalidResponse),
     ];
     let now = chrono::DateTime::from_timestamp(1770000000, 0).unwrap();
     let usage = AgentUsage {
         credits: None,
         updated_at: now,
-        windows: ["Week", "5 hours", "Opus · week"]
-            .into_iter()
-            .map(|name| UsageWindow {
-                name: name.into(),
-                used_percent: 27.,
-                resets_at: None,
-            })
-            .collect(),
+        windows: [
+            "Week",
+            "5 hours",
+            "Opus · week",
+            "Gemini Models · Week used",
+            "Claude and GPT models · 5 hours used",
+        ]
+        .into_iter()
+        .map(|name| UsageWindow {
+            name: name.into(),
+            used_percent: 27.,
+            resets_at: None,
+        })
+        .collect(),
     };
     let rows: Vec<_> = Runtime::ALL.into_iter().map(|runtime| {
         let sections = crate::catalog_golden::capture(|| {

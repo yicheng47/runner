@@ -2,7 +2,7 @@
 
 Runner launches separately installed agent CLIs and keeps their native terminal interfaces. Enable agents, inspect detected executables, and choose executable overrides in **Settings → Agents**.
 
-Claude Code and Codex are the primary integrations, with tuned launch and nudge timing. Antigravity CLI and the other runtimes are secondary: they run chats and missions, but do not get every Runner feature. Antigravity CLI has no usage indicator.
+Claude Code and Codex are the primary integrations, with tuned launch and nudge timing. Antigravity CLI and the other runtimes are secondary: they run chats and missions, but do not get every Runner feature.
 
 ## Agent settings
 
@@ -60,7 +60,7 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 | Needs-input reporting | Generic native Needs you (0.163.0) | Approvals and questions | No | Extension reports only | Approvals and questions | No | Approvals on macOS/Linux |
 | Models discovered from the CLI | Yes | Yes | Yes | Yes | No | Yes | Yes |
 | Update through Settings → Agents | Yes | Yes | No | Yes | Yes | No | No |
-| Usage indicator | Yes | Yes | No | No | No | No | No |
+| Usage indicator | Yes | Yes | 1.5.8+ (macOS checked) | No | No | No | No |
 | Skills | Catalog and switch | Catalog and switch | Catalog | Catalog | Catalog and switch | Catalog | Catalog |
 | Runner skill installed | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Mission access | Bypass | Bypass | Bypass | Trusted workspace | Bypass | Bypass | Bypass |
@@ -87,6 +87,8 @@ See [Sessions](../concepts/sessions.md) for lifecycle behavior and [Troubleshoot
 ## Minimum versions and agent updates
 
 Codex needs **0.149.0 or newer** for Runner's launch hooks. The launcher marks only an older Codex’s agent row **Update needed**; role rows have no update labels or actions. The notice explains that starting Codex or a role using it updates Codex first and leaves the pane waiting; the chat starts when the update succeeds. A refused resume or fork offers the same recovery. An unknown version is allowed to try launching.
+
+Antigravity CLI usage checks require **1.5.8 or newer** so Runner can verify authentication without triggering interactive login before reading `/usage`. Older or unrecognized builds remain usable for chats and missions, while keeping Antigravity CLI usage unavailable without running sign-in checks.
 
 When a supported agent has a newer version, only its agent row shows the installed and available versions with **Update**; its roles keep their normal rows. You can still start chats on the supported installed version. A dot on the sidebar's Settings gear opens **Settings → Agents** and covers enabled agents with an update command, including those without a usage meter.
 

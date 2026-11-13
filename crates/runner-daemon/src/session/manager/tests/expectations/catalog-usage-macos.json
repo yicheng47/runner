@@ -62,8 +62,58 @@
   },
   {
     "runtime": "antigravity",
-    "supported": false,
-    "commands": []
+    "supported": true,
+    "commands": [
+      {
+        "command": "/golden/agent",
+        "args": [
+          "--version"
+        ],
+        "env": {
+          "AGY_CLI_CDE_AUTH_ACTION": null,
+          "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999",
+          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+        },
+        "cwd": "<HOME>",
+        "stdin": null,
+        "timeout_ms": 4000
+      },
+      {
+        "command": "/golden/agent",
+        "args": [],
+        "env": {
+          "AGY_CLI_CDE_AUTH_ACTION": "check",
+          "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999",
+          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+        },
+        "cwd": "<HOME>",
+        "stdin": null,
+        "timeout_ms": 4000
+      },
+      {
+        "command": "/golden/agent",
+        "args": [
+          "-p",
+          "/usage",
+          "--output-format",
+          "json"
+        ],
+        "env": {
+          "AGY_CLI_CDE_AUTH_ACTION": null,
+          "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+          "GOLDEN_ENV": "value",
+          "HTTPS_PROXY": "http://127.0.0.1:9999",
+          "PATH": "/golden/bin:<DIRECT_CHAT_PATH>"
+        },
+        "cwd": "<HOME>",
+        "stdin": null,
+        "timeout_ms": 15000
+      }
+    ]
   },
   {
     "runtime": "pi",

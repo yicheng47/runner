@@ -31,6 +31,7 @@ pub enum UnavailableReason {
     KeychainUnavailable,
     ClaudeUnreachable,
     CodexNoAnswer,
+    AntigravityNoAnswer,
     InvalidResponse,
 }
 

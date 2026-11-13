@@ -951,7 +951,14 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                     "SIDEBAR_USAGE_ENTRY_claude-code",
                 ]
                 .map(|id| visual.debug_bounds(id).unwrap());
-                assert_eq!(entries[0].left() - usage.left(), px(10. * zoom + 1.));
+                assert!(
+                    (entries[0].left() - usage.left() - px(6. * zoom + 1.)).abs() <= px(0.5),
+                    "{width} {zoom}: {usage:?} {entries:?}"
+                );
+                assert!(
+                    (entries[1].left() - entries[0].right() - px(5. * zoom)).abs() <= px(0.5),
+                    "{width} {zoom}: {entries:?}"
+                );
                 for pair in entries.windows(2) {
                     assert!(
                         pair[0].right() <= pair[1].left(),
@@ -962,7 +969,7 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                     .debug_bounds("SIDEBAR_USAGE_VALUE_claude-code")
                     .unwrap();
                 assert!(
-                    last.right() <= usage.right() - px(10. * zoom),
+                    last.right() <= usage.right() - px(6. * zoom - 0.5),
                     "{width} {zoom}: {usage:?} {last:?}"
                 );
                 visual.simulate_mouse_move(usage.center(), None, gpui::Modifiers::default());
@@ -1313,8 +1320,79 @@ fn sidebar_usage_uses_weekly_windows() {
         weekly_usage_percent(Runtime::ClaudeCode, snapshot.get(Runtime::ClaudeCode)),
         Some(26.)
     );
+    let antigravity_usage = AgentUsage {
+        credits: None,
+        windows: vec![
+            UsageWindow {
+                name: "Gemini Models · 5 hours used".into(),
+                used_percent: 95.,
+                resets_at: None,
+            },
+            UsageWindow {
+                name: "Gemini Models · Week used".into(),
+                used_percent: 42.,
+                resets_at: None,
+            },
+            UsageWindow {
+                name: "Claude and GPT models · 5 hours used".into(),
+                used_percent: 18.,
+                resets_at: None,
+            },
+            UsageWindow {
+                name: "Claude and GPT models · Week used".into(),
+                used_percent: 73.,
+                resets_at: None,
+            },
+        ],
+        updated_at: chrono::Utc::now(),
+    };
+    assert_eq!(
+        weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
+        Some(73.)
+    );
+    let antigravity_five_hour_only = AgentUsage {
+        credits: None,
+        windows: vec![UsageWindow {
+            name: "Gemini Models · 5 hours used".into(),
+            used_percent: 91.,
+            resets_at: None,
+        }],
+        updated_at: chrono::Utc::now(),
+    };
+    assert_eq!(
+        weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_five_hour_only)),
+        None
+    );
+    for window_name in [
+        "5 hours",
+        "5h",
+        "300 min",
+        "Gemini Models · 5 hours used",
+        "Claude and GPT models · 5 hours used",
+    ] {
+        assert!(is_five_hour(window_name), "{window_name}");
+    }
+    for window_name in [
+        "Week",
+        "Opus · week",
+        "Gemini Models · Week used",
+        "Claude and GPT models · Week used",
+    ] {
+        assert!(!is_five_hour(window_name), "{window_name}");
+    }
     assert_eq!(weekly_usage_percent(Runtime::Codex, None), None);
     assert_eq!(unavailable_line(None, Runtime::Codex), "Checking…");
+    assert_eq!(
+        unavailable_line(Some(UnavailableReason::SignIn), Runtime::Antigravity),
+        "Sign in to Antigravity CLI to see usage"
+    );
+    assert_eq!(
+        unavailable_line(
+            Some(UnavailableReason::AntigravityNoAnswer),
+            Runtime::Antigravity
+        ),
+        "Antigravity CLI didn't answer."
+    );
     #[cfg(debug_assertions)]
     crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
         assert_eq!(
@@ -1325,10 +1403,22 @@ fn sidebar_usage_uses_weekly_windows() {
             weekly_usage_percent(Runtime::Codex, snapshot.get(Runtime::ClaudeCode)),
             Some(26.)
         );
+        assert_eq!(
+            weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
+            Some(73.)
+        );
         assert_eq!(usage_window_name("Week"), "本周");
         assert_eq!(usage_window_name("5 hours"), "5 小时");
         assert_eq!(usage_window_name("Opus · week"), "Opus · 本周");
         assert_eq!(usage_window_name("60 min"), "60 分钟");
+        assert_eq!(
+            usage_window_name("Gemini Models · Week used"),
+            "Gemini 模型 · 本周已用"
+        );
+        assert_eq!(
+            usage_window_name("Claude and GPT models · 5 hours used"),
+            "Claude 和 GPT 模型 · 5 小时已用"
+        );
         assert_eq!(
             usage_window_name("Custom model · custom window"),
             "Custom model · custom window"
@@ -1342,7 +1432,7 @@ fn usage_runtimes_are_installed_enabled_and_usage_capable_in_runtime_order() {
     // An installed, enabled runtime shows without ever having run a session.
     assert_eq!(
         visible_usage_runtimes(&all, &all),
-        [Runtime::Codex, Runtime::ClaudeCode]
+        [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity]
     );
     assert_eq!(
         visible_usage_runtimes(&[Runtime::ClaudeCode], &all),
@@ -1351,7 +1441,7 @@ fn usage_runtimes_are_installed_enabled_and_usage_capable_in_runtime_order() {
     // Uninstalled and disabled runtimes do not.
     assert_eq!(
         visible_usage_runtimes(&[Runtime::Codex, Runtime::Antigravity], &all),
-        [Runtime::Codex]
+        [Runtime::Codex, Runtime::Antigravity]
     );
     assert_eq!(
         visible_usage_runtimes(&all, &[Runtime::ClaudeCode, Runtime::Codex]),
@@ -1370,10 +1460,10 @@ fn usage_runtimes_are_installed_enabled_and_usage_capable_in_runtime_order() {
 
 #[test]
 fn usage_popover_keeps_provider_order_for_installed_and_enabled_subsets() {
-    let order = [Runtime::ClaudeCode, Runtime::Codex];
+    let order = [Runtime::ClaudeCode, Runtime::Codex, Runtime::Antigravity];
     assert_eq!(usage_popover_runtimes(&Runtime::ALL, &Runtime::ALL), order);
-    for installed_mask in 0..4 {
-        for enabled_mask in 0..4 {
+    for installed_mask in 0..8 {
+        for enabled_mask in 0..8 {
             let subset = |mask| {
                 order
                     .into_iter()
@@ -1685,6 +1775,236 @@ fn shared_credit_row_is_codex_only_and_survives_empty_filtered_windows() {
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes() {
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{size, TestAppContext, VisualTestContext};
+
+    let _theme = ThemeGuard::new();
+    theme::set_active_variant(theme::ThemeVariant::Carbon);
+
+    let snapshot_with =
+        |codex_pct: f64, claude_pct: f64, gemini_pct: f64, cg_pct: f64| UsageSnapshot {
+            runtimes: [
+                (
+                    Runtime::Codex,
+                    runner_core::protocol::usage::RuntimeUsage {
+                        value: Some(AgentUsage {
+                            credits: None,
+                            windows: vec![UsageWindow {
+                                name: "Week".into(),
+                                used_percent: codex_pct,
+                                resets_at: None,
+                            }],
+                            updated_at: chrono::Utc::now(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    Runtime::ClaudeCode,
+                    runner_core::protocol::usage::RuntimeUsage {
+                        value: Some(AgentUsage {
+                            credits: None,
+                            windows: vec![UsageWindow {
+                                name: "Week".into(),
+                                used_percent: claude_pct,
+                                resets_at: None,
+                            }],
+                            updated_at: chrono::Utc::now(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    Runtime::Antigravity,
+                    runner_core::protocol::usage::RuntimeUsage {
+                        value: Some(AgentUsage {
+                            credits: None,
+                            windows: vec![
+                                UsageWindow {
+                                    name: "Gemini Models · Week used".into(),
+                                    used_percent: gemini_pct,
+                                    resets_at: None,
+                                },
+                                UsageWindow {
+                                    name: "Claude and GPT models · Week used".into(),
+                                    used_percent: cg_pct,
+                                    resets_at: None,
+                                },
+                            ],
+                            updated_at: chrono::Utc::now(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+    for zoom in [1., 1.5] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        store.update(&mut cx, |store, _| {
+            store.settings.sidebar_width = app_settings::SIDEBAR_DEFAULT;
+            store.settings.app_zoom = zoom;
+            store.usage = snapshot_with(24., 65., 41., 73.);
+        });
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "sidebar-footer-three".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
+            root
+        });
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1200.), px(900.)));
+        visual.run_until_parked();
+
+        // Moderate 2-digit values fit all 3 runtimes on 240 px sidebar without overflow.
+        for selector in [
+            "SIDEBAR_USAGE_ENTRY_codex",
+            "SIDEBAR_USAGE_ENTRY_claude-code",
+            "SIDEBAR_USAGE_ENTRY_antigravity",
+        ] {
+            assert!(
+                visual.debug_bounds(selector).is_some(),
+                "{zoom}: {selector}"
+            );
+        }
+        assert!(visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").is_none());
+        let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+        let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+        assert!((gear.left() - host_btn.right() - px(8. * zoom)).abs() <= px(0.5));
+        assert!(usage.right() <= host_btn.left() - px(8. * zoom - 1.));
+
+        // Narrow 200 px sidebar collapses lowest usage percentages first and preserves highest.
+        store.update(&mut visual, |store, cx| {
+            store.settings.sidebar_width = app_settings::SIDEBAR_MIN;
+            store.usage = snapshot_with(64., 22., 40., 91.);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").is_some());
+        assert!(visual
+            .debug_bounds("SIDEBAR_USAGE_ENTRY_antigravity")
+            .is_some());
+        assert!(visual
+            .debug_bounds("SIDEBAR_USAGE_ENTRY_claude-code")
+            .is_none());
+        let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+        let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        assert!(usage.right() <= host_btn.left() - px(8. * zoom - 1.));
+
+        // Three 100% badges on default 240 px sidebar deterministically collapse with +N overflow.
+        store.update(&mut visual, |store, cx| {
+            store.settings.sidebar_width = app_settings::SIDEBAR_DEFAULT;
+            store.usage = snapshot_with(100., 100., 100., 100.);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").is_some());
+        assert!(visual.debug_bounds("SIDEBAR_USAGE_ENTRY_codex").is_some());
+        assert!(visual
+            .debug_bounds("SIDEBAR_USAGE_ENTRY_antigravity")
+            .is_none());
+        let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
+        let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+        assert!(usage.right() <= host_btn.left() - px(8. * zoom - 1.));
+    }
+}
+
+#[test]
+fn antigravity_usage_section_renders_grouped_pools_filters_five_hour_and_shows_calm_signed_out() {
+    use gpui::{size, TestAppContext, VisualTestContext};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let now = chrono::Utc::now();
+    let all_windows = vec![
+        UsageWindow {
+            name: "Gemini Models · 5 hours used".into(),
+            used_percent: 82.,
+            resets_at: Some(now + chrono::TimeDelta::hours(2)),
+        },
+        UsageWindow {
+            name: "Gemini Models · Week used".into(),
+            used_percent: 41.,
+            resets_at: Some(now + chrono::TimeDelta::days(3)),
+        },
+        UsageWindow {
+            name: "Claude and GPT models · 5 hours used".into(),
+            used_percent: 20.,
+            resets_at: Some(now + chrono::TimeDelta::hours(3)),
+        },
+        UsageWindow {
+            name: "Claude and GPT models · Week used".into(),
+            used_percent: 65.,
+            resets_at: Some(now + chrono::TimeDelta::days(5)),
+        },
+    ];
+    let weekly_only: Vec<_> = all_windows
+        .iter()
+        .filter(|window| !is_five_hour(&window.name))
+        .cloned()
+        .collect();
+    assert_eq!(weekly_only.len(), 2);
+
+    for variant in [
+        theme::ThemeVariant::Carbon,
+        theme::ThemeVariant::RunnerLight,
+    ] {
+        theme::set_active_variant(variant);
+        for zoom in [1., 1.5] {
+            let measure = |usage: Option<AgentUsage>, error: Option<UnavailableReason>| {
+                let mut cx = TestAppContext::single();
+                let host = cx.add_window(move |_, _| CreditSectionProbe {
+                    runtime: Runtime::Antigravity,
+                    usage,
+                    error,
+                    zoom,
+                });
+                let mut visual = VisualTestContext::from_window(host.into(), &cx);
+                visual.simulate_resize(size(px(800.), px(600.)));
+                visual.run_until_parked();
+                let bounds = visual.debug_bounds("USAGE_SECTION_antigravity").unwrap();
+                assert!(bounds.size.width <= px(340. * zoom + 1.));
+                bounds
+            };
+            let full = measure(
+                Some(AgentUsage {
+                    credits: None,
+                    windows: all_windows.clone(),
+                    updated_at: now,
+                }),
+                None,
+            );
+            let weekly = measure(
+                Some(AgentUsage {
+                    credits: None,
+                    windows: weekly_only.clone(),
+                    updated_at: now,
+                }),
+                None,
+            );
+            let signed_out = measure(None, Some(UnavailableReason::SignIn));
+            assert!(weekly.size.height > px(0.));
+            assert!(weekly.size.height < full.size.height);
+            assert!(signed_out.size.height > px(0.));
+            assert!(signed_out.size.height < weekly.size.height);
         }
     }
 }

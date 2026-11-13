@@ -376,7 +376,7 @@ impl UsageAlerts {
             return Vec::new();
         }
         let mut notifications = Vec::new();
-        for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+        for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity] {
             if !settings.model_runtimes().contains(&runtime) {
                 continue;
             }

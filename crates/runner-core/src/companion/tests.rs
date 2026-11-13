@@ -1133,6 +1133,7 @@ fn usage_conversions_preserve_values_and_known_errors() {
         UsageUnavailableReason::KeychainUnavailable,
         UsageUnavailableReason::ClaudeUnreachable,
         UsageUnavailableReason::CodexNoAnswer,
+        UsageUnavailableReason::AntigravityNoAnswer,
         UsageUnavailableReason::InvalidResponse,
     ] {
         let internal: crate::protocol::usage::UnavailableReason = reason.clone().into();

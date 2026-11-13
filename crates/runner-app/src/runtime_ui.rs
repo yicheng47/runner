@@ -14,6 +14,7 @@ pub(crate) struct RuntimeUi {
     pub usage_checking_spinner: &'static str,
     pub usage_week: &'static str,
     pub usage_invalid: &'static str,
+    pub usage_groups: bool,
     pub usage_order: u8,
 }
 
@@ -54,7 +55,7 @@ pub(crate) fn runtime_ui(runtime: Runtime) -> RuntimeUi {
         icon: "message-square.svg", tint: theme::text(), skills_caption: crate::i18n::text(READ_ONLY_CAPTION),
         skill_toggle_hint: crate::i18n::text("ui.applies_to_every_new_claude_code_session_inside_runner_or_not_writes_only_skilloverrides_i"),
         usage_title: "Codex", usage_refresh_spinner: "usage-codex-refreshing", usage_checking_spinner: "usage-codex-checking",
-        usage_week: "Week", usage_invalid: crate::i18n::text("ui.couldn_t_reach_anthropic"), usage_order: u8::MAX,
+        usage_week: "Week", usage_invalid: crate::i18n::text("ui.couldn_t_reach_anthropic"), usage_groups: false, usage_order: u8::MAX,
     };
     match runtime {
         Runtime::ClaudeCode => {
@@ -76,6 +77,13 @@ pub(crate) fn runtime_ui(runtime: Runtime) -> RuntimeUi {
         Runtime::Antigravity => {
             ui.icon = "antigravity-icon.png";
             ui.skills_caption = crate::i18n::text(ANTIGRAVITY_CAPTION);
+            ui.usage_title = "Antigravity CLI";
+            ui.usage_refresh_spinner = "usage-antigravity-refreshing";
+            ui.usage_checking_spinner = "usage-antigravity-checking";
+            ui.usage_week = "Gemini Models · Week used";
+            ui.usage_invalid = crate::i18n::text("ui.antigravity_cli_returned_invalid_usage_data");
+            ui.usage_groups = true;
+            ui.usage_order = 2;
         }
         Runtime::Pi => {
             ui.icon = "pi.svg";
