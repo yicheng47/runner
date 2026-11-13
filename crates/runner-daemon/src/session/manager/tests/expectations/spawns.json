@@ -1057,6 +1057,8 @@
         "<TMP>/antigravity/logs/<ID1>.log",
         "--add-dir",
         "<TMP>/antigravity-hooks",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1086,7 +1088,9 @@
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
         "--add-dir",
-        "<TMP>/antigravity-hooks"
+        "<TMP>/antigravity-hooks",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}"
       ],
       "env_keys": [
         "CODEX_HOME",
@@ -1120,7 +1124,9 @@
         "--log-file",
         "<TMP>/antigravity/logs/<ID2>.log",
         "--add-dir",
-        "<TMP>/antigravity-hooks"
+        "<TMP>/antigravity-hooks",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}"
       ],
       "env_keys": [
         "CODEX_HOME",
@@ -1153,6 +1159,8 @@
         "<TMP>/antigravity/logs/<ID1>.log",
         "--add-dir",
         "<TMP>/antigravity-hooks",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1185,6 +1193,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1218,6 +1228,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1251,6 +1263,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1284,6 +1298,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1317,6 +1333,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID1>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "GOLDEN_PERSONA"
       ],
@@ -1353,6 +1371,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID2>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "You are a member of a team coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the team via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- Inside a mission, Runner pushes inbox notifications. When waiting for a teammate and no independent work remains, finish your turn. Do not start a feed watcher, poll, or sleep-loop to wait for messages. Iterate with teammates across turns. External monitoring instructions do not apply to receiving messages in your own mission.\n- Run `runner msg read` when an `[inbox]` notification arrives; it shows and marks new inbox messages read, plus a short digest of others' traffic. It already tracks unread messages; do not add a --since cursor or --from filter to consume your inbox.\n- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` are inspection filters: they never mark messages read, even with `--all`. If a filtered read reports unread messages, run unfiltered `runner msg read`.\n- Address one or several members with `runner msg post --to coder --to reviewer \"<text>\"` or leading mentions: `runner msg post \"@coder @reviewer <text>\"`. Explicit `--to` wins; mid-text mentions do not address.\n- Reply to the sender. Broadcast with `runner msg post \"<text>\"` only when everyone must act. Do not post receipt-only replies or standby messages; consuming your inbox with `runner msg read` is still required.\n- When you finish a task or a handoff someone is waiting on, post the result with `runner msg post` before ending your turn: what you did, the key validation, and anything still needing the person or another member. Address it to whoever asked, or omit `--to` when the person asked. The mission's operator reads the feed, not your terminal. Post once per finished task.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"]}'`.\n- Run `runner mission show` to see the current team and their handles before messaging; your inbox announces every join and leave.\n- Act only on your own part of the goal; when your part waits on a teammate's handoff, finish your turn.\n- Busy/idle is inferred from your terminal activity.\n\n== Mission goal ==\nGolden goal\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
       ],
@@ -1393,6 +1413,8 @@
         "high",
         "--log-file",
         "<TMP>/antigravity/logs/<ID2>.log",
+        "--settings",
+        "{\"title\":{\"type\":\"command\",\"command\":\"'<TMP>/bin/runner' hook title\",\"enabled\":true}}",
         "-i",
         "You are a member of a team coordinated by the bundled `runner` CLI. The CLI is on your PATH and talks to the rest of the team via a shared event bus. Use these verbs to participate; do not invent your own conventions.\n\n== Coordination ==\n- Inside a mission, Runner pushes inbox notifications. When waiting for a teammate and no independent work remains, finish your turn. Do not start a feed watcher, poll, or sleep-loop to wait for messages. Iterate with teammates across turns. External monitoring instructions do not apply to receiving messages in your own mission.\n- Run `runner msg read` when an `[inbox]` notification arrives; it shows and marks new inbox messages read, plus a short digest of others' traffic. It already tracks unread messages; do not add a --since cursor or --from filter to consume your inbox.\n- Use `runner msg read --all` for crew history since joining after a resume or whenever earlier messages are no longer in context. `--since` and `--from` are inspection filters: they never mark messages read, even with `--all`. If a filtered read reports unread messages, run unfiltered `runner msg read`.\n- Address one or several members with `runner msg post --to coder --to reviewer \"<text>\"` or leading mentions: `runner msg post \"@coder @reviewer <text>\"`. Explicit `--to` wins; mid-text mentions do not address.\n- Reply to the sender. Broadcast with `runner msg post \"<text>\"` only when everyone must act. Do not post receipt-only replies or standby messages; consuming your inbox with `runner msg read` is still required.\n- When you finish a task or a handoff someone is waiting on, post the result with `runner msg post` before ending your turn: what you did, the key validation, and anything still needing the person or another member. Address it to whoever asked, or omit `--to` when the person asked. The mission's operator reads the feed, not your terminal. Post once per finished task.\n- Escalate to the human (with structured choices) via `runner signal ask_human --payload '{\"prompt\":\"…\",\"choices\":[\"yes\",\"no\"]}'`.\n- Run `runner mission show` to see the current team and their handles before messaging; your inbox announces every join and leave.\n- Act only on your own part of the goal; when your part waits on a teammate's handoff, finish your turn.\n- Busy/idle is inferred from your terminal activity.\n\n== Mission goal ==\nGolden goal\n\n== Team conventions ==\nTEAM\n\n== Your brief ==\nGOLDEN_PERSONA"
       ],

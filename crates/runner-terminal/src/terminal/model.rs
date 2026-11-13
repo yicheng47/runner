@@ -58,7 +58,7 @@ pub struct TerminalModel {
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
     scheme: Arc<SchemeState>,
-    events: Sender<Event>,
+    events: Sender<ProxyEvent>,
     input_tracker: Mutex<InputTracker>,
     publish_order: Mutex<()>,
     initial_observation: InputObservation,
@@ -106,7 +106,7 @@ impl TerminalModel {
     }
     pub fn stop_workers(&self) -> Vec<thread::JoinHandle<()>> {
         self.stopped.store(true, Ordering::Release);
-        let _ = self.events.send(Event::Wakeup);
+        let _ = self.events.send(ProxyEvent::Terminal(Event::Wakeup));
         let _ = self.sync_flush.send(());
         self.take_workers()
     }
@@ -178,6 +178,30 @@ impl TerminalModel {
                     if events_stopped.load(Ordering::Acquire) {
                         break;
                     }
+                    let event = match event {
+                        ProxyEvent::SyncSessionTitle {
+                            initial_title,
+                            apply,
+                        } => {
+                            *title.lock().unwrap() = initial_title;
+                            apply();
+                            continue;
+                        }
+                        ProxyEvent::ApplySessionTitle {
+                            title: next_title,
+                            persist,
+                        } => {
+                            let cache_changed = *title.lock().unwrap() != next_title;
+                            if let Some(after_cache_update) = persist(&next_title, cache_changed) {
+                                if cache_changed {
+                                    *title.lock().unwrap() = next_title;
+                                }
+                                after_cache_update();
+                            }
+                            continue;
+                        }
+                        ProxyEvent::Terminal(event) => event,
+                    };
                     match event {
                         Event::PtyWrite(text) if text == SCHEME_PROBE_UNSUPPORTED => {
                             let state = if scheme.subscribed.load(Ordering::Relaxed) {
@@ -360,14 +384,16 @@ impl TerminalModel {
                     self.scheme.subscribed.store(false, Ordering::Relaxed)
                 }
                 Some(SchemeSequence::Query) => {
-                    let _ = self.events.send(Event::PtyWrite(scheme_report(
-                        self.palette.lock().unwrap().theme,
-                    )));
-                }
-                None => {
                     let _ = self
                         .events
-                        .send(Event::PtyWrite(crate::program_status::PROBE_REPLY.into()));
+                        .send(ProxyEvent::Terminal(Event::PtyWrite(scheme_report(
+                            self.palette.lock().unwrap().theme,
+                        ))));
+                }
+                None => {
+                    let _ = self.events.send(ProxyEvent::Terminal(Event::PtyWrite(
+                        crate::program_status::PROBE_REPLY.into(),
+                    )));
                 }
             }
         }
@@ -502,6 +528,69 @@ impl TerminalModel {
     pub fn title(&self) -> String {
         self.title.lock().unwrap().clone()
     }
+    pub fn sync_session_title(&self, initial_title: String, apply: impl FnOnce() + Send + 'static) {
+        if self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        let observation = {
+            let mut sequence = self.sequence.lock().unwrap();
+            let mut parser = self.parser.lock().unwrap();
+            let mut tracker = self.input_tracker.lock().unwrap();
+            let mut term = self.term.lock();
+            let now = Instant::now();
+            let previous_mode = *term.mode();
+            let held_sync = parser.processor.sync_timeout().sync_timeout().is_some();
+            if held_sync {
+                parser.processor.stop_sync(&mut *term);
+                parser.boundary.end_sync();
+            }
+            parser.flush_scheduled = false;
+            let preceding = parser.processor.preceding_char();
+            parser.processor.restore_preceding_char(preceding);
+            parser.boundary = Default::default();
+            parser.burst = Default::default();
+            while !term.snapshot_state().title_stack.is_empty() {
+                Handler::pop_title(&mut *term);
+            }
+            let _ = self.events.send(ProxyEvent::SyncSessionTitle {
+                initial_title,
+                apply: Box::new(apply),
+            });
+            held_sync
+                .then(|| {
+                    let seq = sequence.last;
+                    observe_parsed(
+                        &mut sequence,
+                        &mut tracker,
+                        &mut term,
+                        previous_mode,
+                        seq,
+                        now,
+                    )
+                })
+                .flatten()
+        };
+        if let Some(reports) = &self.cwd_reports {
+            reports.lock().unwrap().carry.clear();
+        }
+        self.scheme.tail.lock().unwrap().clear();
+        self.publish_input(observation);
+    }
+    pub fn apply_session_title(
+        &self,
+        title: String,
+        persist: impl FnOnce(&str, bool) -> Option<Box<dyn FnOnce() + Send>> + Send + 'static,
+    ) -> bool {
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        self.events
+            .send(ProxyEvent::ApplySessionTitle {
+                title,
+                persist: Box::new(persist),
+            })
+            .is_ok()
+    }
     pub fn live_cwd(&self) -> Option<PathBuf> {
         self.live_cwd.lock().unwrap().clone()
     }
@@ -514,7 +603,11 @@ impl TerminalModel {
         *current = PaletteState::new(palette);
         drop(current);
         if flipped && self.scheme.subscribed.load(Ordering::Relaxed) {
-            let _ = self.events.send(Event::PtyWrite(scheme_report(palette)));
+            let _ = self
+                .events
+                .send(ProxyEvent::Terminal(Event::PtyWrite(scheme_report(
+                    palette,
+                ))));
         }
     }
     pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape) {
@@ -597,10 +690,12 @@ impl TerminalModel {
     pub fn flush_events(&self) {
         let (tx, rx) = mpsc::channel();
         self.events
-            .send(Event::TextAreaSizeRequest(Arc::new(move |_| {
-                let _ = tx.send(());
-                String::new()
-            })))
+            .send(ProxyEvent::Terminal(Event::TextAreaSizeRequest(Arc::new(
+                move |_| {
+                    let _ = tx.send(());
+                    String::new()
+                },
+            ))))
             .unwrap();
         rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     }
@@ -659,6 +754,204 @@ mod delivery_tests {
         assert!(model.stop_workers().is_empty());
         assert!(model.feed_output(2, b"\x1b]10;?\x1b\\").is_none());
         assert!(model.write_input(b"late input").is_err());
+    }
+
+    #[test]
+    fn sync_session_title_orders_queued_titles_across_generations_and_resets_cache() {
+        struct GenerationHost {
+            generation: Arc<Mutex<String>>,
+            persisted: Mutex<Vec<(String, String)>>,
+            first_entered: Sender<()>,
+            release_first: Mutex<Option<mpsc::Receiver<()>>>,
+        }
+        impl TerminalHost for GenerationHost {
+            fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn report_input_state(&self, _: &str, _: InputObservation) {}
+            fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+                let first = self.release_first.lock().unwrap().take();
+                if let Some(release) = first {
+                    let _ = self.first_entered.send(());
+                    release.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                let generation = self.generation.lock().unwrap().clone();
+                self.persisted
+                    .lock()
+                    .unwrap()
+                    .push((generation, title.to_owned()));
+                Ok(())
+            }
+            fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+                Ok(())
+            }
+            fn is_local_host(&self, _: &str) -> bool {
+                true
+            }
+            fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+        }
+
+        let generation = Arc::new(Mutex::new("gen-1".to_owned()));
+        let (first_entered, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let host = Arc::new(GenerationHost {
+            generation: Arc::clone(&generation),
+            persisted: Mutex::default(),
+            first_entered,
+            release_first: Mutex::new(Some(release_rx)),
+        });
+        let model = TerminalModel::new(
+            host.clone(),
+            "rebind".into(),
+            80,
+            4,
+            ModelOptions {
+                agent: true,
+                ..ModelOptions::default()
+            },
+        )
+        .unwrap();
+
+        // Hold the worker inside the first title callback, then queue a late pre-resume
+        // title, the rebind fence (clearing cached title for fresh fallback), and an
+        // identical post-resume title before releasing the worker.
+        model.feed_output(1, b"\x1b]2;First Run\x07");
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        model.feed_output(2, b"\x1b]2;Same Topic\x07");
+        let rebind_gen = Arc::clone(&generation);
+        model.sync_session_title(String::new(), move || {
+            *rebind_gen.lock().unwrap() = "gen-2".to_owned();
+        });
+        model.feed_output(3, b"\x1b]2;Same Topic\x07");
+        release_tx.send(()).unwrap();
+        model.flush_events();
+
+        assert_eq!(
+            *host.persisted.lock().unwrap(),
+            vec![
+                ("gen-1".to_owned(), "First Run".to_owned()),
+                ("gen-1".to_owned(), "Same Topic".to_owned()),
+                ("gen-2".to_owned(), "Same Topic".to_owned()),
+            ]
+        );
+        let workers = model.stop_workers();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn sync_session_title_drains_unfinished_synchronized_updates_and_partial_osc_before_rebind() {
+        struct RecordingHost {
+            generation: Arc<Mutex<&'static str>>,
+            emitted: Mutex<Vec<(&'static str, String)>>,
+        }
+        impl TerminalHost for RecordingHost {
+            fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn report_input_state(&self, _: &str, _: InputObservation) {}
+            fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+                self.emitted
+                    .lock()
+                    .unwrap()
+                    .push((*self.generation.lock().unwrap(), title.to_owned()));
+                Ok(())
+            }
+            fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+                Ok(())
+            }
+            fn is_local_host(&self, _: &str) -> bool {
+                true
+            }
+            fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+        }
+
+        let generation = Arc::new(Mutex::new("old"));
+        let host = Arc::new(RecordingHost {
+            generation: Arc::clone(&generation),
+            emitted: Mutex::default(),
+        });
+        let model = TerminalModel::new(
+            host.clone(),
+            "sync-rebind".into(),
+            80,
+            4,
+            ModelOptions {
+                agent: true,
+                ..ModelOptions::default()
+            },
+        )
+        .unwrap();
+
+        // 1. Unfinished ESC[?2026h block followed by rebind and later ESC[?2026l.
+        model.feed_output(1, b"\x1b[?2026h\x1b]2;Old buffered title\x07");
+        let (bound_tx, bound_rx) = mpsc::channel();
+        let gen_for_rebind = Arc::clone(&generation);
+        model.sync_session_title(String::new(), move || {
+            *gen_for_rebind.lock().unwrap() = "new";
+            bound_tx.send(()).unwrap();
+        });
+        bound_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        model.feed_output(2, b"\x1b[?2026l");
+        model.flush_events();
+        assert_eq!(model.title(), "");
+        assert_eq!(
+            *host.emitted.lock().unwrap(),
+            vec![("old", "Old buffered title".to_owned())]
+        );
+
+        // 2. Unfinished ESC[?2026h block racing with the sync-flush timeout worker, plus
+        // stacked title (`CSI 22;0t`) and unterminated OSC 2 bytes before rebind.
+        model.feed_output(
+            3,
+            b"\x1b]2;Stacked Old\x07\x1b[22;0t\x1b[?2026h\x1b]2;Buffered Before Timeout\x07",
+        );
+        model.feed_output(4, b"\x1b[?2026l\x1b]2;Unterminated Old ");
+        model.feed_output(5, b"\x07\x1b[?2026h\x1b]2;Held Sync Two\x07");
+        let (bound2_tx, bound2_rx) = mpsc::channel();
+        let gen_for_rebind2 = Arc::clone(&generation);
+        model.sync_session_title(String::new(), move || {
+            *gen_for_rebind2.lock().unwrap() = "gen-3";
+            bound2_tx.send(()).unwrap();
+        });
+        bound2_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Also test an unterminated OSC sequence across rebind into gen-4.
+        model.feed_output(6, b"\x1b]2;Dangling Prefix ");
+        let (bound3_tx, bound3_rx) = mpsc::channel();
+        let gen_for_rebind3 = Arc::clone(&generation);
+        model.sync_session_title(String::new(), move || {
+            *gen_for_rebind3.lock().unwrap() = "gen-4";
+            bound3_tx.send(()).unwrap();
+        });
+        bound3_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        model.feed_output(7, b"Plain Text\x07\x1b[23;0t\x1b]2;Clean Gen Four\x07");
+        model.flush_events();
+
+        let emitted = host.emitted.lock().unwrap().clone();
+        assert!(
+            !emitted.iter().any(|(generation, _)| *generation == "gen-3"),
+            "unexpected gen-3 emissions: {emitted:?}"
+        );
+        let gen4_titles: Vec<_> = emitted
+            .iter()
+            .filter(|(generation, _)| *generation == "gen-4")
+            .map(|(_, title)| title.as_str())
+            .collect();
+        assert_eq!(gen4_titles, vec!["Clean Gen Four"]);
+        assert_eq!(model.title(), "Clean Gen Four");
+
+        let workers = model.stop_workers();
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 
     #[test]

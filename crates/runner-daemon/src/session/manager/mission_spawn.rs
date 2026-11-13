@@ -428,9 +428,11 @@ impl SessionManager {
             );
         let stop = output.stop_flag();
         self.start_runtime_capture(
-            &role.runtime,
+            &role,
             &session_id,
             Some(mission.id.clone()),
+            resolved_cwd.clone(),
+            plan.assigned_key.clone(),
             &app_data_dir,
             &row_started_at,
             Arc::clone(&stop),

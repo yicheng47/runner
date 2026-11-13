@@ -79,14 +79,28 @@ impl TerminalLink {
     }
 }
 
+type PersistSessionTitle = Box<dyn FnOnce(&str, bool) -> Option<Box<dyn FnOnce() + Send>> + Send>;
+
+enum ProxyEvent {
+    Terminal(Event),
+    SyncSessionTitle {
+        initial_title: String,
+        apply: Box<dyn FnOnce() + Send>,
+    },
+    ApplySessionTitle {
+        title: String,
+        persist: PersistSessionTitle,
+    },
+}
+
 pub struct EventProxy {
-    tx: Sender<Event>,
+    tx: Sender<ProxyEvent>,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        let _ = self.tx.send(event);
+        let _ = self.tx.send(ProxyEvent::Terminal(event));
         (self.waker)();
     }
 }

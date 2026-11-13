@@ -477,3 +477,113 @@ async fn codex_session_end_rejects_stale_and_retired_launches_neutrally() {
         assert!(observed.is_empty());
     }
 }
+
+#[test]
+fn antigravity_title_hook_prints_trimmed_title_and_stays_silent_on_blank_or_invalid_stdin() {
+    let root = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    let app_data = root.path().join("Jason's 路径 app data");
+    #[cfg(windows)]
+    let app_data = root.path().join("Jason 路径 app data");
+    std::fs::create_dir_all(app_data.join("bin")).unwrap();
+    let executable = app_data
+        .join("bin")
+        .join(runner_core::cli_install::AGENT_DEST_BIN_NAME);
+    std::fs::copy(env!("CARGO_BIN_EXE_runner-agent-cli"), &executable).unwrap();
+
+    let decoy_dir = root.path().join("decoy");
+    std::fs::create_dir_all(&decoy_dir).unwrap();
+    let decoy = decoy_dir.join(runner_core::cli_install::AGENT_DEST_BIN_NAME);
+    std::fs::write(&decoy, b"not-an-executable").unwrap();
+
+    let agy_args = runner_daemon::runtimes::adapter(Runtime::Antigravity).launch_args(
+        &runner_daemon::runtimes::LaunchContext {
+            env: &Default::default(),
+            cwd: None,
+            default_model: None,
+            role_args: &[],
+            app_data_dir: &app_data,
+            session_id: "runner",
+            resuming: false,
+            mission: false,
+            model: None,
+            effort: None,
+            codex_speed: None,
+            system_prompt: None,
+            first_turn: None,
+        },
+    );
+    let settings: Value = serde_json::from_str(
+        agy_args
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .expect("Antigravity should emit --settings")[1]
+            .as_str(),
+    )
+    .unwrap();
+    let title_command = settings["title"]["command"].as_str().unwrap();
+
+    for via_shell in [false, true] {
+        for (stdin_bytes, expected_stdout) in [
+            (
+                r#"{"cwd":"/tmp","conversation_title":"  修复 Antigravity 标题  ","product":"antigravity"}"#
+                    .as_bytes(),
+                "修复 Antigravity 标题\n",
+            ),
+            (
+                br#"{"conversation_title":"ASCII title"}"#.as_slice(),
+                "ASCII title\n",
+            ),
+            (
+                br#"{"cwd":"/tmp","product":"antigravity"}"#.as_slice(),
+                "",
+            ),
+            (br#"{"conversation_title":"   \t\r\n "}"#.as_slice(), ""),
+            (br#"{"conversation_title":null}"#.as_slice(), ""),
+            (b"{malformed".as_slice(), ""),
+            (b"".as_slice(), ""),
+        ] {
+            let mut cmd = if via_shell {
+                #[cfg(unix)]
+                {
+                    let mut c = Command::new("sh");
+                    c.args(["-c", title_command]);
+                    c
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt as _;
+                    let mut c = Command::new("cmd");
+                    c.raw_arg("/c").raw_arg(title_command);
+                    c
+                }
+            } else {
+                let mut c = Command::new(&executable);
+                c.args(["hook", "title"]);
+                c
+            };
+            let mut child = cmd
+                .env(runner_core::protocol::SESSION_CLI_ENV, &decoy)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(stdin_bytes).unwrap();
+            let result = child.wait_with_output().unwrap();
+            assert!(
+                result.status.success(),
+                "via_shell={via_shell}: {result:?}"
+            );
+            assert!(
+                result.stderr.is_empty(),
+                "via_shell={via_shell}: {result:?}"
+            );
+            assert_eq!(
+                String::from_utf8(result.stdout).unwrap(),
+                expected_stdout,
+                "via_shell={via_shell}"
+            );
+        }
+    }
+}

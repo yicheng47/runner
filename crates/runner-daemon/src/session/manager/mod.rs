@@ -212,6 +212,7 @@ struct SessionState {
     output_seq: u64,
     controller: terminal::Controller,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
+    terminal_started_at: Option<terminal::TerminalStartedAt>,
     terminal_input: Option<std::sync::mpsc::Sender<Vec<u8>>>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,

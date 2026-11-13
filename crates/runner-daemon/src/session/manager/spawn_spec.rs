@@ -678,7 +678,17 @@ fn command_lines(
             };
             option = (!mission).then_some(OptionKey::Bypass);
         }
-        if arg == "--settings" {
+        if arg == "--settings" && runtime == Runtime::Antigravity {
+            if let [_, settings] = crate::runtimes::antigravity::antigravity_settings_args(
+                &[],
+                Path::new("<Runner data>"),
+            )
+            .as_slice()
+            {
+                code = format!("--settings {settings}");
+            }
+            note = Note::NamesChat;
+        } else if arg == "--settings" {
             if let Some(value) = tokens
                 .get(1)
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
@@ -880,6 +890,75 @@ mod launch_preview_tests {
                 .collect::<Vec<_>>()
                 .join(" "),
             args.join(" ")
+        );
+    }
+
+    #[test]
+    fn antigravity_preview_shows_title_hook_settings_without_disturbing_claude() {
+        use runner_core::protocol::runtime::{RuntimeCommandNote, RuntimeLaunchOption};
+
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let app_data = root.path().join("Jason's Runner Data");
+        std::fs::create_dir_all(&app_data).unwrap();
+
+        for mission in [false, true] {
+            let preview = core.sessions.command_preview(
+                Runtime::Antigravity,
+                "agy",
+                mission,
+                RuntimeLaunchOptions::default(),
+                &app_data,
+                BTreeMap::new(),
+            );
+            let settings_line = preview
+                .lines
+                .iter()
+                .find(|line| line.command.trim_start().starts_with("--settings "))
+                .expect("Antigravity preview should show --settings");
+            assert_eq!(settings_line.note, RuntimeCommandNote::NamesChat);
+            assert_eq!(settings_line.option, None);
+            assert!(!settings_line.command.contains("fullscreen"));
+            assert!(settings_line.command.contains("<Runner data>"));
+            assert!(!settings_line
+                .command
+                .contains(app_data.to_string_lossy().as_ref()));
+            let json_str = settings_line
+                .command
+                .trim_start()
+                .strip_prefix("--settings ")
+                .unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(json_str).unwrap();
+            assert_eq!(parsed["title"]["type"], "command");
+            assert_eq!(parsed["title"]["enabled"], true);
+            assert!(parsed["title"]["command"]
+                .as_str()
+                .unwrap()
+                .contains("hook title"));
+        }
+
+        let claude = core.sessions.command_preview(
+            Runtime::ClaudeCode,
+            "claude",
+            false,
+            RuntimeLaunchOptions {
+                bypass: false,
+                remote_plugin_catalog: true,
+                status_hooks: true,
+            },
+            &app_data,
+            BTreeMap::new(),
+        );
+        let claude_settings = claude
+            .lines
+            .iter()
+            .find(|line| line.command.trim_start().starts_with("--settings "))
+            .expect("Claude Code preview should show --settings");
+        assert!(claude_settings.command.contains("\"tui\":\"fullscreen\""));
+        assert_eq!(claude_settings.note, RuntimeCommandNote::StatusHooks);
+        assert_eq!(
+            claude_settings.option,
+            Some(RuntimeLaunchOption::StatusHooks)
         );
     }
 }

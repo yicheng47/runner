@@ -121,6 +121,9 @@ fn decoration(text: &str, cwd: Option<&str>) -> bool {
             | "opencode"
             | "gemini"
             | "gemini cli"
+            | "antigravity"
+            | "antigravity cli"
+            | "agy"
             | "grok"
             | "grok build"
             | "pi"
@@ -280,6 +283,35 @@ mod tests {
             provider_title("Run Shell Command Echo - GitHub Copilot", None).as_deref(),
             Some("Run Shell Command Echo")
         );
+    }
+
+    #[test]
+    fn antigravity_brand_titles_leave_only_the_conversation_topic() {
+        let cwd = Some("/repos/runner");
+        for raw in [
+            "Antigravity",
+            "antigravity",
+            "Antigravity CLI",
+            "ANTIGRAVITY CLI",
+            "agy",
+            "AGY",
+            "⠋ Antigravity CLI",
+            "Antigravity CLI - runner",
+            "agy | runner",
+        ] {
+            assert_eq!(provider_title(raw, cwd), None, "{raw}");
+        }
+        for (raw, expected) in [
+            ("Fix session title", "Fix session title"),
+            (
+                "Fix Antigravity session title",
+                "Fix Antigravity session title",
+            ),
+            ("Antigravity CLI - Fix session title", "Fix session title"),
+            ("修复会话标题 - agy", "修复会话标题"),
+        ] {
+            assert_eq!(provider_title(raw, cwd).as_deref(), Some(expected), "{raw}");
+        }
     }
 
     #[test]

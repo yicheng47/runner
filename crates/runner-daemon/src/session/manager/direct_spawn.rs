@@ -389,9 +389,11 @@ impl SessionManager {
         };
 
         self.start_runtime_capture(
-            &role.runtime,
+            &role,
             &session_id,
             None,
+            resolved_cwd.clone(),
+            plan.assigned_key.clone(),
             app_data_dir,
             &started_at,
             output.stop_flag(),
