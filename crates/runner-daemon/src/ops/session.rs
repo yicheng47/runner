@@ -1251,6 +1251,14 @@ pub fn session_stop(state: &AppCore, session_id: &str) -> Result<()> {
 }
 
 pub fn session_archive_direct(state: &AppCore, session_id: &str) -> Result<()> {
+    session_archive_direct_with_missions(state, session_id, false).map(|_| ())
+}
+
+pub fn session_archive_direct_with_missions(
+    state: &AppCore,
+    session_id: &str,
+    with_missions: bool,
+) -> Result<Vec<String>> {
     let direct = match session_get(state, session_id)? {
         Some(direct) => direct,
         None => {
@@ -1272,10 +1280,57 @@ pub fn session_archive_direct(state: &AppCore, session_id: &str) -> Result<()> {
             "session {session_id} is a terminal; terminals close rather than archive"
         )));
     }
+    let linked_missions = if with_missions {
+        let conn = state.db.get()?;
+        crate::repo::mission::list_linked(&conn, session_id)?
+    } else {
+        Vec::new()
+    };
     if direct.status == crate::model::SessionStatus::Running {
         session_kill(state, session_id)?;
+        if !state
+            .sessions
+            .live_session_ids()
+            .iter()
+            .any(|live| live == session_id)
+        {
+            let conn = state.db.get()?;
+            if crate::repo::session::get_row(&conn, session_id)?
+                .is_some_and(|row| row.status == crate::model::SessionStatus::Running)
+            {
+                crate::repo::session::set_exit_status(
+                    &conn,
+                    session_id,
+                    crate::model::SessionStatus::Stopped,
+                    chrono::Utc::now(),
+                )?;
+            }
+        }
     }
-    session_archive(state, session_id)
+    session_archive(state, session_id)?;
+    let mut archived_mission_ids = Vec::with_capacity(linked_missions.len());
+    for mission in linked_missions {
+        match crate::daemon::block_on(crate::ops::mission::mission_archive_impl(
+            state,
+            mission.id.clone(),
+        )) {
+            Ok(archived) => {
+                state.events.emit(
+                    "mission/changed",
+                    &serde_json::json!({ "mission_id": archived.id }),
+                );
+                archived_mission_ids.push(archived.id);
+            }
+            Err(error) => {
+                if !crate::ops::mission::mission_get(state, &mission.id)
+                    .is_ok_and(|row| row.archived_at.is_some())
+                {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(archived_mission_ids)
 }
 
 pub fn session_start_chat(

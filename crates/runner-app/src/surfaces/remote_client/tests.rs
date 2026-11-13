@@ -147,6 +147,11 @@ impl Fake {
                 overview.tabs.retain(|tab| tab.id != id);
                 Some(Ok(serde_json::Value::Null))
             }
+            "archive" if value["target"]["kind"] == "mission" => {
+                let id = value["target"]["id"].as_str().unwrap();
+                overview.missions.retain(|mission| mission.id != id);
+                Some(Ok(serde_json::Value::Null))
+            }
             "layout" => {
                 let id = value["target"]["id"].as_str().unwrap();
                 let Some(tab) = overview.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -8269,6 +8274,111 @@ fn remote_archive_intermediate_launcher_waits_for_collapse_without_stealing_find
             assert!(
                 fake.input.lock().unwrap().is_empty(),
                 "Find input reached the terminal"
+            );
+        }
+    }
+}
+
+#[test]
+fn remote_chat_archive_prompts_for_linked_missions_and_supports_new_and_legacy_hosts() {
+    for legacy_host in [true, false] {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+
+        let mut data = fake.overview.lock().unwrap().clone();
+        data.missions[0].linked_chat = Some(runner_core::companion::LinkedChat {
+            session_id: "s".into(),
+            title: "Remote chat".into(),
+            archived: false,
+            reports: true,
+        });
+        let mut other = data.missions[0].clone();
+        other.id = "other-mission".into();
+        other.title = "Other mission".into();
+        other.linked_chat = None;
+        data.missions.push(other);
+        fake.set_overview(data);
+        cx.run_until_parked();
+
+        let window = add_window(&mut cx, &store, temp.path(), "remote-linked-archive");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+        // Sidebar/tab archive on a remote chat with a linked mission opens Option A instead of archiving silently.
+        window
+            .update(&mut visual, |root, window, cx| {
+                window.activate_window();
+                root.request_archive_all(
+                    Some("remote-tab"),
+                    vec!["s".into()],
+                    crate::ArchiveAllSource::Sidebar,
+                    window,
+                    cx,
+                );
+                assert!(
+                    root.terminal_close_confirm.is_some(),
+                    "legacy_host={legacy_host}: linked remote chat opens confirmation"
+                );
+            })
+            .unwrap();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert!(visual
+            .debug_bounds("CONFIRM_LINKED_MISSION remote-mission")
+            .is_some());
+        assert!(visual
+            .debug_bounds("CONFIRM_LINKED_MISSION other-mission")
+            .is_none());
+
+        // Escape cancels with zero archive requests.
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("archive"), 0);
+
+        if !legacy_host {
+            fake.queue_result(
+                "archive",
+                Ok(serde_json::json!({"archivedMissions": ["remote-mission"]})),
+            );
+        }
+
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.request_archive_all(
+                    Some("remote-tab"),
+                    vec!["s".into()],
+                    crate::ArchiveAllSource::Sidebar,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+
+        let archives = action_trace(&fake, "archive");
+        assert_eq!(archives[0]["target"]["kind"], "session");
+        assert_eq!(archives[0]["target"]["id"], "s");
+        assert_eq!(archives[0]["withMissions"], true);
+        if legacy_host {
+            assert_eq!(
+                archives.len(),
+                2,
+                "legacy host returning null triggers explicit mission archive fallback"
+            );
+            assert_eq!(archives[1]["target"]["kind"], "mission");
+            assert_eq!(archives[1]["target"]["id"], "remote-mission");
+            assert!(archives[1].get("withMissions").is_none());
+        } else {
+            assert_eq!(
+                archives.len(),
+                1,
+                "withMissions-aware host archives chat and linked missions in one request"
             );
         }
     }

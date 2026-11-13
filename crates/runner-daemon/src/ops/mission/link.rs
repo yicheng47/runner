@@ -686,4 +686,84 @@ mod tests {
             .collect();
         assert_eq!(ids, [first.id.as_str(), second.id.as_str()]);
     }
+
+    #[test]
+    fn archiving_the_chat_with_missions_archives_only_its_unarchived_linked_missions() {
+        let f = fixture();
+        f.session("chat", "codex", None);
+        f.session("other", "codex", None);
+        let running = f.start(Some("chat"), None, false);
+        let settled_stopped = f.start(Some("chat"), None, false);
+        crate::daemon::block_on(crate::ops::mission::mission_stop_impl(
+            &f.core,
+            settled_stopped.id.clone(),
+        ))
+        .unwrap();
+        let already_archived = f.start(Some("chat"), None, false);
+        f.stop_mission(&already_archived.id);
+        let other_mission = f.start(Some("other"), None, false);
+
+        // Attach a drawer shell to the running linked mission to verify mission_archive_impl teardown.
+        f.session("drawer-shell", "shell", None);
+        let running_node = node_of(&f, &running.id);
+        crate::ops::node::node_mission_layout_set(
+            &f.core,
+            &running_node.id,
+            r#"{"drawer":{"shells":["drawer-shell"]}}"#.into(),
+        )
+        .unwrap();
+
+        let mut events = f.core.events.subscribe();
+        let archived_ids =
+            crate::ops::session::session_archive_direct_with_missions(&f.core, "chat", true)
+                .unwrap();
+
+        assert_eq!(
+            archived_ids,
+            vec![running.id.clone(), settled_stopped.id.clone()]
+        );
+        assert!(
+            crate::ops::session::session_get(&f.core, "chat")
+                .unwrap()
+                .unwrap()
+                .archived_at
+                .is_some(),
+            "chat itself is stopped and archived"
+        );
+        for id in [&running.id, &settled_stopped.id, &already_archived.id] {
+            let mission = f.get(id);
+            assert!(mission.archived_at.is_some(), "{id} should be archived");
+            let linked = mission.linked_chat.expect("linked_session_id stays intact");
+            assert_eq!(linked.session_id, "chat");
+            assert!(linked.archived);
+        }
+        assert!(
+            repo::session::get_row(&f.core.db.get().unwrap(), "drawer-shell")
+                .unwrap()
+                .is_none(),
+            "mission drawer shell is permanently closed during mission_archive_impl teardown"
+        );
+        assert!(
+            f.get(&other_mission.id).archived_at.is_none(),
+            "another chat's linked mission stays unarchived"
+        );
+        assert!(published(&mut events).contains(&"mission/changed"));
+    }
+
+    #[test]
+    fn archiving_the_chat_without_with_missions_leaves_linked_missions_unarchived() {
+        let f = fixture();
+        f.session("chat", "codex", None);
+        let linked = f.start(Some("chat"), None, false);
+
+        let archived_ids =
+            crate::ops::session::session_archive_direct_with_missions(&f.core, "chat", false)
+                .unwrap();
+
+        assert!(archived_ids.is_empty());
+        let mission = f.get(&linked.id);
+        assert!(mission.archived_at.is_none());
+        assert_eq!(linked_to(&mission), Some("chat"));
+        assert!(mission.linked_chat.unwrap().archived);
+    }
 }

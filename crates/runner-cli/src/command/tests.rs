@@ -1751,6 +1751,11 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
             json!({"session_id": SESSION_ID}),
         ),
         (
+            vec!["session", "archive", "--with-missions", "01S"],
+            vec!["session_list", "session_archive"],
+            json!({"session_id": SESSION_ID, "with_missions": true}),
+        ),
+        (
             vec!["session", "resume", "01S"],
             vec!["session_list", "session_resume"],
             json!({"session_id": SESSION_ID}),
@@ -1910,6 +1915,7 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
         "session_get_with_status",
         "session_stop",
         "session_archive_direct",
+        "session_archive_direct_with_missions",
         "session_start_chat",
         "session_resume",
         "session_restart",
@@ -1968,6 +1974,7 @@ fn every_command_leaf_parses_without_a_socket() {
         &["session", "show", "01S"],
         &["session", "stop", "01S"],
         &["session", "archive", "01S"],
+        &["session", "archive", "--with-missions", "01S"],
         &["session", "resume", "01S"],
         &["session", "restart", "01S"],
         &["msg", "post", "hello", "--mission", "01M"],

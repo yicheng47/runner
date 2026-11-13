@@ -314,6 +314,13 @@ impl NativeRoot {
             return;
         }
         if self.remote_client.is_active() {
+            let session_ids = self
+                .remote_client
+                .archive_targets(vec![session_id.to_owned()]);
+            if session_ids.len() > 1 {
+                self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
+                return;
+            }
             if let Some(layout) = self.front_page_layout() {
                 let target = archive_chat_pane_target(layout, pane_id, session_id);
                 TerminalCloseConfirm::open(&mut self.terminal_close_confirm, target, window, cx);
@@ -541,13 +548,8 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let has_linked_missions = !self.linked_missions_for_chats(&session_ids, cx).is_empty();
         if self.remote_client.is_active() {
-            if let Some(tab) = tab_id {
-                self.select_remote_item(
-                    crate::surfaces::remote_client::RemoteItem::Tab(tab.into()),
-                    cx,
-                );
-            }
             let terminals = session_ids
                 .iter()
                 .filter(|id| {
@@ -555,19 +557,26 @@ impl NativeRoot {
                         .is_some_and(|session| session.agent_runtime == "shell")
                 })
                 .count();
-            let Some(confirmation_body) = super::super::sidebar::archive_confirmation_counts(
+            let confirmation_body = super::super::sidebar::archive_confirmation_counts(
                 session_ids.len() - terminals,
                 terminals,
-            ) else {
+            );
+            if confirmation_body.is_none() && !has_linked_missions {
                 self.remote_archive_sessions(session_ids, cx);
                 return;
-            };
+            }
+            if let Some(tab) = tab_id {
+                self.select_remote_item(
+                    crate::surfaces::remote_client::RemoteItem::Tab(tab.into()),
+                    cx,
+                );
+            }
             TerminalCloseConfirm::open(
                 &mut self.terminal_close_confirm,
                 TerminalCloseTarget::ArchiveAll {
                     session_ids,
                     source,
-                    confirmation_body,
+                    confirmation_body: confirmation_body.unwrap_or_else(|| "".into()),
                 },
                 window,
                 cx,
@@ -576,13 +585,14 @@ impl NativeRoot {
             return;
         }
 
-        let Some(confirmation_body) = super::super::sidebar::archive_all_confirmation_body(
+        let confirmation_body = super::super::sidebar::archive_all_confirmation_body(
             &session_ids,
             &self.app_store.read(cx).sessions,
-        ) else {
+        );
+        if confirmation_body.is_none() && !has_linked_missions {
             self.archive_all_sessions(session_ids, source, window, cx);
             return;
-        };
+        }
         if let Some(tab_id) = tab_id {
             self.tabs.activate(tab_id);
             self.set_route(AppRoute::Chat, cx);
@@ -595,7 +605,7 @@ impl NativeRoot {
             TerminalCloseTarget::ArchiveAll {
                 session_ids,
                 source,
-                confirmation_body,
+                confirmation_body: confirmation_body.unwrap_or_else(|| "".into()),
             },
             window,
             cx,

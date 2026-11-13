@@ -459,7 +459,12 @@ pub(super) enum SessionCommand {
     /// Stop a session and leave it resumable.
     Stop { session: String },
     /// Stop and archive a direct chat.
-    Archive { session: String },
+    Archive {
+        session: String,
+        /// Stop and archive unarchived missions linked to this chat too.
+        #[arg(long)]
+        with_missions: bool,
+    },
     /// Resume a stopped session.
     Resume { session: String },
     /// Restart a mission session with a fresh conversation.

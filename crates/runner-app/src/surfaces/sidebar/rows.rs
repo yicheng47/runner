@@ -35,7 +35,7 @@ impl Sidebar {
         cx.notify();
     }
 
-    pub(super) fn set_mission_archiving(
+    pub(crate) fn set_mission_archiving(
         &mut self,
         mission_id: String,
         archiving: bool,

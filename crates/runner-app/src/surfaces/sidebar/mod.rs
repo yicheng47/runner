@@ -25,6 +25,7 @@ use elements::sidebar_tab_target;
 
 pub(crate) use archive::{
     archive_all_confirmation_body, archive_confirmation_counts, archive_targets_for_chats,
+    LinkedMissionArchiveItem, LinkedMissionIdleState,
 };
 pub(crate) use elements::{
     default_session_label, direct_chat_display_status, project_children, session_label,

@@ -2479,3 +2479,256 @@ fn a_pinned_groups_chevron_clears_the_pin_and_its_line_follows_the_drawn_mark() 
     assert!(field.contains(&group_state(&mut f).center()));
     assert!(toggle.left() >= field.left() && toggle.right() <= mark.left());
 }
+
+#[test]
+fn archiving_a_linked_chat_prompts_cancels_and_archives_missions_while_unlinked_stays_instant() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let mut f = RootFixture::new(&mut cx, temp.path(), &["chat"]);
+
+    // Unlinked single-chat sidebar archive stays immediate with no confirmation dialog.
+    let unlinked_core = f
+        .store
+        .read_with(&f.visual, |store, _| store.test_core.clone());
+    let unlinked_tab = {
+        let conn = unlinked_core.db.get().unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (id, status, agent_runtime, agent_command, title, started_at)
+             VALUES ('unlinked', 'stopped', 'codex', 'codex', 'Unlinked', '2026-11-03T00:01:00Z')",
+        )
+        .unwrap();
+        let layout = PaneLayout::single(Some("unlinked"), &["unlinked".to_owned()]);
+        runner_daemon::repo::node::create_tab(
+            &conn,
+            None,
+            "Unlinked",
+            10,
+            &layout.serialize().unwrap(),
+        )
+        .unwrap()
+        .id
+    };
+    f.store.update(&mut f.visual, |store, cx| {
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    f.window
+        .update(&mut f.visual, |root, _, cx| {
+            root.reload_tabs(cx).unwrap();
+        })
+        .unwrap();
+    f.visual.run_until_parked();
+
+    f.window
+        .update(&mut f.visual, |root, window, cx| {
+            root.request_archive_all(
+                Some(&unlinked_tab),
+                vec!["unlinked".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            assert!(
+                root.terminal_close_confirm.is_none(),
+                "unlinked chat without shells archives immediately"
+            );
+        })
+        .unwrap();
+    f.visual.run_until_parked();
+    assert!(
+        runner_daemon::ops::session::session_get(&unlinked_core, "unlinked")
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_some(),
+        "unlinked chat was archived directly"
+    );
+
+    // Link m1 and m2 to `chat`; leave m3 unlinked.
+    f.link("m1", "chat");
+    f.link("m2", "chat");
+    let tab = f.tab.clone();
+
+    // Sidebar ArchiveTab on the linked group must open Option A's ConfirmDialog instead of archiving.
+    f.window
+        .update(&mut f.visual, |root, window, cx| {
+            root.request_archive_all(
+                Some(&tab),
+                vec!["chat".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            assert!(
+                root.terminal_close_confirm.is_some(),
+                "linked chat opens confirmation"
+            );
+        })
+        .unwrap();
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+    assert!(f
+        .visual
+        .debug_bounds("CONFIRM_DIALOG_LINKED_MISSIONS")
+        .is_some());
+    assert!(f.visual.debug_bounds("CONFIRM_LINKED_MISSION m1").is_some());
+    assert!(f.visual.debug_bounds("CONFIRM_LINKED_MISSION m2").is_some());
+    assert!(f.visual.debug_bounds("CONFIRM_LINKED_MISSION m3").is_none());
+
+    // Cancel via Escape keeps chat, m1, and m2 unarchived and grouped.
+    f.visual.simulate_keystrokes("escape");
+    f.visual.run_until_parked();
+    f.window
+        .read_with(&f.visual, |root, _| {
+            assert!(root.terminal_close_confirm.is_none());
+        })
+        .unwrap();
+    assert!(
+        runner_daemon::ops::session::session_get(&unlinked_core, "chat")
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_none()
+    );
+    assert_eq!(f.groups().missions(&tab).len(), 2);
+
+    // Stopped chat card path (`archive_chat_sessions`) also gates behind Option A.
+    unlinked_core
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = 'chat'",
+            [],
+        )
+        .unwrap();
+    f.store.update(&mut f.visual, |store, cx| {
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    f.visual.run_until_parked();
+
+    f.window
+        .update(&mut f.visual, |root, window, cx| {
+            root.open_mission("m1".into(), window, cx);
+            assert_eq!(root.route, crate::AppRoute::Mission("m1".into()));
+            root.archive_chat_sessions(vec!["chat".into()], window, cx);
+            assert!(
+                root.terminal_close_confirm.is_some(),
+                "StoppedChatCard archive_chat_sessions prompts when linked missions exist"
+            );
+            root.confirm_terminal_close(window, cx);
+        })
+        .unwrap();
+    f.visual.run_until_parked();
+
+    assert!(
+        runner_daemon::ops::session::session_get(&unlinked_core, "chat")
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_some()
+    );
+    for id in ["m1", "m2"] {
+        let mission = runner_daemon::ops::mission::mission_get(&unlinked_core, id).unwrap();
+        assert!(mission.archived_at.is_some(), "{id} should be archived");
+        assert_eq!(
+            mission.linked_chat.as_ref().map(|c| c.session_id.as_str()),
+            Some("chat"),
+            "{id} retains linked_session_id"
+        );
+    }
+    assert!(
+        runner_daemon::ops::mission::mission_get(&unlinked_core, "m3")
+            .unwrap()
+            .archived_at
+            .is_none(),
+        "unlinked mission m3 stays untouched"
+    );
+    f.window
+        .read_with(&f.visual, |root, _| {
+            assert_eq!(
+                root.route,
+                crate::AppRoute::Chat,
+                "archiving an open linked mission leaves AppRoute::Mission cleanly"
+            );
+        })
+        .unwrap();
+}
+
+#[test]
+fn split_tab_single_pane_close_scopes_linked_missions_to_that_pane() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let mut f = RootFixture::new(&mut cx, temp.path(), &["chat-a", "chat-b"]);
+    f.link("m1", "chat-a");
+    f.link("m2", "chat-b");
+    let core = f
+        .store
+        .read_with(&f.visual, |store, _| store.test_core.clone());
+    let tab = f.tab.clone();
+
+    let pane_a = f
+        .window
+        .update(&mut f.visual, |root, window, cx| {
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate(&tab);
+            root.route = crate::AppRoute::Chat;
+            let pane_a = root
+                .tabs
+                .active()
+                .unwrap()
+                .root
+                .leaves()
+                .into_iter()
+                .find(|leaf| leaf.session_id.as_deref() == Some("chat-a"))
+                .unwrap()
+                .id
+                .clone();
+            root.request_close_chat_pane(&pane_a, "chat-a", window, cx);
+            assert!(root.terminal_close_confirm.is_some());
+            pane_a
+        })
+        .unwrap();
+    let _ = pane_a;
+    f.visual.update(|window, _| window.refresh());
+    f.visual.run_until_parked();
+
+    assert!(f.visual.debug_bounds("CONFIRM_LINKED_MISSION m1").is_some());
+    assert!(
+        f.visual.debug_bounds("CONFIRM_LINKED_MISSION m2").is_none(),
+        "sibling pane's linked mission is excluded from single-pane close prompt"
+    );
+
+    f.window
+        .update(&mut f.visual, |root, window, cx| {
+            root.confirm_terminal_close(window, cx);
+        })
+        .unwrap();
+    f.visual.run_until_parked();
+
+    assert!(runner_daemon::ops::session::session_get(&core, "chat-a")
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_some());
+    assert!(runner_daemon::ops::mission::mission_get(&core, "m1")
+        .unwrap()
+        .archived_at
+        .is_some());
+    assert!(
+        runner_daemon::ops::session::session_get(&core, "chat-b")
+            .unwrap()
+            .unwrap()
+            .archived_at
+            .is_none(),
+        "chat-b stays open in the surviving pane"
+    );
+    assert!(
+        runner_daemon::ops::mission::mission_get(&core, "m2")
+            .unwrap()
+            .archived_at
+            .is_none(),
+        "chat-b's linked mission m2 stays unarchived"
+    );
+}

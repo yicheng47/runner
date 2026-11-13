@@ -1175,3 +1175,55 @@ fn update_recovery_wire_preserves_versions_and_startup_errors() {
     .unwrap();
     assert!(old.startup_error.is_none());
 }
+
+#[test]
+fn archive_action_wire_keeps_default_shape_and_accepts_optional_with_missions() {
+    let default_req = ActionRequest::Archive {
+        id: 7,
+        target: ActionTarget {
+            kind: ActionKind::Session,
+            id: "chat-1".into(),
+        },
+        with_missions: false,
+    };
+    let default_json = serde_json::to_value(&default_req).unwrap();
+    assert!(
+        default_json.get("withMissions").is_none(),
+        "default archive wire shape omits withMissions for older hosts"
+    );
+    assert_eq!(
+        ClientMessage::decode(&serde_json::to_vec(&default_json).unwrap()).unwrap(),
+        ClientMessage::Action(Box::new(default_req))
+    );
+
+    let with_missions_req = ActionRequest::Archive {
+        id: 8,
+        target: ActionTarget {
+            kind: ActionKind::Session,
+            id: "chat-1".into(),
+        },
+        with_missions: true,
+    };
+    let with_missions_json = serde_json::to_value(&with_missions_req).unwrap();
+    assert_eq!(with_missions_json["withMissions"], true);
+    assert_eq!(
+        ClientMessage::decode(&serde_json::to_vec(&with_missions_json).unwrap()).unwrap(),
+        ClientMessage::Action(Box::new(with_missions_req))
+    );
+
+    let bad = ClientMessage::decode(
+        &serde_json::to_vec(&json!({
+            "type": "archive",
+            "id": 9,
+            "target": { "kind": "session", "id": "chat-1" },
+            "withMissions": "yes"
+        }))
+        .unwrap(),
+    )
+    .unwrap_err();
+    assert!(
+        bad.message.contains("field withMissions must be a boolean"),
+        "{}",
+        bad.message
+    );
+}

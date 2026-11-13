@@ -477,6 +477,7 @@ cli_cases! {
     session_show => vec!["session", "show", SESSION],
     session_stop => vec!["session", "stop", SESSION],
     session_archive => vec!["session", "archive", SESSION],
+    session_archive_with_missions => vec!["session", "archive", "--with-missions", SESSION],
     session_resume => vec!["session", "resume", SESSION],
     session_restart => vec!["session", "restart", SESSION],
     msg_post => vec!["msg", "post", "Hello", "--mission", MISSION, "--to", "reviewer"],
@@ -867,7 +868,10 @@ fn render_case(case: &Case) -> String {
         && (case.args.starts_with(&["mission", "unlink"])
             || case
                 .args
-                .starts_with(&["mission", "show", "mission-running"]))
+                .starts_with(&["mission", "show", "mission-running"])
+            || case
+                .args
+                .starts_with(&["session", "archive", "--with-missions"]))
     {
         let pool = runner_daemon::db::open_fixture_pool(&fixture.data.join("runner.db")).unwrap();
         let conn = pool.get().unwrap();
@@ -1290,4 +1294,33 @@ fn session_show_text_and_json_keep_launch_values_after_role_edit() {
             .unwrap()
             .contains("SECRET_878_SENTINEL"));
     }
+}
+
+#[test]
+fn session_archive_with_missions_succeeds_with_empty_list_when_no_unarchived_linked_missions_exist()
+{
+    let mut fixture = Fixture::new();
+    {
+        let pool = runner_daemon::db::open_fixture_pool(&fixture.data.join("runner.db")).unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "UPDATE missions SET linked_session_id = ?1, archived_at = ?2 WHERE id = 'mission-running'",
+            [SESSION, STAMP],
+        )
+        .unwrap();
+    }
+    fixture.start();
+    let output = fixture
+        .command(false)
+        .args(["session", "archive", "--with-missions", SESSION, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["session_id"], SESSION);
+    assert_eq!(json["archived_mission_ids"], serde_json::json!([]));
 }

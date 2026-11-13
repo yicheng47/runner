@@ -705,6 +705,23 @@ fn render_confirmation(action: &str, value: &Value) -> Vec<String> {
     let ids = ids(value);
     if ids.is_empty() {
         vec![action.to_owned()]
+    } else if let Some(archived_missions) = value
+        .get("archived_mission_ids")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .filter(|items| !items.is_empty())
+    {
+        let noun = if archived_missions.len() == 1 {
+            "linked mission"
+        } else {
+            "linked missions"
+        };
+        vec![format!(
+            "{action} {} and {} {noun} ({})",
+            ids.join(", "),
+            archived_missions.len(),
+            archived_missions.join(", ")
+        )]
     } else {
         vec![format!("{action} {}", ids.join(", "))]
     }
@@ -1378,6 +1395,35 @@ mod tests {
         assert!(rendered[1].contains("one two"));
         assert!(rendered[1].contains('…'));
         assert!(rendered[1].ends_with('-'));
+    }
+
+    #[test]
+    fn session_archive_confirmation_lists_archived_linked_missions_when_present() {
+        assert_eq!(
+            render_confirmation("Archived session", &json!({"session_id": "01S"})),
+            vec!["Archived session 01S"]
+        );
+        assert_eq!(
+            render_confirmation(
+                "Archived session",
+                &json!({"session_id": "01S", "archived_mission_ids": []})
+            ),
+            vec!["Archived session 01S"]
+        );
+        assert_eq!(
+            render_confirmation(
+                "Archived session",
+                &json!({"session_id": "01S", "archived_mission_ids": ["01M1"]})
+            ),
+            vec!["Archived session 01S and 1 linked mission (01M1)"]
+        );
+        assert_eq!(
+            render_confirmation(
+                "Archived session",
+                &json!({"session_id": "01S", "archived_mission_ids": ["01M1", "01M2"]})
+            ),
+            vec!["Archived session 01S and 2 linked missions (01M1, 01M2)"]
+        );
     }
 }
 

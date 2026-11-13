@@ -35,6 +35,7 @@ pub(crate) struct ShellStart {
 
 pub(crate) struct ArchiveCompletion {
     pub(crate) removed: Vec<String>,
+    pub(crate) archived_missions: Vec<String>,
     pub(crate) error: Option<String>,
     pub(crate) completion: Completion,
 }
@@ -225,16 +226,25 @@ impl WorkspaceAction {
                 .iter()
                 .filter_map(|id| {
                     root.front_page_session(id, cx).map(|session| {
-                        (
-                            id.clone(),
-                            if session.agent_runtime == "shell" {
-                                ArchiveSessionOperation::CloseTerminal
+                        let operation = if session.agent_runtime == "shell" {
+                            ArchiveSessionOperation::CloseTerminal
+                        } else {
+                            let running = session.status == SessionStatus::Running;
+                            let linked_missions = root
+                                .linked_missions_for_chats(std::slice::from_ref(id), cx)
+                                .into_iter()
+                                .map(|mission| mission.id)
+                                .collect::<Vec<_>>();
+                            if linked_missions.is_empty() {
+                                ArchiveSessionOperation::ArchiveChat { running }
                             } else {
-                                ArchiveSessionOperation::ArchiveChat {
-                                    running: session.status == SessionStatus::Running,
+                                ArchiveSessionOperation::ArchiveChatWithMissions {
+                                    running,
+                                    linked_missions,
                                 }
-                            },
-                        )
+                            }
+                        };
+                        (id.clone(), operation)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -283,7 +293,7 @@ impl WorkspaceAction {
             }
         }
         let operation = move || {
-            let (removed, error) = client.archive_sessions(plan);
+            let (removed, archived_missions, error) = client.archive_sessions(plan);
             if remote_target {
                 if let Some(error) = &error {
                     return Err(error.clone());
@@ -304,6 +314,7 @@ impl WorkspaceAction {
             }
             Ok(ArchiveCompletion {
                 removed,
+                archived_missions,
                 error,
                 completion: Completion {
                     layouts: completed,

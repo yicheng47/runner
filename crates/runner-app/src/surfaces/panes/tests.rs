@@ -3251,6 +3251,151 @@ fn archive_chat_confirm_body_warns_only_while_the_agent_runs() {
 }
 
 #[test]
+fn option_a_linked_mission_confirm_copy_covers_settled_running_and_split_tab_states_in_both_locales(
+) {
+    use super::{single_chat_with_missions_confirm_copy, tab_with_missions_confirm_copy};
+    use crate::i18n::{testing::with_locale, Locale};
+    use crate::surfaces::sidebar::{LinkedMissionArchiveItem, LinkedMissionIdleState};
+
+    let item =
+        |id: &str, running: bool, idle_state: LinkedMissionIdleState| LinkedMissionArchiveItem {
+            id: id.into(),
+            title: format!("{id} title"),
+            running,
+            idle_state,
+        };
+
+    with_locale(Locale::English, || {
+        let single_settled = single_chat_with_missions_confirm_copy(
+            "Release coordinator",
+            false,
+            &[item("m1", false, LinkedMissionIdleState::Settled)],
+        );
+        assert_eq!(single_settled.title, "Archive chat and mission?");
+        assert_eq!(
+            single_settled.body,
+            "Archiving Release coordinator also archives its linked mission."
+        );
+        assert_eq!(
+            single_settled.detail.as_deref(),
+            Some("You can restore both from Settings → Archived.")
+        );
+        assert_eq!(single_settled.confirm_label, "Archive chat & mission");
+        assert_eq!(single_settled.icon, "archive.svg");
+
+        let two_settled = single_chat_with_missions_confirm_copy(
+            "Release coordinator",
+            false,
+            &[
+                item("m1", false, LinkedMissionIdleState::Settled),
+                item("m2", false, LinkedMissionIdleState::Ended),
+            ],
+        );
+        assert_eq!(two_settled.title, "Archive chat and 2 missions?");
+        assert_eq!(
+            two_settled.body,
+            "Archiving Release coordinator also archives its linked missions."
+        );
+        assert_eq!(
+            two_settled.detail.as_deref(),
+            Some("You can restore chats and missions from Settings → Archived.")
+        );
+        assert_eq!(two_settled.confirm_label, "Archive chat & 2 missions");
+
+        let both_running = single_chat_with_missions_confirm_copy(
+            "Release coordinator",
+            true,
+            &[
+                item("m1", true, LinkedMissionIdleState::Settled),
+                item("m2", false, LinkedMissionIdleState::Settled),
+            ],
+        );
+        assert_eq!(both_running.title, "Archive chat and 2 missions?");
+        assert_eq!(
+            both_running.body,
+            "Release coordinator and 1 linked mission are still running. Archiving stops them first."
+        );
+        assert_eq!(both_running.confirm_label, "Stop & archive all");
+
+        let mission_only_running = single_chat_with_missions_confirm_copy(
+            "Release coordinator",
+            false,
+            &[item("m1", true, LinkedMissionIdleState::Settled)],
+        );
+        assert_eq!(
+            mission_only_running.body,
+            "1 linked mission is still running. Archiving Release coordinator stops it first and archives both."
+        );
+        assert_eq!(mission_only_running.confirm_label, "Stop & archive all");
+
+        let split_with_shell = tab_with_missions_confirm_copy(
+            2,
+            1,
+            0,
+            &[
+                item("m1", false, LinkedMissionIdleState::Settled),
+                item("m2", false, LinkedMissionIdleState::Ended),
+            ],
+        );
+        assert_eq!(split_with_shell.title, "Archive tab?");
+        assert_eq!(
+            split_with_shell.body,
+            "This archives 2 chats and 2 linked missions, and permanently closes 1 terminal."
+        );
+        assert_eq!(
+            split_with_shell.detail.as_deref(),
+            Some("Archived chats and missions can be restored from Settings → Archived; closed terminals cannot.")
+        );
+        assert_eq!(split_with_shell.confirm_label, "Archive tab");
+        assert_eq!(split_with_shell.icon, "trash.svg");
+
+        let split_running_no_shell = tab_with_missions_confirm_copy(
+            2,
+            0,
+            1,
+            &[item("m1", true, LinkedMissionIdleState::Settled)],
+        );
+        assert_eq!(
+            split_running_no_shell.body,
+            "This archives 2 chats and 1 linked mission. Running chats and linked missions are stopped first."
+        );
+        assert_eq!(
+            split_running_no_shell.detail.as_deref(),
+            Some("You can restore chats and missions from Settings → Archived.")
+        );
+        assert_eq!(split_running_no_shell.icon, "archive.svg");
+    });
+
+    with_locale(Locale::SimplifiedChinese, || {
+        let single_settled = single_chat_with_missions_confirm_copy(
+            "@coder",
+            false,
+            &[item("m1", false, LinkedMissionIdleState::Settled)],
+        );
+        assert_eq!(single_settled.title, "归档对话和任务？");
+        assert_eq!(single_settled.body, "归档 @coder 会同时归档其关联任务。");
+        assert_eq!(
+            single_settled.detail.as_deref(),
+            Some("可在“设置 → 已归档”中恢复这两项。")
+        );
+        assert_eq!(single_settled.confirm_label, "归档对话和任务");
+
+        let split_running = tab_with_missions_confirm_copy(
+            2,
+            0,
+            1,
+            &[item("m1", true, LinkedMissionIdleState::Settled)],
+        );
+        assert_eq!(split_running.title, "归档标签页？");
+        assert_eq!(
+            split_running.body,
+            "此操作会归档 2 个对话和 1 个关联任务。运行中的对话和关联任务会先停止。"
+        );
+        assert_eq!(split_running.confirm_label, "归档标签页");
+    });
+}
+
+#[test]
 fn start_surface_badges_follow_default_rebound_and_unbound_bindings() {
     let mut overrides = keymap::KeymapOverrides::new();
     for (binding, mac, windows) in [
