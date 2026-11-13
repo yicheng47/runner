@@ -66,6 +66,8 @@ pub const FEATURES: &[&str] = &[
     "startMission",
     "stopMission",
     "resumeMission",
+    "linkMission",
+    "unlinkMission",
     "attach",
     "input",
     "takeControl",

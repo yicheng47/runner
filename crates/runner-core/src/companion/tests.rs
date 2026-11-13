@@ -49,6 +49,8 @@ const CLIENT_FIXTURES: &[&str] = &[
     "start_mission",
     "stop_mission",
     "resume_mission",
+    "link_mission",
+    "unlink_mission",
     "overview_request",
     "feed_request",
     "follow",
@@ -1227,4 +1229,49 @@ fn archive_action_wire_keeps_default_shape_and_accepts_optional_with_missions() 
         "{}",
         bad.message
     );
+}
+
+#[test]
+fn mission_link_actions_validate_fields_and_preserve_id_mapping() {
+    assert!(ActionRequest::NAMES.contains(&"linkMission"));
+    assert!(ActionRequest::NAMES.contains(&"unlinkMission"));
+    for name in ["link_mission", "unlink_mission"] {
+        let body = fixture(name);
+        let message = ClientMessage::decode(&serde_json::to_vec(&body).unwrap()).unwrap();
+        let ClientMessage::Action(mut action) = message else {
+            panic!("{name}")
+        };
+        assert_eq!(action.id(), 42);
+        action.set_id(99);
+        assert_eq!(action.id(), 99);
+        assert!(!format!("{action:?}").contains("mission-a"));
+        for field in body
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "id" | "type"))
+        {
+            let mut invalid = body.clone();
+            invalid[field] = json!({"private-body-canary": true});
+            let error = ClientMessage::decode(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest, "{name}.{field}");
+            assert_eq!(
+                error.message,
+                format!(
+                    "{}: field {field} must be a string.",
+                    body["type"].as_str().unwrap()
+                )
+            );
+            assert!(!error.message.contains("private-body-canary"));
+
+            let mut missing = body.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            let error = ClientMessage::decode(&serde_json::to_vec(&missing).unwrap()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest, "{name}.{field}");
+            assert_eq!(
+                error.message,
+                format!("{}: missing field {field}.", body["type"].as_str().unwrap())
+            );
+        }
+    }
 }

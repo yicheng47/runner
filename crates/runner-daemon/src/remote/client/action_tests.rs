@@ -1702,3 +1702,174 @@ async fn remote_launch_refusal_keeps_the_typed_runtime_version_gate() {
         .unwrap_err();
     assert_eq!(error.version_gate.unwrap().min_version, "0.149.0");
 }
+
+#[tokio::test]
+async fn remote_mission_link_and_unlink_apply_host_rules_and_update_the_overview() {
+    let host = Host::new().await;
+    let mut events = host.core.events.subscribe();
+    let project = host
+        .ok(json!({"type":"createProject","name":"Other","path":host.path()}))
+        .await["project"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let chat = host.start().await;
+    host.wait_live(&chat).await;
+    let second_chat = host.start().await;
+    host.wait_live(&second_chat).await;
+    let archived_chat = host.start().await;
+    host.ok(json!({"type":"stop","session":archived_chat}))
+        .await;
+    host.ok(json!({"type":"archive","target":{"kind":"session","id":archived_chat}}))
+        .await;
+    let shell = host
+        .ok(json!({"type":"startShell","cwd":host.path(),"cols":80,"rows":24}))
+        .await["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other_project_chat = host
+        .ok(json!({
+            "type":"startChat",
+            "runtime":"codex",
+            "project":project,
+            "cwd":host.path(),
+            "cols":80,
+            "rows":24
+        }))
+        .await["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let tab = ulid::Ulid::new().to_string();
+    host.layout(&tab, Some(&chat), None).await;
+    let second_tab = ulid::Ulid::new().to_string();
+    host.layout(&second_tab, Some(&second_chat), None).await;
+
+    let mission = host
+        .ok(json!({
+            "type":"startMission",
+            "crew":"crew",
+            "title":"Linkable mission",
+            "cwd":host.path(),
+            "cols":80,
+            "rows":24
+        }))
+        .await["mission"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let overview = host.fixture.client.overview("2".into()).await.unwrap();
+    let member_session = overview.missions[0].members[0].session.clone();
+    assert_eq!(overview.missions[0].linked_chat, None);
+
+    // Drain prior events before checking link/unlink emissions.
+    while events.try_recv().is_ok() {}
+
+    let link_reply = tokio::time::timeout(
+        Duration::from_secs(5),
+        host.fixture.client.request(
+            "2".into(),
+            c::ClientMessage::decode(
+                &serde_json::to_vec(&json!({
+                    "type":"linkMission",
+                    "id":1,
+                    "mission":mission,
+                    "session":chat
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(link_reply.features.iter().any(|f| f == "linkMission"));
+    assert!(link_reply.features.iter().any(|f| f == "unlinkMission"));
+    assert_eq!(link_reply.result, Value::Null);
+
+    let mut saw_mission_changed = false;
+    while let Ok(event) = events.try_recv() {
+        if event.name == "mission/changed" {
+            saw_mission_changed = true;
+        }
+    }
+    assert!(saw_mission_changed, "linkMission must emit mission/changed");
+
+    let overview = host.fixture.client.overview("2".into()).await.unwrap();
+    assert_eq!(
+        overview.missions[0].linked_chat,
+        Some(c::LinkedChat {
+            session_id: chat.clone(),
+            title: overview.sessions[&chat].title.clone(),
+            archived: false,
+            reports: true,
+        })
+    );
+
+    // Move link to a second direct agent chat in the same scope.
+    assert_eq!(
+        host.ok(json!({"type":"linkMission","mission":mission,"session":second_chat}))
+            .await,
+        Value::Null
+    );
+    let overview = host.fixture.client.overview("2".into()).await.unwrap();
+    assert_eq!(
+        overview.missions[0]
+            .linked_chat
+            .as_ref()
+            .map(|c| c.session_id.as_str()),
+        Some(second_chat.as_str())
+    );
+
+    // Reject non-linkable targets without changing the existing link.
+    for target in [
+        archived_chat.as_str(),
+        shell.as_str(),
+        member_session.as_str(),
+        other_project_chat.as_str(),
+        "missing-chat-canary",
+    ] {
+        let error = host
+            .request(json!({"type":"linkMission","mission":mission,"session":target}))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error, "The remote computer refused the request.",
+            "{target}"
+        );
+        assert!(!error.contains("missing-chat-canary"));
+        let stored = crate::ops::mission::get(&host.core.db.get().unwrap(), &mission).unwrap();
+        assert_eq!(
+            stored.linked_chat.map(|c| c.session_id),
+            Some(second_chat.clone()),
+            "{target}"
+        );
+    }
+
+    // Unlink clears the link and keeps the mission unarchived.
+    while events.try_recv().is_ok() {}
+    assert_eq!(
+        host.ok(json!({"type":"unlinkMission","mission":mission}))
+            .await,
+        Value::Null
+    );
+    let mut saw_unlink_changed = false;
+    while let Ok(event) = events.try_recv() {
+        if event.name == "mission/changed" {
+            saw_unlink_changed = true;
+        }
+    }
+    assert!(
+        saw_unlink_changed,
+        "unlinkMission must emit mission/changed"
+    );
+    let overview = host.fixture.client.overview("2".into()).await.unwrap();
+    assert_eq!(overview.missions.len(), 1);
+    assert_eq!(overview.missions[0].linked_chat, None);
+
+    let stored = crate::ops::mission::get(&host.core.db.get().unwrap(), &mission).unwrap();
+    assert!(stored.archived_at.is_none());
+    assert_eq!(stored.linked_chat, None);
+}

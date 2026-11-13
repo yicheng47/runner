@@ -763,27 +763,41 @@ impl FrontPageClient {
         &self,
         mission: String,
         session: String,
-    ) -> ClientResult<runner_core::protocol::model::Mission> {
-        if self.is_remote() {
-            return Err(ClientError::msg("Linking is available on the host."));
+    ) -> ClientResult<Option<runner_core::protocol::model::Mission>> {
+        if !self.is_remote() {
+            return self
+                .daemon
+                .mission_link(runner_core::protocol::MissionLinkInput {
+                    mission_id: mission,
+                    session_id: session,
+                    no_report: false,
+                    caller_session_id: None,
+                })
+                .map(Some);
         }
-        self.daemon
-            .mission_link(runner_core::protocol::MissionLinkInput {
-                mission_id: mission,
-                session_id: session,
-                no_report: false,
-                caller_session_id: None,
-            })
+        self.action::<()>(
+            "linkMission",
+            ActionRequest::LinkMission {
+                id: 0,
+                mission,
+                session,
+            },
+        )
+        .map(|()| None)
     }
 
     pub(crate) fn unlink_mission(
         &self,
         mission: String,
-    ) -> ClientResult<runner_core::protocol::model::Mission> {
-        if self.is_remote() {
-            return Err(ClientError::msg("Linking is available on the host."));
+    ) -> ClientResult<Option<runner_core::protocol::model::Mission>> {
+        if !self.is_remote() {
+            return self.daemon.mission_unlink(&mission).map(Some);
         }
-        self.daemon.mission_unlink(&mission)
+        self.action::<()>(
+            "unlinkMission",
+            ActionRequest::UnlinkMission { id: 0, mission },
+        )
+        .map(|()| None)
     }
 
     pub(crate) fn archive_mission_state(

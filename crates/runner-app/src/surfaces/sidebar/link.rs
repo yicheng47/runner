@@ -320,6 +320,20 @@ pub(super) struct LinkDrop {
     pub(super) chats: Vec<(String, String)>,
 }
 
+fn collect_pane_sessions(pane: &runner_core::companion::Pane, out: &mut Vec<String>) {
+    match pane {
+        runner_core::companion::Pane::Leaf {
+            session: Some(session),
+        } => out.push(session.clone()),
+        runner_core::companion::Pane::Leaf { session: None }
+        | runner_core::companion::Pane::Unknown(_) => {}
+        runner_core::companion::Pane::Split { a, b, .. } => {
+            collect_pane_sessions(a, out);
+            collect_pane_sessions(b, out);
+        }
+    }
+}
+
 impl super::Sidebar {
     /// The agent chats a mission in `project_id` can link to: unarchived direct
     /// chats in the same project, or in none. `only` narrows them to a tab's.
@@ -329,6 +343,48 @@ impl super::Sidebar {
         only: Option<&[String]>,
         cx: &gpui::App,
     ) -> Vec<ChatChoice> {
+        if self.front_page.is_remote() {
+            let Some(overview) = self.remote_overview(cx) else {
+                return Vec::new();
+            };
+            let mut missions = HashMap::<&str, usize>::new();
+            for mission in &overview.missions {
+                if let Some(chat) = &mission.linked_chat {
+                    *missions.entry(chat.session_id.as_str()).or_default() += 1;
+                }
+            }
+            let mut session_ids = Vec::new();
+            for tab in &overview.tabs {
+                if tab.project.as_deref() == project_id {
+                    collect_pane_sessions(&tab.panes, &mut session_ids);
+                }
+            }
+            let mut seen = std::collections::HashSet::new();
+            return session_ids
+                .into_iter()
+                .filter(|session_id| {
+                    seen.insert(session_id.clone())
+                        && only.is_none_or(|only| only.contains(session_id))
+                })
+                .filter_map(|session_id| {
+                    let session = overview.sessions.get(&session_id)?;
+                    if session.kind != runner_core::companion::SessionKind::Chat {
+                        return None;
+                    }
+                    let display = SessionDisplay::remote(&session_id, session, false, false, false);
+                    Some(ChatChoice {
+                        title: display.label(self.live_title(&session_id, cx).as_deref()),
+                        runtime: session.runtime.clone().unwrap_or_default(),
+                        active_at: None,
+                        missions: missions
+                            .get(session_id.as_str())
+                            .copied()
+                            .unwrap_or_default(),
+                        session_id,
+                    })
+                })
+                .collect();
+        }
         let store = self.app_store.read(cx);
         let mut missions = HashMap::<&str, usize>::new();
         for summary in &store.missions {
@@ -375,27 +431,42 @@ impl super::Sidebar {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        let Some(mission) = self
-            .app_store
-            .read(cx)
-            .missions
-            .iter()
-            .find(|summary| summary.mission.id == mission_id)
-            .map(|summary| summary.mission.clone())
-        else {
+        let mission_info = if self.front_page.is_remote() {
+            self.remote_overview(cx).and_then(|overview| {
+                let mission = overview.missions.into_iter().find(|m| m.id == mission_id)?;
+                Some((
+                    mission.project,
+                    mission.linked_chat.map(|chat| chat.session_id),
+                ))
+            })
+        } else {
+            self.app_store
+                .read(cx)
+                .missions
+                .iter()
+                .find(|summary| summary.mission.id == mission_id)
+                .map(|summary| {
+                    (
+                        summary.mission.project_id.clone(),
+                        summary
+                            .mission
+                            .linked_chat
+                            .as_ref()
+                            .map(|chat| chat.session_id.clone()),
+                    )
+                })
+        };
+        let Some((project_id, linked_session_id)) = mission_info else {
             return;
         };
-        let chats = self.chat_choices(mission.project_id.as_deref(), only.as_deref(), cx);
-        let scope = mission
-            .project_id
-            .as_ref()
+        let chats = self.chat_choices(project_id.as_deref(), only.as_deref(), cx);
+        let scope = project_id
+            .as_deref()
             .and_then(|id| {
-                self.app_store
-                    .read(cx)
-                    .projects
-                    .iter()
-                    .find(|project| &project.id == id)
-                    .map(|project| project.name.clone())
+                self.source_projects(cx)
+                    .into_iter()
+                    .find(|project| project.id == id)
+                    .map(|project| project.name)
             })
             .unwrap_or_else(|| crate::i18n::text("ui.recents_scope").to_owned());
         let (anchor, beside) = match anchor {
@@ -430,12 +501,47 @@ impl super::Sidebar {
                 beside,
                 on_back,
                 scope,
-                mission.linked_chat.map(|chat| chat.session_id),
+                linked_session_id,
                 chats,
                 std::rc::Rc::new(move |session, window, cx| {
                     pick_root.update(cx, |this, cx| {
                         this.close_link_picker(cx);
                         this.close_context_menu(window, cx);
+                        if this.front_page.is_remote() {
+                            if let Some(shell) = this.shell.upgrade() {
+                                let pending = pending.clone();
+                                let pick_mission = pick_mission.clone();
+                                shell.update(cx, |root, cx| {
+                                    if let Some(pending) = pending {
+                                        root.remote_client.remote_action(
+                                            "sidebar-order".into(),
+                                            &["linkMission", "move"],
+                                            move |client| {
+                                                client.link_mission(pick_mission, session)?;
+                                                client.move_item(
+                                                    &pending.node,
+                                                    pending.project.as_ref(),
+                                                    &pending.order,
+                                                )?;
+                                                Ok(Default::default())
+                                            },
+                                            cx,
+                                        );
+                                    } else {
+                                        root.remote_client.remote_action(
+                                            format!("mission:{pick_mission}"),
+                                            &["linkMission"],
+                                            move |client| {
+                                                client.link_mission(pick_mission, session)?;
+                                                Ok(Default::default())
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                });
+                            }
+                            return;
+                        }
                         // A rejected link leaves the mission where it was.
                         if this.link_mission_to(pick_mission.clone(), session, cx) {
                             if let Some(pending) = &pending {
@@ -503,6 +609,23 @@ impl super::Sidebar {
         session_id: String,
         cx: &mut gpui::Context<Self>,
     ) -> bool {
+        if self.front_page.is_remote() {
+            if let Some(shell) = self.shell.upgrade() {
+                let key = format!("mission:{mission_id}");
+                shell.update(cx, |root, cx| {
+                    root.remote_client.remote_action(
+                        key,
+                        &["linkMission"],
+                        move |client| {
+                            client.link_mission(mission_id, session_id)?;
+                            Ok(Default::default())
+                        },
+                        cx,
+                    );
+                });
+            }
+            return false;
+        }
         match self.front_page.link_mission(mission_id, session_id) {
             Ok(_) => {
                 self.refresh_store(crate::app_store::StoreRefreshKind::All, cx);
@@ -516,6 +639,23 @@ impl super::Sidebar {
     }
 
     pub(super) fn unlink_mission(&mut self, mission_id: String, cx: &mut gpui::Context<Self>) {
+        if self.front_page.is_remote() {
+            if let Some(shell) = self.shell.upgrade() {
+                let key = format!("mission:{mission_id}");
+                shell.update(cx, |root, cx| {
+                    root.remote_client.remote_action(
+                        key,
+                        &["unlinkMission"],
+                        move |client| {
+                            client.unlink_mission(mission_id)?;
+                            Ok(Default::default())
+                        },
+                        cx,
+                    );
+                });
+            }
+            return;
+        }
         match self.front_page.unlink_mission(mission_id) {
             Ok(_) => self.refresh_store(crate::app_store::StoreRefreshKind::All, cx),
             Err(error) => self.report_error(error.to_string(), cx),

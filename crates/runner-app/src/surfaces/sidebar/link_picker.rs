@@ -78,6 +78,11 @@ impl LinkPicker {
         self.query.read(cx).focus_handle()
     }
 
+    #[cfg(test)]
+    pub(super) fn search_placeholder(&self, cx: &App) -> String {
+        self.query.read(cx).placeholder().to_string()
+    }
+
     fn shown(&self, cx: &App) -> Vec<ChatChoice> {
         picker_entries(&self.chats, self.query.read(cx).text())
             .into_iter()
