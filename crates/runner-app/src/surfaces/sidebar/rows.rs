@@ -48,11 +48,18 @@ impl Sidebar {
         };
         if changed {
             if let Some(shell) = self.shell.upgrade() {
+                let remote = self.front_page.is_remote();
                 cx.defer(move |cx| {
-                    let workspace = shell.read(cx).mission_workspace.clone();
-                    workspace.update(cx, |workspace, cx| {
-                        workspace.set_archiving(&mission_id, archiving, cx);
-                    });
+                    let workspace = if remote {
+                        shell.read(cx).remote_client.remote_mission_workspace()
+                    } else {
+                        Some(shell.read(cx).mission_workspace.clone())
+                    };
+                    if let Some(workspace) = workspace {
+                        workspace.update(cx, |workspace, cx| {
+                            workspace.set_archiving(&mission_id, archiving, cx);
+                        });
+                    }
                 });
             }
             cx.notify();

@@ -112,7 +112,7 @@ pub(super) fn output_view(command: &Command) -> output::View {
             SessionCommand::List => View::SessionList,
             SessionCommand::Show { .. } => View::SessionShow,
             SessionCommand::Stop { .. } => View::Confirmation("Stopped session"),
-            SessionCommand::Archive { .. } => View::Confirmation("Archived session"),
+            SessionCommand::Archive { .. } => View::SessionArchive,
             SessionCommand::Resume { .. } => View::Confirmation("Resumed session"),
             SessionCommand::Restart { .. } => View::Confirmation("Restarted session"),
         },

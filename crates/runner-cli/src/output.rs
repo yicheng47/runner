@@ -22,6 +22,7 @@ pub enum View {
     MissionFeed,
     SessionList,
     SessionShow,
+    SessionArchive,
     RoleChange(&'static str),
     Confirmation(&'static str),
 }
@@ -96,6 +97,7 @@ fn render_default(view: View, value: &Value) -> Vec<String> {
         View::MissionFeed => render_mission_feed(value),
         View::SessionList => render_session_list(value),
         View::SessionShow => render_session_show(value),
+        View::SessionArchive => render_session_archive(value),
         View::RoleChange(action) => vec![format!("{action} {}", cell(value.get("handle")))],
         View::Confirmation(action) => render_confirmation(action, value),
     }
@@ -705,7 +707,17 @@ fn render_confirmation(action: &str, value: &Value) -> Vec<String> {
     let ids = ids(value);
     if ids.is_empty() {
         vec![action.to_owned()]
-    } else if let Some(archived_missions) = value
+    } else {
+        vec![format!("{action} {}", ids.join(", "))]
+    }
+}
+
+fn render_session_archive(value: &Value) -> Vec<String> {
+    let ids = ids(value);
+    if ids.is_empty() {
+        return vec!["Archived session".to_owned()];
+    }
+    if let Some(archived_missions) = value
         .get("archived_mission_ids")
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
@@ -717,13 +729,13 @@ fn render_confirmation(action: &str, value: &Value) -> Vec<String> {
             "linked missions"
         };
         vec![format!(
-            "{action} {} and {} {noun} ({})",
+            "Archived session {} and {} {noun} ({})",
             ids.join(", "),
             archived_missions.len(),
             archived_missions.join(", ")
         )]
     } else {
-        vec![format!("{action} {}", ids.join(", "))]
+        vec![format!("Archived session {}", ids.join(", "))]
     }
 }
 
@@ -1400,29 +1412,40 @@ mod tests {
     #[test]
     fn session_archive_confirmation_lists_archived_linked_missions_when_present() {
         assert_eq!(
-            render_confirmation("Archived session", &json!({"session_id": "01S"})),
+            render_default(View::SessionArchive, &json!({"session_id": "01S"})),
             vec!["Archived session 01S"]
         );
         assert_eq!(
-            render_confirmation(
-                "Archived session",
+            render_default(
+                View::SessionArchive,
                 &json!({"session_id": "01S", "archived_mission_ids": []})
             ),
             vec!["Archived session 01S"]
         );
         assert_eq!(
-            render_confirmation(
-                "Archived session",
+            render_default(
+                View::SessionArchive,
                 &json!({"session_id": "01S", "archived_mission_ids": ["01M1"]})
             ),
             vec!["Archived session 01S and 1 linked mission (01M1)"]
         );
         assert_eq!(
-            render_confirmation(
-                "Archived session",
+            render_default(
+                View::SessionArchive,
                 &json!({"session_id": "01S", "archived_mission_ids": ["01M1", "01M2"]})
             ),
             vec!["Archived session 01S and 2 linked missions (01M1, 01M2)"]
+        );
+        assert_eq!(
+            render_default(
+                View::Confirmation("Deleted project"),
+                &json!({
+                    "id": "project-fixture",
+                    "archived_mission_ids": ["mission-fixture"],
+                    "archived_session_ids": ["session-fixture"]
+                })
+            ),
+            vec!["Deleted project project-fixture"]
         );
     }
 }

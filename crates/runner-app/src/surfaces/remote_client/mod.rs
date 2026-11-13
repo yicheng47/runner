@@ -23,9 +23,19 @@ pub(crate) use pairing::PairDialog;
 pub(crate) use usage::usage_snapshot;
 pub(crate) use workspace::{sidebar_nodes, Item as RemoteItem, RemoteWindow};
 
+#[derive(Clone)]
+struct PendingRemoteArchive {
+    token: u64,
+    computer: String,
+    sessions: Vec<String>,
+    missions: Vec<String>,
+}
+
 pub(crate) struct RemoteClient {
     pub(crate) ui: ClientUi,
     workspace: Option<RemoteWindow>,
+    next_archive_token: u64,
+    pending_archives: Vec<PendingRemoteArchive>,
     app_store: Entity<AppStore>,
     root_focus: FocusHandle,
     usage_popover: Option<usage::UsageWatch>,
@@ -43,6 +53,8 @@ impl RemoteClient {
         Self {
             ui: ClientUi::new(cx),
             workspace: None,
+            next_archive_token: 0,
+            pending_archives: Vec::new(),
             usage_popover: None,
             app_store,
             root_focus,
@@ -66,7 +78,156 @@ impl RemoteClient {
     }
     pub(crate) fn disconnect(&mut self) {
         self.workspace = None;
+        self.pending_archives.clear();
         self.usage_popover = None;
+    }
+
+    pub(crate) fn has_pending_archive(
+        &self,
+        sessions: &[String],
+        missions: &[String],
+        cx: &App,
+    ) -> bool {
+        let Some(remote) = self.workspace.as_ref() else {
+            return false;
+        };
+        let computer = &remote.computer.id;
+        let sidebar = remote.sidebar.read(cx);
+        sessions.iter().any(|id| {
+            sidebar.session_archiving(id)
+                || self.pending_archives.iter().any(|entry| {
+                    entry.computer == *computer && entry.sessions.iter().any(|item| item == id)
+                })
+        }) || missions.iter().any(|id| {
+            self.pending_archives.iter().any(|entry| {
+                entry.computer == *computer && entry.missions.iter().any(|item| item == id)
+            })
+        })
+    }
+
+    pub(crate) fn begin_pending_archive(
+        &mut self,
+        sessions: &[String],
+        missions: &[String],
+        cx: &mut Context<NativeRoot>,
+    ) -> Option<u64> {
+        if sessions.is_empty() || self.has_pending_archive(sessions, missions, cx) {
+            return None;
+        }
+        let remote = self.workspace.as_mut()?;
+        let computer = remote.computer.id.clone();
+        let newly_marked_missions = {
+            let sidebar = remote.sidebar.read(cx);
+            missions
+                .iter()
+                .filter(|id| !sidebar.mission_archiving(id))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let token = self.next_archive_token;
+        self.next_archive_token = self.next_archive_token.wrapping_add(1);
+        self.pending_archives.push(PendingRemoteArchive {
+            token,
+            computer,
+            sessions: sessions.to_vec(),
+            missions: newly_marked_missions.clone(),
+        });
+        remote.sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_archiving(sessions, &newly_marked_missions, cx);
+        });
+        Some(token)
+    }
+
+    pub(crate) fn finish_pending_archive(&mut self, token: u64, cx: &mut Context<NativeRoot>) {
+        let Some(pos) = self
+            .pending_archives
+            .iter()
+            .position(|entry| entry.token == token)
+        else {
+            return;
+        };
+        let removed = self.pending_archives.remove(pos);
+        let clear_sessions = removed
+            .sessions
+            .into_iter()
+            .filter(|id| {
+                !self.pending_archives.iter().any(|entry| {
+                    entry.computer == removed.computer
+                        && entry.sessions.iter().any(|item| item == id)
+                })
+            })
+            .collect::<Vec<_>>();
+        let clear_missions = removed
+            .missions
+            .into_iter()
+            .filter(|id| {
+                !self.pending_archives.iter().any(|entry| {
+                    entry.computer == removed.computer
+                        && entry.missions.iter().any(|item| item == id)
+                })
+            })
+            .collect::<Vec<_>>();
+        if let Some(remote) = self
+            .workspace
+            .as_ref()
+            .filter(|remote| remote.computer.id == removed.computer)
+        {
+            remote.sidebar.update(cx, |sidebar, cx| {
+                sidebar.end_archiving(&clear_sessions, &clear_missions, cx);
+            });
+        }
+    }
+
+    pub(crate) fn clear_pending_archives_for(
+        &mut self,
+        computer: &str,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        let mut clear_sessions = Vec::new();
+        let mut clear_missions = Vec::new();
+        self.pending_archives.retain(|entry| {
+            if entry.computer == computer {
+                clear_sessions.extend(entry.sessions.iter().cloned());
+                clear_missions.extend(entry.missions.iter().cloned());
+                false
+            } else {
+                true
+            }
+        });
+        if clear_sessions.is_empty() && clear_missions.is_empty() {
+            return;
+        }
+        if let Some(remote) = self
+            .workspace
+            .as_ref()
+            .filter(|remote| remote.computer.id == computer)
+        {
+            remote.sidebar.update(cx, |sidebar, cx| {
+                sidebar.end_archiving(&clear_sessions, &clear_missions, cx);
+            });
+        }
+    }
+
+    fn restore_pending_archive_marks(
+        &self,
+        computer: &str,
+        sidebar: &Entity<Sidebar>,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        let mut sessions = Vec::new();
+        let mut missions = Vec::new();
+        for entry in &self.pending_archives {
+            if entry.computer == computer {
+                sessions.extend(entry.sessions.iter().cloned());
+                missions.extend(entry.missions.iter().cloned());
+            }
+        }
+        if sessions.is_empty() && missions.is_empty() {
+            return;
+        }
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.begin_archiving(&sessions, &missions, cx);
+        });
     }
     pub(crate) fn client(&self, cx: &App) -> crate::surfaces::front_page::FrontPageClient {
         self.workspace

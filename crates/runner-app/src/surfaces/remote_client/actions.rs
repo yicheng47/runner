@@ -38,6 +38,7 @@ impl RemoteClient {
             key,
             epoch: self.ui.epoch,
             remote,
+            pending_archive: None,
         })
     }
     pub(crate) fn complete_action<T>(

@@ -23,6 +23,7 @@ pub(crate) struct WorkspaceAction {
     pub(crate) key: String,
     pub(crate) epoch: u64,
     pub(crate) remote: Option<(HashMap<String, PaneLayout>, u64)>,
+    pub(crate) pending_archive: Option<u64>,
 }
 
 pub(crate) struct ShellStart {
@@ -63,12 +64,15 @@ impl WorkspaceAction {
 
     pub(crate) fn complete_observed<T>(
         root: &mut NativeRoot,
-        action: WorkspaceAction,
+        mut action: WorkspaceAction,
         result: Result<T, String>,
         remote_completion: impl FnOnce(T) -> Completion,
         observe: impl FnOnce(&mut NativeRoot, &FrontPageClient, bool, &mut Context<NativeRoot>),
         cx: &mut Context<NativeRoot>,
     ) -> Option<Result<T, String>> {
+        if let Some(token) = action.pending_archive.take() {
+            root.remote_client.finish_pending_archive(token, cx);
+        }
         let client = action.client.clone();
         let succeeded = result.is_ok();
         if action.remote.is_none() {
@@ -284,7 +288,26 @@ impl WorkspaceAction {
             .as_ref()
             .map(|close| format!("layout:{}", close.tab_id))
             .unwrap_or_else(|| "archive-sessions".into());
-        let action = WorkspaceAction::prepare(root, key, &required, cx)?;
+        let mut archive_sessions = Vec::new();
+        let mut archive_missions = Vec::new();
+        if remote_target {
+            archive_sessions.extend(ids.iter().cloned());
+            for (_, operation) in &plan {
+                archive_missions.extend(operation.linked_missions().iter().cloned());
+            }
+            if root
+                .remote_client
+                .has_pending_archive(&archive_sessions, &archive_missions, cx)
+            {
+                return None;
+            }
+        }
+        let mut action = WorkspaceAction::prepare(root, key, &required, cx)?;
+        if remote_target {
+            action.pending_archive =
+                root.remote_client
+                    .begin_pending_archive(&archive_sessions, &archive_missions, cx);
+        }
         if remote_target {
             if let Some(close) = &pane_close {
                 if let Some(layout) = layouts.iter().find(|layout| layout.id == close.tab_id) {

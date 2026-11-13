@@ -310,7 +310,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.launcher_session_pending(session_id, cx) {
+        if self.launcher_session_pending(session_id, cx)
+            || self.sidebar_archiving_session(session_id, cx)
+        {
             return;
         }
         if self.remote_client.is_active() {
@@ -548,6 +550,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if session_ids.iter().any(|id| {
+            self.launcher_session_pending(id, cx) || self.sidebar_archiving_session(id, cx)
+        }) {
+            return;
+        }
         let has_linked_missions = !self.linked_missions_for_chats(&session_ids, cx).is_empty();
         if self.remote_client.is_active() {
             let terminals = session_ids

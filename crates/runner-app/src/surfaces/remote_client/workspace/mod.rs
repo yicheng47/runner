@@ -355,6 +355,7 @@ impl RemoteClient {
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_front_page_target(front_page.clone(), cx)
         });
+        self.restore_pending_archive_marks(&computer.id, &sidebar, cx);
         let shell = cx.weak_entity();
         let mission_workspace = cx.new(|workspace_cx| {
             MissionWorkspace::new_remote(

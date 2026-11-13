@@ -535,11 +535,16 @@ impl Sidebar {
     /// The mission's attention from the daemon's state; an older daemon's
     /// missions fall back to their members' statuses.
     pub(super) fn mission_attention(&self, summary: &MissionSummary) -> AttentionState {
-        match summary.phase {
+        let attention = match summary.phase {
             Some(phase) => phase_attention(phase, self.mission_unread(summary)),
             None => {
                 super::rows::status_attention(self.mission_status_rollup(summary).priority_value())
             }
+        };
+        if self.archiving_missions.contains(&summary.mission.id) {
+            attention.max(AttentionState::Working)
+        } else {
+            attention
         }
     }
 

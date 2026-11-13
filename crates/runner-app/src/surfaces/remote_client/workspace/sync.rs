@@ -263,6 +263,9 @@ impl RemoteClient {
             remote.errors.clear();
         }
         remote.connection = connection;
+        let disconnected_computer =
+            (!matches!(connection, Connection::Opening | Connection::Connected))
+                .then(|| remote.computer.id.clone());
         let access = clients.update(cx, |state, cx| {
             state.front_page_access(&remote.computer, cx)
         });
@@ -325,6 +328,9 @@ impl RemoteClient {
         workspace.update(cx, |workspace, cx| {
             workspace.sync_remote(client, mission, overview, clients, cx)
         });
+        if let Some(computer) = disconnected_computer {
+            self.clear_pending_archives_for(&computer, cx);
+        }
         self.ensure_remote_library(cx);
         self.load_remote_metadata(cx);
         self.attach_remote_panes(cx);

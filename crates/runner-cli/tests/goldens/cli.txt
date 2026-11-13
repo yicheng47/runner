@@ -114,7 +114,7 @@ exit 0
 
 $ runner project delete Runner --force
 exit 0
-Deleted project project-fixture and 1 linked mission (mission-fixture)
+Deleted project project-fixture
 
 $ runner project delete Runner --force --json
 exit 0

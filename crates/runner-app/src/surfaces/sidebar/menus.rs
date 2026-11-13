@@ -468,7 +468,7 @@ impl Sidebar {
             }
             SidebarMenuAction::UnlinkMission(mission_id) => self.unlink_mission(mission_id, cx),
             SidebarMenuAction::ArchiveMission(mission_id) => {
-                if !self.front_page.is_remote() && self.archiving_missions.contains(&mission_id) {
+                if self.archiving_missions.contains(&mission_id) {
                     return;
                 }
                 let archive_id = mission_id.clone();

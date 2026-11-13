@@ -354,10 +354,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if session_ids
-            .iter()
-            .any(|id| self.launcher_session_pending(id, cx))
-        {
+        if session_ids.iter().any(|id| {
+            self.launcher_session_pending(id, cx) || self.sidebar_archiving_session(id, cx)
+        }) {
             return;
         }
         let remote = self.front_page_client(cx).is_remote();
@@ -400,15 +399,11 @@ impl NativeRoot {
         let Some((action, operation)) =
             WorkspaceAction::archive(self, session_ids, local_plan, pane_close, cx)
         else {
-            self.sidebar.update(cx, |sidebar, cx| {
-                for id in &pending_ids {
-                    sidebar.archiving_sessions.remove(id);
-                }
-                for mission_id in &pending_missions {
-                    sidebar.set_mission_archiving(mission_id.clone(), false, cx);
-                }
-                cx.notify();
-            });
+            if !pending_ids.is_empty() || !pending_missions.is_empty() {
+                self.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.end_archiving(&pending_ids, &pending_missions, cx);
+                });
+            }
             return;
         };
         let task = cx.background_spawn(async move { operation() });
@@ -467,6 +462,10 @@ impl Sidebar {
         self.archiving_sessions.contains(session_id)
     }
 
+    pub(crate) fn mission_archiving(&self, mission_id: &str) -> bool {
+        self.archiving_missions.contains(mission_id)
+    }
+
     fn prepare_archive_sessions(
         &mut self,
         session_ids: &[String],
@@ -512,18 +511,43 @@ impl Sidebar {
                 })
                 .collect::<Vec<_>>()
         };
-        self.archiving_sessions
-            .extend(plan.iter().map(|(id, _)| id.clone()));
         let mission_ids = plan
             .iter()
             .flat_map(|(_, operation)| operation.linked_missions().iter().cloned())
             .collect::<Vec<_>>();
-        for mission_id in mission_ids {
-            self.set_mission_archiving(mission_id, true, cx);
+        let session_ids = plan.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        self.begin_archiving(&session_ids, &mission_ids, cx);
+        Some(plan)
+    }
+
+    pub(crate) fn begin_archiving(
+        &mut self,
+        sessions: &[String],
+        missions: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        self.archiving_sessions.extend(sessions.iter().cloned());
+        for mission_id in missions {
+            self.set_mission_archiving(mission_id.clone(), true, cx);
         }
         self.schedule_shell_notify(cx);
         cx.notify();
-        Some(plan)
+    }
+
+    pub(crate) fn end_archiving(
+        &mut self,
+        sessions: &[String],
+        missions: &[String],
+        cx: &mut Context<Self>,
+    ) {
+        for id in sessions {
+            self.archiving_sessions.remove(id);
+        }
+        for mission_id in missions {
+            self.set_mission_archiving(mission_id.clone(), false, cx);
+        }
+        self.schedule_shell_notify(cx);
+        cx.notify();
     }
 }
 
@@ -541,13 +565,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> bool {
         self.sidebar.update(cx, |sidebar, cx| {
-            for id in &attempted {
-                sidebar.archiving_sessions.remove(id);
-            }
-            for mission_id in &attempted_missions {
-                sidebar.set_mission_archiving(mission_id.clone(), false, cx);
-            }
-            cx.notify();
+            sidebar.end_archiving(&attempted, &attempted_missions, cx);
         });
         for session_id in &removed {
             self.attached.remove(session_id);
