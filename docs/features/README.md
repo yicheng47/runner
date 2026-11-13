@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1141 — Git changes view](./1141-git-changes.md) — a lazygit-style Changes view in the side panel: changed files beside their Unified or Split diff, the branch's commits since its base, and files marked viewed, served by `runnerd` ([#1141](https://github.com/yicheng47/runner/issues/1141)). Three pull requests to `main`; m1, the `runnerd` changes service, is in development.
 - [1297 — Link and unlink missions from a remote window](./1297-remote-mission-link.md) — `linkMission` / `unlinkMission` companion actions so a remote window gets the host's link controls ([#1297](https://github.com/yicheng47/runner/issues/1297)).
 - [1290 — Archive linked missions with chat](./1290-archive-linked-missions.md) — confirmation prompt and combined archive when archiving a chat with linked missions ([#1290](https://github.com/yicheng47/runner/issues/1290)).
 - [1286 — Antigravity CLI usage indicator](./1286-antigravity-usage.md) — restore non-interactive zero-login Antigravity CLI usage polling, dual-pool Option P1 subheadings, Option F1 3-badge/+N footer, settings and near-limit alerts ([#1286](https://github.com/yicheng47/runner/issues/1286)).
