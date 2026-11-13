@@ -956,7 +956,7 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                     "{width} {zoom}: {usage:?} {entries:?}"
                 );
                 assert!(
-                    (entries[1].left() - entries[0].right() - px(5. * zoom)).abs() <= px(0.5),
+                    (entries[1].left() - entries[0].right() - px(8. * zoom)).abs() <= px(0.5),
                     "{width} {zoom}: {entries:?}"
                 );
                 for pair in entries.windows(2) {
@@ -1348,7 +1348,7 @@ fn sidebar_usage_uses_weekly_windows() {
     };
     assert_eq!(
         weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
-        Some(73.)
+        Some(42.)
     );
     let antigravity_five_hour_only = AgentUsage {
         credits: None,
@@ -1361,6 +1361,26 @@ fn sidebar_usage_uses_weekly_windows() {
     };
     assert_eq!(
         weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_five_hour_only)),
+        None
+    );
+    let antigravity_claude_only = AgentUsage {
+        credits: None,
+        windows: vec![
+            UsageWindow {
+                name: "Claude and GPT models · 5 hours used".into(),
+                used_percent: 18.,
+                resets_at: None,
+            },
+            UsageWindow {
+                name: "Claude and GPT models · Week used".into(),
+                used_percent: 73.,
+                resets_at: None,
+            },
+        ],
+        updated_at: chrono::Utc::now(),
+    };
+    assert_eq!(
+        weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_claude_only)),
         None
     );
     for window_name in [
@@ -1405,7 +1425,7 @@ fn sidebar_usage_uses_weekly_windows() {
         );
         assert_eq!(
             weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
-            Some(73.)
+            Some(42.)
         );
         assert_eq!(usage_window_name("Week"), "本周");
         assert_eq!(usage_window_name("5 hours"), "5 小时");
@@ -1780,6 +1800,45 @@ fn shared_credit_row_is_codex_only_and_survives_empty_filtered_windows() {
 }
 
 #[test]
+fn sidebar_usage_entry_selection_accounts_for_eight_px_gap_and_overflow() {
+    let two_digit = [
+        (Runtime::Codex, Some(24.), "24%".to_owned()),
+        (Runtime::ClaudeCode, Some(65.), "65%".to_owned()),
+        (Runtime::Antigravity, Some(41.), "41%".to_owned()),
+    ];
+    for (max_width, zoom) in [(144., 1.), (216., 1.5)] {
+        let (kept, hidden) = usage::select_sidebar_usage_entries(&two_digit, max_width, zoom);
+        assert_eq!(kept, vec![0, 1, 2], "{max_width}@{zoom}");
+        assert_eq!(hidden, 0, "{max_width}@{zoom}");
+    }
+    // 12 pad + 3*38 entries + 2*8 gaps = 142 px, so 140 px overflows to 2 + +1.
+    assert_eq!(
+        usage::select_sidebar_usage_entries(&two_digit, 140., 1.),
+        (vec![1, 2], 1)
+    );
+
+    let three_digit = [
+        (Runtime::Codex, Some(100.), "100%".to_owned()),
+        (Runtime::ClaudeCode, Some(100.), "100%".to_owned()),
+        (Runtime::Antigravity, Some(100.), "100%".to_owned()),
+    ];
+    assert_eq!(
+        usage::select_sidebar_usage_entries(&three_digit, 144., 1.),
+        (vec![0, 1], 1)
+    );
+
+    let narrow = [
+        (Runtime::Codex, Some(64.), "64%".to_owned()),
+        (Runtime::ClaudeCode, Some(22.), "22%".to_owned()),
+        (Runtime::Antigravity, Some(91.), "91%".to_owned()),
+    ];
+    assert_eq!(
+        usage::select_sidebar_usage_entries(&narrow, 104., 1.),
+        (vec![2], 2)
+    );
+}
+
+#[test]
 fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes() {
     use crate::theme_snapshot::ThemeGuard;
     use gpui::{size, TestAppContext, VisualTestContext};
@@ -1873,6 +1932,11 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
         visual.simulate_resize(size(px(1200.), px(900.)));
         visual.run_until_parked();
+        store.update(&mut visual, |store, cx| {
+            store.usage = snapshot_with(24., 65., 41., 73.);
+            cx.notify();
+        });
+        visual.run_until_parked();
 
         // Moderate 2-digit values fit all 3 runtimes on 240 px sidebar without overflow.
         for selector in [
@@ -1886,6 +1950,15 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
             );
         }
         assert!(visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").is_none());
+        let codex = visual.debug_bounds("SIDEBAR_USAGE_ENTRY_codex").unwrap();
+        let claude = visual
+            .debug_bounds("SIDEBAR_USAGE_ENTRY_claude-code")
+            .unwrap();
+        let antigravity = visual
+            .debug_bounds("SIDEBAR_USAGE_ENTRY_antigravity")
+            .unwrap();
+        assert!((claude.left() - codex.right() - px(8. * zoom)).abs() <= px(0.5));
+        assert!((antigravity.left() - claude.right() - px(8. * zoom)).abs() <= px(0.5));
         let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
         let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
         let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
@@ -1895,7 +1968,7 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
         // Narrow 200 px sidebar collapses lowest usage percentages first and preserves highest.
         store.update(&mut visual, |store, cx| {
             store.settings.sidebar_width = app_settings::SIDEBAR_MIN;
-            store.usage = snapshot_with(64., 22., 40., 91.);
+            store.usage = snapshot_with(64., 22., 91., 40.);
             cx.notify();
         });
         visual.run_until_parked();

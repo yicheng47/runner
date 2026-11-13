@@ -82,36 +82,43 @@ impl NativeRoot {
                 Runtime::Antigravity => settings.antigravity,
                 _ => false,
             };
+            let row = SettingsRow::new(
+                runtime.display_name(),
+                Toggle::new(format!("usage-badge-{}", runtime.key()), enabled)
+                    .disabled(!settings.sidebar)
+                    .on_change(move |value, _, cx| {
+                        owner.update(cx, |root, cx| {
+                            root.update_app_settings(cx, true, |s| {
+                                match runtime {
+                                    Runtime::Codex => s.usage.codex = value,
+                                    Runtime::ClaudeCode => s.usage.claude_code = value,
+                                    Runtime::Antigravity => s.usage.antigravity = value,
+                                    _ => {}
+                                }
+                                true
+                            });
+                        })
+                    }),
+            )
+            .when_some(
+                match runtime {
+                    Runtime::ClaudeCode => Some(crate::i18n::text("usage.active_account")),
+                    Runtime::Antigravity => {
+                        Some(crate::i18n::text("usage.antigravity_gemini_pool"))
+                    }
+                    _ => None,
+                },
+                SettingsRow::subtitle,
+            );
+            #[cfg(test)]
+            let row = row.debug_prefix(format!("USAGE_BADGE_{}", runtime.key()));
             sidebar.push(
                 div()
+                    .when(cfg!(test), |row| {
+                        row.debug_selector(move || format!("USAGE_BADGE_ROW_{}", runtime.key()))
+                    })
                     .opacity(if settings.sidebar { 1. } else { 0.45 })
-                    .child(
-                        SettingsRow::new(
-                            runtime.display_name(),
-                            Toggle::new(format!("usage-badge-{}", runtime.key()), enabled)
-                                .disabled(!settings.sidebar)
-                                .on_change(move |value, _, cx| {
-                                    owner.update(cx, |root, cx| {
-                                        root.update_app_settings(cx, true, |s| {
-                                            match runtime {
-                                                Runtime::Codex => s.usage.codex = value,
-                                                Runtime::ClaudeCode => s.usage.claude_code = value,
-                                                Runtime::Antigravity => s.usage.antigravity = value,
-                                                _ => {}
-                                            }
-                                            true
-                                        });
-                                    })
-                                }),
-                        )
-                        .subtitle(match runtime {
-                            Runtime::ClaudeCode => crate::i18n::text("usage.active_account"),
-                            Runtime::Antigravity => {
-                                crate::i18n::text("usage.antigravity_highest_pool")
-                            }
-                            _ => "",
-                        }),
-                    )
+                    .child(row)
                     .into_any_element(),
             );
         }

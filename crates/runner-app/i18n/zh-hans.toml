@@ -1132,7 +1132,7 @@
 "ui.you_can_restore_chats_and_missions_from_settings_archived" = "可在“设置 → 已归档”中恢复对话和任务。"
 "ui.your_edits_to_this_server_have_not_been_saved" = "对此服务器的编辑尚未保存。"
 "ui.your_edits_to_this_skill_have_not_been_saved" = "对此技能的编辑尚未保存。"
-"usage.antigravity_highest_pool" = "显示使用比例最高的每周模型池。"
+"usage.antigravity_gemini_pool" = "显示 Gemini 模型的每周模型池。"
 "usage.claude_gpt_models" = "Claude 和 GPT 模型"
 "usage.five_hours" = "5 小时"
 "usage.gemini_models" = "Gemini 模型"

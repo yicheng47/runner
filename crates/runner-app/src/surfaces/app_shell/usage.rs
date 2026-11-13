@@ -136,21 +136,7 @@ pub(super) fn unavailable_line(
     }
 }
 
-fn is_weekly_pool_window(name: &str) -> bool {
-    let label = name.split_once(" · ").map_or(name, |(_, label)| label);
-    let label = label.strip_suffix(" used").unwrap_or(label);
-    label == "Week"
-}
-
 pub(super) fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<f64> {
-    if crate::runtime_ui::runtime_ui(runtime).usage_groups {
-        return usage?
-            .windows
-            .iter()
-            .filter(|window| is_weekly_pool_window(&window.name))
-            .map(|window| window.used_percent)
-            .reduce(f64::max);
-    }
     let name = crate::runtime_ui::runtime_ui(runtime).usage_week;
     usage?
         .windows
@@ -182,8 +168,8 @@ pub(crate) fn usage_popover_runtimes(installed: &[Runtime], enabled: &[Runtime])
 fn estimated_badge_text_width(text: &str) -> f32 {
     text.chars()
         .map(|ch| match ch {
-            '0'..='9' => 7.2,
-            '%' | '—' => 10.5,
+            '0'..='9' => 7.0,
+            '%' | '—' => 10.0,
             '+' => 7.2,
             _ => 7.0,
         })
@@ -195,13 +181,13 @@ fn estimated_entry_width(text: &str) -> f32 {
     14.0 + estimated_badge_text_width(text)
 }
 
-fn select_sidebar_usage_entries(
+pub(super) fn select_sidebar_usage_entries(
     entries: &[(Runtime, Option<f64>, String)],
     max_width: f32,
     zoom: f32,
 ) -> (Vec<usize>, usize) {
     const PILL_PAD_X: f32 = 12.0; // 6 px left + 6 px right
-    const BADGE_GAP: f32 = 5.0;
+    const BADGE_GAP: f32 = 8.0;
 
     if entries.is_empty() {
         return (Vec::new(), 0);
@@ -330,7 +316,7 @@ pub(crate) fn sidebar_usage_element(
         .h(px(32. * zoom))
         .flex()
         .items_center()
-        .gap(px(5. * zoom))
+        .gap(px(8. * zoom))
         .px(px(6. * zoom))
         .rounded(px(6. * zoom))
         .border_1()

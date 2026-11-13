@@ -1132,7 +1132,7 @@
 "ui.you_can_restore_chats_and_missions_from_settings_archived" = "You can restore chats and missions from Settings → Archived."
 "ui.your_edits_to_this_server_have_not_been_saved" = "Your edits to this server have not been saved."
 "ui.your_edits_to_this_skill_have_not_been_saved" = "Your edits to this skill have not been saved."
-"usage.antigravity_highest_pool" = "Shows the highest weekly pool."
+"usage.antigravity_gemini_pool" = "Shows the Gemini Models weekly pool."
 "usage.claude_gpt_models" = "Claude and GPT models"
 "usage.five_hours" = "5 hours"
 "usage.gemini_models" = "Gemini Models"
