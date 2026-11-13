@@ -102,6 +102,8 @@ pub struct SettingsRow {
     subtitle: Option<SharedString>,
     subtitle_color: Option<Hsla>,
     wrap_control: bool,
+    #[cfg(test)]
+    debug_prefix: Option<SharedString>,
     control: AnyElement,
 }
 
@@ -113,6 +115,8 @@ impl SettingsRow {
             subtitle: None,
             subtitle_color: None,
             wrap_control: false,
+            #[cfg(test)]
+            debug_prefix: None,
             control: control.into_any_element(),
         }
     }
@@ -136,10 +140,22 @@ impl SettingsRow {
         self.wrap_control = true;
         self
     }
+
+    #[cfg(test)]
+    pub fn debug_prefix(mut self, prefix: impl Into<SharedString>) -> Self {
+        self.debug_prefix = Some(prefix.into());
+        self
+    }
 }
 
 impl RenderOnce for SettingsRow {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        #[cfg(test)]
+        let label_prefix = self.debug_prefix.clone();
+        #[cfg(test)]
+        let subtitle_prefix = self.debug_prefix.clone();
+        #[cfg(test)]
+        let control_prefix = self.debug_prefix;
         div()
             .flex()
             .items_center()
@@ -165,6 +181,21 @@ impl RenderOnce for SettingsRow {
                     .gap(rems(2. / 16.))
                     .child({
                         let label = div()
+                            .when_some(
+                                {
+                                    #[cfg(test)]
+                                    {
+                                        label_prefix
+                                    }
+                                    #[cfg(not(test))]
+                                    {
+                                        None::<SharedString>
+                                    }
+                                },
+                                |label, prefix| {
+                                    label.debug_selector(move || format!("{prefix}_LABEL"))
+                                },
+                            )
                             .text_size(theme::text_body())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text());
@@ -190,12 +221,44 @@ impl RenderOnce for SettingsRow {
                                 description
                                     .debug_selector(|| "SETTINGS_WRAPPED_ROW_DESCRIPTION".into())
                             })
+                            .when_some(
+                                {
+                                    #[cfg(test)]
+                                    {
+                                        subtitle_prefix
+                                    }
+                                    #[cfg(not(test))]
+                                    {
+                                        None::<SharedString>
+                                    }
+                                },
+                                |el, prefix| {
+                                    el.debug_selector(move || format!("{prefix}_SUBTITLE"))
+                                },
+                            )
                             .text_size(theme::text_meta())
                             .text_color(self.subtitle_color.unwrap_or_else(theme::muted))
                             .child(subtitle)
                     })),
             )
-            .child(div().flex_none().child(self.control))
+            .child(
+                div()
+                    .when_some(
+                        {
+                            #[cfg(test)]
+                            {
+                                control_prefix
+                            }
+                            #[cfg(not(test))]
+                            {
+                                None::<SharedString>
+                            }
+                        },
+                        |el, prefix| el.debug_selector(move || format!("{prefix}_CONTROL")),
+                    )
+                    .flex_none()
+                    .child(self.control),
+            )
     }
 }
 
