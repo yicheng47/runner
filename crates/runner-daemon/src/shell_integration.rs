@@ -96,42 +96,7 @@ fn install(path: &Path, body: &str, session_id: &str) -> bool {
     }
 }
 
-/// Whether an OSC 7 report's host names this machine: empty, `localhost`,
-/// this machine's hostname, or its first label, ignoring ASCII case. zsh's
-/// `$HOST` and bash's `$HOSTNAME` both come from `gethostname`.
-pub fn is_local_host(host: &str) -> bool {
-    if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    local_hostname().is_some_and(|name| {
-        host.eq_ignore_ascii_case(&name)
-            || name
-                .split('.')
-                .next()
-                .is_some_and(|label| host.eq_ignore_ascii_case(label))
-    })
-}
-
-#[cfg(unix)]
-pub fn local_hostname() -> Option<String> {
-    let mut buf = [0u8; 256];
-    // SAFETY: the buffer outlives the call and its length is passed with it.
-    let status = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if status != 0 {
-        return None;
-    }
-    let end = buf.iter().position(|&byte| byte == 0).unwrap_or(buf.len());
-    String::from_utf8(buf[..end].to_vec())
-        .ok()
-        .filter(|name| !name.is_empty())
-}
-
-#[cfg(windows)]
-pub fn local_hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .filter(|name| !name.is_empty())
-}
+pub use runner_core::local_host::{is_local_host, local_hostname};
 
 #[cfg(test)]
 mod tests {

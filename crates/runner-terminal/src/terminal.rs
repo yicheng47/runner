@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(windows))]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -286,15 +288,18 @@ fn scan_osc7(buf: &[u8]) -> (Vec<&[u8]>, &[u8]) {
     (reports, &[])
 }
 
+fn strip_file_scheme(uri: &str) -> Option<&str> {
+    let prefix = uri.get(..7)?;
+    prefix.eq_ignore_ascii_case("file://").then(|| &uri[7..])
+}
+
 /// The directory an OSC 7 payload reports: a `file://` URI whose host is
 /// this machine and whose path, cut at `?` or `#` and percent-decoded, is
 /// absolute UTF-8. Anything else reports nothing.
 fn parse_cwd_report(payload: &[u8], is_local: &impl Fn(&str) -> bool) -> Option<PathBuf> {
     let text = std::str::from_utf8(payload).ok()?;
-    if !text.get(..7)?.eq_ignore_ascii_case("file://") {
-        return None;
-    }
-    let (host, path) = text[7..].split_at(text[7..].find('/')?);
+    let after_scheme = strip_file_scheme(text)?;
+    let (host, path) = after_scheme.split_at(after_scheme.find('/')?);
     if !is_local(&percent_decode(host)) {
         return None;
     }
@@ -307,7 +312,6 @@ fn parse_cwd_report(payload: &[u8], is_local: &impl Fn(&str) -> bool) -> Option<
 
 /// `/C:/Users/me` as a Windows path: a file URI's path keeps a slash before
 /// the drive letter.
-#[cfg(any(windows, test))]
 fn strip_drive_slash(path: &str) -> &str {
     match path.as_bytes() {
         [b'/', drive, b':', ..] if drive.is_ascii_alphabetic() => &path[1..],
@@ -1447,8 +1451,16 @@ fn wrapped_hyperlink_ids_match(left: &str, right: &str) -> bool {
     left == right || (left.ends_with("_alacritty") && right.ends_with("_alacritty"))
 }
 
-fn terminal_hyperlink_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink> {
-    let hyperlink = term.grid()[point].hyperlink()?;
+enum Osc8Lookup {
+    None,
+    Rejected,
+    Link(TerminalLink),
+}
+
+fn terminal_hyperlink_at<T>(term: &Term<T>, point: Point) -> Osc8Lookup {
+    let Some(hyperlink) = term.grid()[point].hyperlink() else {
+        return Osc8Lookup::None;
+    };
     let is_separator = |column| {
         let cell = &term.grid()[point.line][Column(column)];
         matches!(cell.c, '│' | '|') && cell.hyperlink().is_none()
@@ -1487,11 +1499,15 @@ fn terminal_hyperlink_at<T>(term: &Term<T>, point: Point) -> Option<TerminalLink
                 .map(move |column| Point::new(Line(line), Column(column)))
         })
         .filter(|&point| matches_link(point));
-    Some(TerminalLink::from_points(
-        file_target_from_uri(hyperlink.uri())
-            .unwrap_or_else(|| LinkTarget::Url(hyperlink.uri().to_owned())),
-        points,
-    ))
+    let target = if strip_file_scheme(hyperlink.uri()).is_some() {
+        let Some(target) = file_target_from_uri(hyperlink.uri()) else {
+            return Osc8Lookup::Rejected;
+        };
+        target
+    } else {
+        LinkTarget::Url(hyperlink.uri().to_owned())
+    };
+    Osc8Lookup::Link(TerminalLink::from_points(target, points))
 }
 
 fn link_rows_joined<T>(term: &Term<T>, line: Line) -> bool {
@@ -1512,7 +1528,10 @@ fn link_rows_joined<T>(term: &Term<T>, line: Line) -> bool {
         .map(|column| next[Column(column)].c)
         .collect();
     let prefix = prefix.to_ascii_lowercase();
-    if prefix.starts_with("http://") || prefix.starts_with("https://") {
+    if prefix.starts_with("http://")
+        || prefix.starts_with("https://")
+        || prefix.starts_with("file://")
+    {
         return false;
     }
     let left = &term.grid()[line][Column(last)];
@@ -1534,10 +1553,11 @@ fn link_rows_joined<T>(term: &Term<T>, line: Line) -> bool {
                 .find(|&column| {
                     let cell = &next[Column(column)];
                     !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                        && (cell.c.is_whitespace() || (column > first && cell.c == '/'))
+                        && (cell.c.is_whitespace()
+                            || (column > first && matches!(cell.c, '/' | '\\')))
                 })
                 .map_or(term.columns(), |column| {
-                    column + usize::from(next[Column(column)].c == '/')
+                    column + usize::from(matches!(next[Column(column)].c, '/' | '\\'))
                 });
             // Allow a two-column TUI margin, but do not join text that would have fit.
             fragment_end - first > (term.columns() - last - 1).saturating_sub(2)
@@ -1563,8 +1583,10 @@ fn terminal_link_at_with_hard_breaks<T>(
     {
         point.column = Column(point.column.0.saturating_sub(1));
     }
-    if let Some(link) = terminal_hyperlink_at(term, point) {
-        return Some(link);
+    match terminal_hyperlink_at(term, point) {
+        Osc8Lookup::Link(link) => return Some(link),
+        Osc8Lookup::Rejected => return None,
+        Osc8Lookup::None => {}
     }
 
     let soft_start = term.line_search_left(point).line;
@@ -1628,10 +1650,15 @@ fn terminal_link_at_with_hard_breaks<T>(
         .find_iter(&text)
         .find(|matched| overlaps_hit(&matched.range()))
     {
-        Some(matched) => (
-            matched.range(),
-            LinkTarget::Url(matched.as_str().to_owned()),
-        ),
+        Some(matched) => {
+            let uri = matched.as_str();
+            let target = if strip_file_scheme(uri).is_some() {
+                file_target_from_uri(uri)?
+            } else {
+                LinkTarget::Url(uri.to_owned())
+            };
+            (matched.range(), target)
+        }
         None if hard_breaks && (start != soft_start || end != soft_end) => {
             return terminal_link_at_with_hard_breaks(term, point, cwds, false);
         }
@@ -1662,9 +1689,9 @@ fn file_link_regex() -> &'static Regex {
         Regex::new(
             r##"(?x)
             (?P<path>
-                (?: ~/ | \.\.?/ | / )?
+                (?: ~[/\\] | (?:\.\.?[/\\])+ | [A-Za-z]:[/\\] | \\\\ | / )?
+                (?: [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23]+ [/\\] )*
                 [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23]* [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23.]
-                (?: / [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23]* [^\s/:()\[\]{}<>'"`|\\,;=*?!\x23.] )*
             )
             (?:
                 : (?P<line>\d+) (?: : (?P<column>\d+) )?
@@ -1693,41 +1720,241 @@ fn file_target_from_captures(captures: &regex::Captures<'_>, cwds: &[&Path]) -> 
     })
 }
 
-fn resolve_file_candidate(candidate: &str, cwds: &[&Path]) -> Option<PathBuf> {
-    let paths = if let Some(rest) = candidate.strip_prefix("~/") {
-        vec![runner_core::app_paths::home_dir()?.join(rest)]
-    } else if candidate.starts_with('/') {
+fn is_windows_drive_path(path: &str) -> bool {
+    matches!(
+        path.as_bytes(),
+        [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+    )
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    matches!(
+        path.as_bytes(),
+        [drive, b':', ..] if drive.is_ascii_alphabetic()
+    )
+}
+
+fn is_windows_drive_root(path: &str) -> bool {
+    matches!(
+        path.as_bytes(),
+        [drive, b':'] | [drive, b':', b'/' | b'\\'] if drive.is_ascii_alphabetic()
+    )
+}
+
+fn is_windows_unc_path(path: &str) -> bool {
+    path.starts_with("\\\\")
+}
+
+fn strip_tilde_prefix(candidate: &str, windows: bool) -> Option<&str> {
+    candidate
+        .strip_prefix("~/")
+        .or_else(|| windows.then(|| candidate.strip_prefix("~\\")).flatten())
+}
+
+fn join_platform_path(base: &Path, rest: &str, windows: bool) -> PathBuf {
+    if !windows {
+        return base.join(rest);
+    }
+    let base = base.to_string_lossy();
+    let base = base.as_ref();
+    if base.is_empty() {
+        return PathBuf::from(rest);
+    }
+    let rest = rest.trim_start_matches(['/', '\\']);
+    if base.ends_with(['/', '\\']) {
+        PathBuf::from(format!("{base}{rest}"))
+    } else {
+        PathBuf::from(format!("{base}\\{rest}"))
+    }
+}
+
+fn candidate_paths(
+    candidate: &str,
+    cwds: &[&Path],
+    home: Option<&Path>,
+    windows: bool,
+) -> Vec<PathBuf> {
+    let raw = if let Some(rest) = strip_tilde_prefix(candidate, windows) {
+        let Some(home) = home else {
+            return Vec::new();
+        };
+        vec![join_platform_path(home, rest, windows)]
+    } else if (windows && (is_windows_drive_path(candidate) || is_windows_unc_path(candidate)))
+        || candidate.starts_with('/')
+    {
         vec![PathBuf::from(candidate)]
     } else {
-        cwds.iter().map(|cwd| cwd.join(candidate)).collect()
+        cwds.iter()
+            .map(|cwd| join_platform_path(cwd, candidate, windows))
+            .collect()
     };
-    paths
-        .iter()
-        .map(|path| normalize_path(path))
+    raw.into_iter()
+        .map(|path| normalize_path_for(&path, windows))
+        .collect()
+}
+
+fn resolve_file_candidate(candidate: &str, cwds: &[&Path]) -> Option<PathBuf> {
+    let home = strip_tilde_prefix(candidate, cfg!(windows))
+        .and_then(|_| runner_core::app_paths::home_dir());
+    candidate_paths(candidate, cwds, home.as_deref(), cfg!(windows))
+        .into_iter()
         .find(|path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file()))
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
+fn normalize_path_for(path: &Path, windows: bool) -> PathBuf {
+    if windows {
+        PathBuf::from(normalize_windows_path(&path.to_string_lossy()))
+    } else {
+        normalize_posix_path(path)
+    }
+}
+
+fn normalize_posix_path(path: &Path) -> PathBuf {
+    #[cfg(not(windows))]
+    {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if normalized.as_os_str().is_empty()
+                        || normalized
+                            .components()
+                            .next_back()
+                            .is_some_and(|last| last == Component::ParentDir)
+                    {
+                        normalized.push(Component::ParentDir);
+                    } else {
+                        normalized.pop();
+                    }
+                }
+                other => normalized.push(other),
             }
-            other => normalized.push(other),
+        }
+        normalized
+    }
+    #[cfg(windows)]
+    {
+        let raw = path.to_string_lossy();
+        let (has_root, rest) = match raw.strip_prefix('/') {
+            Some(rest) => (true, rest),
+            None => (false, raw.as_ref()),
+        };
+        PathBuf::from(normalize_lexical_path(
+            String::new(),
+            has_root,
+            rest,
+            &['/'],
+            '/',
+        ))
+    }
+}
+
+fn normalize_lexical_path(
+    mut normalized: String,
+    has_root: bool,
+    rest: &str,
+    separators: &[char],
+    separator: char,
+) -> String {
+    let mut segments: Vec<&str> = Vec::new();
+    for part in rest.split(separators) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if segments.last().is_some_and(|last| *last != "..") {
+                    segments.pop();
+                } else if !has_root {
+                    segments.push("..");
+                }
+            }
+            other => segments.push(other),
         }
     }
+    if has_root {
+        normalized.push(separator);
+    }
+    let mut buf = [0u8; 4];
+    let sep = separator.encode_utf8(&mut buf);
+    normalized.push_str(&segments.join(sep));
     normalized
 }
 
+fn split_unc_share<'a>(after_unc: &'a str, leader: &str) -> Option<(String, &'a str)> {
+    let mut parts = after_unc.splitn(3, ['/', '\\']);
+    let server = parts.next().filter(|s| !s.is_empty())?;
+    let share = parts.next().filter(|s| !s.is_empty())?;
+    let rest = parts.next().unwrap_or("");
+    Some((format!("{leader}{server}\\{share}"), rest))
+}
+
+fn split_windows_prefix(path: &str) -> (String, bool, &str) {
+    if let Some(after_verbatim) = path.strip_prefix("\\\\?\\") {
+        if let Some(after_unc) = after_verbatim
+            .get(..4)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("UNC\\"))
+            .map(|_| &after_verbatim[4..])
+        {
+            if let Some((prefix, rest)) = split_unc_share(after_unc, "\\\\?\\UNC\\") {
+                return (prefix, true, rest);
+            }
+        }
+        if is_windows_drive_path(after_verbatim) {
+            let prefix = format!("\\\\?\\{}", &after_verbatim[..2]);
+            return (prefix, true, &after_verbatim[3..]);
+        }
+    }
+    if let Some(after_unc) = path.strip_prefix("\\\\") {
+        if let Some((prefix, rest)) = split_unc_share(after_unc, "\\\\") {
+            return (prefix, true, rest);
+        }
+    }
+    if has_windows_drive_prefix(path) {
+        let has_root = matches!(path.as_bytes().get(2), Some(b'/' | b'\\'));
+        let rest = if has_root { &path[3..] } else { &path[2..] };
+        return (path[..2].to_owned(), has_root, rest);
+    }
+    if let Some(rest) = path.strip_prefix(['/', '\\']) {
+        return (String::new(), true, rest);
+    }
+    (String::new(), false, path)
+}
+
+fn normalize_windows_path(path: &str) -> String {
+    let (normalized, has_root, rest) = split_windows_prefix(path);
+    normalize_lexical_path(normalized, has_root, rest, &['/', '\\'], '\\')
+}
+
 fn file_target_from_uri(uri: &str) -> Option<LinkTarget> {
-    let rest = uri.strip_prefix("file://")?;
+    let local_name = runner_core::local_host::local_hostname();
+    file_target_from_uri_with_platform(uri, cfg!(windows), local_name.as_deref())
+}
+
+fn file_target_from_uri_with_platform(
+    uri: &str,
+    windows: bool,
+    local_name: Option<&str>,
+) -> Option<LinkTarget> {
+    let rest = strip_file_scheme(uri)?;
     let (rest, fragment) = rest
         .split_once('#')
         .map_or((rest, None), |(rest, fragment)| (rest, Some(fragment)));
-    let path = percent_decode(&rest[rest.find('/')?..]);
-    let (path, line, column) = split_line_suffix(&path);
+    let (before_query, _) = rest.split_once('?').unwrap_or((rest, ""));
+    let slash = before_query.find('/')?;
+    let host = String::from_utf8(percent_decode_bytes(&before_query[..slash])).ok()?;
+    if !runner_core::local_host::is_local_host_for(&host, local_name) {
+        return None;
+    }
+    let decoded = String::from_utf8(percent_decode_bytes(&before_query[slash..])).ok()?;
+    if decoded.contains('\0')
+        || decoded.starts_with("//")
+        || decoded.starts_with(r"/\\")
+        || decoded.starts_with("\\\\")
+        || (windows && decoded.starts_with(r"/\"))
+    {
+        return None;
+    }
+    let (path, line, column) = split_line_suffix(&decoded);
     let line = line.or_else(|| {
         fragment?
             .strip_prefix('L')?
@@ -1736,6 +1963,25 @@ fn file_target_from_uri(uri: &str) -> Option<LinkTarget> {
             .parse()
             .ok()
     });
+    let path = if windows {
+        let stripped = strip_drive_slash(path);
+        if is_windows_drive_path(stripped) {
+            let normalized = normalize_windows_path(stripped);
+            if is_windows_drive_root(&normalized) {
+                return None;
+            }
+            normalized
+        } else if has_windows_drive_prefix(stripped) || path == "/" || path.is_empty() {
+            return None;
+        } else {
+            path.to_owned()
+        }
+    } else {
+        if path == "/" || path.is_empty() {
+            return None;
+        }
+        path.to_owned()
+    };
     Some(LinkTarget::File {
         path: PathBuf::from(path),
         line,
@@ -1793,7 +2039,7 @@ fn percent_decode_bytes(text: &str) -> Vec<u8> {
 fn url_regex() -> &'static Regex {
     static URL_REGEX: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     URL_REGEX.get_or_init(|| {
-        Regex::new(r#"(https?|HTTPS?)://[^\s\"'!*(){}|\\\^<>`]*[^\s\"':,.!?{}|\\\^~\[\]`()<>]"#)
+        Regex::new(r#"(?i:https?|file)://[^\s\"'!*(){}|\\\^<>`]*[^\s\"':,.!?{}|\\\^~\[\]`()<>]"#)
             .expect("valid terminal URL regex")
     })
 }
