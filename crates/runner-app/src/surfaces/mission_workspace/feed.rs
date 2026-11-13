@@ -296,12 +296,17 @@ impl MissionWorkspace {
                                 let row = if let Some(entry) = entry {
                                     this.render_mission_feed_row(entry, cx)
                                 } else if this.feed_rows.is_empty() && index == 0 {
-                                    div()
-                                        .px_4()
-                                        .text_size(theme::text_ui())
-                                        .text_color(theme::faint())
-                                        .child(crate::i18n::text("ui.no_events_yet"))
-                                        .into_any_element()
+                                    if this.show_empty_feed_notice(cx) {
+                                        div()
+                                            .debug_selector(|| "MISSION_NO_EVENTS".into())
+                                            .px_4()
+                                            .text_size(theme::text_ui())
+                                            .text_color(theme::faint())
+                                            .child(crate::i18n::text("ui.no_events_yet"))
+                                            .into_any_element()
+                                    } else {
+                                        div().into_any_element()
+                                    }
                                 } else {
                                     this.render_empty_mission(cx)
                                 };
@@ -538,10 +543,19 @@ impl MissionWorkspace {
         }
     }
 
+    fn show_empty_feed_notice(&self, cx: &App) -> bool {
+        !self.presentation.is_remote()
+            || self
+                .presentation
+                .feed()
+                .is_some_and(|feed| feed.read(cx).history_loaded)
+    }
+
     pub(super) fn feed_item_count(&self) -> usize {
         self.feed_rows.len().max(1)
             + usize::from(
-                self.mission_composer_roster().is_empty()
+                !self.presentation.is_remote()
+                    && self.mission_composer_roster().is_empty()
                     && !self.loading
                     && mission_slot_actions_available(
                         self.mission_view().as_ref().map(|mission| mission.status),
@@ -587,26 +601,24 @@ impl MissionWorkspace {
                     .text_color(theme::muted())
                     .child(description),
             )
-            .when(!self.presentation.is_remote(), |panel| {
-                panel.child(
-                    Button::new("empty-mission-add-role", crate::i18n::text("ui.add_role"))
-                        .variant(ButtonVariant::Primary)
-                        .icon("plus.svg")
-                        .on_press(move |window, cx| {
-                            if let Some(mission) = mission.clone() {
-                                let _ = shell.update(cx, |this, cx| {
-                                    this.open_add_role_modal(
-                                        mission,
-                                        Vec::new(),
-                                        events.clone(),
-                                        window,
-                                        cx,
-                                    )
-                                });
-                            }
-                        }),
-                )
-            })
+            .child(
+                Button::new("empty-mission-add-role", crate::i18n::text("ui.add_role"))
+                    .variant(ButtonVariant::Primary)
+                    .icon("plus.svg")
+                    .on_press(move |window, cx| {
+                        if let Some(mission) = mission.clone() {
+                            let _ = shell.update(cx, |this, cx| {
+                                this.open_add_role_modal(
+                                    mission,
+                                    Vec::new(),
+                                    events.clone(),
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }
+                    }),
+            )
             .into_any_element()
     }
 
