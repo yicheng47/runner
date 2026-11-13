@@ -41,15 +41,23 @@ pub(crate) fn seed_project_trust_at(
     settings: &Path,
     home: Option<&Path>,
 ) -> Result<()> {
-    let cwd = std::fs::canonicalize(cwd)
+    let canonical = std::fs::canonicalize(cwd)
         .map_err(|error| Error::msg(format!("realpath {}: {error}", cwd.display())))?;
-    if is_broad_trust_root(&cwd, home) {
+    let normalized = normalize_non_canonical(cwd)?;
+    if is_broad_trust_root(&canonical, home) || is_broad_trust_root(&normalized, home) {
         log::debug!(
             "skipping broad Antigravity trust root: cwd={}",
             cwd.display()
         );
         return Ok(());
     }
+    let normalized_text = normalized.to_string_lossy();
+    let canonical_text = canonical.to_string_lossy();
+    let candidates: Vec<&str> = if normalized != canonical {
+        vec![normalized_text.as_ref(), canonical_text.as_ref()]
+    } else {
+        vec![canonical_text.as_ref()]
+    };
 
     let _guard = SETTINGS_LOCK
         .lock()
@@ -65,7 +73,7 @@ pub(crate) fn seed_project_trust_at(
             )))
         }
     };
-    let Some(contents) = with_trusted_workspace(&raw, &cwd.to_string_lossy())
+    let Some(contents) = with_trusted_workspaces(&raw, &candidates)
         .map_err(|error| Error::msg(format!("{}: {error}", write_path.display())))?
     else {
         return Ok(());
@@ -73,18 +81,52 @@ pub(crate) fn seed_project_trust_at(
     crate::runtimes::helpers::write_config_atomically(&write_path, contents.as_bytes())
 }
 
-/// `raw` with `workspace` appended to `trustedWorkspaces`, or `None` when it
-/// is already there.
+fn normalize_non_canonical(cwd: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(cwd)
+        .map_err(|error| Error::msg(format!("absolute {}: {error}", cwd.display())))?;
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => {
+                normalized.push(std::path::Component::RootDir.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
+#[cfg(test)]
 fn with_trusted_workspace(raw: &str, workspace: &str) -> Result<Option<String>> {
-    let fresh = || {
-        let document = serde_json::json!({ TRUSTED_WORKSPACES: [workspace] });
+    with_trusted_workspaces(raw, &[workspace])
+}
+
+/// `raw` with each missing entry from `new_workspaces` appended to
+/// `trustedWorkspaces`, or `None` when all of them are already there.
+fn with_trusted_workspaces(raw: &str, new_workspaces: &[&str]) -> Result<Option<String>> {
+    let mut unique = Vec::with_capacity(new_workspaces.len());
+    for workspace in new_workspaces {
+        if !unique.contains(workspace) {
+            unique.push(*workspace);
+        }
+    }
+    if unique.is_empty() {
+        return Ok(None);
+    }
+    let fresh = |entries: &[&str]| {
+        let document = serde_json::json!({ TRUSTED_WORKSPACES: entries });
         Ok(Some(format!(
             "{}\n",
             serde_json::to_string_pretty(&document)?
         )))
     };
     if raw.trim().is_empty() {
-        return fresh();
+        return fresh(&unique);
     }
     let document: Value =
         serde_json::from_str(raw).map_err(|error| Error::msg(format!("parse: {error}")))?;
@@ -98,13 +140,19 @@ fn with_trusted_workspace(raw: &str, workspace: &str) -> Result<Option<String>> 
             .ok_or_else(|| Error::msg("trustedWorkspaces is not an array"))?
             .clone(),
     };
-    if workspaces
-        .iter()
-        .any(|entry| entry.as_str() == Some(workspace))
-    {
+    let mut added = false;
+    for workspace in unique {
+        if !workspaces
+            .iter()
+            .any(|entry| entry.as_str() == Some(workspace))
+        {
+            workspaces.push(Value::String(workspace.into()));
+            added = true;
+        }
+    }
+    if !added {
         return Ok(None);
     }
-    workspaces.push(Value::String(workspace.into()));
     let workspaces = Value::Array(workspaces);
 
     let (members, _) = crate::ops::mcp::json_members(raw)?;
@@ -130,7 +178,13 @@ fn with_trusted_workspace(raw: &str, workspace: &str) -> Result<Option<String>> 
             ),
         );
     } else {
-        return fresh();
+        let entries: Vec<&str> = workspaces
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        return fresh(&entries);
     }
     Ok(Some(out))
 }
@@ -259,18 +313,74 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn symlinked_cwd_seeds_realpath() {
+    fn symlinked_cwd_seeds_both_normalized_and_realpath_idempotently() {
         let temp = tempfile::tempdir().unwrap();
         let target = project(&temp);
         let linked = temp.path().join("linked");
         std::os::unix::fs::symlink(&target, &linked).unwrap();
+        let expected_linked = normalize_non_canonical(&linked).unwrap();
+        assert_ne!(expected_linked, target);
+
         let settings = settings_path(temp.path());
         seed_project_trust_at(&linked, &settings, None).unwrap();
-        let value: Value =
-            serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        let first = std::fs::read_to_string(&settings).unwrap();
+        let value: Value = serde_json::from_str(&first).unwrap();
         assert_eq!(
             value[TRUSTED_WORKSPACES],
-            serde_json::json!([target.to_string_lossy()])
+            serde_json::json!([expected_linked.to_string_lossy(), target.to_string_lossy()])
         );
+
+        // Repeat with the same symlink (and trailing `./`) leaves the file byte-for-byte identical.
+        seed_project_trust_at(&linked.join("."), &settings, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), first);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_cwd_appends_missing_entry_without_disturbing_other_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = project(&temp);
+        let linked = temp.path().join("linked");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        let expected_linked = normalize_non_canonical(&linked).unwrap();
+
+        let settings = settings_path(temp.path());
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        let raw = format!(
+            "{{\n  \"model\": \"x\",\n  \"trustedWorkspaces\": [\n    {}\n  ],\n  \"n\": 1e2\n}}\n",
+            serde_json::to_string(&target.to_string_lossy()).unwrap()
+        );
+        std::fs::write(&settings, &raw).unwrap();
+
+        seed_project_trust_at(&linked, &settings, None).unwrap();
+        let updated = std::fs::read_to_string(&settings).unwrap();
+        assert!(updated.contains("\"n\": 1e2"));
+        let value: Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(
+            value[TRUSTED_WORKSPACES],
+            serde_json::json!([target.to_string_lossy(), expected_linked.to_string_lossy()])
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_home_and_root_are_rejected_as_broad_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let real_home = temp.path().join("real-home");
+        std::fs::create_dir_all(&real_home).unwrap();
+        let home_link = temp.path().join("home-link");
+        std::os::unix::fs::symlink(&real_home, &home_link).unwrap();
+        let cwd_link = temp.path().join("cwd-to-home");
+        std::os::unix::fs::symlink(&real_home, &cwd_link).unwrap();
+
+        let settings = settings_path(&real_home);
+        seed_project_trust_at(&cwd_link, &settings, Some(&real_home)).unwrap();
+        seed_project_trust_at(&cwd_link, &settings, Some(&home_link)).unwrap();
+        seed_project_trust_at(&real_home, &settings, Some(&home_link)).unwrap();
+
+        let root_link = temp.path().join("root-link");
+        std::os::unix::fs::symlink("/", &root_link).unwrap();
+        seed_project_trust_at(&root_link, &settings, Some(&real_home)).unwrap();
+        assert!(!settings.exists());
     }
 }

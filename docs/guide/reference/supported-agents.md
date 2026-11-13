@@ -18,10 +18,11 @@ Every agent page has a **Launch** card and a read-only **Command** preview. Choo
 | --- | --- | --- | --- |
 | Bypass approvals and sandbox | Codex | Off | Chats |
 | Bypass permissions | Claude Code | Off | Chats, every account |
+| Bypass permissions | Antigravity CLI | Off | Chats |
 | Remote plugin catalog | Codex | On | Chats, resumes, missions and forks |
 | Status hooks | Codex, Claude Code, pi, Copilot CLI, OpenCode; Grok on macOS/Linux | On | Chats |
 
-Bypass lets a chat run without asking for permission; Codex also runs outside its sandbox. Enable it only for trusted folders. The Bypass switch applies to every Codex and Claude Code chat, including role-backed chats. Chat starts, resumes and forks strip stored role permission flags; with Bypass off, the agent’s own configuration governs approvals. Missions always use their broad-access permissions and status hooks, regardless of the chat switches.
+Bypass lets a chat run without asking for permission; Codex also runs outside its sandbox. Enable it only for trusted folders. The Bypass switch applies to every Codex, Claude Code and Antigravity CLI chat, including role-backed chats. Chat starts, resumes and forks strip stored role permission flags; with Bypass off, the agent’s own configuration governs approvals. Missions always use their broad-access permissions and status hooks, regardless of the chat switches.
 
 Turn **Remote plugin catalog** off to skip Codex’s catalog download on each launch. Catalog plugins then do not load. Runner adds `-c features.remote_plugin=false` for that process and leaves Codex’s config file untouched.
 

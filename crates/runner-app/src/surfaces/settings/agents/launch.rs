@@ -14,6 +14,11 @@ fn switch_copy(
             "ui.launch_codex_bypass_description",
             "On: --ask-for-approval never --sandbox danger-full-access",
         ),
+        RuntimeLaunchOption::Bypass if runtime == Runtime::Antigravity => (
+            "ui.launch_antigravity_bypass",
+            "ui.launch_antigravity_bypass_description",
+            "On: --dangerously-skip-permissions",
+        ),
         RuntimeLaunchOption::Bypass => (
             "ui.launch_claude_bypass",
             "ui.launch_claude_bypass_description",
@@ -358,7 +363,7 @@ fn flag_copy(flags: &str) -> String {
     }
 }
 
-fn preview_note(note: &RuntimeCommandNote) -> SharedString {
+pub(super) fn preview_note(note: &RuntimeCommandNote) -> SharedString {
     use RuntimeCommandNote as Note;
     let key = match note {
         Note::None => return "".into(),
@@ -371,6 +376,7 @@ fn preview_note(note: &RuntimeCommandNote) -> SharedString {
         Note::MissionFiles => "ui.launch_mission_files",
         Note::CodexBypass => "ui.launch_codex_bypass",
         Note::ClaudeBypass => "ui.launch_claude_bypass",
+        Note::AntigravityBypass => "ui.launch_antigravity_bypass",
         Note::CatalogOff => "ui.launch_catalog_off",
         Note::StatusHooks => "ui.launch_status_hooks_chats",
         Note::HooksBypass => "ui.launch_hooks_bypass",

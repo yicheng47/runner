@@ -18,10 +18,11 @@ Claude Code 与 Codex 是主要集成，启动与提醒时序经过专门调整�
 | --- | --- | --- | --- |
 | 跳过审批和沙盒 | Codex | 关闭 | 聊天 |
 | 跳过权限确认 | Claude Code | 关闭 | 所有账号的聊天 |
+| 跳过权限确认 | Antigravity CLI | 关闭 | 聊天 |
 | 远程插件目录 | Codex | 开启 | 聊天、恢复、任务和分叉 |
 | 状态钩子 | Codex、Claude Code、pi、Copilot CLI、OpenCode；macOS/Linux 上的 Grok | 开启 | 聊天 |
 
-Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅对信任的文件夹开启。Bypass 开关适用于所有 Codex 和 Claude Code 聊天，包括使用角色的聊天。聊天启动、恢复和分叉都会去除角色已保存的权限参数；关闭 Bypass 时，由智能体自身配置决定审批行为。任务始终使用宽松权限和状态钩子，不受聊天开关影响。
+Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅对信任的文件夹开启。Bypass 开关适用于所有 Codex、Claude Code 和 Antigravity CLI 聊天，包括使用角色的聊天。聊天启动、恢复和分叉都会去除角色已保存的权限参数；关闭 Bypass 时，由智能体自身配置决定审批行为。任务始终使用宽松权限和状态钩子，不受聊天开关影响。
 
 关闭 **远程插件目录** 可跳过 Codex 每次启动时的目录下载，但目录中的插件也将不再加载。Runner 仅为该进程添加 `-c features.remote_plugin=false`，不修改 Codex 配置文件。
 
