@@ -533,13 +533,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "",
+                "gemini-4-carbon",
+                "gemini-4-argon",
+                "gemini-4-hydrogen",
+                "gemini-pro-orchestrator",
+                "gemini-pro-orchestrator-argon",
                 "gemini-3.8-flash",
-                "gemini-3.7-flash",
-                "gemini-3.6-flash",
-                "gemini-3.1-pro",
-                "claude-sonnet-4-6",
-                "claude-opus-4-6-thinking",
-                "gpt-oss-120b-medium",
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "gpt-oss-120b",
             ]
         );
         let efforts = |model: &str| {
@@ -549,11 +551,16 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(efforts(""), [""]);
-        assert_eq!(efforts("gemini-3.8-flash"), ["", "low", "medium", "high"]);
-        assert_eq!(efforts("gemini-3.1-pro"), ["", "low", "high"]);
+        assert_eq!(
+            efforts("gemini-4-hydrogen"),
+            ["", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(efforts("claude-opus-5-5"), ["", "low", "medium", "high"]);
+        assert_eq!(efforts("gpt-oss-120b"), ["", "medium"]);
         for model in [
-            "claude-sonnet-4-6",
-            "claude-opus-4-6-thinking",
+            "gemini-pro-orchestrator",
+            "gemini-pro-orchestrator-argon",
+            "gemini-4-hydrogen-xhigh",
             "gpt-oss-120b-medium",
         ] {
             assert_eq!(efforts(model), [""], "{model}");

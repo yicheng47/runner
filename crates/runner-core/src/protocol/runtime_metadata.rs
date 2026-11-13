@@ -335,18 +335,41 @@ pub mod claude_code {
     pub const SKILL_DIRS: &[&str] = &[".claude/skills"];
 }
 pub const ANTIGRAVITY_MODELS: &[(&str, &[&str])] = &[
+    ("gemini-4-carbon", &["low", "medium", "high"]),
+    ("gemini-4-argon", &["low", "medium", "high"]),
+    ("gemini-4-hydrogen", &["low", "medium", "high", "xhigh"]),
+    ("gemini-pro-orchestrator", &[]),
+    ("gemini-pro-orchestrator-argon", &[]),
     ("gemini-3.8-flash", &["low", "medium", "high"]),
-    ("gemini-3.7-flash", &["low", "medium", "high"]),
-    ("gemini-3.6-flash", &["low", "medium", "high"]),
-    ("gemini-3.1-pro", &["low", "high"]),
-    ("claude-sonnet-4-6", &[]),
-    ("claude-opus-4-6-thinking", &[]),
-    ("gpt-oss-120b-medium", &[]),
+    ("claude-opus-5-5", &["low", "medium", "high"]),
+    ("claude-sonnet-5-5", &["low", "medium", "high"]),
+    ("gpt-oss-120b", &["medium"]),
 ];
-pub const ANTIGRAVITY_EFFORTS: &[&str] = &["low", "medium", "high"];
+pub const ANTIGRAVITY_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub mod antigravity {
     use super::super::runtime_options::*;
     use super::*;
+
+    /// Split an Antigravity effort-suffixed model ID such as
+    /// `gemini-4-hydrogen-xhigh` into `(base_model, effort_level)`.
+    pub fn split_leveled_model(id: &str) -> Option<(&str, &str)> {
+        ANTIGRAVITY_EFFORTS.iter().find_map(|&level| {
+            let base = id.strip_suffix(level)?.strip_suffix('-')?;
+            (!base.is_empty()).then_some((base, level))
+        })
+    }
+
+    /// Split an Antigravity `agy models` `(id, label)` pair when `id` ends with
+    /// `-<level>` and `label` ends with ` (<level>)` (ASCII case-insensitive).
+    pub fn split_leveled_model_with_label<'a>(
+        id: &'a str,
+        label: &'a str,
+    ) -> Option<(&'a str, &'a str, &'a str)> {
+        let (base_id, level) = split_leveled_model(id)?;
+        let (base_label, tag) = label.strip_suffix(')')?.rsplit_once(" (")?;
+        (!base_label.is_empty() && tag.eq_ignore_ascii_case(level))
+            .then_some((base_id, base_label, level))
+    }
     pub static PERMISSIONS: Permissions = Permissions {
         offered: &[
             PermissionMode::Default,

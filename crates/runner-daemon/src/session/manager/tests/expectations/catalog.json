@@ -185,6 +185,49 @@
         "description": "Use the agent's own default model."
       },
       {
+        "value": "gemini-4-carbon",
+        "label": "gemini-4-carbon",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "value": "gemini-4-argon",
+        "label": "gemini-4-argon",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      {
+        "value": "gemini-4-hydrogen",
+        "label": "gemini-4-hydrogen",
+        "description": null,
+        "supported_efforts": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      {
+        "value": "gemini-pro-orchestrator",
+        "label": "gemini-pro-orchestrator",
+        "description": null,
+        "supported_efforts": []
+      },
+      {
+        "value": "gemini-pro-orchestrator-argon",
+        "label": "gemini-pro-orchestrator-argon",
+        "description": null,
+        "supported_efforts": []
+      },
+      {
         "value": "gemini-3.8-flash",
         "label": "gemini-3.8-flash",
         "description": null,
@@ -195,8 +238,8 @@
         ]
       },
       {
-        "value": "gemini-3.7-flash",
-        "label": "gemini-3.7-flash",
+        "value": "claude-opus-5-5",
+        "label": "claude-opus-5-5",
         "description": null,
         "supported_efforts": [
           "low",
@@ -205,8 +248,8 @@
         ]
       },
       {
-        "value": "gemini-3.6-flash",
-        "label": "gemini-3.6-flash",
+        "value": "claude-sonnet-5-5",
+        "label": "claude-sonnet-5-5",
         "description": null,
         "supported_efforts": [
           "low",
@@ -215,31 +258,12 @@
         ]
       },
       {
-        "value": "gemini-3.1-pro",
-        "label": "gemini-3.1-pro",
+        "value": "gpt-oss-120b",
+        "label": "gpt-oss-120b",
         "description": null,
         "supported_efforts": [
-          "low",
-          "high"
+          "medium"
         ]
-      },
-      {
-        "value": "claude-sonnet-4-6",
-        "label": "claude-sonnet-4-6",
-        "description": null,
-        "supported_efforts": []
-      },
-      {
-        "value": "claude-opus-4-6-thinking",
-        "label": "claude-opus-4-6-thinking",
-        "description": null,
-        "supported_efforts": []
-      },
-      {
-        "value": "gpt-oss-120b-medium",
-        "label": "gpt-oss-120b-medium",
-        "description": null,
-        "supported_efforts": []
       }
     ],
     "efforts": [
@@ -261,6 +285,16 @@
       {
         "value": "high",
         "label": "high",
+        "description": null
+      },
+      {
+        "value": "xhigh",
+        "label": "xhigh",
+        "description": null
+      },
+      {
+        "value": "max",
+        "label": "max",
         "description": null
       }
     ]

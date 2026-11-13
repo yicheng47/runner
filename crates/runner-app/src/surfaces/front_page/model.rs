@@ -435,21 +435,12 @@ impl RuntimeChoice {
         &self,
         model: &str,
     ) -> Vec<runner_core::protocol::runtime::RuntimeCatalogOption> {
-        let model = model.trim();
-        let supported = self
-            .models
-            .iter()
-            .find(|option| option.value == model)
-            .and_then(|option| option.supported_efforts.as_ref());
-        self.efforts
-            .iter()
-            .filter(|effort| {
-                effort.value.is_empty()
-                    || (!model.is_empty()
-                        && supported.is_none_or(|levels| levels.contains(&effort.value)))
-            })
-            .cloned()
-            .collect()
+        runner_core::protocol::runtime::filter_efforts_for_model(
+            self.name,
+            &self.models,
+            &self.efforts,
+            model,
+        )
     }
 }
 

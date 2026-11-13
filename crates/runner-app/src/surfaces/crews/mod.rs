@@ -104,6 +104,8 @@ struct SlotOverrideForm {
     runtime: Option<String>,
     runtime_select: Entity<StyledSelect>,
     model: Entity<TextField>,
+    /// Last trimmed model text observed for distinguishing real model edits from cursor/focus updates.
+    last_model: String,
     model_field: Entity<ModelField>,
     /// The effort override; empty inherits.
     effort: String,

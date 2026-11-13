@@ -32,7 +32,9 @@ pub(crate) fn discovery_runtimes() -> Vec<Runtime> {
 }
 const REFRESH_SECONDS: i64 = 10 * 60;
 const MAX_OUTPUT_BYTES: u64 = 32 * 1024 * 1024;
-const CACHE_VERSION: u32 = 4;
+// Bump when a runtime parser's grouping or ID normalization changes so cached
+// entries refresh immediately.
+const CACHE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ModelSource {

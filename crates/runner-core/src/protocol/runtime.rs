@@ -325,22 +325,34 @@ impl RuntimeCatalogEntry {
         super::runtime_metadata::catalog_for(runtime).map(RuntimeCatalog::into_entry)
     }
     pub fn efforts_for_model(&self, model: &str) -> Vec<RuntimeCatalogOption> {
-        let model = model.trim();
-        let supported = self
-            .models
-            .iter()
-            .find(|entry| entry.value == model)
-            .and_then(|entry| entry.supported_efforts.as_ref());
-        self.efforts
-            .iter()
-            .filter(|effort| {
-                effort.value.is_empty()
-                    || (!model.is_empty()
-                        && supported.is_none_or(|levels| levels.contains(&effort.value)))
-            })
-            .cloned()
-            .collect()
+        filter_efforts_for_model(self.name, &self.models, &self.efforts, model)
     }
+}
+
+/// Filter a runtime's effort options for `model`, preserving the default empty
+/// entry and disabling conflicting effort choices on leveled Antigravity IDs.
+pub fn filter_efforts_for_model(
+    runtime: Runtime,
+    models: &[RuntimeCatalogOption],
+    efforts: &[RuntimeCatalogOption],
+    model: &str,
+) -> Vec<RuntimeCatalogOption> {
+    let model = model.trim();
+    let matched = models.iter().find(|entry| entry.value == model);
+    let leveled_suffix = (runtime == Runtime::Antigravity && matched.is_none())
+        .then(|| super::runtime_metadata::antigravity::split_leveled_model(model))
+        .flatten();
+    let supported = matched.and_then(|entry| entry.supported_efforts.as_ref());
+    efforts
+        .iter()
+        .filter(|effort| {
+            effort.value.is_empty()
+                || (!model.is_empty()
+                    && leveled_suffix.is_none()
+                    && supported.is_none_or(|levels| levels.contains(&effort.value)))
+        })
+        .cloned()
+        .collect()
 }
 pub fn filter_selectable_runtime_catalog(
     catalog: Vec<RuntimeCatalogEntry>,

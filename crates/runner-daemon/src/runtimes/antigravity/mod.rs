@@ -1,4 +1,3 @@
-#[cfg(test)]
 pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_EFFORTS;
 pub(crate) mod agy_capture;
 pub(crate) mod agy_status;
@@ -132,9 +131,15 @@ impl RuntimeAdapter for Antigravity {
         };
         let mut out = vec!["--model".into(), m.to_string()];
         let effort = effort.map(str::to_ascii_lowercase).filter(|e| {
-            ANTIGRAVITY_MODELS
-                .iter()
-                .any(|(id, levels)| *id == m && levels.contains(&e.as_str()))
+            if !ANTIGRAVITY_EFFORTS.contains(&e.as_str()) {
+                return false;
+            }
+            if let Some((_, levels)) = ANTIGRAVITY_MODELS.iter().find(|(id, _)| *id == m) {
+                levels.contains(&e.as_str())
+            } else {
+                runner_core::protocol::runtime_metadata::antigravity::split_leveled_model(m)
+                    .is_none()
+            }
         });
         if let Some(e) = effort {
             out.push("--effort".into());
