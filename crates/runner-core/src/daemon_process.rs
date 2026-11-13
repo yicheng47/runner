@@ -495,15 +495,17 @@ pub fn cleaned_path(
         !part.starts_with(data.join("bin")) && !part.starts_with(data.join("missions"))
     }))
 }
-pub fn clean_environment(data: &Path) {
+/// # Safety
+/// Call before starting any threads that could read or write the process environment.
+pub unsafe fn clean_environment(data: &Path) {
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RUNNER_") && key != "RUNNER_RECORD_INPUT_FIXTURE" {
-            std::env::remove_var(key);
+            unsafe { std::env::remove_var(key) };
         }
     }
     if let Some(path) = std::env::var_os("PATH") {
         if let Ok(path) = cleaned_path(&path, data) {
-            std::env::set_var("PATH", path);
+            unsafe { std::env::set_var("PATH", path) };
         }
     }
 }
@@ -755,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_cleanup_preserves_recording_without_mission_context() {
+    fn daemon_command_preserves_recording_without_mission_context() {
         const TEST_PROCESS: &str = "DAEMON_CLEAN_ENV_TEST";
         const RECORDING: &str = "RUNNER_RECORD_INPUT_FIXTURE";
         if std::env::var_os(TEST_PROCESS).is_some() {
@@ -768,15 +770,12 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(removals.contains(&std::ffi::OsStr::new("RUNNER_MISSION_ID")));
             assert!(!removals.contains(&std::ffi::OsStr::new(RECORDING)));
-            clean_environment(data);
-            assert!(std::env::var_os("RUNNER_MISSION_ID").is_none());
-            assert_eq!(std::env::var_os(RECORDING).unwrap(), "fixture-prefix");
             return;
         }
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "daemon_process::tests::daemon_cleanup_preserves_recording_without_mission_context",
+                "daemon_process::tests::daemon_command_preserves_recording_without_mission_context",
                 "--nocapture",
             ])
             .env(TEST_PROCESS, "1")

@@ -878,23 +878,25 @@ impl SessionManager {
         let rt_session = self.live_runtime_session(session_id)?;
         self.runtime.send_bytes(&rt_session, payload)?;
         std::thread::sleep(std::time::Duration::from_millis(120));
-        let result = if let Some(session) = self.session_state(session_id) {
-            let mut session = session.lock().unwrap();
-            let result = self
+        let result = match self.session_state(session_id) {
+            Some(session) => {
+                let mut session = session.lock().unwrap();
+                let result = self
+                    .runtime
+                    .send_key(&rt_session, "Enter")
+                    .map_err(Into::into);
+                if result.is_ok() {
+                    session.model.apply(
+                        SessionEvent::ArmCompletion,
+                        crate::session::clock::state_now(),
+                    );
+                }
+                result
+            }
+            _ => self
                 .runtime
                 .send_key(&rt_session, "Enter")
-                .map_err(Into::into);
-            if result.is_ok() {
-                session.model.apply(
-                    SessionEvent::ArmCompletion,
-                    crate::session::clock::state_now(),
-                );
-            }
-            result
-        } else {
-            self.runtime
-                .send_key(&rt_session, "Enter")
-                .map_err(Into::into)
+                .map_err(Into::into),
         };
         if result.is_ok() {
             if let Some(ctx) = self.rollout_capture_context(session_id) {

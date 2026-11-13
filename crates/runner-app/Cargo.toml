@@ -7,6 +7,9 @@ license.workspace = true
 publish = false
 default-run = "Runner"
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "Runner"
 path = "src/main.rs"

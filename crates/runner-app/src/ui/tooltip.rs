@@ -111,9 +111,9 @@ impl RenderOnce for Tooltip {
             .relative()
             .when(expand, |trigger| trigger.min_w(px(0.)).flex_1())
             .when(!focused, |trigger| {
-                trigger.tooltip(move |_, cx| {
-                    if let Some((content, interval)) = refresh.clone() {
-                        cx.new(move |cx| {
+                trigger.tooltip(move |_, cx| match refresh.clone() {
+                    Some((content, interval)) => cx
+                        .new(move |cx| {
                             let refresh_task = cx.spawn(async move |weak, cx| loop {
                                 cx.background_executor().timer(interval).await;
                                 if weak.update(cx, |_, cx| cx.notify()).is_err() {
@@ -125,13 +125,12 @@ impl RenderOnce for Tooltip {
                                 _refresh_task: refresh_task,
                             }
                         })
-                        .into()
-                    } else {
-                        cx.new(|_| TooltipView {
+                        .into(),
+                    _ => cx
+                        .new(|_| TooltipView {
                             content: hover_content.clone(),
                         })
-                        .into()
-                    }
+                        .into(),
                 })
             })
             .child(self.child)

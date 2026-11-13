@@ -282,13 +282,16 @@ impl NativeRoot {
             }
             self.sync_active_project_from_active_tab(cx);
             self.set_route(AppRoute::Chat, cx);
-            if let Err(error) = self
+            match self
                 .persist_active_tab(cx)
                 .and_then(|_| self.ensure_active_tab_attached(window, cx))
             {
-                self.chat_error = Some(error.to_string().into());
-            } else {
-                self.focus_drawer_terminal(session_id, window, cx);
+                Err(error) => {
+                    self.chat_error = Some(error.to_string().into());
+                }
+                _ => {
+                    self.focus_drawer_terminal(session_id, window, cx);
+                }
             }
             cx.notify();
             return true;

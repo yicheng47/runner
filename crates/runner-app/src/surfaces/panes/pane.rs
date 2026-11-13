@@ -793,8 +793,8 @@ impl NativeRoot {
                     } => {
                         if Runtime::parse(&entry.agent_runtime).is_some_and(Runtime::is_shell) {
                             None
-                        } else if let Some(overlay) =
-                            Runtime::parse(&entry.agent_runtime).and_then(|runtime| {
+                        } else {
+                            match Runtime::parse(&entry.agent_runtime).and_then(|runtime| {
                                 self.agent_recovery_overlay(
                                     &pane_id,
                                     &session_id,
@@ -802,70 +802,81 @@ impl NativeRoot {
                                     cx.weak_entity(),
                                     cx,
                                 )
-                            })
-                        {
-                            Some(overlay.into_any_element())
-                        } else {
-                            let resume_root = cx.entity();
-                            let archive_root = resume_root.clone();
-                            let resume_id = session_id.clone();
-                            let archive_id = session_id.clone();
-                            let resume_pane = pane_id.clone();
-                            Some(
-                                SessionOverlay::ended(
-                                    format!("ended-{session_id}"),
-                                    entry
-                                        .local
-                                        .as_ref()
-                                        .and_then(|entry| self.claude_paused_text(entry, cx))
-                                        .map_or_else(
-                                            || ended_subtitle(status, resumable, exit_code),
-                                            |account| {
-                                                if !resumable || status == SessionStatus::Crashed {
-                                                    format!(
-                                                        "{} {account}",
-                                                        ended_subtitle(
-                                                            status, resumable, exit_code
-                                                        )
+                            }) {
+                                Some(overlay) => Some(overlay.into_any_element()),
+                                _ => {
+                                    let resume_root = cx.entity();
+                                    let archive_root = resume_root.clone();
+                                    let resume_id = session_id.clone();
+                                    let archive_id = session_id.clone();
+                                    let resume_pane = pane_id.clone();
+                                    Some(
+                                        SessionOverlay::ended(
+                                            format!("ended-{session_id}"),
+                                            entry
+                                                .local
+                                                .as_ref()
+                                                .and_then(|entry| {
+                                                    self.claude_paused_text(entry, cx)
+                                                })
+                                                .map_or_else(
+                                                    || ended_subtitle(status, resumable, exit_code),
+                                                    |account| {
+                                                        if !resumable
+                                                            || status == SessionStatus::Crashed
+                                                        {
+                                                            format!(
+                                                                "{} {account}",
+                                                                ended_subtitle(
+                                                                    status, resumable, exit_code
+                                                                )
+                                                            )
+                                                        } else {
+                                                            account
+                                                        }
+                                                    },
+                                                ),
+                                            move |window, cx| {
+                                                resume_root.update(cx, |this, cx| {
+                                                    this.resume_chat(
+                                                        &resume_pane,
+                                                        &resume_id,
+                                                        window,
+                                                        cx,
                                                     )
-                                                } else {
-                                                    account
-                                                }
+                                                });
                                             },
-                                        ),
-                                    move |window, cx| {
-                                        resume_root.update(cx, |this, cx| {
-                                            this.resume_chat(&resume_pane, &resume_id, window, cx)
-                                        });
-                                    },
-                                    move |window, cx| {
-                                        archive_root.update(cx, |this, cx| {
-                                            this.archive_chat_sessions(
-                                                vec![archive_id.clone()],
-                                                window,
-                                                cx,
-                                            )
-                                        });
-                                    },
-                                )
-                                .when_some(
-                                    start_action_shortcut(
-                                        "resume-session",
-                                        &self.settings(cx).keymap_overrides,
-                                    ),
-                                    |overlay, shortcut| overlay.resume_shortcut(shortcut),
-                                )
-                                .actions_visible(
-                                    self.front_page_client(cx).supports(&["resume"]),
-                                    self.front_page_client(cx).supports(&["archive", "layout"]),
-                                )
-                                .when(cfg!(test), |overlay| {
-                                    overlay.primary_debug_selector(format!(
-                                        "BUTTON:ended-{session_id}-resume"
-                                    ))
-                                })
-                                .into_any_element(),
-                            )
+                                            move |window, cx| {
+                                                archive_root.update(cx, |this, cx| {
+                                                    this.archive_chat_sessions(
+                                                        vec![archive_id.clone()],
+                                                        window,
+                                                        cx,
+                                                    )
+                                                });
+                                            },
+                                        )
+                                        .when_some(
+                                            start_action_shortcut(
+                                                "resume-session",
+                                                &self.settings(cx).keymap_overrides,
+                                            ),
+                                            |overlay, shortcut| overlay.resume_shortcut(shortcut),
+                                        )
+                                        .actions_visible(
+                                            self.front_page_client(cx).supports(&["resume"]),
+                                            self.front_page_client(cx)
+                                                .supports(&["archive", "layout"]),
+                                        )
+                                        .when(cfg!(test), |overlay| {
+                                            overlay.primary_debug_selector(format!(
+                                                "BUTTON:ended-{session_id}-resume"
+                                            ))
+                                        })
+                                        .into_any_element(),
+                                    )
+                                }
+                            }
                         }
                     }
                     PaneOverlayState::None => None,

@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 alacritty_terminal = "0.26"
 anyhow = "1"

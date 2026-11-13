@@ -83,8 +83,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
     .join()
     .unwrap();
     capture.drain();
-    let events = std::mem::take(&mut *capture.0.lock().unwrap());
-    events
+    std::mem::take(&mut *capture.0.lock().unwrap())
 }
 
 #[test]

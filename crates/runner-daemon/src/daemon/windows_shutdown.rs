@@ -68,7 +68,7 @@ struct WindowState {
 }
 
 unsafe fn message_loop(mut state: WindowState, ready: mpsc::SyncSender<io::Result<usize>>) {
-    let instance = GetModuleHandleW(null());
+    let instance = unsafe { GetModuleHandleW(null()) };
     let class: Vec<u16> = format!("RunnerSessionEnd-{}\0", ulid::Ulid::new())
         .encode_utf16()
         .collect();
@@ -76,34 +76,36 @@ unsafe fn message_loop(mut state: WindowState, ready: mpsc::SyncSender<io::Resul
         lpfnWndProc: Some(window_proc),
         hInstance: instance,
         lpszClassName: class.as_ptr(),
-        ..std::mem::zeroed()
+        ..unsafe { std::mem::zeroed() }
     };
-    if RegisterClassW(&descriptor) == 0 {
+    if unsafe { RegisterClassW(&descriptor) } == 0 {
         let _ = ready.send(Err(io::Error::last_os_error()));
         return;
     }
     // No WS_VISIBLE and no parent: broadcasts do not reach HWND_MESSAGE windows.
-    let hwnd = CreateWindowExW(
-        0,
-        class.as_ptr(),
-        class.as_ptr(),
-        WS_OVERLAPPED,
-        0,
-        0,
-        0,
-        0,
-        null_mut(),
-        null_mut(),
-        instance,
-        (&mut state as *mut WindowState).cast(),
-    );
+    let hwnd = unsafe {
+        CreateWindowExW(
+            0,
+            class.as_ptr(),
+            class.as_ptr(),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            instance,
+            (&mut state as *mut WindowState).cast(),
+        )
+    };
     if hwnd.is_null() {
         let _ = ready.send(Err(io::Error::last_os_error()));
     } else {
         let _ = ready.send(Ok(hwnd as usize));
-        let mut message = std::mem::zeroed();
+        let mut message = unsafe { std::mem::zeroed() };
         loop {
-            let result = GetMessageW(&mut message, null_mut(), 0, 0);
+            let result = unsafe { GetMessageW(&mut message, null_mut(), 0, 0) };
             if result <= 0 {
                 if result < 0 {
                     log::error!(
@@ -113,12 +115,14 @@ unsafe fn message_loop(mut state: WindowState, ready: mpsc::SyncSender<io::Resul
                 }
                 break;
             }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
+            unsafe {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
         }
-        DestroyWindow(hwnd);
+        unsafe { DestroyWindow(hwnd) };
     }
-    UnregisterClassW(class.as_ptr(), instance);
+    unsafe { UnregisterClassW(class.as_ptr(), instance) };
 }
 
 unsafe extern "system" fn window_proc(
@@ -128,47 +132,47 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     if message == WM_NCCREATE {
-        let create = &*(lparam as *const CREATESTRUCTW);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
+        let create = unsafe { &*(lparam as *const CREATESTRUCTW) };
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize) };
     }
-    let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+    let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
     if !state.is_null() {
         match message {
             WM_QUERYENDSESSION => {
-                (*state).session_end.query();
+                unsafe { (*state).session_end.query() };
                 log::info!("runnerd WM_QUERYENDSESSION flags={:#x}", lparam as u32);
                 return 1;
             }
             WM_ENDSESSION => {
                 if wparam == 0 {
-                    (*state).session_end.cancel();
+                    unsafe { (*state).session_end.cancel() };
                     log::info!("runnerd WM_ENDSESSION cancelled");
                 } else {
-                    (*state).session_end.confirm();
+                    unsafe { (*state).session_end.confirm() };
                     log::info!(
                         "runnerd WM_ENDSESSION flags={:#x}; awaiting resume stamp",
                         lparam as u32
                     );
-                    if let Some(signal) = (*state).signal.take() {
+                    if let Some(signal) = unsafe { (*state).signal.take() } {
                         let _ = signal.send(());
                     }
-                    if !(*state).session_end.wait_for_stamp(STAMP_TIMEOUT) {
+                    if !unsafe { (*state).session_end.wait_for_stamp(STAMP_TIMEOUT) } {
                         log::error!("runnerd Windows shutdown resume stamp failed or exceeded 4s");
                     }
                 }
                 return 0;
             }
             WM_DESTROY => {
-                PostQuitMessage(0);
+                unsafe { PostQuitMessage(0) };
                 return 0;
             }
             WM_NCDESTROY => {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
             }
             _ => {}
         }
     }
-    DefWindowProcW(hwnd, message, wparam, lparam)
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
 #[cfg(test)]

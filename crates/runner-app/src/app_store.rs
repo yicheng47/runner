@@ -467,15 +467,18 @@ impl AppStore {
                     .update(cx, |this, cx| {
                         let mut labels_changed = false;
                         for id in changed {
-                            if let Some(terminal) = this.bridge.session(&id) {
-                                let label =
-                                    (terminal.title(), terminal.live_cwd(), terminal.control());
-                                if this.terminal_labels.get(&id) != Some(&label) {
-                                    this.terminal_labels.insert(id.clone(), label);
-                                    labels_changed = true;
+                            match this.bridge.session(&id) {
+                                Some(terminal) => {
+                                    let label =
+                                        (terminal.title(), terminal.live_cwd(), terminal.control());
+                                    if this.terminal_labels.get(&id) != Some(&label) {
+                                        this.terminal_labels.insert(id.clone(), label);
+                                        labels_changed = true;
+                                    }
                                 }
-                            } else {
-                                labels_changed |= this.terminal_labels.remove(&id).is_some();
+                                _ => {
+                                    labels_changed |= this.terminal_labels.remove(&id).is_some();
+                                }
                             }
                             this.terminal_updates.update(cx, |_, cx| cx.emit(id));
                         }

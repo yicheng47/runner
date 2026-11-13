@@ -60,7 +60,7 @@ impl Sample for crate::remote::RemoteLogout {
 trait Sample {
     fn sample() -> Self;
 }
-macro_rules! scalar { ($($ty:ty => $value:expr),* $(,)?) => { $(impl Sample for $ty { fn sample() -> Self { $value } })* }; }
+macro_rules! scalar { ($($ty:ty => $value:expr_2021),* $(,)?) => { $(impl Sample for $ty { fn sample() -> Self { $value } })* }; }
 scalar!(() => (), bool => true, u8 => 7, u16 => 80, u32 => 3, u64 => 7, usize => 2, i32 => -2, i64 => -3, f64 => 42.5, String => "样例\nvalue".into(), PathBuf => PathBuf::from("sample/路径"), serde_json::Value => serde_json::json!({"nested": [null, true, 42, "样例"]}), chrono::DateTime<chrono::Utc> => "2026-10-05T00:00:00Z".parse().unwrap());
 impl<T: Sample> Sample for Option<T> {
     fn sample() -> Self {
@@ -94,7 +94,7 @@ impl<A: Sample, B: Sample> Sample for Result<A, B> {
 }
 macro_rules! record { ($ty:ident { $($field:ident),* $(,)? }) => { impl Sample for $ty { fn sample() -> Self { Self { $($field: Sample::sample()),* } } } }; }
 macro_rules! variant {
-    ($ty:ident => $value:expr) => {
+    ($ty:ident => $value:expr_2021) => {
         impl Sample for $ty {
             fn sample() -> Self {
                 $value
@@ -769,7 +769,7 @@ impl Sample for MissionRoleChange {
 }
 
 macro_rules! round_trip_api {
-    ($( $name:ident($( $arg:ident: $client_ty:ty => $wire_ty:ty = $convert:block ),*) -> $out:ty [$fast:literal] => $handler:expr; )*) => {
+    ($( $name:ident($( $arg:ident: $client_ty:ty => $wire_ty:ty = $convert:block ),*) -> $out:ty [$fast:literal] => $handler:expr_2021; )*) => {
         #[test]
         fn every_request_and_success_or_error_response_crosses_json() {
             $(round_trip(Request::$name { $($arg: <$wire_ty>::sample()),* });

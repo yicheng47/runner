@@ -7,6 +7,9 @@ license.workspace = true
 description = "Bundled `runner` CLI for operating Runner and participating in mission coordination."
 autobins = false
 
+[lints]
+workspace = true
+
 [lib]
 name = "runner_cli"
 path = "src/lib.rs"

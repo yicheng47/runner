@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn sidebar_nodes(overview: &Overview) -> Vec<SidebarNode> {
-    let nodes = overview.sidebar.clone().unwrap_or_else(|| {
+    overview.sidebar.clone().unwrap_or_else(|| {
         let mut nodes = overview
             .projects
             .iter()
@@ -34,8 +34,7 @@ pub(crate) fn sidebar_nodes(overview: &Overview) -> Vec<SidebarNode> {
             });
         }
         nodes
-    });
-    nodes
+    })
 }
 
 impl RemoteClient {

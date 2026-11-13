@@ -10,9 +10,13 @@ members = [
 
 [workspace.package]
 version = "0.19.8"
-edition = "2021"
+edition = "2024"
 authors = ["Jason Wang <jason3gb@gmail.com>"]
 license = "MIT"
+
+[workspace.lints.clippy]
+# Keep let-chain rewrites separate from the edition migration.
+collapsible_if = "allow"
 
 [workspace.dependencies]
 chrono = { version = "0.4", features = ["serde"] }

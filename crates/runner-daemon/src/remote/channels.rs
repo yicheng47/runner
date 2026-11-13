@@ -569,70 +569,73 @@ fn authorize(
     if Instant::now() >= entry.deadline {
         return Err(Reject::BadHandshake);
     }
-    if let Some((pair, generation)) = entry.pair.take() {
-        if generation != machine.pairing_generation {
-            return Err(Reject::BadHandshake);
-        }
-        if machine.trust.pin_locked {
-            return Err(Reject::PinLocked);
-        }
-        match pair.finish(frame) {
-            Ok((transport, device)) => {
-                machine
-                    .trust
-                    .record_paired(&device.public_key, device.name, clock.now())
-                    .map_err(|_| Reject::BadHandshake)?;
-                *paired = true;
-                Ok((
-                    Some(transport),
-                    None,
-                    remote::fingerprint(&device.public_key),
-                ))
+    match entry.pair.take() {
+        Some((pair, generation)) => {
+            if generation != machine.pairing_generation {
+                return Err(Reject::BadHandshake);
             }
-            Err(Reject::WrongPin) => {
-                machine.trust.record_failed_pin();
-                Err(if machine.trust.pin_locked {
-                    Reject::PinLocked
-                } else {
-                    Reject::WrongPin
-                })
+            if machine.trust.pin_locked {
+                return Err(Reject::PinLocked);
             }
-            Err(reason) => Err(reason),
-        }
-    } else {
-        let identity = machine.identity.as_ref().ok_or(Reject::NoPin)?;
-        let key = identity.host_key().map_err(|_| Reject::BadHandshake)?;
-        let keys = NoiseKeys {
-            private: &key.private,
-            fixed_ephemeral: None,
-        };
-        match frame.first() {
-            Some(3) => {
-                let pin = identity.pin.as_ref().ok_or(Reject::NoPin)?;
-                if machine.trust.pin_locked {
-                    return Err(Reject::PinLocked);
+            match pair.finish(frame) {
+                Ok((transport, device)) => {
+                    machine
+                        .trust
+                        .record_paired(&device.public_key, device.name, clock.now())
+                        .map_err(|_| Reject::BadHandshake)?;
+                    *paired = true;
+                    Ok((
+                        Some(transport),
+                        None,
+                        remote::fingerprint(&device.public_key),
+                    ))
                 }
-                let mut scalar: [u8; 32] = rand::random();
-                scalar[31] &= 15;
-                while scalar == [0; 32] {
-                    scalar = rand::random();
-                    scalar[31] &= 15;
-                }
-                let (pair, reply) = HostPair::start(keys, &pin.0, frame, scalar)?;
-                entry.pair = Some((pair, machine.pairing_generation));
-                Ok((None, Some(reply), String::new()))
-            }
-            Some(1) => {
-                let (transport, accept, public) = channel::connect(keys, frame, |key| {
-                    machine.trust.devices.iter().any(|d| {
-                        d.public_key == remote::encode_key(key)
-                            && unconfirmed.get(&d.fingerprint).is_none_or(|p| p.confirmed)
+                Err(Reject::WrongPin) => {
+                    machine.trust.record_failed_pin();
+                    Err(if machine.trust.pin_locked {
+                        Reject::PinLocked
+                    } else {
+                        Reject::WrongPin
                     })
-                })?;
-                let fingerprint = remote::fingerprint(&public);
-                Ok((Some(transport), Some(accept), fingerprint))
+                }
+                Err(reason) => Err(reason),
             }
-            _ => Err(Reject::BadHandshake),
+        }
+        _ => {
+            let identity = machine.identity.as_ref().ok_or(Reject::NoPin)?;
+            let key = identity.host_key().map_err(|_| Reject::BadHandshake)?;
+            let keys = NoiseKeys {
+                private: &key.private,
+                fixed_ephemeral: None,
+            };
+            match frame.first() {
+                Some(3) => {
+                    let pin = identity.pin.as_ref().ok_or(Reject::NoPin)?;
+                    if machine.trust.pin_locked {
+                        return Err(Reject::PinLocked);
+                    }
+                    let mut scalar: [u8; 32] = rand::random();
+                    scalar[31] &= 15;
+                    while scalar == [0; 32] {
+                        scalar = rand::random();
+                        scalar[31] &= 15;
+                    }
+                    let (pair, reply) = HostPair::start(keys, &pin.0, frame, scalar)?;
+                    entry.pair = Some((pair, machine.pairing_generation));
+                    Ok((None, Some(reply), String::new()))
+                }
+                Some(1) => {
+                    let (transport, accept, public) = channel::connect(keys, frame, |key| {
+                        machine.trust.devices.iter().any(|d| {
+                            d.public_key == remote::encode_key(key)
+                                && unconfirmed.get(&d.fingerprint).is_none_or(|p| p.confirmed)
+                        })
+                    })?;
+                    let fingerprint = remote::fingerprint(&public);
+                    Ok((Some(transport), Some(accept), fingerprint))
+                }
+                _ => Err(Reject::BadHandshake),
+            }
         }
     }
 }

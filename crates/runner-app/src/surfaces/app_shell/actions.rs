@@ -226,16 +226,21 @@ impl NativeRoot {
         self.sidebar_preview_peeking = false;
         if !collapsed {
             self.sidebar_preview_open = false;
-            if let Some(workspace) = self.remote_client.remote_mission_workspace() {
-                workspace.update(cx, |workspace, cx| {
-                    workspace.focus_active_mission_terminal(window, cx)
-                });
-            } else if self.remote_client.is_local() && matches!(self.route, AppRoute::Mission(_)) {
-                self.mission_workspace.update(cx, |workspace, cx| {
-                    workspace.focus_active_mission_terminal(window, cx);
-                });
-            } else if self.route == AppRoute::Chat {
-                self.focus_active_terminal(window, cx);
+            match self.remote_client.remote_mission_workspace() {
+                Some(workspace) => {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.focus_active_mission_terminal(window, cx)
+                    });
+                }
+                _ => {
+                    if self.remote_client.is_local() && matches!(self.route, AppRoute::Mission(_)) {
+                        self.mission_workspace.update(cx, |workspace, cx| {
+                            workspace.focus_active_mission_terminal(window, cx);
+                        });
+                    } else if self.route == AppRoute::Chat {
+                        self.focus_active_terminal(window, cx);
+                    }
+                }
             }
         }
         cx.notify();

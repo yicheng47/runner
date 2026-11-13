@@ -712,17 +712,22 @@ impl Session {
         feeds: &mut HashSet<String>,
     ) -> Option<c::Overview> {
         self.attachments.remove(&result.id);
-        if let Some(pending) = self.pending.remove(&result.id) {
-            if let Some((mission, follow)) = pending.subscription {
-                if follow {
-                    feeds.insert(mission);
-                } else {
-                    feeds.remove(&mission);
+        match self.pending.remove(&result.id) {
+            Some(pending) => {
+                if let Some((mission, follow)) = pending.subscription {
+                    if follow {
+                        feeds.insert(mission);
+                    } else {
+                        feeds.remove(&mission);
+                    }
+                }
+                let _ = pending.reply.send(Ok(result.result));
+            }
+            _ => {
+                if self.overviews.remove(&result.id).is_some() {
+                    return serde_json::from_value(result.result).ok();
                 }
             }
-            let _ = pending.reply.send(Ok(result.result));
-        } else if self.overviews.remove(&result.id).is_some() {
-            return serde_json::from_value(result.result).ok();
         }
         None
     }

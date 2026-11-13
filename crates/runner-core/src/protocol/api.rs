@@ -214,7 +214,7 @@ macro_rules! daemon_api {
 }
 
 macro_rules! define_api {
-    ($( $name:ident($( $arg:ident: $client_ty:ty => $wire_ty:ty = $convert:block ),*) -> $out:ty [$fast:literal] => $handler:expr; )*) => {
+    ($( $name:ident($( $arg:ident: $client_ty:ty => $wire_ty:ty = $convert:block ),*) -> $out:ty [$fast:literal] => $handler:expr_2021; )*) => {
         #[allow(non_camel_case_types)]
         #[derive(Debug, serde::Serialize, serde::Deserialize)]
         pub enum Request { $( $name { $( $arg: $wire_ty ),* }, )* }

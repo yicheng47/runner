@@ -151,13 +151,12 @@ impl SessionManager {
                     return;
                 };
                 let mut live = Vec::with_capacity(listeners.len());
-                listeners.retain(|listener| {
-                    if let Some(listener) = listener.upgrade() {
+                listeners.retain(|listener| match listener.upgrade() {
+                    Some(listener) => {
                         live.push(listener);
                         true
-                    } else {
-                        false
                     }
+                    _ => false,
                 });
                 (live, listeners.is_empty())
             };
