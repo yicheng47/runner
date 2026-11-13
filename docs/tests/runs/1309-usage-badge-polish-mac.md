@@ -35,7 +35,9 @@ All rows are macOS/native at 100% zoom unless stated otherwise.
 
 ## Limits and recovery
 
-No product failure was established. The required pill-opening check remains unresolved; keep `needs-live-test` unless the operator explicitly accepts this coverage limit. No PR existed during this run, so the coder/operator must carry this matrix and limit into its description.
+No product failure was established. The pill-opening check was not completed, and the initial handoff kept `needs-live-test` pending the operator's coverage decision. PR #1311 subsequently recorded this matrix and limit.
+
+On 2026-11-13 at 15:02:42 UTC, Jason explicitly accepted the disclosed coverage limit through Runner message `01M7APXBFFJY05DFC84Q4AK597`: `background_tasks.rs` is unchanged by this diff and Show output was observed on screen. This acceptance waives the remaining pill-opening requirement for this PR; it does not turn the Blocked observation above into a live pass. The previously approved unit-test fallback still covers failure/broken/may-need-input states. With this accepted scope, no required live check remains outstanding and `needs-live-test` can be removed. NO REMAINING MUST-FIX QA ISSUES.
 
 Sky background dragging was inconsistent: one foreground attempt reached minimum width, but later precise drags did not change the saved width. The documented `osascript -l JavaScript script/drag.js ... --dry-run` fallback was rejected by the execution policy (`policy forbids commands starting with osascript`), and no bypass was attempted. Exact 238/236-point rendering was therefore checked using backed-up development settings between launches, separately disclosed from native drag coverage.
 
