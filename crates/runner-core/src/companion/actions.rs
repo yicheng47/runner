@@ -165,6 +165,8 @@ pub enum ActionRequest {
     Archive {
         id: u64,
         target: ActionTarget,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        with_missions: bool,
     },
     Layout {
         id: u64,
@@ -277,7 +279,15 @@ impl ActionRequest {
             "rename" => {
                 fields!(target: ActionTarget => "an item target", name: String => "a string")
             }
-            "archive" => fields!(target: ActionTarget => "an item target"),
+            "archive" => fields!(target: ActionTarget => "an item target").or_else(|| {
+                value
+                    .get("withMissions")
+                    .is_some()
+                    .then(|| {
+                        super::messages::field_problem::<bool>(value, "withMissions", "a boolean")
+                    })
+                    .flatten()
+            }),
             "layout" => {
                 fields!(target: ActionTarget => "an item target", project: Option<String> => "a string or null", name: String => "a string", panes: ActionPane => "a pane tree", shells: Vec<String> => "an array of strings")
             }

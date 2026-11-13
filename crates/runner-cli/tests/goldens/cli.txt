@@ -707,6 +707,14 @@ $ runner session archive session-fixture --json
 exit 0
 {"session_id":"session-fixture"}
 
+$ runner session archive --with-missions session-fixture
+exit 0
+Archived session session-fixture and 1 linked mission (mission-running)
+
+$ runner session archive --with-missions session-fixture --json
+exit 0
+{"session_id":"session-fixture","archived_mission_ids":["mission-running"]}
+
 $ runner session resume session-fixture
 exit 1
 [stderr]
@@ -2363,9 +2371,10 @@ Arguments:
   <SESSION>  
 
 Options:
-      --json  Print the tool result as exact JSON
-  -q          Print only result IDs
-  -h, --help  Print help
+      --json           Print the tool result as exact JSON
+      --with-missions  Stop and archive unarchived missions linked to this chat too
+  -q                   Print only result IDs
+  -h, --help           Print help
 
 # context: not running
 $ runner session resume --help

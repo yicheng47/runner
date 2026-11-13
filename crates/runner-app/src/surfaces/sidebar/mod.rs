@@ -25,18 +25,20 @@ use elements::sidebar_tab_target;
 
 pub(crate) use archive::{
     archive_all_confirmation_body, archive_confirmation_counts, archive_targets_for_chats,
+    LinkedMissionArchiveItem, LinkedMissionIdleState,
 };
 pub(crate) use elements::{
     default_session_label, direct_chat_display_status, project_children, session_label,
     session_label_live, sidebar_section_header, SidebarItemView,
 };
+pub(crate) use logic::AttentionState;
 
 use super::*;
 use crate::surfaces::front_page::model::{
     MissionDisplay as MissionSummary, SessionDisplay, SidebarNodeDisplay as NodeRow,
 };
 use crate::surfaces::sidebar::logic::{
-    AttentionState, DropTarget, NumberedSidebarRow, SidebarActivationTarget, SidebarShortcutRow,
+    DropTarget, NumberedSidebarRow, SidebarActivationTarget, SidebarShortcutRow,
 };
 use crate::*;
 use gpui::WeakEntity;

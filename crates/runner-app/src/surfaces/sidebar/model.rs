@@ -175,11 +175,21 @@ impl Sidebar {
                         return None;
                     }
                     let rollup = self.tab_status_rollup(&members, cx);
+                    let attention = super::rows::status_attention(rollup.priority_value()).max(
+                        if members
+                            .iter()
+                            .any(|member| self.archiving_sessions.contains(&member.session_id))
+                        {
+                            AttentionState::Working
+                        } else {
+                            AttentionState::None
+                        },
+                    );
                     Some(SidebarRow::Tab {
                         node,
                         layout,
                         members,
-                        attention: super::rows::status_attention(rollup.priority_value()),
+                        attention,
                     })
                 }
                 NodeType::Mission => {
@@ -267,6 +277,21 @@ impl Sidebar {
                     })
                 }
                 NodeType::Project => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remote_row_attentions(&self, cx: &App) -> HashMap<String, AttentionState> {
+        self.remote_rows(cx)
+            .into_iter()
+            .map(|row| match row {
+                SidebarRow::Tab {
+                    node, attention, ..
+                }
+                | SidebarRow::Mission {
+                    node, attention, ..
+                } => (node.ref_id.unwrap_or(node.id), attention),
             })
             .collect()
     }

@@ -346,4 +346,14 @@ impl RemoteClient {
             .unwrap_or_default();
         crate::surfaces::sidebar::archive_targets_for_chats(ids, &layouts)
     }
+
+    pub(crate) fn overview<'a>(&self, cx: &'a App) -> Option<&'a Overview> {
+        let remote = self.workspace.as_ref()?;
+        self.app_store
+            .read(cx)
+            .remote_clients
+            .read(cx)
+            .overviews
+            .get(&remote.computer.id)
+    }
 }

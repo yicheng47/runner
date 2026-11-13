@@ -147,6 +147,11 @@ impl Fake {
                 overview.tabs.retain(|tab| tab.id != id);
                 Some(Ok(serde_json::Value::Null))
             }
+            "archive" if value["target"]["kind"] == "mission" => {
+                let id = value["target"]["id"].as_str().unwrap();
+                overview.missions.retain(|mission| mission.id != id);
+                Some(Ok(serde_json::Value::Null))
+            }
             "layout" => {
                 let id = value["target"]["id"].as_str().unwrap();
                 let Some(tab) = overview.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -8272,4 +8277,345 @@ fn remote_archive_intermediate_launcher_waits_for_collapse_without_stealing_find
             );
         }
     }
+}
+
+#[test]
+fn remote_chat_archive_prompts_for_linked_missions_and_supports_new_and_legacy_hosts() {
+    for legacy_host in [true, false] {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+
+        let mut data = fake.overview.lock().unwrap().clone();
+        data.missions[0].linked_chat = Some(runner_core::companion::LinkedChat {
+            session_id: "s".into(),
+            title: "Remote chat".into(),
+            archived: false,
+            reports: true,
+        });
+        let mut other = data.missions[0].clone();
+        other.id = "other-mission".into();
+        other.title = "Other mission".into();
+        other.linked_chat = None;
+        data.missions.push(other);
+        fake.set_overview(data);
+        cx.run_until_parked();
+
+        let window = add_window(&mut cx, &store, temp.path(), "remote-linked-archive");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+        // Sidebar/tab archive on a remote chat with a linked mission opens Option A instead of archiving silently.
+        window
+            .update(&mut visual, |root, window, cx| {
+                window.activate_window();
+                root.request_archive_all(
+                    Some("remote-tab"),
+                    vec!["s".into()],
+                    crate::ArchiveAllSource::Sidebar,
+                    window,
+                    cx,
+                );
+                assert!(
+                    root.terminal_close_confirm.is_some(),
+                    "legacy_host={legacy_host}: linked remote chat opens confirmation"
+                );
+            })
+            .unwrap();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert!(visual
+            .debug_bounds("CONFIRM_LINKED_MISSION remote-mission")
+            .is_some());
+        assert!(visual
+            .debug_bounds("CONFIRM_LINKED_MISSION other-mission")
+            .is_none());
+
+        // Escape cancels with zero archive requests.
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("archive"), 0);
+
+        if !legacy_host {
+            fake.queue_result(
+                "archive",
+                Ok(serde_json::json!({"archivedMissions": ["remote-mission"]})),
+            );
+        }
+
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.request_archive_all(
+                    Some("remote-tab"),
+                    vec!["s".into()],
+                    crate::ArchiveAllSource::Sidebar,
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        visual.run_until_parked();
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+
+        let archives = action_trace(&fake, "archive");
+        assert_eq!(archives[0]["target"]["kind"], "session");
+        assert_eq!(archives[0]["target"]["id"], "s");
+        assert_eq!(archives[0]["withMissions"], true);
+        if legacy_host {
+            assert_eq!(
+                archives.len(),
+                2,
+                "legacy host returning null triggers explicit mission archive fallback"
+            );
+            assert_eq!(archives[1]["target"]["kind"], "mission");
+            assert_eq!(archives[1]["target"]["id"], "remote-mission");
+            assert!(archives[1].get("withMissions").is_none());
+        } else {
+            assert_eq!(
+                archives.len(),
+                1,
+                "withMissions-aware host archives chat and linked missions in one request"
+            );
+        }
+    }
+}
+
+#[test]
+fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_errors() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+
+    let host_a = computers()[1].clone();
+    let host_b = Computer {
+        id: "host-b".into(),
+        name: "Backup".into(),
+        online: true,
+        paired: true,
+        fingerprint: "host-b-key".into(),
+        ..Default::default()
+    };
+    fake.computers.lock().unwrap().push(host_b.clone());
+
+    let mut data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [{"id": "remote-tab", "project": "p", "name": "Remote tab", "pinned": true, "panes": {"session": "s"}, "shells": []}],
+        "missions": [{"id": "remote-mission", "title": "Remote mission", "project": null, "crew": "Duo", "state": "stopped", "pinned": false, "members": [], "asks": [], "shells": []}],
+        "sessions": {"s": {"kind": "chat", "title": "Remote session", "runtime": "codex", "status": "stopped", "unread": false}}
+    }))
+    .unwrap();
+    data.missions[0].linked_chat = Some(runner_core::companion::LinkedChat {
+        session_id: "s".into(),
+        title: "Remote session".into(),
+        archived: false,
+        reports: true,
+    });
+    fake.set_overview(data.clone());
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer": "host-b", "overview": data}),
+    );
+    cx.run_until_parked();
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-pending-archive");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+
+    // Case 1: Staying on Host A: in-flight state marks both chat and linked mission and blocks
+    // duplicates, then an error clears both marks and surfaces action_error for retry.
+    fake.queue_result("archive", Err(ClientError::msg("archive refused")));
+    window
+        .update(&mut cx, |root, window, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::None)
+            );
+            root.request_archive_all(
+                Some("remote-tab"),
+                vec!["s".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            assert!(root.terminal_close_confirm.is_some());
+            root.confirm_terminal_close(window, cx);
+
+            assert!(root.sidebar_archiving_session("s", cx));
+            assert!(root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Working));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::Working)
+            );
+            root.request_archive_all(
+                Some("remote-tab"),
+                vec!["s".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            assert!(root.terminal_close_confirm.is_none());
+            root.remote_archive_sessions(vec!["s".into()], cx);
+        })
+        .unwrap();
+
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("archive"), 1);
+    window
+        .read_with(&cx, |root, cx| {
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .action_error
+                .is_some());
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::None)
+            );
+        })
+        .unwrap();
+
+    // Case 2: Retry succeeds even across host switches (Host A -> Host B -> Local -> Host A while in
+    // flight, and finishing after epoch change).
+    fake.queue_result(
+        "archive",
+        Ok(serde_json::json!({"archivedMissions": ["remote-mission"]})),
+    );
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.request_archive_all(
+                Some("remote-tab"),
+                vec!["s".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            assert!(root.terminal_close_confirm.is_some());
+            root.confirm_terminal_close(window, cx);
+            assert!(root.sidebar_archiving_session("s", cx));
+            assert!(root.sidebar_archiving_mission("remote-mission", cx));
+
+            // Switching to another computer or This Computer never leaks Host A's pending marks.
+            root.visit_computer(host_b.clone(), window, cx);
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::None)
+            );
+
+            root.return_to_this_computer(window, cx);
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+
+            // Switching back to Host A while in flight restores the archiving state.
+            root.visit_computer(host_a.clone(), window, cx);
+            assert!(root.sidebar_archiving_session("s", cx));
+            assert!(root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Working));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::Working)
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("archive"), 2);
+    window
+        .read_with(&cx, |root, cx| {
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::None)
+            );
+        })
+        .unwrap();
+
+    // Case 3: Completing while viewing Host B cleans up Host A so returning shows no stale marks.
+    fake.queue_result(
+        "archive",
+        Ok(serde_json::json!({"archivedMissions": ["remote-mission"]})),
+    );
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.request_archive_all(
+                Some("remote-tab"),
+                vec!["s".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            root.confirm_terminal_close(window, cx);
+            assert!(root.sidebar_archiving_session("s", cx));
+            assert!(root.sidebar_archiving_mission("remote-mission", cx));
+            root.visit_computer(host_b, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("archive"), 3);
+
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.visit_computer(host_a, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, cx| {
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+            assert_eq!(
+                attentions.get("remote-mission"),
+                Some(&AttentionState::None)
+            );
+        })
+        .unwrap();
+
+    // Case 4: Clearing pending archives for a disconnected host clears both marks cleanly.
+    fake.queue_result(
+        "archive",
+        Ok(serde_json::json!({"archivedMissions": ["remote-mission"]})),
+    );
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.request_archive_all(
+                Some("remote-tab"),
+                vec!["s".into()],
+                crate::ArchiveAllSource::Sidebar,
+                window,
+                cx,
+            );
+            root.confirm_terminal_close(window, cx);
+            assert!(root.sidebar_archiving_session("s", cx));
+            assert!(root.sidebar_archiving_mission("remote-mission", cx));
+            root.remote_client.clear_pending_archives_for("host", cx);
+            assert!(!root.sidebar_archiving_session("s", cx));
+            assert!(!root.sidebar_archiving_mission("remote-mission", cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("archive"), 4);
 }

@@ -8,6 +8,8 @@ mod start;
 mod tab;
 mod tree;
 
+#[cfg(test)]
+pub(crate) use dialogs::{single_chat_with_missions_confirm_copy, tab_with_missions_confirm_copy};
 pub(crate) use drawer::*;
 use panel::*;
 use start::*;

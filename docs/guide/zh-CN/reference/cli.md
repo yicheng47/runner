@@ -1330,9 +1330,10 @@ Arguments:
   <SESSION>
 
 Options:
-      --json  Print the tool result as exact JSON
-  -q          Print only result IDs
-  -h, --help  Print help
+      --json           Print the tool result as exact JSON
+      --with-missions  Stop and archive unarchived missions linked to this chat too
+  -q                   Print only result IDs
+  -h, --help           Print help
 ```
 
 ## runner session resume

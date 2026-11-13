@@ -721,10 +721,22 @@ impl DaemonCore {
                 }
                 Ok(Value::Null)
             }
-            Archive { target, .. } => {
+            Archive {
+                target,
+                with_missions,
+                ..
+            } => {
                 match target.kind {
                     ActionKind::Session => {
-                        ops::session::session_archive_direct(core, &target.id).map_err(failed)?
+                        let archived = ops::session::session_archive_direct_with_missions(
+                            core,
+                            &target.id,
+                            with_missions,
+                        )
+                        .map_err(failed)?;
+                        if with_missions {
+                            return Ok(json!({"archivedMissions": archived}));
+                        }
                     }
                     ActionKind::Tab => ops::node::node_tab_delete(core, &node_id(core, &target)?)
                         .map_err(failed)?,

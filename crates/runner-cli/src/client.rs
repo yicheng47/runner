@@ -381,11 +381,27 @@ pub fn call_daemon(
         }
         "session_archive" => {
             let id: String = argument(&args, "session_id")?;
-            response(
-                client
-                    .session_archive_direct(&id)
-                    .map(|()| json!({"session_id": id})),
-            )
+            let with_missions = args
+                .get("with_missions")
+                .map(|value| serde_json::from_value::<bool>(value.clone()))
+                .transpose()
+                .map_err(|_| {
+                    ClientError::Refused("invalid argument with_missions: expected boolean".into())
+                })?
+                .unwrap_or(false);
+            if with_missions {
+                response(
+                    client.session_archive_direct_with_missions(&id, true).map(
+                        |archived| json!({"session_id": id, "archived_mission_ids": archived}),
+                    ),
+                )
+            } else {
+                response(
+                    client
+                        .session_archive_direct(&id)
+                        .map(|()| json!({"session_id": id})),
+                )
+            }
         }
         _ => Err(ClientError::Refused("tool not found".into())),
     }
