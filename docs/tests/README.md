@@ -6,7 +6,7 @@ Use these documents to select checks and preserve their evidence. [Test Scope](.
 | --- | --- |
 | [regression/README.md](regression/README.md) | Maintained live cases for the current product, with stable IDs, applicability and evidence requirements. |
 | [full-smoke-test.md](full-smoke-test.md) | Execution procedure: candidate identity, development-app isolation, native control, bounded fixtures and cleanup. |
-| [runs/](runs/) | Dated results for a particular candidate, platform and attempt. New records use `YYYY-MM-DD-<platform>.md`; existing filenames remain stable. |
+| [runs/](runs/) | Results for a particular candidate, platform and attempt. Feature/bug QA runs use `<issue>-<slug>-<platform>.md`; full smoke and release runs use `YYYY-MM-DD-<platform>.md` (`mac`, `win`, `linux` or `both`); existing filenames remain stable. |
 | [archive/](archive/) | Historical feature validation, investigations and earlier smoke records, including failed and unverified checks. |
 | This directory | Feature-specific validation plans or records while their work is active or awaiting a release sweep. |
 
