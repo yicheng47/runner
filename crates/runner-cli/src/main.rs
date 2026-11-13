@@ -238,11 +238,13 @@ mod tests {
         for arg0 in ["runner-dev", "runner-agent-cli", "/build/runner-agent-cli"] {
             assert_eq!(decide(&[arg0, "mission", "list"], target()), None, "{arg0}");
         }
-        assert_eq!(
-            decide(&["runner", "hook", "report"], target()),
-            None,
-            "hook reports keep their CLI"
-        );
+        for subcommand in ["report", "title"] {
+            assert_eq!(
+                decide(&["runner", "hook", subcommand], target()),
+                None,
+                "hook commands keep their CLI"
+            );
+        }
         let missing = root.path().join("gone/runner").into_os_string();
         assert_eq!(decide(&["runner"], Some(missing)), None);
         assert_eq!(decide(&["runner"], Some("runner".into())), None);

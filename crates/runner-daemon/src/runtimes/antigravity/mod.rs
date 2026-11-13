@@ -23,6 +23,60 @@ pub(crate) fn antigravity_status_args(app_data_dir: &Path) -> Vec<String> {
             .into_owned(),
     ]
 }
+
+pub(crate) fn inject_antigravity_settings(role_args: &[String]) -> bool {
+    !role_args.iter().any(|arg| {
+        matches!(arg.as_str(), "--settings" | "-settings")
+            || arg.starts_with("--settings=")
+            || arg.starts_with("-settings=")
+    })
+}
+
+pub(crate) fn antigravity_title_command(exe: &Path, windows: bool) -> String {
+    #[cfg(windows)]
+    let exe = ordinary_windows_path(exe);
+    #[cfg(not(windows))]
+    let exe = exe.to_path_buf();
+    let exe = exe.to_string_lossy();
+    if windows {
+        format!("\"{exe}\" hook title")
+    } else {
+        format!("{} hook title", crate::session::launch::shell_quote(&exe))
+    }
+}
+
+pub(crate) fn antigravity_settings_args(role_args: &[String], app_data_dir: &Path) -> Vec<String> {
+    if !inject_antigravity_settings(role_args) {
+        return Vec::new();
+    }
+    let command = antigravity_title_command(&hook_executable(app_data_dir), cfg!(windows));
+    let settings = serde_json::json!({
+        "title": {
+            "type": "command",
+            "command": command,
+            "enabled": true,
+        }
+    });
+    vec!["--settings".into(), settings.to_string()]
+}
+
+pub(crate) fn antigravity_summaries_db_path(
+    role_args: &[String],
+    role_env: &std::collections::HashMap<String, String>,
+) -> Option<PathBuf> {
+    if !inject_antigravity_settings(role_args) {
+        return None;
+    }
+    let env_home = role_env
+        .get(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    #[cfg(test)]
+    let home = env_home.or_else(crate::runtimes::test_home);
+    #[cfg(not(test))]
+    let home = env_home.or_else(runner_core::app_paths::home_dir);
+    home.map(|home| home.join(".gemini/antigravity-cli/conversation_summaries.db"))
+}
 pub fn antigravity_conversation_exists(key: &str) -> bool {
     #[cfg(test)]
     {
@@ -58,8 +112,12 @@ impl RuntimeAdapter for Antigravity {
         agy_capture::prepare_log(app_data_dir, session_id);
     }
     fn start_capture(&self, ctx: CaptureContext) {
+        let summaries_db_path = antigravity_summaries_db_path(&ctx.role_args, &ctx.role_env);
         agy_capture::spawn_capture(agy_capture::CaptureRequest {
             log_path: agy_capture::log_path(&ctx.app_data_dir, &ctx.session_id),
+            summaries_db_path,
+            cwd: ctx.cwd,
+            initial_key: ctx.initial_key,
             manager: ctx.manager,
             session_id: ctx.session_id,
             mission_id: ctx.mission_id,
@@ -185,6 +243,7 @@ impl RuntimeAdapter for Antigravity {
         if status_hooks_enabled(ctx.env) {
             out.extend(antigravity_status_args(ctx.app_data_dir));
         }
+        out.extend(antigravity_settings_args(ctx.role_args, ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

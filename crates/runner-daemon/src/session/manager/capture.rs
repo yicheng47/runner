@@ -12,19 +12,25 @@ impl SessionManager {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_runtime_capture(
         self: &Arc<Self>,
-        runtime_key: &str,
+        role: &Role,
         session_id: &str,
         mission_id: Option<String>,
+        cwd: Option<String>,
+        initial_key: Option<String>,
         app_data_dir: &Path,
         row_started_at: &str,
         stop: Arc<AtomicBool>,
         pool: &Arc<DbPool>,
         events: &Arc<dyn SessionEvents>,
     ) {
-        crate::runtimes::for_key(runtime_key).start_capture(crate::runtimes::CaptureContext {
+        crate::runtimes::for_key(&role.runtime).start_capture(crate::runtimes::CaptureContext {
             manager: Arc::downgrade(self),
             session_id: session_id.to_owned(),
             mission_id,
+            role_args: role.args.clone(),
+            role_env: role.env.clone(),
+            cwd,
+            initial_key,
             app_data_dir: app_data_dir.to_path_buf(),
             row_started_at: row_started_at.to_owned(),
             stop,

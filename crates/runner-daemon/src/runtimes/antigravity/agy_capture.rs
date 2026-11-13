@@ -93,6 +93,9 @@ pub(crate) struct CaptureRequest {
     pub(crate) session_id: String,
     pub(crate) mission_id: Option<String>,
     pub(crate) log_path: PathBuf,
+    pub(crate) summaries_db_path: Option<PathBuf>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) initial_key: Option<String>,
     pub(crate) expected_row_started_at: String,
     /// The session's output stop flag: set when the PTY exits or is killed.
     pub(crate) stop: Arc<AtomicBool>,
@@ -112,18 +115,96 @@ pub(crate) fn spawn_capture(request: CaptureRequest) {
 
 fn run(request: CaptureRequest) {
     let mut tail = LogTail::default();
+    let mut active_key = request.initial_key.clone();
+    let mut title_sync = SummaryTitleSync::default();
     loop {
         // Read once more after the stop flag so a line written just before
         // exit still lands.
         let stopped = request.stop.load(Ordering::Acquire);
         for key in tail.next_conversations(&request.log_path) {
             persist(&request, &key);
+            active_key = Some(key);
+        }
+        if let (Some(summaries_db), Some(conversation_id)) =
+            (request.summaries_db_path.as_deref(), active_key.as_deref())
+        {
+            title_sync.poll(&request, summaries_db, conversation_id);
         }
         if stopped {
             return;
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+// `agy` 1.5.8 generates first-turn titles asynchronously into
+// `conversation_summaries.db`, but `cli/store` skips `currentConversationID`
+// on summary broadcasts and leaves `Store.Conversation.Title` empty until
+// `/rename` or `--conversation` resume. Short-lived read-only queries pick up
+// the native title without mutating or holding locks on `agy`'s database.
+#[derive(Default)]
+struct SummaryTitleSync {
+    last_observed: Option<(String, String)>,
+}
+
+impl SummaryTitleSync {
+    fn poll(&mut self, request: &CaptureRequest, summaries_db: &Path, conversation_id: &str) {
+        let Some(raw) = read_summary_title(summaries_db, conversation_id) else {
+            return;
+        };
+        let Some(cleaned) = crate::session::title::provider_title(&raw, request.cwd.as_deref())
+        else {
+            return;
+        };
+        if self
+            .last_observed
+            .as_ref()
+            .is_some_and(|(id, title)| id == conversation_id && title == &cleaned)
+        {
+            return;
+        }
+        if persist_title(request, &cleaned) {
+            self.last_observed = Some((conversation_id.to_owned(), cleaned));
+        }
+    }
+}
+
+fn read_summary_title(path: &Path, conversation_id: &str) -> Option<String> {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    if !path.is_file() {
+        return None;
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let _ = conn.busy_timeout(Duration::from_millis(50));
+    let _ = conn.pragma_update(None, "query_only", true);
+    conn.query_row(
+        "SELECT title FROM conversation_summaries WHERE conversation_id = ?1",
+        rusqlite::params![conversation_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+fn persist_title(request: &CaptureRequest, cleaned: &str) -> bool {
+    let Some(manager) = request.manager.upgrade() else {
+        return false;
+    };
+    manager
+        .apply_provider_title(crate::session::manager::terminal::ProviderTitleUpdate {
+            session_id: &request.session_id,
+            expected_started_at: &request.expected_row_started_at,
+            cleaned_title: cleaned,
+            mission_id: request.mission_id.as_deref(),
+            pool: &request.pool,
+            events: &request.events,
+        })
+        .unwrap_or(false)
 }
 
 fn persist(request: &CaptureRequest, key: &str) {
@@ -308,5 +389,177 @@ I0922 16:29:57.818131     580 conversation_manager.go:887] Streaming conversatio
         std::fs::write(&path, FIXTURE).unwrap();
         remove_log(temp.path(), "s1");
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn summary_poll_reads_wal_filters_decorations_and_respects_generation() {
+        #[derive(Default)]
+        struct RecordedEvents(std::sync::Mutex<Vec<String>>);
+        impl SessionEvents for RecordedEvents {
+            fn exit(&self, _: &crate::session::manager::ExitEvent) {}
+            fn updated(&self, event: &SessionUpdatedEvent) {
+                self.0.lock().unwrap().push(event.session_id.clone());
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let missing_db = temp.path().join("missing/conversation_summaries.db");
+        assert_eq!(read_summary_title(&missing_db, "conv-1"), None);
+        assert!(!missing_db.exists(), "read-only poll must never create DB");
+
+        let db_path = temp.path().join("conversation_summaries.db");
+        let writer = rusqlite::Connection::open(&db_path).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        writer
+            .execute_batch(
+                "CREATE TABLE conversation_summaries (
+                    conversation_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT ''
+                );",
+            )
+            .unwrap();
+
+        let pool = Arc::new(crate::db::open_in_memory().unwrap());
+        let manager = crate::session::manager::SessionManager::key_test_manager();
+        let mut row =
+            crate::test_support::test_session_row("s-agy", crate::model::SessionStatus::Running);
+        row.agent_runtime = Some("antigravity".into());
+        row.cwd = Some("/tmp/my-project".into());
+        let started_at = row.started_at.unwrap().to_rfc3339();
+        crate::repo::session::insert(&pool.get().unwrap(), &row).unwrap();
+        let events = Arc::new(RecordedEvents::default());
+        let request = CaptureRequest {
+            manager: Arc::downgrade(&manager),
+            session_id: "s-agy".into(),
+            mission_id: None,
+            log_path: log_path(temp.path(), "s-agy"),
+            summaries_db_path: Some(db_path.clone()),
+            cwd: Some("/tmp/my-project".into()),
+            initial_key: None,
+            expected_row_started_at: started_at.clone(),
+            stop: Arc::new(AtomicBool::new(false)),
+            pool: Arc::clone(&pool),
+            events: events.clone(),
+        };
+
+        let mut sync = SummaryTitleSync::default();
+        let c1 = "27499127-777f-4aad-9e04-7c9208bfd9b6";
+        writer
+            .execute(
+                "INSERT INTO conversation_summaries (conversation_id, title) VALUES (?1, ?2)",
+                [c1, ""],
+            )
+            .unwrap();
+        sync.poll(&request, &db_path, c1);
+        assert_eq!(
+            crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                .unwrap()
+                .unwrap()
+                .live_title,
+            None
+        );
+
+        for ignored in ["   ", "Antigravity CLI", "agy", "/tmp/my-project"] {
+            writer
+                .execute(
+                    "UPDATE conversation_summaries SET title = ?2 WHERE conversation_id = ?1",
+                    [c1, ignored],
+                )
+                .unwrap();
+            sync.poll(&request, &db_path, c1);
+            assert_eq!(
+                crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                    .unwrap()
+                    .unwrap()
+                    .live_title,
+                None,
+                "{ignored:?}"
+            );
+        }
+
+        writer
+            .execute(
+                "UPDATE conversation_summaries SET title = ?2 WHERE conversation_id = ?1",
+                [c1, "  Rainbows Form Through Light Refraction  "],
+            )
+            .unwrap();
+        sync.poll(&request, &db_path, c1);
+        assert_eq!(
+            crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                .unwrap()
+                .unwrap()
+                .live_title
+                .as_deref(),
+            Some("Rainbows Form Through Light Refraction")
+        );
+        assert_eq!(events.0.lock().unwrap().len(), 1);
+
+        // If OSC 2 immediately sets a newer `/rename` title before `conversation_summaries.db`
+        // flushes, polling the unchanged summary row must not revert `live_title`.
+        crate::repo::session::set_live_title(
+            &pool.get().unwrap(),
+            "s-agy",
+            Some("Newer OSC Rename"),
+            Some(&started_at),
+        )
+        .unwrap();
+        sync.poll(&request, &db_path, c1);
+        assert_eq!(
+            crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                .unwrap()
+                .unwrap()
+                .live_title
+                .as_deref(),
+            Some("Newer OSC Rename")
+        );
+        assert_eq!(events.0.lock().unwrap().len(), 1);
+
+        // Switching conversations picks up the new conversation's summary title.
+        let c2 = "9d79746d-9af0-41a2-83b4-45edfb6ed263";
+        writer
+            .execute(
+                "INSERT INTO conversation_summaries (conversation_id, title) VALUES (?1, ?2)",
+                [c2, "Switched Topic"],
+            )
+            .unwrap();
+        sync.poll(&request, &db_path, c2);
+        assert_eq!(
+            crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                .unwrap()
+                .unwrap()
+                .live_title
+                .as_deref(),
+            Some("Switched Topic")
+        );
+
+        // Stale generation (`expected_row_started_at` mismatch) never overwrites `live_title`.
+        let stale_request = CaptureRequest {
+            manager: Arc::downgrade(&manager),
+            session_id: "s-agy".into(),
+            mission_id: None,
+            log_path: log_path(temp.path(), "s-agy"),
+            summaries_db_path: Some(db_path.clone()),
+            cwd: Some("/tmp/my-project".into()),
+            initial_key: None,
+            expected_row_started_at: "1999-01-01T00:00:00+00:00".into(),
+            stop: Arc::new(AtomicBool::new(false)),
+            pool: Arc::clone(&pool),
+            events: events.clone(),
+        };
+        writer
+            .execute(
+                "UPDATE conversation_summaries SET title = ?2 WHERE conversation_id = ?1",
+                [c2, "Stale Generation Title"],
+            )
+            .unwrap();
+        sync.poll(&stale_request, &db_path, c2);
+        assert_eq!(
+            crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                .unwrap()
+                .unwrap()
+                .live_title
+                .as_deref(),
+            Some("Switched Topic")
+        );
     }
 }

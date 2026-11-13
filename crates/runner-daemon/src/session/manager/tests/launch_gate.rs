@@ -234,4 +234,64 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             .iter()
             .any(|arg| arg.contains("check_for_update_on_startup")));
     }
+
+    let agy_fresh = compose(
+        "antigravity",
+        crate::runtimes::adapter(Runtime::Antigravity).resume_plan(None),
+    );
+    let agy_settings = agy_fresh
+        .windows(2)
+        .find(|pair| pair[0] == "--settings")
+        .map(|pair| serde_json::from_str::<serde_json::Value>(&pair[1]).unwrap())
+        .expect("Antigravity spawn should carry --settings");
+    assert_eq!(agy_settings["title"]["type"], "command");
+    assert_eq!(agy_settings["title"]["enabled"], true);
+    assert!(agy_settings["title"]["command"]
+        .as_str()
+        .unwrap()
+        .contains("hook title"));
+    assert_eq!(&agy_fresh[agy_fresh.len() - 2..], ["-i", "first turn"]);
+
+    let agy_resumed = compose(
+        "antigravity",
+        crate::runtimes::adapter(Runtime::Antigravity).resume_plan(Some(&prior)),
+    );
+    assert!(has_arg_pair(&agy_resumed, "--conversation", &prior));
+    assert!(agy_resumed.windows(2).any(|pair| pair[0] == "--settings"));
+    assert!(!agy_resumed.iter().any(|arg| arg == "-i"));
+
+    for custom_flag in [
+        &["--settings", r#"{"toolPermission":"request-review"}"#][..],
+        &["-settings", r#"{"toolPermission":"request-review"}"#][..],
+        &[r#"--settings={"toolPermission":"request-review"}"#][..],
+        &[r#"-settings={"toolPermission":"request-review"}"#][..],
+    ] {
+        let mut custom_role = role("agy", custom_flag);
+        custom_role.runtime = "antigravity".into();
+        let mut spec = SpawnSpec {
+            session_id: "settings-opt-out".into(),
+            command: custom_role.command.clone(),
+            args: custom_role.args.clone(),
+            ..Default::default()
+        };
+        mgr_with_fake(None, fake_runtime()).apply_runtime_args(
+            &mut spec,
+            &custom_role,
+            &crate::runtimes::adapter(Runtime::Antigravity).resume_plan(None),
+            &fixture_tmp_dir().join("runner-app-data"),
+            None,
+            Some("first turn"),
+            None,
+            None,
+        );
+        assert_eq!(
+            spec.args
+                .iter()
+                .filter(|arg| arg.starts_with("--settings") || arg.starts_with("-settings"))
+                .count(),
+            1,
+            "{custom_flag:?} -> {:?}",
+            spec.args
+        );
+    }
 }

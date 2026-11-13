@@ -26,6 +26,9 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
     let log = crate::runtimes::antigravity::agy_capture::log_path(app_data, "runner-session")
         .to_string_lossy()
         .into_owned();
+    let expected_settings = antigravity_settings_args(&[], app_data);
+    assert_eq!(expected_settings.len(), 2);
+    assert_eq!(expected_settings[0], "--settings");
     let fresh = trailing_runtime_args(
         Runtime::Antigravity.key(),
         &[],
@@ -47,6 +50,8 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
             "medium",
             "--log-file",
             log.as_str(),
+            "--settings",
+            expected_settings[1].as_str(),
             "-i",
             "first turn",
         ]
@@ -63,12 +68,140 @@ fn antigravity_trailing_args_carry_the_session_log_and_first_turn_on_i() {
         Some("persona"),
         Some("first turn"),
     );
-    assert_eq!(resumed, ["--log-file", log.as_str()]);
+    assert_eq!(
+        resumed,
+        [
+            "--log-file",
+            log.as_str(),
+            "--settings",
+            expected_settings[1].as_str(),
+        ]
+    );
     assert!(system_prompt_args(Runtime::Antigravity.key(), Some("persona")).is_empty());
     assert_eq!(
         first_turn_argv(Runtime::Antigravity.key(), Some("body")),
         ["-i", "body"]
     );
+}
+
+#[test]
+fn antigravity_settings_inject_title_hook_across_launches_and_respect_role_settings_flags() {
+    let app_data = Path::new("/Users/jason/Library/Application Support/Jason's Runner");
+    let env = std::collections::BTreeMap::new();
+    for (resuming, mission, first_turn) in [
+        (false, false, Some("chat prompt")),
+        (true, false, None),
+        (false, true, Some("mission brief")),
+        (true, true, None),
+    ] {
+        let args = Antigravity.launch_args(&LaunchContext {
+            default_model: None,
+            env: &env,
+            cwd: None,
+            role_args: &[],
+            app_data_dir: app_data,
+            session_id: "runner-session",
+            resuming,
+            mission,
+            model: None,
+            effort: None,
+            codex_speed: None,
+            system_prompt: None,
+            first_turn,
+        });
+        let settings_str = args
+            .windows(2)
+            .find(|pair| pair[0] == "--settings")
+            .map(|pair| pair[1].as_str())
+            .expect("Antigravity launch_args should inject --settings");
+        let parsed: serde_json::Value = serde_json::from_str(settings_str).unwrap();
+        assert_eq!(parsed["title"]["type"], "command");
+        assert_eq!(parsed["title"]["enabled"], true);
+        let cmd = parsed["title"]["command"].as_str().unwrap();
+        if cfg!(windows) {
+            assert_eq!(
+                cmd,
+                format!("\"{}\" hook title", hook_executable(app_data).display())
+            );
+        } else {
+            assert_eq!(
+                cmd,
+                "'/Users/jason/Library/Application Support/Jason'\\''s Runner/bin/runner' hook title"
+            );
+        }
+        if let Some(body) = first_turn {
+            assert_eq!(&args[args.len() - 2..], ["-i", body]);
+        } else {
+            assert!(!args.iter().any(|arg| arg == "-i"));
+        }
+    }
+
+    assert_eq!(
+        antigravity_title_command(
+            Path::new("/Users/jason/Library/Application Support/Jason's Runner/bin/runner"),
+            false,
+        ),
+        "'/Users/jason/Library/Application Support/Jason'\\''s Runner/bin/runner' hook title"
+    );
+    let win_cmd = antigravity_title_command(
+        Path::new(r"C:\Users\Jason Wang\AppData\Roaming\com.wycstudios.runner\bin\runner.exe"),
+        true,
+    );
+    assert_eq!(
+        win_cmd,
+        r#""C:\Users\Jason Wang\AppData\Roaming\com.wycstudios.runner\bin\runner.exe" hook title"#
+    );
+    assert_eq!(win_cmd.matches('"').count(), 2);
+
+    for custom in [
+        vec!["--settings", r#"{"toolPermission":"request-review"}"#],
+        vec!["-settings", r#"{"toolPermission":"request-review"}"#],
+        vec![r#"--settings={"toolPermission":"request-review"}"#],
+        vec![r#"-settings={"toolPermission":"request-review"}"#],
+    ] {
+        let role_args: Vec<String> = custom.iter().map(|s| (*s).to_owned()).collect();
+        assert!(!inject_antigravity_settings(&role_args), "{custom:?}");
+        assert!(
+            antigravity_settings_args(&role_args, app_data).is_empty(),
+            "{custom:?}"
+        );
+        let fake_home = tempfile::tempdir().unwrap();
+        let role_env = std::collections::HashMap::new();
+        crate::runtimes::with_conversation_home(fake_home.path(), || {
+            assert_eq!(
+                antigravity_summaries_db_path(&[], &role_env),
+                Some(
+                    fake_home
+                        .path()
+                        .join(".gemini/antigravity-cli/conversation_summaries.db")
+                )
+            );
+            assert_eq!(
+                antigravity_summaries_db_path(&role_args, &role_env),
+                None,
+                "{custom:?}"
+            );
+        });
+        let args = Antigravity.launch_args(&LaunchContext {
+            default_model: None,
+            env: &env,
+            cwd: None,
+            role_args: &role_args,
+            app_data_dir: app_data,
+            session_id: "runner-session",
+            resuming: false,
+            mission: false,
+            model: None,
+            effort: None,
+            codex_speed: None,
+            system_prompt: None,
+            first_turn: Some("first turn"),
+        });
+        assert!(
+            !args.iter().any(|arg| arg.contains("settings")),
+            "{custom:?} -> {args:?}"
+        );
+    }
 }
 
 #[test]

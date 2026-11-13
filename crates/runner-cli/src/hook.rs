@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 use runner_core::protocol::hook::{self, HookReport, DEADLINE, MAX_ENVELOPE_BYTES};
@@ -20,9 +20,14 @@ pub enum Command {
         bridge_unavailable: bool,
     },
     Serve,
+    Title,
 }
 
 pub fn run(command: &Command) -> i32 {
+    if matches!(command, Command::Title) {
+        let _ = write_conversation_title(io::stdin().lock(), io::stdout().lock());
+        return 0;
+    }
     let route = Route::from_env();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -72,8 +77,32 @@ pub fn run(command: &Command) -> i32 {
                 );
             }
         }
+        Command::Title => {}
     }
     0
+}
+
+fn write_conversation_title(input: impl Read, mut output: impl Write) -> io::Result<()> {
+    let mut bytes = Vec::new();
+    input
+        .take((MAX_ENVELOPE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_ENVELOPE_BYTES {
+        return Ok(());
+    }
+    let Ok(payload) = serde_json::from_slice::<Value>(&bytes) else {
+        return Ok(());
+    };
+    if let Some(title) = payload
+        .get("conversation_title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+    {
+        writeln!(output, "{title}")?;
+        output.flush()?;
+    }
+    Ok(())
 }
 
 fn command_caller_thread_id(runtime: Runtime, event: &str, payload: &Value) -> Option<String> {
@@ -662,5 +691,60 @@ mod tests {
         }
         assert_eq!(neutral("copilot", "PreToolUse"), "");
         assert_eq!(neutral("claude-code", "PreToolUse"), "");
+    }
+
+    #[test]
+    fn title_hook_extracts_trimmed_conversation_title_and_ignores_other_inputs() {
+        let run_case = |input: &[u8]| {
+            let mut output = Vec::new();
+            write_conversation_title(input, &mut output).unwrap();
+            String::from_utf8(output).unwrap()
+        };
+
+        assert_eq!(
+            run_case(br#"{"conversation_title":"Fix session title"}"#),
+            "Fix session title\n"
+        );
+        assert_eq!(
+            run_case(
+                r#"{"cwd":"/tmp","conversation_title":"  修复会话标题 🚀 \t\r\n","product":"antigravity"}"#
+                    .as_bytes()
+            ),
+            "修复会话标题 🚀\n"
+        );
+
+        for silent in [
+            b"".as_slice(),
+            b"   \n",
+            b"{",
+            b"not json",
+            b"null",
+            b"[]",
+            b"\"string\"",
+            b"42",
+            br#"{"cwd":"/tmp","session_id":"s","product":"antigravity"}"#,
+            br#"{"conversation_title":""}"#,
+            br#"{"conversation_title":"   \t\r\n\u3000"}"#,
+            br#"{"conversation_title":null}"#,
+            br#"{"conversation_title":123}"#,
+            br#"{"conversation_title":true}"#,
+            br#"{"conversation_title":["topic"]}"#,
+            br#"{"conversation_title":{"text":"topic"}}"#,
+        ] {
+            assert_eq!(
+                run_case(silent),
+                "",
+                "{:?}",
+                String::from_utf8_lossy(silent)
+            );
+        }
+
+        let mut oversized = br#"{"conversation_title":"Oversized","pad":""#.to_vec();
+        oversized.resize(MAX_ENVELOPE_BYTES + 16, b'x');
+        oversized.extend_from_slice(br#""}"#);
+        let reader = std::io::Read::chain(oversized.as_slice(), io::repeat(b'x'));
+        let mut output = Vec::new();
+        write_conversation_title(reader, &mut output).unwrap();
+        assert!(output.is_empty());
     }
 }

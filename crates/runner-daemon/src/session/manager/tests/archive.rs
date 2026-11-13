@@ -232,6 +232,181 @@ fn ordinary_stop_resume_keeps_sequence_terminal_and_single_input_worker() {
 }
 
 #[test]
+fn stop_resume_rebinds_reused_terminal_for_live_title_updates() {
+    let data = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = core_with_fake(data.path(), fake.clone());
+
+    // Resumed conversation keeps the terminal model and accepts new OSC 2 titles
+    // after `resume_in_place` advances `started_at`.
+    let id = spawn(&core, "trae");
+    let key = uuid::Uuid::new_v4().to_string();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+            params![id, key],
+        )
+        .unwrap();
+    let old = core.sessions.terminal_model(&id).unwrap();
+    let mut attachment = core.sessions.attach_terminal(&id).unwrap();
+    output(
+        &core,
+        &fake,
+        &id,
+        &mut attachment,
+        1,
+        b"\x1b]2;Provider First\x07",
+    );
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("Provider First")
+    );
+    std::thread::sleep(Duration::from_millis(5));
+    session_stop(&core, &id).unwrap();
+    session_resume(&core, &id, None, None).unwrap();
+    assert!(Arc::ptr_eq(
+        &old,
+        &core.sessions.terminal_model(&id).unwrap()
+    ));
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("Provider First")
+    );
+    output(
+        &core,
+        &fake,
+        &id,
+        &mut attachment,
+        2,
+        b"\x1b]2;Resumed Provider\x07",
+    );
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("Resumed Provider")
+    );
+    session_stop(&core, &id).unwrap();
+
+    // Fresh-fallback resume clears `live_title`; re-emitting the same OSC 2 title
+    // on the reused terminal must still persist instead of hitting stale dedupe.
+    let fresh_id = spawn(&core, "trae");
+    let fresh_old = core.sessions.terminal_model(&fresh_id).unwrap();
+    let mut fresh_attachment = core.sessions.attach_terminal(&fresh_id).unwrap();
+    output(
+        &core,
+        &fake,
+        &fresh_id,
+        &mut fresh_attachment,
+        1,
+        b"\x1b]2;Same Topic\x07",
+    );
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &fresh_id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("Same Topic")
+    );
+    std::thread::sleep(Duration::from_millis(5));
+    session_stop(&core, &fresh_id).unwrap();
+    // Simulate a late pre-rebind OSC 2 event sitting in the terminal queue after
+    // `resume_in_place` already advanced `started_at` and cleared `live_title`:
+    // it must execute under the old generation (matching 0 rows) before rebind.
+    let stale_started_at = core
+        .sessions
+        .session_state(&fresh_id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal_started_at
+        .clone()
+        .unwrap();
+    let resumed_at = Utc::now() + chrono::Duration::seconds(2);
+    crate::repo::session::resume_in_place(
+        &core.db.get().unwrap(),
+        &fresh_id,
+        resumed_at,
+        None,
+        true,
+        (80, 24),
+        None,
+    )
+    .unwrap();
+    core.sessions.ingest_output_chunk(
+        &fresh_id,
+        None,
+        b"\x1b]2;Stale Pre-Resume\x07",
+        &core.session_events(),
+    );
+    assert!(matches!(
+        fresh_attachment.frames.recv().unwrap(),
+        TerminalFrame::Output { seq: 2, .. }
+    ));
+    core.sessions
+        .rebind_terminal_session(&fresh_id, &fresh_old, &stale_started_at, &core.db)
+        .unwrap();
+    fresh_old.flush_events();
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &fresh_id)
+            .unwrap()
+            .unwrap()
+            .live_title,
+        None
+    );
+    crate::repo::session::set_exit_status(
+        &core.db.get().unwrap(),
+        &fresh_id,
+        crate::model::SessionStatus::Stopped,
+        resumed_at,
+    )
+    .unwrap();
+    session_resume(&core, &fresh_id, None, None).unwrap();
+    assert!(Arc::ptr_eq(
+        &fresh_old,
+        &core.sessions.terminal_model(&fresh_id).unwrap()
+    ));
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &fresh_id)
+            .unwrap()
+            .unwrap()
+            .live_title,
+        None
+    );
+    output(
+        &core,
+        &fake,
+        &fresh_id,
+        &mut fresh_attachment,
+        3,
+        b"\x1b]2;Same Topic\x07",
+    );
+    assert_eq!(
+        crate::repo::session::get_row(&core.db.get().unwrap(), &fresh_id)
+            .unwrap()
+            .unwrap()
+            .live_title
+            .as_deref(),
+        Some("Same Topic")
+    );
+    session_stop(&core, &fresh_id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
 fn explicit_and_natural_shell_close_release_terminal_resources() {
     for natural in [false, true] {
         let data = tempfile::tempdir().unwrap();

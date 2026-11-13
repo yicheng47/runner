@@ -169,6 +169,7 @@ impl SessionState {
     pub(super) fn release_terminal(&mut self) -> Vec<thread::JoinHandle<()>> {
         self.finish_companion_terminals();
         self.terminal_input.take();
+        self.terminal_started_at.take();
         let mut workers = self
             .terminal
             .take()
@@ -196,12 +197,49 @@ impl SessionState {
     }
 }
 
+pub(super) type TerminalStartedAt = Arc<Mutex<Option<String>>>;
+
+pub(crate) struct ProviderTitleUpdate<'a> {
+    pub(crate) session_id: &'a str,
+    pub(crate) expected_started_at: &'a str,
+    pub(crate) cleaned_title: &'a str,
+    pub(crate) mission_id: Option<&'a str>,
+    pub(crate) pool: &'a DbPool,
+    pub(crate) events: &'a Arc<dyn SessionEvents>,
+}
+
+fn persist_live_title_for_generation(
+    pool: &DbPool,
+    session_id: &str,
+    cleaned_title: &str,
+    expected_started_at: &str,
+) -> Result<Option<(bool, Option<String>)>> {
+    let conn = pool.get()?;
+    let updated = crate::repo::session::set_live_title(
+        &conn,
+        session_id,
+        Some(cleaned_title),
+        Some(expected_started_at),
+    )?;
+    let row = crate::repo::session::get_row(&conn, session_id)?;
+    if updated > 0 {
+        return Ok(Some((true, row.and_then(|row| row.mission_id))));
+    }
+    let Some(row) = row.filter(|row| {
+        row.started_at.map(|time| time.to_rfc3339()).as_deref() == Some(expected_started_at)
+            && row.live_title.as_deref() == Some(cleaned_title)
+    }) else {
+        return Ok(None);
+    };
+    Ok(Some((false, row.mission_id)))
+}
+
 struct Host {
     manager: Weak<SessionManager>,
     pool: DbPool,
     events: Arc<dyn SessionEvents>,
     agent: bool,
-    started_at: Option<String>,
+    started_at: TerminalStartedAt,
 }
 impl TerminalHost for Host {
     fn write_input(&self, id: &str, bytes: &[u8]) -> HostResult<()> {
@@ -228,12 +266,13 @@ impl TerminalHost for Host {
             self.events.terminal_metadata_changed(id);
             return Ok(());
         }
+        let expected_started_at = self.started_at.lock().unwrap().clone();
         let conn = self.pool.get()?;
         if crate::repo::session::set_live_title(
             &conn,
             id,
             (!title.is_empty()).then_some(title),
-            self.started_at.as_deref(),
+            expected_started_at.as_deref(),
         )? == 0
         {
             return Ok(());
@@ -260,6 +299,42 @@ impl TerminalHost for Host {
     }
 }
 
+struct SessionTerminalBinding {
+    runtime: Option<Runtime>,
+    agent: bool,
+    cwd: Option<String>,
+    initial_title: String,
+    started_at: Option<String>,
+}
+
+fn session_terminal_binding(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<SessionTerminalBinding> {
+    let runtime = crate::repo::session::effective_runtime(conn, id)?
+        .as_deref()
+        .and_then(Runtime::parse);
+    let row = crate::repo::session::get_row(conn, id)?;
+    let agent = runtime.is_some_and(|runtime| !runtime.is_shell());
+    let cwd = row.as_ref().and_then(|row| row.cwd.clone());
+    let initial_title = row
+        .as_ref()
+        .filter(|_| agent)
+        .and_then(|row| row.live_title.as_deref())
+        .and_then(|title| crate::session::title::provider_title(title, cwd.as_deref()))
+        .unwrap_or_default();
+    let started_at = row
+        .and_then(|row| row.started_at)
+        .map(|time| time.to_rfc3339());
+    Ok(SessionTerminalBinding {
+        runtime,
+        agent,
+        cwd,
+        initial_title,
+        started_at,
+    })
+}
+
 impl SessionManager {
     pub fn discard_unlisted_terminal(&self, id: &str) {
         self.sessions.lock().unwrap().remove(id);
@@ -271,7 +346,8 @@ impl SessionManager {
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) -> Result<()> {
-        let model = self.create_terminal(id, size.0, size.1, pool, events)?;
+        let (model, started_at) =
+            self.create_terminal_with_started_at(id, size.0, size.1, pool, events)?;
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
         let mut control = self.terminal_control.lock().unwrap();
         let controller = self.inherited_controller(id, pool, &mut control)?;
@@ -284,10 +360,12 @@ impl SessionManager {
         state.last_exit_was_killed = false;
         state.controller = controller;
         state.terminal = Some(model);
+        state.terminal_started_at = Some(started_at);
         state.terminal_input = Some(input);
         state.terminal_input_worker = Some(worker);
         Ok(())
     }
+    #[cfg(test)]
     pub(super) fn create_terminal(
         self: &Arc<Self>,
         id: &str,
@@ -296,29 +374,27 @@ impl SessionManager {
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) -> Result<Arc<TerminalModel>> {
+        self.create_terminal_with_started_at(id, cols, rows, pool, events)
+            .map(|(model, _)| model)
+    }
+    pub(super) fn create_terminal_with_started_at(
+        self: &Arc<Self>,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        pool: &DbPool,
+        events: &Arc<dyn SessionEvents>,
+    ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
         let conn = pool.get()?;
-        let runtime = crate::repo::session::effective_runtime(&conn, id)?
-            .as_deref()
-            .and_then(Runtime::parse);
-        let row = crate::repo::session::get_row(&conn, id)?;
-        let agent = runtime.is_some_and(|runtime| !runtime.is_shell());
-        let cwd = row.as_ref().and_then(|row| row.cwd.clone());
-        let title = row
-            .as_ref()
-            .filter(|_| agent)
-            .and_then(|row| row.live_title.as_deref())
-            .and_then(|title| crate::session::title::provider_title(title, cwd.as_deref()))
-            .unwrap_or_default();
-        let started_at = row
-            .and_then(|row| row.started_at)
-            .map(|time| time.to_rfc3339());
+        let binding = session_terminal_binding(&conn, id)?;
         drop(conn);
+        let started_at = Arc::new(Mutex::new(binding.started_at));
         let host = Arc::new(Host {
             manager: Arc::downgrade(self),
             pool: pool.clone(),
             events: Arc::clone(events),
-            agent,
-            started_at,
+            agent: binding.agent,
+            started_at: Arc::clone(&started_at),
         });
         let model = TerminalModel::new(
             host,
@@ -326,20 +402,108 @@ impl SessionManager {
             cols,
             rows,
             ModelOptions {
-                codex_native_attention: runtime.is_some_and(|runtime| {
+                codex_native_attention: binding.runtime.is_some_and(|runtime| {
                     crate::runtimes::adapter(runtime)
                         .status_semantics()
                         .native_attention
                 }),
-                agent,
-                shell: runtime.is_some_and(Runtime::is_shell),
-                initial_title: title,
-                cwd,
+                agent: binding.agent,
+                shell: binding.runtime.is_some_and(Runtime::is_shell),
+                initial_title: binding.initial_title,
+                cwd: binding.cwd,
             },
         )
         .map_err(|error| Error::msg(error.to_string()))?;
         model.set_palette(*self.terminal_palette.lock().unwrap());
-        Ok(model)
+        Ok((model, started_at))
+    }
+    pub(super) fn rebind_terminal_session(
+        &self,
+        id: &str,
+        terminal: &TerminalModel,
+        started_at: &TerminalStartedAt,
+        pool: &DbPool,
+    ) -> Result<()> {
+        let conn = pool.get()?;
+        let binding = session_terminal_binding(&conn, id)?;
+        drop(conn);
+        let started_at = Arc::clone(started_at);
+        let next_started_at = binding.started_at;
+        terminal.sync_session_title(binding.initial_title, move || {
+            *started_at.lock().unwrap() = next_started_at;
+        });
+        Ok(())
+    }
+    pub(crate) fn apply_provider_title(&self, update: ProviderTitleUpdate<'_>) -> Result<bool> {
+        let attached = self.session_state(update.session_id).and_then(|state| {
+            let state = state.lock().unwrap();
+            state
+                .terminal
+                .clone()
+                .zip(state.terminal_started_at.clone())
+        });
+        if let Some((terminal, terminal_started_at)) = attached {
+            let (tx, rx) = mpsc::sync_channel(1);
+            let session_id = update.session_id.to_owned();
+            let expected = update.expected_started_at.to_owned();
+            let fallback_mission = update.mission_id.map(str::to_owned);
+            let pool = update.pool.clone();
+            let events = Arc::clone(update.events);
+            let applied = terminal.apply_session_title(
+                update.cleaned_title.to_owned(),
+                move |cleaned, cache_changed| {
+                    if terminal_started_at.lock().unwrap().as_deref() != Some(expected.as_str()) {
+                        let _ = tx.send(Ok(false));
+                        return None;
+                    }
+                    match persist_live_title_for_generation(&pool, &session_id, cleaned, &expected)
+                    {
+                        Ok(Some((db_updated, row_mission))) => {
+                            let mission_id = row_mission.or(fallback_mission);
+                            Some(Box::new(move || {
+                                if db_updated || cache_changed {
+                                    events.updated(&SessionUpdatedEvent {
+                                        session_id,
+                                        mission_id,
+                                    });
+                                }
+                                let _ = tx.send(Ok(true));
+                            }))
+                        }
+                        Ok(None) => {
+                            let _ = tx.send(Ok(false));
+                            None
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Err(error));
+                            None
+                        }
+                    }
+                },
+            );
+            if applied {
+                if let Ok(outcome) = rx.recv() {
+                    return outcome;
+                }
+            }
+        }
+        match persist_live_title_for_generation(
+            update.pool,
+            update.session_id,
+            update.cleaned_title,
+            update.expected_started_at,
+        )? {
+            Some((db_updated, row_mission)) => {
+                if db_updated {
+                    update.events.updated(&SessionUpdatedEvent {
+                        session_id: update.session_id.to_owned(),
+                        mission_id: row_mission.or_else(|| update.mission_id.map(str::to_owned)),
+                    });
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
     pub(crate) fn terminal_output_sequence(&self, id: &str) -> u64 {
         self.session_state(id)
