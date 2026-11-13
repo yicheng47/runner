@@ -9,6 +9,7 @@ pub mod companion;
 pub mod daemon_process;
 pub mod error;
 pub mod event_log;
+pub mod local_host;
 pub mod logging;
 pub mod mission_roster;
 pub mod model;

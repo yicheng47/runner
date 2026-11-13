@@ -1041,3 +1041,481 @@ fn scheme_sequences_are_seen_once_across_chunk_splits() {
     assert_eq!(scan_scheme_sequences(&mut tail, b""), vec![]);
     assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?25h"), vec![]);
 }
+
+#[test]
+fn file_uri_targets_resolve_cross_platform_and_windows_paths() {
+    let file_target = |path: &str, line: Option<u32>, column: Option<u32>| LinkTarget::File {
+        path: PathBuf::from(path),
+        line,
+        column,
+    };
+    let local_name = Some("Jasons-Mac-Studio.local");
+
+    assert_eq!(
+        super::file_target_from_uri_with_platform("file:///tmp/report.html", false, local_name),
+        Some(file_target("/tmp/report.html", None, None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "FILE:///tmp/report.html:12:5",
+            false,
+            local_name
+        ),
+        Some(file_target("/tmp/report.html", Some(12), Some(5)))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file://localhost/tmp/my%20report.html?view=1#L42",
+            false,
+            local_name
+        ),
+        Some(file_target("/tmp/my report.html", Some(42), None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file://Jasons-Mac-Studio.local/tmp/report.html",
+            false,
+            local_name
+        ),
+        Some(file_target("/tmp/report.html", None, None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file://jasons-mac-studio/tmp/report.html#L8",
+            false,
+            local_name
+        ),
+        Some(file_target("/tmp/report.html", Some(8), None))
+    );
+
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file:///C:/Users/Jason/report.html",
+            true,
+            local_name
+        ),
+        Some(file_target(r"C:\Users\Jason\report.html", None, None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file:///C:/Users/Jason/report.html",
+            false,
+            local_name
+        ),
+        Some(file_target("/C:/Users/Jason/report.html", None, None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file://LocalHost/C:/Users/Jason%20Wang/report.html:12:5",
+            true,
+            local_name
+        ),
+        Some(file_target(
+            r"C:\Users\Jason Wang\report.html",
+            Some(12),
+            Some(5)
+        ))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "file://JASONS-MAC-STUDIO/C:/Users/Jason/report.html",
+            true,
+            local_name
+        ),
+        Some(file_target(r"C:\Users\Jason\report.html", None, None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform(
+            "FILE:///c%3A/Users/me/../you/report.html?foo=bar:1#L9",
+            true,
+            local_name
+        ),
+        Some(file_target(r"c:\Users\you\report.html", Some(9), None))
+    );
+    assert_eq!(
+        super::file_target_from_uri_with_platform("file:///tmp/x.rs:7", true, local_name),
+        Some(file_target("/tmp/x.rs", Some(7), None))
+    );
+
+    for invalid in [
+        "file://other-host.invalid/tmp/report.html",
+        "file://other-host.invalid/C:/report.html",
+        "file:////other-host.invalid/share/report.html",
+        r"file:///\\other-host.invalid\share\report.html",
+        "file:///",
+        "file://localhost",
+        "file:///tmp/%FF",
+        "file:///tmp/bad%00path",
+        "https://example.com/report.html",
+    ] {
+        assert_eq!(
+            super::file_target_from_uri_with_platform(invalid, false, local_name),
+            None,
+            "unix {invalid:?}"
+        );
+        assert_eq!(
+            super::file_target_from_uri_with_platform(invalid, true, local_name),
+            None,
+            "windows {invalid:?}"
+        );
+    }
+    for windows_invalid in ["file:///C:/", "file:///C:", "file:///C:relative.html"] {
+        assert_eq!(
+            super::file_target_from_uri_with_platform(windows_invalid, true, local_name),
+            None,
+            "{windows_invalid:?}"
+        );
+    }
+}
+
+#[test]
+fn plain_text_and_osc8_file_uris_resolve_to_file_links() {
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(cwd.path().join("report.html"), "").unwrap();
+    let host = runner_core::local_host::local_hostname().expect("local hostname");
+    let short_host = host.split('.').next().unwrap_or(&host).to_ascii_lowercase();
+
+    let output = format!(
+        "see file:///tmp/report.html:12:5 and FILE://localhost/tmp/my%20file.html#L7.\r\n\
+         remote file://other-host.invalid/tmp/secret.txt https://example.com/ok\r\n\
+         \x1b]8;;file:///tmp/osc.html?v=1#L9\x1b\\open\x1b]8;;\x1b\\ \
+         \x1b]8;;file://other-host.invalid/report.html\x1b\\report.html\x1b]8;;\x1b\\ \
+         \x1b]8;;file://other-host.invalid/report.html\x1b\\https://example.com/label\x1b]8;;\x1b\\\r\n\
+         \x1b]8;;file://{host}/tmp/local-full.html\x1b\\full\x1b]8;;\x1b\\ \
+         \x1b]8;;file://{short_host}/tmp/local-short.html\x1b\\short\x1b]8;;\x1b\\"
+    );
+    let term = link_term(120, output.as_bytes());
+    let cwds = [cwd.path()];
+
+    let first = terminal_link_at(&term, Point::new(Line(0), Column(10)), &cwds).unwrap();
+    assert_eq!(
+        first.target,
+        LinkTarget::File {
+            path: PathBuf::from("/tmp/report.html"),
+            line: Some(12),
+            column: Some(5),
+        }
+    );
+    assert_eq!(first.start, Point::new(Line(0), Column(4)));
+    assert_eq!(first.end, Point::new(Line(0), Column(31)));
+
+    let second = terminal_link_at(&term, Point::new(Line(0), Column(45)), &cwds).unwrap();
+    assert_eq!(
+        second.target,
+        LinkTarget::File {
+            path: PathBuf::from("/tmp/my file.html"),
+            line: Some(7),
+            column: None,
+        }
+    );
+    assert_eq!(second.end, Point::new(Line(0), Column(74)));
+    assert!(
+        terminal_link_at(&term, Point::new(Line(0), Column(75)), &cwds).is_none(),
+        "trailing period is excluded"
+    );
+
+    assert!(
+        terminal_link_at(&term, Point::new(Line(1), Column(12)), &cwds).is_none(),
+        "remote file:// URI in plain text must not link or fall back to Url"
+    );
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(1), Column(52)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::Url("https://example.com/ok".into())
+    );
+
+    let osc = terminal_link_at(&term, Point::new(Line(2), Column(1)), &cwds).unwrap();
+    assert_eq!(
+        osc.target,
+        LinkTarget::File {
+            path: PathBuf::from("/tmp/osc.html"),
+            line: Some(9),
+            column: None,
+        }
+    );
+    assert!(
+        terminal_link_at(&term, Point::new(Line(2), Column(8)), &cwds).is_none(),
+        "rejected OSC 8 file:// URI must not fall back to file_link_regex on label"
+    );
+    assert!(
+        terminal_link_at(&term, Point::new(Line(2), Column(25)), &cwds).is_none(),
+        "rejected OSC 8 file:// URI must not fall back to url_regex on label"
+    );
+
+    let local_full = terminal_link_at(&term, Point::new(Line(3), Column(1)), &cwds).unwrap();
+    assert_eq!(
+        local_full.target,
+        LinkTarget::File {
+            path: PathBuf::from("/tmp/local-full.html"),
+            line: None,
+            column: None,
+        }
+    );
+    let local_short = terminal_link_at(&term, Point::new(Line(3), Column(6)), &cwds).unwrap();
+    assert_eq!(
+        local_short.target,
+        LinkTarget::File {
+            path: PathBuf::from("/tmp/local-short.html"),
+            line: None,
+            column: None,
+        }
+    );
+
+    let underlined = link_term(
+        40,
+        b"\x1b[4;34mhttps://example.com/path\x1b[0m\r\n  file:///tmp/next.html",
+    );
+    let top = terminal_link_at(&underlined, Point::new(Line(0), Column(5)), &[]).unwrap();
+    assert_eq!(
+        top.target,
+        LinkTarget::Url("https://example.com/path".into())
+    );
+    assert_eq!(top.end.line, Line(0));
+}
+
+#[test]
+fn file_link_regex_matches_windows_drive_and_unc_paths_with_suffixes() {
+    let parse_match = |text: &str, needle: &str| {
+        let offset = text.find(needle)?;
+        let captures = super::file_link_regex()
+            .captures_iter(text)
+            .find(|captures| {
+                captures
+                    .get(0)
+                    .is_some_and(|m| m.start() <= offset && m.end() > offset)
+            })?;
+        let number = |name: &str| {
+            captures
+                .name(name)
+                .and_then(|matched| matched.as_str().parse::<u32>().ok())
+        };
+        Some((
+            captures.name("path")?.as_str().to_owned(),
+            number("line")
+                .or_else(|| number("pline"))
+                .or_else(|| number("hline")),
+            number("column").or_else(|| number("pcolumn")),
+        ))
+    };
+
+    for (input, needle, expected) in [
+        (
+            r"C:\Users\me\report.html",
+            "report.html",
+            (r"C:\Users\me\report.html", None, None),
+        ),
+        (
+            "C:/Users/me/report.html",
+            "report.html",
+            ("C:/Users/me/report.html", None, None),
+        ),
+        (
+            r"C:\Users\me\report.html:12",
+            "report.html",
+            (r"C:\Users\me\report.html", Some(12), None),
+        ),
+        (
+            r"C:\Users\me\report.html:12:5",
+            "report.html",
+            (r"C:\Users\me\report.html", Some(12), Some(5)),
+        ),
+        (
+            "C:/Users/me/report.html(3, 4)",
+            "report.html",
+            ("C:/Users/me/report.html", Some(3), Some(4)),
+        ),
+        (
+            r"C:\Users\me\report.html#L9",
+            "report.html",
+            (r"C:\Users\me\report.html", Some(9), None),
+        ),
+        (
+            r"See (C:\Users\me\report.html:2).",
+            "C:",
+            (r"C:\Users\me\report.html", Some(2), None),
+        ),
+        (
+            r"Error in C:\Users\me\report.html: error",
+            "C:",
+            (r"C:\Users\me\report.html", None, None),
+        ),
+        (
+            r"\\server\shared\report.html:7",
+            "report.html",
+            (r"\\server\shared\report.html", Some(7), None),
+        ),
+        (
+            r"src\lib.rs:12:5",
+            "lib.rs",
+            (r"src\lib.rs", Some(12), Some(5)),
+        ),
+        (r".\README.md", "README", (r".\README.md", None, None)),
+        (
+            r"..\..\docs\guide.md",
+            "guide.md",
+            (r"..\..\docs\guide.md", None, None),
+        ),
+        (r"~\notes.txt", "notes.txt", (r"~\notes.txt", None, None)),
+    ] {
+        assert_eq!(
+            parse_match(input, needle),
+            Some((expected.0.to_owned(), expected.1, expected.2)),
+            "{input:?}"
+        );
+    }
+    assert!(parse_match(r"C:\", r"\").is_none());
+}
+
+#[test]
+fn windows_candidate_paths_and_normalization_handle_drives_unc_and_relative_cwds() {
+    let win_cwd = Path::new(r"C:\repo\sub");
+    assert_eq!(
+        super::candidate_paths(r"C:\Users\me\..\you\report.html", &[], None, true),
+        vec![PathBuf::from(r"C:\Users\you\report.html")]
+    );
+    assert_eq!(
+        super::candidate_paths("C:/Users/me/./report.html", &[win_cwd], None, true),
+        vec![PathBuf::from(r"C:\Users\me\report.html")]
+    );
+    assert_eq!(
+        super::candidate_paths(r"\\server\share\dir\..\report.html", &[], None, true),
+        vec![PathBuf::from(r"\\server\share\report.html")]
+    );
+    assert_eq!(
+        super::candidate_paths(r"\\server\share\..\..\report.html", &[], None, true),
+        vec![PathBuf::from(r"\\server\share\report.html")]
+    );
+    assert_eq!(
+        super::candidate_paths(r"..\other\lib.rs", &[win_cwd], None, true),
+        vec![PathBuf::from(r"C:\repo\other\lib.rs")]
+    );
+    assert_eq!(
+        super::candidate_paths(
+            r"~\notes.txt",
+            &[],
+            Some(Path::new(r"C:\Users\jason")),
+            true
+        ),
+        vec![PathBuf::from(r"C:\Users\jason\notes.txt")]
+    );
+
+    assert_eq!(
+        super::candidate_paths("src/lib.rs", &[Path::new("/repo")], None, false),
+        vec![PathBuf::from("/repo/src/lib.rs")]
+    );
+    assert_eq!(
+        super::candidate_paths("/C:/Users/me/report.html", &[], None, false),
+        vec![PathBuf::from("/C:/Users/me/report.html")]
+    );
+    assert_eq!(
+        super::candidate_paths("/C:/Users/me/../you/./report.html", &[], None, false),
+        vec![PathBuf::from("/C:/Users/you/report.html")]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn posix_candidate_paths_preserve_non_utf8_bytes() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let home = PathBuf::from(OsString::from_vec(b"/tmp/home-\xFF".to_vec()));
+    let expected = PathBuf::from(OsString::from_vec(b"/tmp/home-\xFF/report.html".to_vec()));
+    assert_eq!(
+        super::candidate_paths("~/sub/../report.html", &[], Some(&home), false),
+        vec![expected]
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_drive_paths_and_file_uris_resolve_in_terminal() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("project");
+    std::fs::create_dir_all(cwd.join("src")).unwrap();
+    let report = cwd.join("report.html");
+    let lib = cwd.join("src").join("lib.rs");
+    std::fs::write(&report, "<html></html>").unwrap();
+    std::fs::write(&lib, "fn main() {}\n").unwrap();
+
+    let backslash_path = report.to_string_lossy().into_owned();
+    let slash_path = backslash_path.replace('\\', "/");
+    let uri_path = format!("file:///{slash_path}");
+    let localhost_uri = format!("file://localhost/{slash_path}");
+
+    let output = format!(
+        "{backslash_path}:12:5 {slash_path}(3,4)\r\n\
+         {uri_path}:7 {localhost_uri}#L9\r\n\
+         src\\lib.rs:4:2\r\n\
+         \x1b]8;;{uri_path}#L15\x1b\\open\x1b]8;;\x1b\\"
+    );
+    let term = link_term(240, output.as_bytes());
+
+    let line0_bs = terminal_link_at(&term, Point::new(Line(0), Column(3)), &[]).unwrap();
+    assert_eq!(
+        line0_bs.target,
+        LinkTarget::File {
+            path: report.clone(),
+            line: Some(12),
+            column: Some(5),
+        }
+    );
+
+    let line0_sl = terminal_link_at(
+        &term,
+        Point::new(Line(0), Column(backslash_path.len() + 8)),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        line0_sl.target,
+        LinkTarget::File {
+            path: report.clone(),
+            line: Some(3),
+            column: Some(4),
+        }
+    );
+
+    let line1_uri = terminal_link_at(&term, Point::new(Line(1), Column(2)), &[]).unwrap();
+    assert_eq!(
+        line1_uri.target,
+        LinkTarget::File {
+            path: report.clone(),
+            line: Some(7),
+            column: None,
+        }
+    );
+
+    let line1_local =
+        terminal_link_at(&term, Point::new(Line(1), Column(uri_path.len() + 6)), &[]).unwrap();
+    assert_eq!(
+        line1_local.target,
+        LinkTarget::File {
+            path: report.clone(),
+            line: Some(9),
+            column: None,
+        }
+    );
+
+    let line2_rel =
+        terminal_link_at(&term, Point::new(Line(2), Column(2)), &[cwd.as_path()]).unwrap();
+    assert_eq!(
+        line2_rel.target,
+        LinkTarget::File {
+            path: lib,
+            line: Some(4),
+            column: Some(2),
+        }
+    );
+
+    let line3_osc = terminal_link_at(&term, Point::new(Line(3), Column(1)), &[]).unwrap();
+    assert_eq!(
+        line3_osc.target,
+        LinkTarget::File {
+            path: report,
+            line: Some(15),
+            column: None,
+        }
+    );
+}
