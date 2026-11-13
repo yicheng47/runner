@@ -1296,6 +1296,7 @@ fn cached_mission_header_tabs_and_feed_span_the_content_column() {
         }
     }
 
+    assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_some());
     assert!(visual.debug_bounds("MISSION_NO_ROLES").is_some());
     assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
     assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_some());

@@ -1559,3 +1559,163 @@ fn the_remote_header_reads_and_toggles_a_linked_missions_group_pin() {
     cx.run_until_parked();
     assert!(!pinned(&mut cx), "the header follows the host's group pin");
 }
+
+#[test]
+fn remote_zero_role_mission_does_not_flash_no_roles_or_no_events_before_feed_loads() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for with_events in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        let mut data = overview();
+        data.missions[0].members.clear();
+        data.missions[0].asks.clear();
+        data.sessions.clear();
+        fake.set_overview(data.clone());
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-empty-roles");
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        if with_events {
+            fake.queue_result(
+                "feed",
+                Ok(serde_json::json!({
+                    "entries": [entry("e1", serde_json::json!({"kind":"message","text":"Mission started"}))],
+                    "before": null
+                })),
+            );
+        }
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+            })
+            .unwrap();
+        let workspace = workspace(window, &cx);
+        let feed = workspace.read_with(&cx, |workspace, _| {
+            assert!(!workspace.loading);
+            assert_eq!(workspace.feed_item_count(), 1);
+            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+            workspace
+                .presentation
+                .remote_for_test()
+                .unwrap()
+                .feed
+                .clone()
+                .unwrap()
+        });
+        feed.read_with(&cx, |feed, _| {
+            assert!(feed.loading);
+            assert!(!feed.history_loaded);
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.update(|window, _| window.refresh());
+        feed.read_with(&visual, |feed, _| {
+            assert!(feed.loading);
+            assert!(!feed.history_loaded);
+        });
+        assert!(visual.debug_bounds("MISSION_FEED").is_some());
+        assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
+        assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
+        assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
+        assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
+        workspace.read_with(&visual, |workspace, _| {
+            assert_eq!(workspace.feed_item_count(), 1);
+            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+        });
+
+        visual.run_until_parked();
+        feed.read_with(&visual, |feed, _| {
+            assert!(!feed.loading);
+            assert!(feed.history_loaded);
+        });
+        assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
+        assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
+        assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
+        workspace.read_with(&visual, |workspace, _| {
+            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+        });
+        let initial_no_events_bounds = if with_events {
+            assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
+            assert!(visual.debug_bounds("MISSION_MESSAGE_GROUP e1").is_some());
+            None
+        } else {
+            let bounds = visual.debug_bounds("MISSION_NO_EVENTS");
+            assert!(bounds.is_some());
+            bounds
+        };
+
+        for _ in 0..3 {
+            fake.set_overview(data.clone());
+            visual.run_until_parked();
+            visual.update(|window, _| window.refresh());
+            assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
+            assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
+            assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
+            workspace.read_with(&visual, |workspace, _| {
+                assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+            });
+            if with_events {
+                assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
+                assert!(visual.debug_bounds("MISSION_MESSAGE_GROUP e1").is_some());
+            } else {
+                assert_eq!(
+                    visual.debug_bounds("MISSION_NO_EVENTS"),
+                    initial_no_events_bounds
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn remote_zero_role_mission_hides_no_events_when_initial_feed_load_fails() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+    remote_test::enable_missions(&fake);
+    let mut data = overview();
+    data.missions[0].members.clear();
+    data.missions[0].asks.clear();
+    data.sessions.clear();
+    fake.set_overview(data);
+    let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-feed-error");
+    window
+        .update(&mut cx, |root, window, cx| {
+            remote_test::choose_host(root, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    fake.queue_result(
+        "feed",
+        Err(runner_core::protocol::ClientError::msg("Feed unavailable")),
+    );
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let workspace = workspace(window, &visual);
+    workspace.read_with(&visual, |workspace, cx| {
+        let feed = workspace
+            .presentation
+            .remote_for_test()
+            .unwrap()
+            .feed
+            .as_ref()
+            .unwrap()
+            .read(cx);
+        assert!(!feed.loading);
+        assert!(!feed.history_loaded);
+        assert!(feed.error.is_some());
+    });
+    assert!(visual.debug_bounds("MISSION_FEED").is_some());
+    assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
+    assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
+}

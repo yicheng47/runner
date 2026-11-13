@@ -38,7 +38,7 @@ pub(crate) struct MissionFeed {
     follows: Arc<FeedFollow>,
     follow_owner: u64,
     refresh_again: bool,
-    history_loaded: bool,
+    pub(crate) history_loaded: bool,
     retry_older: bool,
     catch_up_ids: Option<HashSet<String>>,
     _events: Vec<gpui::Task<()>>,
