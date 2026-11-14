@@ -148,14 +148,18 @@ class VersionTests(unittest.TestCase):
                 self.assertEqual(command[0], 'readelf')
                 return 'GLIBC_2.35'
             package_stages = []
+            expected_notices = (ROOT / 'crates/runner-app/LICENSE.themes').read_bytes()
             def build(*command, **kwargs):
                 if command[0] == 'cargo':
                     return
                 self.assertEqual(command[0], 'dpkg-deb')
                 stage = Path(command[-2])
                 package_stages.append(stage)
-                for path in [stage / 'usr', stage / 'usr/lib/runner', stage / 'usr/lib/runner/install-layout-v1']:
+                for path in [stage / 'usr', stage / 'usr/lib/runner', stage / 'usr/lib/runner/install-layout-v1', stage / 'usr/lib/runner/LICENSE.themes']:
                     self.assertEqual(path.stat().st_mode & 0o022, 0, str(path))
+                notices = stage / 'usr/lib/runner/LICENSE.themes'
+                self.assertEqual(notices.stat().st_mode & 0o777, 0o644)
+                self.assertEqual(notices.read_bytes(), expected_notices)
             previous_umask = os.umask(0o002)
             try:
                 with mock.patch.object(sys, 'argv', ['bundle-linux', '--arch', 'aarch64', '--formats', 'tar,deb', '--output-dir', str(output)]), \
@@ -173,6 +177,10 @@ class VersionTests(unittest.TestCase):
                     self.assertEqual(member.mode & 0o022, 0, member.name)
                     if member.isdir():
                         self.assertEqual(member.mode, 0o755, member.name)
+                notices_member = next((member for member in archive.getmembers() if member.name.endswith('/lib/runner/LICENSE.themes')), None)
+                self.assertIsNotNone(notices_member)
+                self.assertEqual(notices_member.mode, 0o644)
+                self.assertEqual(archive.extractfile(notices_member).read(), expected_notices)
 
     def test_prebuilt_binary_inputs_are_rejected(self):
         # Even real ci binaries cannot be re-labelled as production package inputs.
@@ -233,6 +241,7 @@ class InstallerTests(unittest.TestCase):
         (package / 'runnerd').write_text('CLI-BYTES')
         (package / 'install-layout-v1').write_text('runner-linux-package-v1\n')
         (package / 'icon.png').write_bytes(b'ICON')
+        (package / 'LICENSE.themes').write_bytes((ROOT / 'crates/runner-app/LICENSE.themes').read_bytes())
         for src, dest in [('packaging/linux/runnerd.service', 'lib/systemd/user/runnerd.service'),
                           ('packaging/linux/runner.desktop', 'share/applications/runner.desktop'),
                           ('script/linux/install.sh', 'install.sh')]:
@@ -251,6 +260,10 @@ class InstallerTests(unittest.TestCase):
         command = self.prefix / 'bin/runner'
         self.assertEqual(command.read_text(), 'CLI-BYTES')
         self.assertEqual((self.prefix / 'bin/runnerd').read_bytes(), command.read_bytes())
+        self.assertEqual(
+            (self.prefix / 'lib/runner/LICENSE.themes').read_bytes(),
+            (ROOT / 'crates/runner-app/LICENSE.themes').read_bytes(),
+        )
         data = self.home / '.local/share/com.wycstudios.runner/runner.db'
         data.parent.mkdir(parents=True)
         data.write_text('KEEP-DATABASE')
@@ -453,7 +466,7 @@ def check_packages(directory):
             else:
                 continue
             if package.suffix == '.deb':
-                for expected in ['usr/lib/runner/Runner', 'usr/lib/runner/runner-agent-cli', 'usr/lib/runner/runnerd', 'usr/lib/systemd/user/runnerd.service', 'usr/share/applications/runner.desktop']:
+                for expected in ['usr/lib/runner/Runner', 'usr/lib/runner/runner-agent-cli', 'usr/lib/runner/runnerd', 'usr/lib/runner/LICENSE.themes', 'usr/lib/systemd/user/runnerd.service', 'usr/share/applications/runner.desktop']:
                     if expected not in listing:
                         raise SystemExit(f'{package}: missing {expected}')
         print(hashlib.sha256(package.read_bytes()).hexdigest(), package.name)

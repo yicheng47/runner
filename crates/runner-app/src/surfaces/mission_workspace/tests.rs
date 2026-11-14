@@ -627,7 +627,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             temp.path().join("settings.json"),
             AppSettings {
                 app_theme: theme::ThemeIntent::Dark,
-                dark_terminal_theme: app_settings::DarkTerminalTheme::RosePineDawn,
+                dark_app_theme: theme::DarkTheme::CatppuccinMocha,
                 ..AppSettings::default()
             },
             None,
@@ -676,14 +676,17 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         });
         root
     });
-    assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
+    assert_eq!(
+        theme::active_variant(),
+        theme::ThemeVariant::CatppuccinMocha
+    );
     assert_eq!(
         bridge.session("direct").unwrap().palette(),
-        runner_terminal::palette::ROSE_PINE_DAWN
+        runner_terminal::palette::CATPPUCCIN_MOCHA
     );
     assert_eq!(
         bridge.session("slot").unwrap().palette(),
-        runner_terminal::palette::ROSE_PINE_DAWN
+        runner_terminal::palette::CATPPUCCIN_MOCHA
     );
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(1200.), px(900.)));
@@ -695,7 +698,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             store.update_settings(
                 |settings| {
                     settings.app_theme = intent;
-                    settings.dark_terminal_theme = app_settings::DarkTerminalTheme::Runner;
+                    settings.dark_app_theme = theme::DarkTheme::Runner;
                     true
                 },
                 false,

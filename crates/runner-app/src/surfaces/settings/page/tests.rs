@@ -436,50 +436,49 @@ fn runner_skill_row_only_reports_exception_states() {
 }
 
 #[test]
-fn theme_selects_have_the_signed_off_options_in_order() {
-    let light = light_theme_options();
+fn theme_galleries_list_six_themes_per_mode_with_unique_keys_and_matching_lightness() {
+    use crate::theme::{DarkTheme, LightTheme};
+
+    assert_eq!(LightTheme::ALL.len(), 6);
+    assert_eq!(DarkTheme::ALL.len(), 6);
+
+    let light_keys: Vec<_> = LightTheme::ALL.into_iter().map(LightTheme::key).collect();
     assert_eq!(
-        light,
-        vec![
-            SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-            SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
+        light_keys,
+        [
+            "runner-light",
+            "catppuccin-latte",
+            "rose-pine-dawn",
+            "tokyo-night-day",
+            "gruvbox-light",
+            "solarized-light",
         ]
     );
-    let light_terminal = light_terminal_theme_options();
+    let dark_keys: Vec<_> = DarkTheme::ALL.into_iter().map(DarkTheme::key).collect();
     assert_eq!(
-        light_terminal,
-        vec![
-            SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-            SelectOption::new("runner", "Runner").swatch(0x00ff9c),
-            SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
+        dark_keys,
+        [
+            "carbon",
+            "catppuccin-mocha",
+            "rose-pine-moon",
+            "tokyo-night",
+            "gruvbox-dark",
+            "solarized-dark",
         ]
     );
-    let dark_terminal = dark_terminal_theme_options();
-    assert_eq!(
-        dark_terminal,
-        vec![
-            SelectOption::new("runner", "Runner").swatch(0x00ff9c),
-            SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-            SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-        ]
-    );
-    for option in light {
-        let theme = parse_light_theme(&option.value).unwrap();
-        assert_eq!(light_theme_value(theme), option.value);
-        assert_eq!(option.label.as_ref(), light_theme_label(theme));
+    for light in LightTheme::ALL {
+        assert_eq!(LightTheme::parse(light.key()), Some(light));
+        assert!(light.variant().is_light());
+        assert!(light.variant().terminal_palette().is_light());
     }
-    for (option, theme) in light_terminal.iter().zip(LightTerminalTheme::ALL) {
-        assert_eq!(option.value, theme.key());
-        assert_eq!(option.label.as_ref(), theme.label());
+    for dark in DarkTheme::ALL {
+        assert_eq!(DarkTheme::parse(dark.key()), Some(dark));
+        assert!(!dark.variant().is_light());
+        assert!(!dark.variant().terminal_palette().is_light());
     }
-    for (option, theme) in dark_terminal.iter().zip(DarkTerminalTheme::ALL) {
-        assert_eq!(option.value, theme.key());
-        assert_eq!(option.label.as_ref(), theme.label());
-    }
-    assert_eq!(dark_theme_label(DarkTheme::Runner), "Runner");
-    assert_eq!(parse_light_theme("codex"), None);
-    assert_eq!(LightTerminalTheme::parse("match-app"), None);
-    assert_eq!(DarkTerminalTheme::parse("runner-dark"), None);
+    assert_eq!(DarkTheme::Runner.label(), "Runner");
+    assert_eq!(LightTheme::parse("codex"), None);
+    assert_eq!(DarkTheme::parse("runner-dark"), None);
 }
 
 #[test]
@@ -1118,32 +1117,19 @@ fn general_quit_menu_renders_a_right_hand_tick_for_each_choice() {
 }
 
 #[test]
-fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_one() {
+fn appearance_theme_galleries_update_app_and_terminal_together_and_fit_six_cards() {
+    use crate::theme::{DarkTheme, LightTheme, ThemeVariant};
     use crate::theme_snapshot::{assert_fill, ThemeGuard};
-    use gpui::{size, Render, TestAppContext, VisualTestContext};
+    use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
     use runner_daemon::{db, session, shell_path};
     use std::sync::{Arc, RwLock};
 
-    struct PaneHost(Entity<NativeRoot>);
-    impl Render for PaneHost {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .p_6()
-                .children(self.0.update(cx, |root, cx| root.render_settings_pane(cx)))
-        }
-    }
     fn packed(rgb: alacritty_terminal::vte::ansi::Rgb) -> u32 {
         u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b)
     }
-    fn captioned_by(pane: gpui::Bounds<gpui::Pixels>, caption: gpui::Bounds<gpui::Pixels>) -> bool {
-        caption.left() >= pane.left()
-            && caption.right() <= pane.right()
-            && caption.top() >= pane.bottom()
-    }
 
     let _theme = ThemeGuard::new();
-    theme::set_active_variant(theme::ThemeVariant::Carbon);
+    theme::set_active_variant(ThemeVariant::CatppuccinMocha);
     let temp = tempfile::tempdir().unwrap();
     let runtime_shell_env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let runtime_discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
@@ -1161,13 +1147,14 @@ fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_o
     let mut cx = TestAppContext::single();
     let store = cx.new(|cx| {
         AppStore::new(
-            core,
+            core.clone(),
             None,
             None,
             temp.path().join("settings.json"),
             AppSettings {
                 app_theme: ThemeIntent::Dark,
-                dark_terminal_theme: DarkTerminalTheme::CatppuccinMocha,
+                light_app_theme: LightTheme::RunnerLight,
+                dark_app_theme: DarkTheme::CatppuccinMocha,
                 ..AppSettings::default()
             },
             None,
@@ -1183,90 +1170,354 @@ fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_o
         let updater = cx.new(|cx| Updater::new(false, temp.path().join("updates"), cx));
         cx.set_global(GlobalUpdater(updater));
     });
+    let bridge = cx.update(|cx| store.read(cx).bridge.clone());
+    let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
+        Arc::new(core.session_events());
+    core.sessions
+        .prepare_unlisted_terminal("term", (80, 24), &core.db, &events)
+        .unwrap();
+    let terminal = bridge.attach("term").unwrap();
+    terminal.test_feed(1, b"ready");
+
     let host = cx.add_window(|window, cx| {
         window.resize(size(px(1200.), px(900.)));
-        let root = cx.new(|cx| {
-            NativeRoot::new(
-                "theme-preview".into(),
-                temp.path().join("logs"),
-                None,
-                None,
-                store.clone(),
-                window,
-                cx,
-            )
-        });
-        root.update(cx, |root, _| {
-            root.settings_page.pane = SettingsPane::Appearance
-        });
-        PaneHost(root)
+        let mut root = NativeRoot::new(
+            "theme-galleries".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.enter_settings_pane(SettingsPane::Appearance, window, cx);
+        root
     });
     cx.run_until_parked();
     let mut window = VisualTestContext::from_window(host.into(), &cx);
-    let light_pane = PreviewMode::Light.pane_selector();
-    let dark_pane = PreviewMode::Dark.pane_selector();
-
-    // The app is Carbon, yet the left pane is Runner Light + Dawn: the
-    // preview reads the picks, not the globals.
-    assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
-    let light = window.debug_bounds(light_pane).unwrap();
-    let dark = window.debug_bounds(dark_pane).unwrap();
-    assert!(light.right() <= dark.left(), "{light:?} {dark:?}");
-    assert_fill(&mut window, light_pane, theme::RUNNER_LIGHT.bg);
-    assert_fill(
-        &mut window,
-        PreviewMode::Light.terminal_selector(),
-        packed(runner_terminal::palette::ROSE_PINE_DAWN.background),
-    );
-    assert_fill(&mut window, dark_pane, theme::CARBON.bg);
-    assert_fill(
-        &mut window,
-        PreviewMode::Dark.terminal_selector(),
-        packed(runner_terminal::palette::CATPPUCCIN_MOCHA.background),
-    );
-    let active = window.debug_bounds(theme_preview::ACTIVE_CAPTION).unwrap();
-    assert!(captioned_by(dark, active), "{dark:?} {active:?}");
-
-    theme::set_active_variant(theme::ThemeVariant::RunnerLight);
-    window.refresh().unwrap();
+    window.simulate_resize(size(px(1200.), px(900.)));
     window.run_until_parked();
-    let light = window.debug_bounds(light_pane).unwrap();
-    let active = window.debug_bounds(theme_preview::ACTIVE_CAPTION).unwrap();
-    assert!(captioned_by(light, active), "{light:?} {active:?}");
-    assert_fill(&mut window, light_pane, theme::RUNNER_LIGHT.bg);
-    assert_fill(&mut window, dark_pane, theme::CARBON.bg);
-    // The outline is a selection, not only a report: clicking a pane pins
-    // the Theme intent to that mode.
-    let pick = |window: &mut VisualTestContext, selector: &'static str| {
-        let at = window.debug_bounds(selector).unwrap().center();
-        window.simulate_click(at, gpui::Modifiers::default());
-        window.run_until_parked();
-        host.update(window, |host, _, cx| host.0.read(cx).settings(cx).app_theme)
-            .unwrap()
-    };
-    assert_eq!(pick(&mut window, dark_pane), ThemeIntent::Dark);
-    assert_eq!(pick(&mut window, light_pane), ThemeIntent::Light);
-    assert!(window.debug_bounds("SETTINGS_APP_PALETTE").is_some());
+
+    assert_eq!(theme::active_variant(), ThemeVariant::CatppuccinMocha);
+    assert_eq!(
+        bridge.session("term").unwrap().palette(),
+        runner_terminal::palette::CATPPUCCIN_MOCHA
+    );
+    assert!(window
+        .debug_bounds("SETTINGS_LIGHT_THEME_GALLERY")
+        .is_some());
+    assert!(window.debug_bounds("SETTINGS_DARK_THEME_GALLERY").is_some());
+    assert!(window.debug_bounds("SETTINGS_APP_PALETTE").is_none());
     assert!(window.debug_bounds("SETTINGS_TERMINAL_COLORS").is_none());
     assert_eq!(
         window.debug_bounds("SETTINGS_WINDOW_MATERIAL").is_some(),
         cfg!(target_os = "macos")
     );
 
-    host.update(&mut window, |host, _, cx| {
-        host.0.update(cx, |root, _| {
-            root.settings_page.pane = SettingsPane::Terminal
-        });
-        cx.notify();
+    // Every preview card paints with its own theme's ground and terminal palette.
+    for light in LightTheme::ALL {
+        let variant = light.variant();
+        let preview_sel = static_selector(format!("APPEARANCE_THEME_PREVIEW_{}", light.key()));
+        let term_sel = static_selector(format!("APPEARANCE_THEME_TERMINAL_{}", light.key()));
+        assert_fill(&mut window, preview_sel, theme::colors_for(variant).bg);
+        assert_fill(
+            &mut window,
+            term_sel,
+            packed(variant.terminal_palette().background),
+        );
+    }
+    for dark in DarkTheme::ALL {
+        let variant = dark.variant();
+        let preview_sel = static_selector(format!("APPEARANCE_THEME_PREVIEW_{}", dark.key()));
+        let term_sel = static_selector(format!("APPEARANCE_THEME_TERMINAL_{}", dark.key()));
+        assert_fill(&mut window, preview_sel, theme::colors_for(variant).bg);
+        assert_fill(
+            &mut window,
+            term_sel,
+            packed(variant.terminal_palette().background),
+        );
+    }
+
+    // All six cards in each gallery stay in one non-overlapping horizontal row.
+    for (gallery_sel, keys) in [
+        (
+            "SETTINGS_LIGHT_THEME_GALLERY",
+            LightTheme::ALL
+                .into_iter()
+                .map(LightTheme::key)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "SETTINGS_DARK_THEME_GALLERY",
+            DarkTheme::ALL
+                .into_iter()
+                .map(DarkTheme::key)
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        let gallery = window.debug_bounds(gallery_sel).unwrap();
+        let mode_tag = if gallery_sel.contains("LIGHT") {
+            "LIGHT"
+        } else {
+            "DARK"
+        };
+        let mut prev_right = gallery.left();
+        for key in &keys {
+            let card = window
+                .debug_bounds(static_selector(format!(
+                    "APPEARANCE_{mode_tag}_THEME_{key}"
+                )))
+                .unwrap();
+            assert!(card.left() >= prev_right, "{key}: {card:?} {prev_right:?}");
+            assert!(
+                card.right() <= gallery.right(),
+                "{key}: {card:?} {gallery:?}"
+            );
+            let label = window
+                .debug_bounds(static_selector(format!("APPEARANCE_THEME_LABEL_{key}")))
+                .unwrap();
+            assert!(
+                label.size.height <= px(22.),
+                "label wrapped unexpectedly: {key} {label:?}"
+            );
+            prev_right = card.right();
+        }
+    }
+
+    // Only the selected light and dark themes show checks; dark gallery meta says "in use now".
+    assert!(window
+        .debug_bounds("APPEARANCE_THEME_CHECK_runner-light")
+        .is_some());
+    assert!(window
+        .debug_bounds("APPEARANCE_THEME_CHECK_catppuccin-latte")
+        .is_none());
+    assert!(window
+        .debug_bounds("APPEARANCE_THEME_CHECK_catppuccin-mocha")
+        .is_some());
+    assert!(window
+        .debug_bounds("APPEARANCE_THEME_CHECK_tokyo-night")
+        .is_none());
+
+    // Measure label fit for the longest names when selected.
+    for (selector, label_selector, check_selector, label_text) in [
+        (
+            "APPEARANCE_DARK_THEME_catppuccin-mocha",
+            "APPEARANCE_THEME_LABEL_catppuccin-mocha",
+            "APPEARANCE_THEME_CHECK_catppuccin-mocha",
+            "Catppuccin Mocha",
+        ),
+        (
+            "APPEARANCE_LIGHT_THEME_catppuccin-latte",
+            "APPEARANCE_THEME_LABEL_catppuccin-latte",
+            "APPEARANCE_THEME_CHECK_catppuccin-latte",
+            "Catppuccin Latte",
+        ),
+        (
+            "APPEARANCE_LIGHT_THEME_tokyo-night-day",
+            "APPEARANCE_THEME_LABEL_tokyo-night-day",
+            "APPEARANCE_THEME_CHECK_tokyo-night-day",
+            "Tokyo Night Day",
+        ),
+    ] {
+        let card = window.debug_bounds(selector).unwrap();
+        window.simulate_click(card.center(), Modifiers::default());
+        window.run_until_parked();
+        let label_bounds = window.debug_bounds(label_selector).unwrap();
+        let check_bounds = window.debug_bounds(check_selector).unwrap();
+        assert!(
+            label_bounds.right() <= check_bounds.left(),
+            "{label_text}: {label_bounds:?} vs {check_bounds:?}"
+        );
+        let shaped_width = shaped_ui_text_width(&mut window, label_text);
+        assert!(
+            shaped_width <= label_bounds.size.width,
+            "{label_text} truncated at desktop width: needed {shaped_width:?}, got {:?}",
+            label_bounds.size.width
+        );
+    }
+
+    // Picking an inactive light theme stores it without leaving Dark mode.
+    let gruvbox_light = window
+        .debug_bounds("APPEARANCE_LIGHT_THEME_gruvbox-light")
+        .unwrap();
+    window.simulate_click(gruvbox_light.center(), Modifiers::default());
+    window.run_until_parked();
+    assert_eq!(
+        store.read_with(&window, |store, _| store.settings.light_app_theme),
+        LightTheme::GruvboxLight
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::CatppuccinMocha);
+
+    // Picking an active dark theme updates the active variant and terminal palette immediately.
+    let tokyo_night = window
+        .debug_bounds("APPEARANCE_DARK_THEME_tokyo-night")
+        .unwrap();
+    window.simulate_click(tokyo_night.center(), Modifiers::default());
+    window.run_until_parked();
+    assert_eq!(
+        store.read_with(&window, |store, _| store.settings.dark_app_theme),
+        DarkTheme::TokyoNight
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::TokyoNight);
+    assert_eq!(
+        bridge.session("term").unwrap().palette(),
+        runner_terminal::palette::TOKYO_NIGHT
+    );
+
+    // Switching mode to Light activates the stored Light theme and its terminal palette.
+    store.update(&mut window, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.app_theme = ThemeIntent::Light;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    window.run_until_parked();
+    assert_eq!(theme::active_variant(), ThemeVariant::GruvboxLight);
+    assert_eq!(
+        bridge.session("term").unwrap().palette(),
+        runner_terminal::palette::GRUVBOX_LIGHT
+    );
+    assert!(window.debug_bounds("SETTINGS_LIGHT_THEME_META").is_some());
+    assert!(window.debug_bounds("SETTINGS_DARK_THEME_META").is_some());
+    assert_eq!(
+        crate::i18n::tf(
+            "format.theme_in_use",
+            &[(
+                "meta",
+                crate::i18n::text("ui.used_when_the_app_is_light").to_string(),
+            )],
+        ),
+        "Used when the app is light · in use now"
+    );
+    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+        assert_eq!(
+            crate::i18n::tf(
+                "format.theme_in_use",
+                &[(
+                    "meta",
+                    crate::i18n::text("ui.used_when_the_app_is_light").to_string(),
+                )],
+            ),
+            "浅色模式下使用 · 当前使用"
+        );
+    });
+
+    // Narrow windows and zoomed viewports fold into 3×2 rows without wrapping or truncating labels.
+    for (win_w, win_h, zoom) in [(960., 700., 1.0_f32), (1440., 900., 1.3_f32)] {
+        window.simulate_resize(size(px(win_w), px(win_h)));
+        host.update(&mut window, |root, window, cx| {
+            root.set_zoom(zoom, window, cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+
+        for (gallery_sel, mode_tag, keys) in [
+            (
+                "SETTINGS_LIGHT_THEME_GALLERY",
+                "LIGHT",
+                LightTheme::ALL
+                    .into_iter()
+                    .map(|choice| (choice.key(), choice.label()))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "SETTINGS_DARK_THEME_GALLERY",
+                "DARK",
+                DarkTheme::ALL
+                    .into_iter()
+                    .map(|choice| (choice.key(), choice.label()))
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            let gallery = window.debug_bounds(gallery_sel).unwrap();
+            let row0_top = window
+                .debug_bounds(static_selector(format!(
+                    "APPEARANCE_{mode_tag}_THEME_{}",
+                    keys[0].0
+                )))
+                .unwrap()
+                .top();
+            let row0_bottom = window
+                .debug_bounds(static_selector(format!(
+                    "APPEARANCE_{mode_tag}_THEME_{}",
+                    keys[0].0
+                )))
+                .unwrap()
+                .bottom();
+            let row1_top = window
+                .debug_bounds(static_selector(format!(
+                    "APPEARANCE_{mode_tag}_THEME_{}",
+                    keys[3].0
+                )))
+                .unwrap()
+                .top();
+            assert!(
+                row1_top >= row0_bottom,
+                "{win_w}x{win_h}@{zoom} {mode_tag}: {row1_top:?} < {row0_bottom:?}"
+            );
+            for (row_offset, chunk) in keys.chunks(3).enumerate() {
+                let mut prev_right = gallery.left();
+                let expected_top = if row_offset == 0 { row0_top } else { row1_top };
+                for (key, label_text) in chunk {
+                    let card = window
+                        .debug_bounds(static_selector(format!(
+                            "APPEARANCE_{mode_tag}_THEME_{key}"
+                        )))
+                        .unwrap();
+                    assert!(card.left() >= prev_right, "{key}: {card:?} {prev_right:?}");
+                    assert!(
+                        card.right() <= gallery.right(),
+                        "{key}: {card:?} {gallery:?}"
+                    );
+                    assert!(
+                        (f32::from(card.top()) - f32::from(expected_top)).abs() < 1.5,
+                        "{key}: top {:?} vs {expected_top:?}",
+                        card.top()
+                    );
+                    prev_right = card.right();
+
+                    let label_bounds = window
+                        .debug_bounds(static_selector(format!("APPEARANCE_THEME_LABEL_{key}")))
+                        .unwrap();
+                    assert!(
+                        label_bounds.size.height <= px(22. * zoom),
+                        "label wrapped at {win_w}x{win_h}@{zoom}: {key} {label_bounds:?}"
+                    );
+                    let shaped_width = shaped_ui_text_width(&mut window, label_text);
+                    assert!(
+                        shaped_width <= label_bounds.size.width,
+                        "{label_text} truncated at {win_w}x{win_h}@{zoom}: needed {shaped_width:?}, got {:?}",
+                        label_bounds.size.width
+                    );
+                }
+            }
+        }
+    }
+    window.simulate_resize(size(px(1200.), px(900.)));
+    host.update(&mut window, |root, window, cx| {
+        root.set_zoom(1.0, window, cx);
     })
     .unwrap();
     window.run_until_parked();
-    assert!(window.debug_bounds("SETTINGS_TERMINAL_THEME").is_none());
-    // GPUI clears `debug_bounds` each frame; Appearance selectors must be gone.
+
+    // Terminal settings no longer has the Colors section.
+    host.update(&mut window, |root, window, cx| {
+        root.enter_settings_pane(SettingsPane::Terminal, window, cx);
+    })
+    .unwrap();
+    window.run_until_parked();
+    assert!(window
+        .debug_bounds("SETTINGS_LIGHT_THEME_GALLERY")
+        .is_none());
+    assert!(window.debug_bounds("SETTINGS_DARK_THEME_GALLERY").is_none());
     assert!(window.debug_bounds("SETTINGS_APP_PALETTE").is_none());
+    assert!(window.debug_bounds("SETTINGS_TERMINAL_COLORS").is_none());
     let sections = [
         "SETTINGS_TERMINAL_TEXT",
-        "SETTINGS_TERMINAL_COLORS",
         "SETTINGS_TERMINAL_CURSOR",
         "SETTINGS_TERMINAL_KEYBOARD",
         "SETTINGS_TERMINAL_SCROLLBACK",
@@ -1279,7 +1530,7 @@ fn appearance_preview_draws_each_mode_from_its_picks_and_outlines_the_resolved_o
         window.debug_bounds("SETTINGS_TERMINAL_KEYBOARD").is_some(),
         cfg!(target_os = "macos")
     );
-    assert_eq!(tops.len(), if cfg!(target_os = "macos") { 5 } else { 4 });
+    assert_eq!(tops.len(), if cfg!(target_os = "macos") { 4 } else { 3 });
     assert!(tops.is_sorted(), "{tops:?}");
     assert!(window.debug_bounds("SETTINGS_OPTION_AS_META").is_some() == cfg!(target_os = "macos"));
     let pane = window.debug_bounds("SETTINGS_TERMINAL_PANE").unwrap();
@@ -1394,26 +1645,21 @@ fn nav_search_filters_labels_and_removes_empty_groups() {
 
         let terminal = filtered_nav_groups("  TERM  ");
         assert_eq!(terminal, vec![("App", vec![SettingsPane::Terminal])]);
-        for row in [
-            "line height",
-            "scrollback",
-            "copy on select",
-            "blink",
-            "dark mode palette",
-        ] {
+        for row in ["line height", "scrollback", "copy on select", "blink"] {
             assert_eq!(
                 filtered_nav_groups(row),
                 vec![("App", vec![SettingsPane::Terminal])],
                 "{row}"
             );
         }
-        assert_eq!(
-            filtered_nav_groups("palette"),
-            vec![(
-                "App",
-                vec![SettingsPane::Appearance, SettingsPane::Terminal]
-            )]
-        );
+        for row in ["light theme", "dark theme"] {
+            assert_eq!(
+                filtered_nav_groups(row),
+                vec![("App", vec![SettingsPane::Appearance])],
+                "{row}"
+            );
+        }
+        assert!(filtered_nav_groups("palette").is_empty());
         assert_eq!(
             filtered_nav_groups("option as meta").is_empty(),
             !cfg!(target_os = "macos")
@@ -1538,6 +1784,7 @@ fn content_scrollbar_starts_below_the_drag_strip_at_the_window_edge() {
                     self.content_scrollbar.clone(),
                     zoom,
                     px(40. * zoom),
+                    SETTINGS_CONTENT_MAX_WIDTH,
                 ))
         }
     }
@@ -1728,4 +1975,170 @@ fn launch_dims_prefer_direct_layouts_and_fall_back_to_mission_geometry() {
         launch_dims_for("mission", &direct, (104, 42)),
         Some((104, 42))
     );
+}
+
+#[test]
+fn appearance_keyboard_tabs_between_theme_cards_and_applies_selection() {
+    use crate::theme::{DarkTheme, ThemeVariant};
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{size, Modifiers, ScrollWheelEvent, TestAppContext, VisualTestContext};
+
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let host = cx.add_window(|window, cx| {
+        NativeRoot::new(
+            "appearance-settings-keyboard".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(960.), px(700.)));
+    host.update(&mut visual, |root, window, cx| {
+        root.enter_settings_pane(SettingsPane::Appearance, window, cx);
+        root.set_theme_intent(ThemeIntent::Dark, cx);
+        root.set_dark_theme(DarkTheme::Runner, cx);
+        window.refresh();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    let mut catppuccin = visual
+        .debug_bounds("APPEARANCE_DARK_THEME_catppuccin-mocha")
+        .unwrap();
+    if catppuccin.bottom() > px(680.) {
+        let scroll_target = visual
+            .debug_bounds("SETTINGS_LIGHT_THEME_GALLERY")
+            .unwrap()
+            .center();
+        visual.simulate_event(ScrollWheelEvent {
+            position: scroll_target,
+            delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-320.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        catppuccin = visual
+            .debug_bounds("APPEARANCE_DARK_THEME_catppuccin-mocha")
+            .unwrap();
+    }
+
+    visual.simulate_click(catppuccin.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.dark_app_theme),
+        DarkTheme::CatppuccinMocha
+    );
+    let catppuccin_focus = host
+        .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+        .unwrap();
+
+    visual.simulate_keystrokes("ctrl-tab");
+    visual.run_until_parked();
+    assert_eq!(
+        host.update(&mut visual, |_, window, cx| window.focused(cx))
+            .unwrap(),
+        Some(catppuccin_focus.clone())
+    );
+
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    let rose_pine_focus = host
+        .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+        .unwrap();
+    assert_ne!(rose_pine_focus, catppuccin_focus);
+
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.dark_app_theme),
+        DarkTheme::RosePineMoon
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::RosePineMoon);
+    assert!(visual
+        .debug_bounds("APPEARANCE_THEME_CHECK_rose-pine-moon")
+        .is_some());
+    assert!(visual
+        .debug_bounds("APPEARANCE_THEME_CHECK_catppuccin-mocha")
+        .is_none());
+
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    let tokyo_focus = host
+        .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+        .unwrap();
+    assert_ne!(tokyo_focus, rose_pine_focus);
+
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.dark_app_theme),
+        DarkTheme::TokyoNight
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::TokyoNight);
+
+    visual.simulate_keystrokes("shift-tab");
+    visual.run_until_parked();
+    assert_eq!(
+        host.update(&mut visual, |_, window, cx| window.focused(cx))
+            .unwrap(),
+        Some(rose_pine_focus)
+    );
+
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.dark_app_theme),
+        DarkTheme::RosePineMoon
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::RosePineMoon);
+}
+
+#[test]
+fn theme_card_focus_style_occludes_shadow_with_opaque_panel_background() {
+    use crate::theme::ThemeVariant;
+    use crate::theme_snapshot::ThemeGuard;
+
+    let _theme = ThemeGuard::new();
+    for variant in ThemeVariant::ALL {
+        theme::set_active_variant(variant);
+        let focused = appearance::theme_card_focus_style(Default::default());
+        assert_eq!(focused.background, Some(gpui::Fill::from(theme::panel())));
+        assert_eq!(theme::panel().a, 1.0);
+        assert_ne!(theme::panel(), theme::accent());
+        assert!(focused.box_shadow.is_some());
+    }
+}
+
+fn static_selector(selector: String) -> &'static str {
+    Box::leak(selector.into_boxed_str())
+}
+
+fn shaped_ui_text_width(window: &mut gpui::VisualTestContext, text: &str) -> gpui::Pixels {
+    let owned = text.to_owned();
+    window.update(|window, _| {
+        let style = window.text_style();
+        let font_size = theme::text_ui().to_pixels(window.rem_size());
+        window
+            .text_system()
+            .shape_line(
+                owned.into(),
+                font_size,
+                &[gpui::TextRun {
+                    len: text.len(),
+                    font: style.font(),
+                    color: theme::text(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+    })
 }

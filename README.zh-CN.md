@@ -148,7 +148,7 @@ runner help agents</code></pre>
 - **在一个地方管理 MCP 服务与技能** — **Settings → MCP** 和 **Settings → Skills** 按 agent 列出它自己的配置，可以按 agent 单独关掉某一项，只改动你碰过的那一条。
 - **桌面通知** — agent 需要输入、完成一轮回复或失败时收到通知，点击即可打开对应的 chat 或 mission。在 **Settings → Notifications** 中选择通知事件。
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 会继承它的 cwd，并在侧边栏里归在一起。
-- **浅色与深色** — Carbon 和 Runner Light，外加 Catppuccin，每种模式各有一套应用配色和终端配色。Claude Code 会实时跟着切换。
+- **浅色与深色** — Runner Light 与 Runner，外加 Catppuccin、Rosé Pine、Tokyo Night、Gruvbox 与 Solarized，为每种模式选择一个主题即可同时设置应用和终端配色。Claude Code 会实时跟着切换。
 
 ## 演示
 
@@ -190,6 +190,7 @@ Runner 集成了 **Codex、Claude Code、Antigravity CLI、GitHub Copilot CLI、
 - **[alacritty_terminal](https://github.com/alacritty/alacritty)** — 每一栏底下的终端网格、解析器和回滚。
 - **[xterm.js](https://github.com/xtermjs/xterm.js)** — 程序化绘制的制表符字形表按其 MIT 声明转录自 WebGL 插件（`crates/runner-app/LICENSE.xterm`）。
 - **[Windows Terminal ConPTY](https://github.com/microsoft/terminal)** — Windows 构建按 MIT 声明内置了微软的 `conpty.dll` 和 `OpenConsole.exe`（`crates/runner-app/LICENSE.conpty`）。
+- **[Catppuccin](https://github.com/catppuccin/catppuccin)**（MIT）、**[Rosé Pine](https://github.com/rose-pine/rose-pine-theme)**（MIT）、**[Tokyo Night](https://github.com/folke/tokyonight.nvim)**（Apache-2.0）、**[Gruvbox](https://github.com/morhetz/gruvbox)**（MIT）与 **[Solarized](https://ethanschoonover.com/solarized/)**（MIT）— 内置应用与终端主题（`crates/runner-app/LICENSE.themes`）。
 - **[Sparkle](https://sparkle-project.org)** — macOS 的更新器。
 
 ## 作者

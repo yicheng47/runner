@@ -296,6 +296,7 @@ for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 i
     sips -z "$size" "$size" "$ICON_SOURCE" --out "$ICONSET/$name" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/Runner.icns"
+install -m 644 "$ROOT_DIR/crates/runner-app/LICENSE.themes" "$APP_BUNDLE/Contents/Resources/LICENSE.themes"
 write_plist > "$APP_BUNDLE/Contents/Info.plist"
 plutil -lint "$APP_BUNDLE/Contents/Info.plist"
 

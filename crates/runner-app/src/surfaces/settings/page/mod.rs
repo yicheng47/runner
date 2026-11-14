@@ -27,9 +27,10 @@ use gpui::{
 use runner_app::terminal_ime::OptionAsMeta;
 
 use runner_app::ui::{
-    working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize,
-    PaneHeader, Scrollbar, SelectHandler, SelectLeading, SelectOption, SettingsCard, SettingsRow,
-    StepHandler, Stepper, StyledSelect, TextField, Toggle, WorkingDirField,
+    focus_ring, working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton,
+    IconButtonSize, PaneHeader, Scrollbar, SelectHandler, SelectLeading, SelectOption,
+    SettingsCard, SettingsRow, StepHandler, Stepper, StyledSelect, TextField, Toggle,
+    WorkingDirField,
 };
 
 use runner_core::protocol::command::{
@@ -40,16 +41,13 @@ use crate::surfaces::*;
 
 use crate::app_settings::{
     normalize_terminal_line_height, normalize_terminal_scrollback, normalize_zoom, nudge_zoom,
-    DarkTerminalTheme, LightTerminalTheme, TerminalCursorStyle, TerminalFontFamily,
-    TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN, TERMINAL_LINE_HEIGHT_MAX,
-    TERMINAL_LINE_HEIGHT_MIN, TERMINAL_SCROLLBACK_PRESETS, ZOOM_STEPS,
+    TerminalCursorStyle, TerminalFontFamily, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
+    TERMINAL_LINE_HEIGHT_MAX, TERMINAL_LINE_HEIGHT_MIN, TERMINAL_SCROLLBACK_PRESETS, ZOOM_STEPS,
 };
 
 use crate::platform_ui::{SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET};
 
 use crate::surfaces::app_shell::TITLEBAR_DRAG_HEIGHT;
-
-use crate::surfaces::settings::theme_preview::{self, PreviewMode, PreviewPane};
 
 use crate::theme::{DarkTheme, LightTheme, ThemeIntent};
 
@@ -57,8 +55,6 @@ use crate::*;
 
 const SETTINGS_SAVE_DELAY_MS: u64 = 300;
 
-/// The palette selects share one trigger width, so the rows of each palette
-/// card line up.
 const SETTINGS_SELECT_WIDTH: Pixels = px(176.);
 
 const FILE_ICONS_SELECT_WIDTH: Pixels = px(200.);
@@ -166,17 +162,13 @@ impl SettingsPane {
             Self::Appearance => &[
                 "ui.theme",
                 "ui.window_material",
-                "ui.app_palette",
-                "ui.light_mode",
-                "ui.dark_mode",
+                "ui.light_theme",
+                "ui.dark_theme",
             ],
             Self::Terminal => &[
                 "ui.font_family",
                 "ui.font_size",
                 "terminal.line_height",
-                "terminal.section_colors",
-                "ui.light_mode_palette",
-                "ui.dark_mode_palette",
                 "ui.cursor_style",
                 "terminal.blink_cursor",
                 #[cfg(target_os = "macos")]
@@ -278,10 +270,6 @@ fn launch_dims_for(
 enum SettingsSelection {
     Language,
     DefaultCrew,
-    LightTheme,
-    DarkTheme,
-    LightTerminalTheme,
-    DarkTerminalTheme,
     TerminalFont,
     TerminalCursor,
     TerminalScrollback,
@@ -308,10 +296,6 @@ pub(crate) struct SettingsState {
     default_crew: Entity<StyledSelect>,
     default_working_dir: Entity<TextField>,
     working_dir_browse_focus: FocusHandle,
-    light_theme: Entity<StyledSelect>,
-    dark_theme: Entity<StyledSelect>,
-    light_terminal_theme: Entity<StyledSelect>,
-    dark_terminal_theme: Entity<StyledSelect>,
     terminal_font: Entity<StyledSelect>,
     terminal_cursor: Entity<StyledSelect>,
     terminal_scrollback: Entity<StyledSelect>,
@@ -437,41 +421,6 @@ impl SettingsState {
             settings.default_crew_id.clone(),
             vec![SelectOption::new("", crate::i18n::message("ui.no_default"))],
             SettingsSelection::DefaultCrew,
-            cx,
-        );
-        let light_theme = settings_select(
-            &root,
-            "settings-light-theme",
-            light_theme_value(settings.light_app_theme),
-            light_theme_options(),
-            SettingsSelection::LightTheme,
-            cx,
-        );
-        let dark_theme = settings_select(
-            &root,
-            "settings-dark-theme",
-            dark_theme_value(settings.dark_app_theme),
-            vec![
-                SelectOption::new("carbon", "Runner").swatch(0x00ff9c),
-                SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-            ],
-            SettingsSelection::DarkTheme,
-            cx,
-        );
-        let light_terminal_theme = settings_select(
-            &root,
-            "settings-light-terminal-theme",
-            settings.light_terminal_theme.key(),
-            light_terminal_theme_options(),
-            SettingsSelection::LightTerminalTheme,
-            cx,
-        );
-        let dark_terminal_theme = settings_select(
-            &root,
-            "settings-dark-terminal-theme",
-            settings.dark_terminal_theme.key(),
-            dark_terminal_theme_options(),
-            SettingsSelection::DarkTerminalTheme,
             cx,
         );
         let font_cache = crate::terminal::fonts::FontFamilyCache::global(cx);
@@ -621,10 +570,6 @@ impl SettingsState {
             default_crew,
             default_working_dir,
             working_dir_browse_focus: cx.focus_handle(),
-            light_theme,
-            dark_theme,
-            light_terminal_theme,
-            dark_terminal_theme,
             terminal_font,
             terminal_cursor,
             terminal_scrollback,
@@ -670,6 +615,9 @@ struct ShortcutConflict {
 /// keeps it out of the window's bottom corner on every platform (#553). The
 /// overlay has no id or handlers, so wheel and click pass through it to the
 /// scroll container.
+const SETTINGS_CONTENT_MAX_WIDTH: f32 = 760.;
+const APPEARANCE_CONTENT_MAX_WIDTH: f32 = 908.;
+
 fn settings_content_column(
     titlebar_drag_area: Option<impl IntoElement>,
     content: Option<AnyElement>,
@@ -677,6 +625,7 @@ fn settings_content_column(
     scrollbar: Entity<Scrollbar>,
     zoom: f32,
     horizontal_padding: Pixels,
+    max_width_px: f32,
 ) -> impl IntoElement {
     div()
         .relative()
@@ -699,7 +648,7 @@ fn settings_content_column(
                     div()
                         .mx_auto()
                         .w_full()
-                        .max_w(rems(760. / 16.))
+                        .max_w(rems(max_width_px / 16.))
                         .child(content)
                 })),
         )
@@ -769,11 +718,7 @@ fn settings_select(
     let width = match selection {
         // Room for the sample icons beside the longest name, Catppuccin.
         SettingsSelection::FileIcons => Some(FILE_ICONS_SELECT_WIDTH),
-        SettingsSelection::Language
-        | SettingsSelection::LightTheme
-        | SettingsSelection::DarkTheme
-        | SettingsSelection::LightTerminalTheme
-        | SettingsSelection::DarkTerminalTheme => Some(SETTINGS_SELECT_WIDTH),
+        SettingsSelection::Language => Some(SETTINGS_SELECT_WIDTH),
         SettingsSelection::DefaultCrew
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
@@ -1048,14 +993,6 @@ impl NativeRoot {
             SettingsSelection::DefaultCrew => {
                 update_if_changed(&mut settings.default_crew_id, value.to_owned())
             }
-            SettingsSelection::LightTheme => parse_light_theme(value)
-                .is_some_and(|value| update_if_changed(&mut settings.light_app_theme, value)),
-            SettingsSelection::DarkTheme => parse_dark_theme(value)
-                .is_some_and(|value| update_if_changed(&mut settings.dark_app_theme, value)),
-            SettingsSelection::LightTerminalTheme => LightTerminalTheme::parse(value)
-                .is_some_and(|value| update_if_changed(&mut settings.light_terminal_theme, value)),
-            SettingsSelection::DarkTerminalTheme => DarkTerminalTheme::parse(value)
-                .is_some_and(|value| update_if_changed(&mut settings.dark_terminal_theme, value)),
             SettingsSelection::TerminalFont => update_if_changed(
                 &mut settings.terminal_font_family,
                 TerminalFontFamily::new(value),
@@ -1152,6 +1089,22 @@ impl NativeRoot {
     fn set_theme_intent(&mut self, intent: ThemeIntent, cx: &mut Context<Self>) {
         if self.update_app_settings(cx, true, |settings| {
             update_if_changed(&mut settings.app_theme, intent)
+        }) {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_light_theme(&mut self, theme: LightTheme, cx: &mut Context<Self>) {
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.light_app_theme, theme)
+        }) {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn set_dark_theme(&mut self, theme: DarkTheme, cx: &mut Context<Self>) {
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.dark_app_theme, theme)
         }) {
             cx.notify();
         }
