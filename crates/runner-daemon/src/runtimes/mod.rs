@@ -60,7 +60,7 @@ pub(crate) fn apply_launch_options(
         && options.bypass
         && matches!(
             Runtime::parse(&role.runtime),
-            Some(Runtime::Codex | Runtime::ClaudeCode)
+            Some(Runtime::Codex | Runtime::ClaudeCode | Runtime::Antigravity)
         )
     {
         role.args = permissions.apply_mission(&role.args);

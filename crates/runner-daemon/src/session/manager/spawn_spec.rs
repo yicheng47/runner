@@ -668,11 +668,20 @@ fn command_lines(
             note = Note::CatalogOff;
             option = Some(OptionKey::RemotePluginCatalog);
         }
-        if ["--ask-for-approval", "--sandbox", "--permission-mode"].contains(&arg.as_str()) {
+        if [
+            "--ask-for-approval",
+            "--sandbox",
+            "--permission-mode",
+            "--dangerously-skip-permissions",
+        ]
+        .contains(&arg.as_str())
+        {
             note = if mission {
                 Note::AlwaysInMissions
             } else if runtime == Runtime::Codex {
                 Note::CodexBypass
+            } else if runtime == Runtime::Antigravity {
+                Note::AntigravityBypass
             } else {
                 Note::ClaudeBypass
             };
@@ -920,6 +929,40 @@ mod launch_preview_tests {
             assert!(!agy_text.contains("--add-dir"), "{agy_text}");
             if mission {
                 assert!(agy_text.contains("--dangerously-skip-permissions"));
+            } else {
+                assert!(!agy_text.contains("--dangerously-skip-permissions"));
+            }
+        }
+
+        for mission in [false, true] {
+            let agy_bypass = core.sessions.command_preview(
+                Runtime::Antigravity,
+                "agy",
+                mission,
+                options,
+                root.path(),
+                BTreeMap::new(),
+            );
+            let bypass_line = agy_bypass
+                .lines
+                .iter()
+                .find(|line| line.command.trim() == "--dangerously-skip-permissions")
+                .expect("Antigravity preview should show --dangerously-skip-permissions when bypass is on");
+            if mission {
+                assert_eq!(
+                    bypass_line.note,
+                    runner_core::protocol::runtime::RuntimeCommandNote::AlwaysInMissions
+                );
+                assert_eq!(bypass_line.option, None);
+            } else {
+                assert_eq!(
+                    bypass_line.note,
+                    runner_core::protocol::runtime::RuntimeCommandNote::AntigravityBypass
+                );
+                assert_eq!(
+                    bypass_line.option,
+                    Some(runner_core::protocol::runtime::RuntimeLaunchOption::Bypass)
+                );
             }
         }
     }

@@ -791,7 +791,12 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                 };
                 let baseline = compose(false, true, true);
                 let bypass = compose(true, true, true);
-                if mission || !matches!(runtime, Runtime::Codex | Runtime::ClaudeCode) {
+                if mission
+                    || !matches!(
+                        runtime,
+                        Runtime::Codex | Runtime::ClaudeCode | Runtime::Antigravity
+                    )
+                {
                     assert_eq!(baseline.args, bypass.args, "{runtime} mission={mission}");
                 } else {
                     assert!(crate::runtimes::adapter(runtime)
@@ -889,7 +894,7 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
             }
         }
     }
-    for runtime in [Runtime::Codex, Runtime::ClaudeCode] {
+    for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity] {
         let adapter = crate::runtimes::adapter(runtime);
         for mode in adapter
             .permissions()
@@ -971,6 +976,21 @@ fn launch_options_persist_under_one_key_and_publish_in_status() {
             .unwrap()
             .launch_options
             .bypass
+    );
+    assert!(
+        crate::ops::runtime::runtime_set_launch_option(
+            &core,
+            Runtime::Antigravity,
+            OptionKey::Bypass,
+            true,
+        )
+        .unwrap()
+        .runtimes
+        .iter()
+        .find(|row| row.name == Runtime::Antigravity)
+        .unwrap()
+        .launch_options
+        .bypass
     );
     assert!(crate::ops::runtime::runtime_set_launch_option(
         &core,
@@ -1124,5 +1144,89 @@ fn chat_bypass_switch_applies_to_roles_with_stored_permission_modes() {
             );
             manager.kill(&session.id).unwrap();
         }
+    }
+}
+
+#[test]
+fn antigravity_chat_bypass_switch_applies_and_strips_conflicting_mode_flags() {
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+    for initial_args in [
+        vec!["--mode".into(), "accept-edits".into(), "--debug".into()],
+        vec!["-mode=accept-edits".into(), "--debug".into()],
+        vec!["--dangerously-skip-permissions".into(), "--debug".into()],
+    ] {
+        let pool = pool_with_schema();
+        let root = tempfile::tempdir().unwrap();
+        let mut configured = role("agy-custom", &[]);
+        configured.runtime = Runtime::Antigravity.key().into();
+        configured.args = initial_args.clone();
+        insert_role_row(&pool.get().unwrap(), &configured);
+        crate::db::set_runtime_launch_option(
+            &pool,
+            Runtime::Antigravity,
+            RuntimeLaunchOption::Bypass,
+            true,
+        )
+        .unwrap();
+        let fake = fake_runtime();
+        let manager = mgr_with_fake(None, fake.clone());
+        let session = manager
+            .spawn_direct(
+                &configured,
+                None,
+                None,
+                None,
+                None,
+                root.path().to_str(),
+                None,
+                None,
+                root.path(),
+                pool.clone(),
+                capture(),
+                None,
+            )
+            .unwrap();
+        let check = |args: &[String]| {
+            assert!(
+                args.iter()
+                    .any(|arg| arg == "--dangerously-skip-permissions"),
+                "{args:?}"
+            );
+            assert!(args.iter().any(|arg| arg == "--debug"), "{args:?}");
+            assert!(
+                !args
+                    .iter()
+                    .any(|arg| arg == "--mode" || arg.starts_with("-mode=")),
+                "{args:?}"
+            );
+        };
+        check(&fake.last_spawn_spec().unwrap().args);
+        manager.kill(&session.id).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET agent_session_key = ?2 WHERE id = ?1",
+                params![session.id, "11111111-1111-4111-8111-111111111111"],
+            )
+            .unwrap();
+        manager
+            .resume(
+                &session.id,
+                None,
+                None,
+                root.path(),
+                pool.clone(),
+                capture(),
+            )
+            .unwrap();
+        check(&fake.last_spawn_spec().unwrap().args);
+        assert_eq!(
+            crate::repo::role::get(&pool.get().unwrap(), &configured.id)
+                .unwrap()
+                .unwrap()
+                .args,
+            initial_args
+        );
+        manager.kill(&session.id).unwrap();
     }
 }

@@ -31,7 +31,10 @@ pub enum RuntimeLaunchOption {
 impl RuntimeLaunchOption {
     pub fn supported(self, runtime: Runtime) -> bool {
         match self {
-            Self::Bypass => matches!(runtime, Runtime::Codex | Runtime::ClaudeCode),
+            Self::Bypass => matches!(
+                runtime,
+                Runtime::Codex | Runtime::ClaudeCode | Runtime::Antigravity
+            ),
             Self::RemotePluginCatalog => runtime == Runtime::Codex,
             Self::StatusHooks => {
                 matches!(
@@ -78,6 +81,7 @@ pub enum RuntimeCommandNote {
     MissionFiles,
     CodexBypass,
     ClaudeBypass,
+    AntigravityBypass,
     CatalogOff,
     StatusHooks,
     HooksBypass,

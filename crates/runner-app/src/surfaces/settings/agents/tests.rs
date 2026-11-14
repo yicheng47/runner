@@ -1424,3 +1424,85 @@ fn launch_copy_shows_feedback_and_ignores_unavailable_previews() {
     })
     .unwrap();
 }
+
+#[test]
+fn antigravity_launch_card_renders_bypass_switch_and_preview_note() {
+    use runner_core::protocol::runtime::{
+        RuntimeCommandLine, RuntimeCommandNote, RuntimeCommandPreview, RuntimeLaunchOption,
+    };
+
+    assert_eq!(
+        super::launch::preview_note(&RuntimeCommandNote::AntigravityBypass),
+        "Bypass permissions"
+    );
+    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+        assert_eq!(
+            super::launch::preview_note(&RuntimeCommandNote::AntigravityBypass),
+            "跳过权限确认"
+        );
+    });
+
+    let mut cx = gpui::TestAppContext::single();
+    let mut agy = runtime(RuntimeRowState::Detected);
+    agy.name = Runtime::Antigravity;
+    agy.display_name = "Antigravity CLI".into();
+    agy.launch_options.bypass = true;
+    let (_temp, pane) = test_pane(vec![agy], false, &mut cx);
+    pane.update(&mut cx, |pane, _, cx| {
+        pane.selected_runtime = Some(Runtime::Antigravity);
+        pane.launch_previews.insert(
+            (Runtime::Antigravity, false),
+            RuntimeCommandPreview {
+                lines: vec![
+                    RuntimeCommandLine {
+                        command: "agy".into(),
+                        note: RuntimeCommandNote::None,
+                        option: None,
+                    },
+                    RuntimeCommandLine {
+                        command: "  --dangerously-skip-permissions".into(),
+                        note: RuntimeCommandNote::AntigravityBypass,
+                        option: Some(RuntimeLaunchOption::Bypass),
+                    },
+                ],
+            },
+        );
+        pane.launch_previews.insert(
+            (Runtime::Antigravity, true),
+            RuntimeCommandPreview {
+                lines: vec![
+                    RuntimeCommandLine {
+                        command: "agy".into(),
+                        note: RuntimeCommandNote::None,
+                        option: None,
+                    },
+                    RuntimeCommandLine {
+                        command: "  --dangerously-skip-permissions".into(),
+                        note: RuntimeCommandNote::AlwaysInMissions,
+                        option: None,
+                    },
+                ],
+            },
+        );
+        cx.notify();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+    assert!(window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_Bypass")
+        .is_some());
+    assert!(window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_RemotePluginCatalog")
+        .is_none());
+    assert!(window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_StatusHooks")
+        .is_none());
+    pane.read_with(&window, |pane, cx| {
+        assert_eq!(
+            pane.launch_copy.read(cx).value(),
+            Some("agy\n  --dangerously-skip-permissions")
+        );
+    })
+    .unwrap();
+}
