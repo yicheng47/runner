@@ -51,3 +51,7 @@ The existing native Windows SSH target pc at 192.168.2.137:22 timed out with Bat
 Intermediate checks exposed the edition-enabled collapsible_if and let_and_return lints. Trial removal of all precise captures produced borrow errors for the two builders identified above; only those bounds were restored. Clippy also rejected one fixer-generated single-pattern match, which was reverted after its resource-free fallback was audited. No runtime test failed.
 
 The frozen candidate SHA is carried by the Runner review handoff and subsequent PR review comment.
+
+## Regression promotion
+
+No lasting live case is added: this edition migration preserves behavior, and its source/lifetime audit, harness-free environment check and platform compilation are automated checks. Their results and the unavailable native Windows migration probe remain recorded above.

@@ -65,7 +65,7 @@ The list has two sections: Commits above, files below.
 - **Look.** Viewed rows dim their name and counts, and the summary counts them.
 - **Changed since viewed.** When a viewed file's diff changes in Uncommitted changes, its box clears and turns amber, and its folder hint reads "changed" in amber, until it is viewed again.
 - **What a mark belongs to** (Jason, 2026-11-13): a mark is the checkout, the path, and the two versions compared, by their git blob ids, `runnerd` hashing a working-tree file. A file shows as viewed whenever a mark matches what it compares, so a mark made in Uncommitted changes carries over when the agent commits the file unchanged, and a commit's files keep their marks since a commit never changes. A file shows as changed since viewed when it is not viewed and an earlier mark exists for its path in the same checkout, made in Uncommitted changes.
-- **Persistence.** Marks are kept by `runnerd`, so they survive restarts, show in every window on the same checkout at once, and can follow remote sessions later. Marks for a checkout that no longer exists are pruned when `runnerd` starts.
+- **Where marks live** (Jason, 2026-11-14): `runnerd` keeps marks in memory, with no table and no schema change, so every window on the same checkout shows them at once and remote sessions can follow later. They last as long as `runnerd` runs: a Runner update, stopping `runnerd` or restarting the computer clears them. Durable marks, if wanted later, would be a file in the checkout's git folder rather than a table.
 
 ### From Files to the diff
 
@@ -108,11 +108,11 @@ New requests, all slow, beside #634's `files_*`:
 | Request | Returns |
 |---|---|
 | `changes_commits(root)` | The branch or detached commit, the base it resolved to (or none), and the commits since it: id, short id, subject, author, date and parent count, at most 200 with the total |
-| `changes_files(root, target)` | For `uncommitted` or a commit id: each changed file under the root with its status, old path for a rename, added and removed counts or binary, both blob ids, and whether a viewed mark matches; plus the totals |
+| `changes_files(root, target)` | For `uncommitted` or a commit id: each changed file under the root with its status, old path for a rename, added and removed counts or binary, both blob ids, whether a viewed mark matches, and whether it changed since viewed; plus the totals |
 | `changes_diff(root, target, path)` | The hunks as line ranges with their `@@` rows, and the old and new contents within #634's 10 MB limit per side, or a placeholder reason: binary, too large, mode only or submodule |
-| `changes_set_viewed(root, path, old blob, new blob, viewed)` | Stores or removes a mark and pushes `changes/viewed` to every client watching that checkout |
+| `changes_set_viewed(root, target, path, old_blob_id, new_blob_id, viewed)` | Stores or removes a mark, recording whether it was made on uncommitted changes, and pushes `changes/viewed` to every client watching that checkout |
 
-Refreshes reuse `files_watch` and its `files/changed` and `files/status` events. The marks are a new table in `runnerd`'s database, keyed by the checkout's top path, the path and the two blob ids, added by a migration. The CLI gets no commands.
+Refreshes reuse `files_watch` and its `files/changed` and `files/status` events. The marks are held in `runnerd`'s memory, keyed by the checkout's top path, the path and the two blob ids; the database and its schema do not change. The CLI gets no commands.
 
 Remembered view choices (Unified or Split, flat or tree) are app settings in `ui-settings.json`, like Files' options.
 
@@ -127,7 +127,7 @@ Read-only, as #634: no stage, unstage or discard; no commit, push or pull reques
 - **Large diffs.** A regenerated lockfile or a vendored folder can add hundreds of thousands of lines. Counts come from one `git diff --numstat` per selection, the diff is fetched only for the selected file, and both are virtualized.
 - **Highlighting two versions.** Highlighting the old and new files doubles the highlighter's work for a selection. It runs off the UI thread as #634's does, and the diff shows plain until it arrives.
 - **Git as a subprocess.** Windows needs `git.exe` on PATH; without it Changes shows the not-in-git state, as Files does. CRLF is handled as above.
-- **Core review.** The new requests and the migration touch the client protocol and the schema, so that work takes `core-review`.
+- **Core review.** The new requests touch the client protocol and its event delivery, so that work takes `core-review`.
 
 ## Delivery
 
@@ -135,13 +135,13 @@ No umbrella branch: each step stands on its own on `main`, so three sequential p
 
 | Step | What | Crew | Labels |
 |---|---|---|---|
-| m1 — runnerd changes service | The four requests, base resolution, the viewed marks table and its migration. Nothing a person sees | agy duo | `core-review`, no live checks |
+| m1 — runnerd changes service | The four requests, base resolution and the in-memory viewed marks. Nothing a person sees | agy duo | `core-review`, no live checks |
 | m2 — the Changes view | The surface and its `C` key and Settings row, the list flat and tree, Commits, the Unified diff with highlighting and edge cases, live refresh, the keyboard, and viewed marks | agy trio | `frontend-only` |
 | m3 — Split and Files' Diff button | Split, the side panel's maximize and the 360 px rule, and the Diff button on a file's tab | agy trio | `frontend-only` |
 
 The crews use the Antigravity coder on `gemini-4-hydrogen` at `xhigh` with the codex reviewer, and the trios add the codex `qa` (Jason, 2026-11-13). m2 waits on m1, and m3 on m2. Each step updates the guide pages for what it adds.
 
-m1 lands on `main` without changing anything that runs today: it adds requests no client sends until m2, changes no existing `files_*` request, event or table, and its migration only creates a table, so an older build still opens the database. Its `changes/viewed` event goes only to clients watching that checkout, and the app ignores event names it does not know.
+m1 lands on `main` without changing anything that runs today: it adds requests no client sends until m2, changes no existing `files_*` request or event, and leaves the database schema as it is. Its `changes/viewed` event goes only to clients watching that checkout, and the app ignores event names it does not know.
 
 ## Verification
 
@@ -150,7 +150,7 @@ m1 lands on `main` without changing anything that runs today: it adds requests n
 - **Parsers:** `git diff --numstat -z` with renames, copies, binary files and paths with spaces and newlines; unified hunks, including `\ No newline at end of file`; the commit log.
 - **Base resolution,** in fixture repositories built with the git CLI: `origin/HEAD` set, only `origin/main`, only `origin/master`, no `origin` with a local `main`, no base, a detached `HEAD`, the main checkout level with its base and two commits ahead, a branch that merged its base in, and a repository with no commit.
 - **Files and diffs** in a fixture with modified, added, renamed, deleted, untracked, binary, over-10 MB, CRLF-only, mode-only, conflicted and symlink files and a submodule: counts and statuses match git, and each placeholder appears where expected. A subfolder root lists only its subtree.
-- **Viewed marks:** set and clear; a mark carries from Uncommitted changes to the commit that commits the file unchanged; an edit after viewing shows changed; a second client gets `changes/viewed`; the prune at start; the migration from the current schema.
+- **Viewed marks:** set and clear; a mark carries from Uncommitted changes to the commit that commits the file unchanged; an edit after viewing shows changed; a second client gets `changes/viewed`.
 - **App:** Split's line pairing, the 360 px rule, flat and tree grouping, the keyboard's focus moves, and CRLF-only detection.
 
 ### Live checks
@@ -161,7 +161,7 @@ The agy trio's `qa` runs these on macOS and Windows, and on Linux when a Linux m
 2. **Selection and keys:** ↑↓, j/k and clicks swap the diff at once; Tab, Enter, Esc, `[` `]`, ← → and Space act as the table says, and the terminal keeps its keys. Reason: new keyboard map.
 3. **Commits:** the worktree lists its two commits and the main checkout none; selecting a commit shows its files and the label; a repository with no `origin` resolves its local `main`. Reason: base resolution.
 4. **Live refresh:** an owned bounded agent edits a viewed file, which turns changed, then commits it; the file moves to the new commit, and an unchanged viewed file keeps its mark. Reason: watcher reuse and mark carry-over.
-5. **Viewed marks** survive a restart of the app and of the development daemon, and show in a second window. Reason: persistence.
+5. **Viewed marks** show in a second window at once, and a restart of the development daemon clears them. Reason: marks live in `runnerd`'s memory.
 6. **Split and maximize:** Split in a narrow panel maximizes it; Restore chat returns to Unified; ⇧⌘↩ / Ctrl+Shift+Enter maximizes the panel with focus in it and the pane with focus in the chat; the chat keeps its 420 px. Reason: new panel control (m3).
 7. **Files' Diff button** shows only for a changed file and toggles in place; Unified or Split is shared with Changes. Reason: new entry point (m3).
 8. **Edge placeholders** for binary, over-10 MB, CRLF-only and conflicted files, on Windows with `core.autocrlf=true`. Reason: platform-specific diff display.

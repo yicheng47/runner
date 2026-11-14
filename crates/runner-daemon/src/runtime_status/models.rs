@@ -395,10 +395,29 @@ pub(crate) fn command_output(
     .ok()
 }
 
+pub(crate) fn command_output_with_stderr(
+    executable: &str,
+    args: &[&str],
+    env: &LoginShellEnv,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    run_process(
+        Query {
+            executable,
+            args,
+            stdin: None,
+            env,
+            timeout,
+        },
+        true,
+    )
+    .ok()
+}
+
 /// Runs one bounded, headless query off the UI thread. Owned processes and
 /// their descendants are terminated on timeout and reaped on every path.
 pub(crate) fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
-    match run_process(query) {
+    match run_process(query, false) {
         Ok(output) => Ok(output),
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => Err(Reason::Timeout),
         Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Err(Reason::InvalidOutput),
@@ -406,7 +425,7 @@ pub(crate) fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
     }
 }
 
-fn run_process(query: Query<'_>) -> std::io::Result<Vec<u8>> {
+fn run_process(query: Query<'_>, merge_stderr: bool) -> std::io::Result<Vec<u8>> {
     let mut output = tempfile::tempfile()?;
     let mut command = Command::new(query.executable);
     if query
@@ -427,7 +446,11 @@ fn run_process(query: Query<'_>) -> std::io::Result<Vec<u8>> {
             Stdio::null()
         })
         .stdout(output.try_clone()?)
-        .stderr(Stdio::null());
+        .stderr(if merge_stderr {
+            Stdio::from(output.try_clone()?)
+        } else {
+            Stdio::null()
+        });
     if let Some(home) = runner_core::app_paths::home_dir() {
         command.current_dir(home);
     }

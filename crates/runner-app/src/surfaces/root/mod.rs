@@ -273,6 +273,7 @@ pub(crate) struct NativeRoot {
     pub(crate) window_label: String,
     pub(crate) log_dir: PathBuf,
     pub(crate) closing: bool,
+    pub(crate) window_active: bool,
     pub(crate) app_store: Entity<AppStore>,
     pub(crate) store_revisions: StoreRevisions,
     pub(crate) tabs: TabSet,
@@ -370,6 +371,7 @@ pub(crate) struct NativeRoot {
     pub(crate) _project_cwd_subscription: Option<Subscription>,
     pub(crate) _updater_subscription: Subscription,
     pub(crate) _store_subscription: Subscription,
+    pub(crate) _event_tasks: [gpui::Task<()>; 4],
 }
 
 impl NativeRoot {

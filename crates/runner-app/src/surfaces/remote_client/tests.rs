@@ -55,6 +55,8 @@ impl TerminalSubscription for Frames {
         })
     }
 }
+type MarkViewedHook = Box<dyn FnMut(&Fake, &str) + Send>;
+
 pub(crate) struct Fake {
     base: runner_daemon::daemon::InProcessTransport,
     status: Mutex<RemoteStatus>,
@@ -93,6 +95,7 @@ pub(crate) struct Fake {
     local_requests: Mutex<Vec<std::mem::Discriminant<Request>>>,
     action_results:
         Mutex<HashMap<String, std::collections::VecDeque<Result<serde_json::Value, ClientError>>>>,
+    on_mark_viewed: Mutex<Option<MarkViewedHook>>,
     model_session_removal: AtomicBool,
 }
 impl Fake {
@@ -289,6 +292,18 @@ impl Transport for Fake {
                     "deleteProject" => serde_json::json!({"archivedMissions":[],"archivedSessions":[]}),
                     _ => serde_json::Value::Null,
                 }) });
+                if result.is_ok() && kind == "markViewed" {
+                    if let Some(session) = value["session"].as_str() {
+                        let hook = self.on_mark_viewed.lock().unwrap().take();
+                        if let Some(mut hook) = hook {
+                            hook(self, session);
+                            let mut slot = self.on_mark_viewed.lock().unwrap();
+                            if slot.is_none() {
+                                *slot = Some(hook);
+                            }
+                        }
+                    }
+                }
                 Response::remote_request(result.map(|result| runner_core::remote::RemoteResult {
                     result,
                     features: self.features.lock().unwrap().clone(),
@@ -538,6 +553,7 @@ pub(crate) fn fixture(
         action_requests: Mutex::new(Vec::new()),
         local_requests: Mutex::new(Vec::new()),
         action_results: Mutex::new(HashMap::new()),
+        on_mark_viewed: Mutex::new(None),
         model_session_removal: AtomicBool::new(false),
     });
     let clients = cx.new(|cx| model::ClientState::new(fake.client(), cx));
@@ -8626,4 +8642,924 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
         .unwrap();
     cx.run_until_parked();
     assert_eq!(fake.request_count("archive"), 4);
+}
+
+#[test]
+fn remote_reading_running_codex_chat_clears_unread_and_survives_switching_and_stale_loads() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let initial: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "other-tab", "project": "p", "name": "Other tab", "pinned": true, "panes": {"session": "other"}, "shells": []},
+            {"id": "remote-tab", "project": "p", "name": "Remote tab", "pinned": true, "panes": {"session": "s"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "other": {"kind": "chat", "title": "Other", "runtime": "shell", "status": "idle", "unread": false},
+            "s": {"kind": "chat", "title": "Codex chat", "runtime": "codex", "status": "idle", "unread": true}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(initial.clone());
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-unread-running-codex");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+
+    // Initially viewing `other-tab`: running codex session `s` keeps its unread dot.
+    window
+        .read_with(&cx, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("other-tab"), Some(&AttentionState::None));
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+    assert_eq!(fake.request_count("markViewed"), 0);
+
+    // Selecting the running unread Codex tab sends `markViewed`, preserves `unread: true`
+    // until the host emits its status update, and then clears the dot locally.
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = false;
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        action_trace(&fake, "markViewed")
+            .into_iter()
+            .map(|request| request["session"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["s".to_owned()]
+    );
+    // Ordered overview reconciliation clears local unread immediately after `markViewed` settles,
+    // without needing an unsolicited `remote/session-status` push.
+    assert!(
+        !clients.read_with(&cx, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&cx, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+
+    // Switching away and back preserves the cleared state without spurious acks.
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 1);
+    window
+        .read_with(&cx, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+
+    // A later unviewed completion lights the dot again; an in-flight load started before
+    // `markViewed` cannot restore `unread: true` after viewing clears it.
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = true;
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    cx.run_until_parked();
+    window
+        .read_with(&cx, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+
+    let (release_load, load_gate) = std::sync::mpsc::channel();
+    let (load_started_tx, load_started_rx) = std::sync::mpsc::channel();
+    fake.overview_gates
+        .lock()
+        .unwrap()
+        .insert("host".into(), load_gate);
+    *fake.overview_started.lock().unwrap() = Some(load_started_tx);
+    let load_client = fake.client();
+    let (load_updates, mut load_responses) = futures::channel::mpsc::unbounded();
+    let load_worker =
+        std::thread::spawn(move || model::load(&load_client, "host", &load_updates, &mut 1));
+    assert_eq!(
+        load_started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        "host"
+    );
+    let load_started = futures::executor::block_on(load_responses.next()).unwrap();
+    clients.update(&mut cx, |state, _| state.apply(load_started));
+
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = false;
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 2);
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": false}
+        }),
+    );
+    release_load.send(()).unwrap();
+    load_worker.join().unwrap();
+    while let Ok(update) = load_responses.try_recv() {
+        clients.update(&mut cx, |state, _| state.apply(update));
+    }
+    cx.run_until_parked();
+    assert!(
+        !clients.read_with(&cx, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&cx, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+
+    // Staying on `remote-tab` while Runner is unfocused leaves a new completion unread
+    // until the window becomes active; once active, passive status pushes auto-ack too.
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.deactivate_window();
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    assert!(
+        clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    assert_eq!(fake.request_count("markViewed"), 2);
+
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 3);
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": false}
+        }),
+    );
+    visual.run_until_parked();
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 4);
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": false}
+        }),
+    );
+    visual.run_until_parked();
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+
+    // Switching away before a later turn completes keeps the green dot lit.
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+}
+
+#[test]
+fn remote_focus_pane_and_take_control_mark_viewed_without_sync_spam() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [{
+            "id": "split-tab",
+            "project": "p",
+            "name": "Split tab",
+            "pinned": true,
+            "panes": {
+                "split": "row",
+                "sizes": [0.5, 0.5],
+                "a": {"session": "a"},
+                "b": {"session": "b"}
+            },
+            "shells": []
+        }],
+        "missions": [],
+        "sessions": {
+            "a": {"kind": "chat", "title": "Pane A", "runtime": "codex", "status": "idle", "unread": false},
+            "b": {"kind": "chat", "title": "Pane B", "runtime": "codex", "status": "idle", "unread": false}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-focus-and-epoch");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+
+    // Unfocused window: `b` completes -> focusing `pane-b` sends `markViewed`.
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "b", "status": "idle", "unread": true}
+        }),
+    );
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, _window, cx| {
+            let pane_b = root.front_page_layout().unwrap().root.leaves()[1]
+                .id
+                .clone();
+            root.focus_pane(&pane_b, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 1);
+    assert!(
+        !clients.read_with(&cx, |state, _| state.overviews["host"].sessions["b"]
+            .status
+            .unread)
+    );
+
+    // Taking remote control while unread on a running chat also sends `markViewed`.
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "a", "status": "idle", "unread": true}
+        }),
+    );
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, _window, cx| {
+            root.remote_client.take_remote_control("a", cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 2);
+    assert!(
+        !clients.read_with(&cx, |state, _| state.overviews["host"].sessions["a"]
+            .status
+            .unread)
+    );
+
+    // After a failed reconciliation, passive `sync_remote_state` deduplicates per `(session,
+    // status_epoch)` across `remote/latency` ticks until a newer push arrives.
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    fake.queue_result("markViewed", Err(ClientError::msg("transient failure")));
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "a", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 3);
+
+    fake.emit(
+        "remote/latency",
+        serde_json::json!({"computer": "host", "ms": 25}),
+    );
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 3);
+
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "a", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 4);
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["a"]
+            .status
+            .unread)
+    );
+}
+
+#[test]
+fn remote_delayed_mark_viewed_preserves_newer_unread_without_intermediate_clear() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "other-tab", "project": "p", "name": "Other tab", "pinned": true, "panes": {"session": "other"}, "shells": []},
+            {"id": "tab-status", "project": "p", "name": "Status tab", "pinned": true, "panes": {"session": "s1"}, "shells": []},
+            {"id": "tab-overview", "project": "p", "name": "Overview tab", "pinned": true, "panes": {"session": "s2"}, "shells": []},
+            {"id": "tab-load", "project": "p", "name": "Load tab", "pinned": true, "panes": {"session": "s3"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "other": {"kind": "chat", "title": "Other", "runtime": "shell", "status": "idle", "unread": false},
+            "s1": {"kind": "chat", "title": "Status session", "runtime": "codex", "status": "idle", "unread": true},
+            "s2": {"kind": "chat", "title": "Overview event session", "runtime": "codex", "status": "idle", "unread": true},
+            "s3": {"kind": "chat", "title": "Load overview session", "runtime": "codex", "status": "idle", "unread": true}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-delayed-ack-no-false");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+    // 1) Status-push path: user opens `tab-status`, switches away while Turn 1 `markViewed` is in
+    // flight, and receives a coalesced Turn 2 `unread: true` status push with NO preceding false.
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("tab-status".into()), cx);
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    clients.update(&mut visual, |state, cx| {
+        state.apply_event(ClientEvent {
+            name: "remote/session-status".into(),
+            payload: serde_json::json!({
+                "computer": "host",
+                "status": {"session": "s1", "status": "idle", "unread": true}
+            }),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s1"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("tab-status"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+
+    // 2) `remote/overview` event path: user opens `tab-overview`, switches away while Turn 1
+    // `markViewed` is in flight, and receives a Turn 2 `unread: true` overview with NO false.
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("tab-overview".into()), cx);
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    clients.update(&mut visual, |state, cx| {
+        state.apply_event(ClientEvent {
+            name: "remote/overview".into(),
+            payload: serde_json::json!({"computer": "host", "overview": data}),
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s2"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(
+                attentions.get("tab-overview"),
+                Some(&AttentionState::Unread)
+            );
+        })
+        .unwrap();
+
+    // 3) `Update::Overview` path: user opens `tab-load`, switches away while Turn 1 `markViewed`
+    // is in flight, and an initial/reconnect `Update::Overview` arrives with `s3.unread == true`.
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("tab-load".into()), cx);
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    clients.update(&mut visual, |state, cx| {
+        state.apply(model::Update::LoadStarted("host".into(), 9));
+        state.apply(model::Update::Overview("host".into(), 9, data.clone()));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s3"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("tab-load"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+    assert_eq!(fake.request_count("markViewed"), 3);
+}
+
+#[test]
+fn remote_coalesced_turn_completion_with_delayed_ack_preserves_unread() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "other-tab", "project": "p", "name": "Other tab", "pinned": true, "panes": {"session": "other"}, "shells": []},
+            {"id": "remote-tab", "project": "p", "name": "Remote Codex", "pinned": true, "panes": {"session": "s"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "other": {"kind": "chat", "title": "Other", "runtime": "codex", "status": "idle", "unread": false},
+            "s": {"kind": "chat", "title": "Codex", "runtime": "codex", "status": "idle", "unread": false}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-coalesced-unread");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    let coalesced_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = coalesced_calls.clone();
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(move |fake, session| {
+        let cleared = hook_calls.fetch_add(1, Ordering::SeqCst) > 0;
+        fake.overview
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .status
+            .unread = !cleared;
+    }));
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = true;
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 0);
+
+    // User selects `remote-tab` (Turn 1 `markViewed` dispatched) and navigates away to
+    // `other-tab` before its ack completes. Zero host status/overview pushes arrive (modeling
+    // a fast Turn 1 clear -> busy -> Turn 2 `idle+unread=true` cycle coalesced away on host).
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("other-tab".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    assert_eq!(fake.request_count("markViewed"), 1);
+    assert!(
+        clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::Unread));
+        })
+        .unwrap();
+
+    // Switching back to `remote-tab` even with unchanged `status_epoch` still sends a fresh
+    // `markViewed`, and post-ack reconciliation clears the dot without an unsolicited push.
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 2);
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+}
+
+#[test]
+fn remote_coalesced_turn_completion_while_visible_acknowledges_turn_two() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "remote-tab", "project": "p", "name": "Remote Codex", "pinned": true, "panes": {"session": "s"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "s": {"kind": "chat", "title": "Codex", "runtime": "codex", "status": "idle", "unread": false}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-coalesced-visible");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 0);
+
+    // Call 1 models Turn 1 clear -> busy -> Turn 2 `idle+unread=true` with zero host pushes;
+    // Call 2 clears Turn 2 while the user stays active on `remote-tab`.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = calls.clone();
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(move |fake, session| {
+        let cleared = hook_calls.fetch_add(1, Ordering::SeqCst) > 0;
+        fake.overview
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .status
+            .unread = !cleared;
+    }));
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = true;
+    fake.emit(
+        "remote/session-status",
+        serde_json::json!({
+            "computer": "host",
+            "status": {"session": "s", "status": "idle", "unread": true}
+        }),
+    );
+    visual.run_until_parked();
+
+    assert_eq!(fake.request_count("markViewed"), 2);
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+}
+
+#[test]
+fn remote_unread_push_while_mark_viewed_pending_retries_after_completion() {
+    use crate::surfaces::sidebar::AttentionState;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "remote-tab", "project": "p", "name": "Remote Codex", "pinned": true, "panes": {"session": "s"}, "shells": []},
+            {"id": "other-tab", "project": "p", "name": "Other tab", "pinned": true, "panes": {"session": "other"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "s": {"kind": "chat", "title": "Codex", "runtime": "codex", "status": "idle", "unread": false},
+            "other": {"kind": "chat", "title": "Other", "runtime": "codex", "status": "idle", "unread": false}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-pending-retry");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), 0);
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls = calls.clone();
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(move |fake, session| {
+        let cleared = hook_calls.fetch_add(1, Ordering::SeqCst) > 0;
+        fake.overview
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .status
+            .unread = !cleared;
+    }));
+
+    // Dispatch Turn 1 `markViewed` so `"mark-viewed:s"` enters `actions_pending`.
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut("s")
+        .unwrap()
+        .status
+        .unread = true;
+    clients.update(&mut visual, |state, cx| {
+        state.apply_event(ClientEvent {
+            name: "remote/session-status".into(),
+            payload: serde_json::json!({
+                "computer": "host",
+                "status": {"session": "s", "status": "idle", "unread": true}
+            }),
+        });
+        cx.notify();
+    });
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.sync_remote_state(cx);
+            assert!(root
+                .remote_client
+                .workspace
+                .as_ref()
+                .unwrap()
+                .actions_pending
+                .contains("mark-viewed:s"));
+        })
+        .unwrap();
+
+    // While Turn 1 is still pending in `actions_pending`, a newer Turn 2 push arrives and hits
+    // the `prepare_action` pending guard. Settling with ZERO extra status/latency events
+    // must immediately retry `markViewed` for Turn 2 and clear it.
+    clients.update(&mut visual, |state, cx| {
+        state.apply_event(ClientEvent {
+            name: "remote/session-status".into(),
+            payload: serde_json::json!({
+                "computer": "host",
+                "status": {"session": "s", "status": "idle", "unread": true}
+            }),
+        });
+        cx.notify();
+    });
+    window
+        .update(&mut visual, |root, _window, cx| {
+            root.sync_remote_state(cx);
+            assert!(root
+                .remote_client
+                .workspace
+                .as_ref()
+                .unwrap()
+                .actions_pending
+                .contains("mark-viewed:s"));
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    assert_eq!(fake.request_count("markViewed"), 2);
+    assert!(
+        !clients.read_with(&visual, |state, _| state.overviews["host"].sessions["s"]
+            .status
+            .unread)
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            let attentions = root.front_page_sidebar().read(cx).remote_row_attentions(cx);
+            assert_eq!(attentions.get("remote-tab"), Some(&AttentionState::None));
+        })
+        .unwrap();
+
+    // Direct race check on `reconcile_session_overview`:
+    // 1) A pre-Turn-2 `unread: false` overview cannot clobber a push that arrived after overview began.
+    clients.update(&mut visual, |state, cx| {
+        let epoch_at_start = state.session_status_epoch("host", "s");
+        let load_gen = state.begin_reconcile_load("host");
+        state.apply_event(ClientEvent {
+            name: "remote/session-status".into(),
+            payload: serde_json::json!({
+                "computer": "host",
+                "status": {"session": "s", "status": "idle", "unread": true}
+            }),
+        });
+        state.reconcile_session_overview("host", load_gen, "s", epoch_at_start, data.clone(), cx);
+        assert!(state.overviews["host"].sessions["s"].status.unread);
+    });
+
+    // 2) An unrelated push for `other` while `s`'s overview is in flight still lets `s` reconcile
+    // to `unread: false` without losing `other`'s `unread: true`.
+    clients.update(&mut visual, |state, cx| {
+        let epoch_s = state.session_status_epoch("host", "s");
+        let load_gen = state.begin_reconcile_load("host");
+        state.apply_event(ClientEvent {
+            name: "remote/session-status".into(),
+            payload: serde_json::json!({
+                "computer": "host",
+                "status": {"session": "other", "status": "idle", "unread": true}
+            }),
+        });
+        state.reconcile_session_overview("host", load_gen, "s", epoch_s, data.clone(), cx);
+        assert!(!state.overviews["host"].sessions["s"].status.unread);
+        assert!(state.overviews["host"].sessions["other"].status.unread);
+    });
+
+    // 3) A competing `LoadStarted` while `R` is in flight forces `R` through the per-session
+    // fallback; delivering stale `L` afterward (with no intervening status push) must not
+    // overwrite `R`'s reconciled status.
+    clients.update(&mut visual, |state, cx| {
+        let epoch_s = state.session_status_epoch("host", "s");
+        let r_gen = state.begin_reconcile_load("host");
+        state.apply(model::Update::LoadStarted("host".into(), 42));
+        let mut r_overview = data.clone();
+        r_overview.sessions.get_mut("s").unwrap().status.unread = true;
+        state.reconcile_session_overview("host", r_gen, "s", epoch_s, r_overview, cx);
+        assert!(state.overviews["host"].sessions["s"].status.unread);
+        state.apply(model::Update::Overview("host".into(), 42, data.clone()));
+        assert!(state.overviews["host"].sessions["s"].status.unread);
+    });
 }

@@ -60,6 +60,7 @@ Source: "{#SourceDir}\OpenConsole.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\crates\runner-app\LICENSE.xterm"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\crates\runner-app\LICENSE.conpty"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\crates\runner-app\LICENSE.themes"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\fonts\JetBrainsMono-NF-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\file-icons\LICENSE-catppuccin"; DestDir: "{app}\file-icons"; Flags: ignoreversion
 Source: "..\..\assets\file-icons\LICENSE-material"; DestDir: "{app}\file-icons"; Flags: ignoreversion

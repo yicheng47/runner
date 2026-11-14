@@ -24,41 +24,68 @@ impl NativeRoot {
                 .map(|(label, panes)| self.render_settings_nav_group(label, panes, active, cx))
                 .collect()
         };
-        let content = self.render_settings_pane(cx);
         // Keep the full-size footer sample when zoom leaves little room for page gutters.
+        let available = f32::from(window.viewport_size().width) - width - 8. * zoom - 4.;
         let horizontal_padding = if active == SettingsPane::Usage {
             let preview_width = super::super::usage::USAGE_PREVIEW_WIDTH
                 + 2. * super::super::usage::USAGE_PREVIEW_PADDING;
-            let available = f32::from(window.bounds().size.width) - width - 8. * zoom - 4.;
             ((available - preview_width * zoom) / 2.).clamp(0., 40. * zoom)
         } else {
             40. * zoom
         };
+        let available_content_width = (available - 2. * horizontal_padding).max(0.);
+        let gallery_columns = if available_content_width >= 864. * zoom {
+            6
+        } else {
+            3
+        };
+        let content_max_width = if active == SettingsPane::Appearance {
+            APPEARANCE_CONTENT_MAX_WIDTH
+        } else {
+            SETTINGS_CONTENT_MAX_WIDTH
+        };
+        let content = self.render_settings_pane(gallery_columns, cx);
 
         div()
             .absolute()
             .debug_selector(|| "SETTINGS_CHROME".into())
             .key_context("Settings")
             .track_focus(&self.settings_page.focus)
-            .when(active == SettingsPane::Agents, |settings| {
-                settings.on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "tab"
-                        && !this.settings_page.search.read(cx).is_composing()
-                        && !this
-                            .settings_page
-                            .agents
-                            .as_ref()
-                            .is_some_and(|pane| pane.read(cx).is_composing(cx))
-                    {
-                        cx.stop_propagation();
-                        if event.keystroke.modifiers.shift {
-                            window.focus_prev(cx);
-                        } else {
-                            window.focus_next(cx);
+            .when(
+                matches!(active, SettingsPane::Agents | SettingsPane::Appearance),
+                |settings| {
+                    settings.on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key != "tab"
+                            || this.settings_page.search.read(cx).is_composing()
+                        {
+                            return;
                         }
-                    }
-                }))
-            })
+                        let modifiers = event.keystroke.modifiers;
+                        let allowed = match this.settings_page.pane {
+                            SettingsPane::Agents => !this
+                                .settings_page
+                                .agents
+                                .as_ref()
+                                .is_some_and(|pane| pane.read(cx).is_composing(cx)),
+                            SettingsPane::Appearance => {
+                                !(modifiers.control
+                                    || modifiers.platform
+                                    || modifiers.alt
+                                    || modifiers.function)
+                            }
+                            _ => false,
+                        };
+                        if allowed {
+                            cx.stop_propagation();
+                            if modifiers.shift {
+                                window.focus_prev(cx);
+                            } else {
+                                window.focus_next(cx);
+                            }
+                        }
+                    }))
+                },
+            )
             .inset_0()
             .flex()
             .overflow_hidden()
@@ -173,6 +200,7 @@ impl NativeRoot {
                         self.settings_page.content_scrollbar.clone(),
                         zoom,
                         px(horizontal_padding),
+                        content_max_width,
                     )),
             )
             .child(self.render_sidebar_resize_handle(width, cx))
@@ -366,12 +394,16 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    pub(super) fn render_settings_pane(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn render_settings_pane(
+        &mut self,
+        gallery_columns: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         match self.settings_page.pane {
             SettingsPane::General => Some(self.render_general_settings(cx)),
             SettingsPane::Usage => Some(self.render_usage_settings(cx)),
             SettingsPane::Missions => Some(self.render_missions_settings(cx)),
-            SettingsPane::Appearance => Some(self.render_appearance_settings(cx)),
+            SettingsPane::Appearance => Some(self.render_appearance_settings(gallery_columns, cx)),
             SettingsPane::Account => Some(self.render_account_settings(cx)),
             SettingsPane::Remote => Some(self.render_remote_settings(cx)),
             SettingsPane::Notifications => Some(self.render_notifications_settings(cx)),

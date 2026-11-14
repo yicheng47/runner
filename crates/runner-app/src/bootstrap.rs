@@ -49,7 +49,7 @@ pub fn install_wake(client: DaemonClient) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use runner_daemon::daemon::boot::{boot_core, stop_running_sessions_on_quit};
+    use runner_daemon::daemon::boot::{boot_with_cli_setup, stop_running_sessions_on_quit};
     use runner_daemon::daemon::resume::consume_launch_claims;
     use runner_daemon::{db, repo, session, shell_path};
     use std::path::Path;
@@ -134,16 +134,22 @@ mod tests {
             .join(runner_core::cli_install::MCP_DEST_BIN_NAME);
         std::fs::create_dir_all(bridge.parent().unwrap()).unwrap();
         std::fs::write(&bridge, "stale bridge").unwrap();
-        let _core = boot_core(&first, Vec::new()).unwrap();
+        let first_core = boot_with_cli_setup(&first, Vec::new()).unwrap();
         assert!(!bridge.exists());
+        let first_db = Arc::downgrade(&first_core.db);
+        drop(first_core);
+        assert_eq!(first_db.strong_count(), 0);
 
         let second = NativePaths::new(temp.path().join("second"), temp.path().join("second-logs"));
-        let _core = boot_core(&second, Vec::new()).unwrap();
+        let second_core = boot_with_cli_setup(&second, Vec::new()).unwrap();
         assert!(!second
             .app_data_dir
             .join("bin")
             .join(runner_core::cli_install::MCP_DEST_BIN_NAME)
             .exists());
+        let second_db = Arc::downgrade(&second_core.db);
+        drop(second_core);
+        assert_eq!(second_db.strong_count(), 0);
     }
 
     #[test]

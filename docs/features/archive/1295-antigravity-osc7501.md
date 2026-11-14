@@ -11,7 +11,7 @@ Tracking issue: [#1295](https://github.com/yicheng47/runner/issues/1295).
 3. **False `Esc` cancellation**: Raw `Esc` bytes during `Working` inject `LocalCancel` even when `agy` only dismisses UI state or ignores `Esc`.
 4. **Hook & `--add-dir` overhead**: `agy` runs hooks synchronously on every turn and tool call, and `--add-dir antigravity-hooks` adds Runner's internal hooks folder as an extra workspace root, requiring the `#787` `PreInvocation` `ephemeralMessage` cwd workaround.
 
-Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all lifecycle/status hook shims, `.agents/hooks.json` generation, and `--add-dir antigravity-hooks` at once (leaving `#1292`'s `--settings` chat-title callback separate), aligns with [P0.8](../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
+Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all lifecycle/status hook shims, `.agents/hooks.json` generation, and `--add-dir antigravity-hooks` at once (leaving `#1292`'s `--settings` chat-title callback separate), aligns with [P0.8](../../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
 
 ## Scope
 
@@ -20,7 +20,7 @@ Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity 
 1. **Retire Antigravity status hooks and Runner-injected `--add-dir` workspaces**:
    - Return `status_hooks() -> None` and `mission_dir_args() -> Vec::new()` for `Antigravity`, removing `antigravity_status_args` (`--add-dir antigravity-hooks`), `agy_status.rs` hook parsing/installation, `WORKSPACE_CONTEXT_ENV` (`#787` ephemeral context), and the `--add-dir <mission_dir>` mission-bus workspace (missions already run with `--dangerously-skip-permissions` and coordinate through the `runner` CLI, whereas adding Runner's internal bus folder causes `agy` to sort it ahead of later-sorting project `cwd` paths as `Command Working Directory`).
    - Remove `Runtime::Antigravity` from `RuntimeLaunchOption::StatusHooks` (`crates/runner-core/src/protocol/runtime.rs`), Settings launch option copy (`crates/runner-app/src/surfaces/settings/agents/launch.rs`), command previews, and hook-watcher tests.
-   - Clean up any previously generated `antigravity-hooks` directory safely on daemon startup/housekeeping without touching user config or `--log-file` capture.
+   - Remove the hook files (`report.sh`, `.agents/hooks.json`) from any previously generated `antigravity-hooks` directory safely on daemon startup/housekeeping without touching user config or `--log-file` capture. Keep the folder itself, recreating it empty where the first #1295 build had already deleted it: a conversation started with `--add-dir antigravity-hooks` keeps it as its command working directory when resumed, and `agy` cannot run any shell command once it is gone.
 2. **Keep conversation identity via `LogTail`**:
    - Retain `--log-file` and `agy_capture.rs` (`KeyCapture::LogTail`) unchanged for initial conversation capture and `/clear`, `/new`, `/fork`, and `/resume` rekeying.
 3. **Promote OSC 7501 (`ProgramStatus`) for managed Antigravity sessions**:
@@ -54,7 +54,7 @@ Single PR (`feat/1295-antigravity-osc7501`), labeled `core-review` (touches `ses
 1. **Daemon runtime & state (`runner-daemon`, `runner-core`)**:
    - Remove Antigravity `StatusHooks` implementation, `--add-dir antigravity-hooks` args, and `StatusHooks` launch option metadata for `Runtime::Antigravity`.
    - Extend `SessionModel` / `StartupDelivery` / `CoreSessionEvents::status` / `turn_started` tracking so managed hookless OSC 7501 runtimes (Antigravity) get completion notifications on `Done`, deterministic `StartupDelivery`, and mission `turn_started` confirmation without regressing shell-tab `#861` or hooked-runtime precedence.
-   - Clean up legacy `antigravity-hooks` artifacts during startup cleanup if present.
+   - Clean up legacy `antigravity-hooks` hook files during startup cleanup if present, keeping the folder.
 2. **Settings UI & copy (`runner-app`, i18n if needed)**:
    - Remove the Antigravity `Status hooks` switch/caption (`launch.rs`, previews, tests).
 3. **Docs & tests**:

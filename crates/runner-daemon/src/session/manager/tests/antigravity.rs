@@ -752,7 +752,7 @@ fn antigravity_summary_title_updates_attached_terminal_metadata_and_preferred_ti
 }
 
 #[test]
-fn antigravity_daemon_startup_removes_legacy_hooks_folder() {
+fn antigravity_daemon_startup_removes_legacy_hook_files_and_keeps_the_folder() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
     let hooks_root = app_data.path().join("antigravity-hooks");
@@ -765,5 +765,122 @@ fn antigravity_daemon_startup_removes_legacy_hooks_folder() {
     mgr.start_runtime_watchers(app_data.path(), pool, capture())
         .unwrap();
 
-    assert!(!hooks_root.exists());
+    assert!(hooks_root.is_dir());
+    assert!(!agents_dir.exists());
+    assert!(!hooks_root.join("report.sh").exists());
+}
+
+#[test]
+fn antigravity_daemon_startup_restores_a_deleted_legacy_hooks_folder() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let hooks_root = app_data.path().join("antigravity-hooks");
+
+    let mgr = mgr_with_fake(None, fake_runtime());
+    mgr.start_runtime_watchers(app_data.path(), pool, capture())
+        .unwrap();
+
+    assert!(hooks_root.is_dir());
+    assert_eq!(std::fs::read_dir(&hooks_root).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn antigravity_symlinked_cwd_seeds_both_paths_on_direct_resume_and_mission() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let target = std::fs::canonicalize(app_data.path()).unwrap().join("real");
+    std::fs::create_dir_all(&target).unwrap();
+    let linked = std::fs::canonicalize(app_data.path())
+        .unwrap()
+        .join("linked");
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+
+    let mut role = role("agy", &[]);
+    role.runtime = "antigravity".into();
+    insert_role_row(&pool.get().unwrap(), &role);
+
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let settings = crate::runtimes::antigravity::agy_trust::settings_path(home.path());
+
+    // 1. Direct chat with symlinked cwd seeds both linked and target.
+    let spawned = crate::runtimes::with_conversation_home(home.path(), || {
+        mgr.spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(linked.to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+    })
+    .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        value["trustedWorkspaces"],
+        serde_json::json!([linked.to_string_lossy(), target.to_string_lossy()])
+    );
+    mgr.kill(&spawned.id).unwrap();
+
+    // 2. Resume after clearing settings still seeds both paths.
+    std::fs::remove_file(&settings).unwrap();
+    crate::runtimes::with_conversation_home(home.path(), || {
+        mgr.resume(
+            &spawned.id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+    })
+    .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        value["trustedWorkspaces"],
+        serde_json::json!([linked.to_string_lossy(), target.to_string_lossy()])
+    );
+    mgr.kill(&spawned.id).unwrap();
+
+    // 3. Mission spawn with symlinked cwd also seeds both paths.
+    std::fs::remove_file(&settings).unwrap();
+    let mut mission_role = super::role("agy-mission", &[]);
+    mission_role.runtime = "antigravity".into();
+    let (mut mission, slot) = seed_mission_rows(&pool, &mission_role);
+    mission.cwd = Some(linked.to_string_lossy().into_owned());
+    let events_log_path = runner_core::event_log::path::events_path(
+        app_data.path(),
+        mission.crew_id.as_deref(),
+        &mission.id,
+    );
+    let mission_session = crate::runtimes::with_conversation_home(home.path(), || {
+        mgr.spawn(
+            &mission,
+            &mission_role,
+            &slot,
+            app_data.path(),
+            events_log_path,
+            Arc::clone(&pool),
+            capture(),
+            Some("first turn".into()),
+        )
+    })
+    .unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        value["trustedWorkspaces"],
+        serde_json::json!([linked.to_string_lossy(), target.to_string_lossy()])
+    );
+    mgr.kill(&mission_session.id).unwrap();
 }

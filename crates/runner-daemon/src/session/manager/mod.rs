@@ -55,7 +55,7 @@ mod output;
 mod resume;
 mod shell;
 mod spawn;
-mod spawn_spec;
+pub(crate) mod spawn_spec;
 mod startup;
 mod status;
 pub mod terminal;

@@ -1719,3 +1719,492 @@ fn remote_zero_role_mission_hides_no_events_when_initial_feed_load_fails() {
     assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
     assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
 }
+
+fn push_member(
+    data: &mut Overview,
+    mission_idx: usize,
+    handle: &str,
+    session_id: &str,
+    status: runner_core::companion::Status,
+) {
+    data.missions[mission_idx]
+        .members
+        .push(runner_core::companion::Member {
+            handle: handle.into(),
+            session: session_id.into(),
+            lead: false,
+        });
+    let mut session = data.sessions["member"].clone();
+    session.status.status = status;
+    data.sessions.insert(session_id.into(), session);
+}
+
+#[test]
+fn member_added_while_viewing_another_tab_or_mission_gets_a_tab_on_return() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, mut cx, window, _, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let mut data = overview();
+    let mut second_mission = data.missions[0].clone();
+    second_mission.id = "second-mission".into();
+    second_mission.title = "Second mission".into();
+    second_mission.members = vec![runner_core::companion::Member {
+        handle: "lead".into(),
+        session: "other-member".into(),
+        lead: true,
+    }];
+    second_mission.asks.clear();
+    data.missions.push(second_mission);
+    data.sessions
+        .insert("other-member".into(), data.sessions["member"].clone());
+    fake.set_overview(data.clone());
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    push_member(
+        &mut data,
+        0,
+        "extra-writer",
+        "extra",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data.clone());
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    workspace.read_with(&visual, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["member", "extra"]);
+        let members: Vec<String> = workspace
+            .members()
+            .into_iter()
+            .map(|member| member.handle)
+            .collect();
+        assert_eq!(members, ["coder", "extra-writer"]);
+        let roster: Vec<String> = workspace
+            .mission_composer_roster()
+            .into_iter()
+            .map(|entry| entry.handle)
+            .collect();
+        assert_eq!(roster, ["coder", "extra-writer"]);
+    });
+    for selector in [
+        "MISSION_TAB member",
+        "MISSION_TAB extra",
+        "MISSION_CARD member",
+        "MISSION_CARD extra",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("second-mission".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    push_member(
+        &mut data,
+        0,
+        "third",
+        "third-id",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data);
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    workspace.read_with(&visual, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["member", "extra", "third-id"]);
+        let roster: Vec<String> = workspace
+            .mission_composer_roster()
+            .into_iter()
+            .map(|entry| entry.handle)
+            .collect();
+        assert_eq!(roster, ["coder", "extra-writer", "third"]);
+    });
+    for selector in ["MISSION_TAB third-id", "MISSION_CARD third-id"] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+}
+
+#[test]
+fn member_added_while_mission_is_stopped_gets_tab_when_reopened() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, mut cx, window, _, fake) = setup();
+    let workspace = workspace(window, &cx);
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut stopped = overview();
+    stopped.missions[0].state = runner_core::companion::MissionState::Stopped;
+    stopped.sessions.get_mut("member").unwrap().status.status =
+        runner_core::companion::Status::Stopped;
+    push_member(
+        &mut stopped,
+        0,
+        "extra-writer",
+        "extra",
+        runner_core::companion::Status::Stopped,
+    );
+    fake.set_overview(stopped);
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    workspace.read_with(&visual, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["member", "extra"]);
+        let roster: Vec<String> = workspace
+            .mission_composer_roster()
+            .into_iter()
+            .map(|entry| entry.handle)
+            .collect();
+        assert_eq!(roster, ["coder", "extra-writer"]);
+    });
+    for selector in [
+        "MISSION_TAB member",
+        "MISSION_TAB extra",
+        "MISSION_CARD member",
+        "MISSION_CARD extra",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+}
+
+#[test]
+fn closed_tab_stays_closed_while_added_member_gets_tab_and_presentation_holds() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let mut pushed = overview();
+    push_member(
+        &mut pushed,
+        0,
+        "second",
+        "second-id",
+        runner_core::companion::Status::Working,
+    );
+    let mut shell = pushed.sessions["member"].clone();
+    shell.kind = runner_core::companion::SessionKind::Shell;
+    for id in ["shell-a", "shell-b"] {
+        pushed.sessions.insert(id.into(), shell.clone());
+    }
+    pushed.missions[0].shells = vec!["shell-a".into(), "shell-b".into()];
+    fake.set_overview(pushed.clone());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.select_mission_session("second-id", window, cx);
+            workspace.close_mission_session_tab("member", window, cx);
+            workspace.toggle_terminal_drawer(window, cx);
+            workspace.activate_terminal_drawer_shell("shell-a", window, cx);
+            workspace.layout.drawer.set_height(219.);
+        })
+    });
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    push_member(
+        &mut pushed,
+        0,
+        "extra-writer",
+        "extra",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(pushed.clone());
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    workspace.read_with(&visual, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["second-id", "extra"]);
+        assert_eq!(
+            workspace.active_tab,
+            MissionTab::Session("second-id".into())
+        );
+        assert_eq!(
+            workspace.presentation.selected_handle().map(String::as_str),
+            Some("second")
+        );
+        assert!(workspace.layout.drawer.open());
+        assert_eq!(workspace.layout.drawer.active_shell(), Some("shell-a"));
+        assert_eq!(workspace.layout.drawer.height(), 219.);
+        let roster: Vec<String> = workspace
+            .mission_composer_roster()
+            .into_iter()
+            .map(|entry| entry.handle)
+            .collect();
+        assert_eq!(roster, ["coder", "second", "extra-writer"]);
+    });
+    assert!(visual.debug_bounds("MISSION_TAB member").is_none());
+    for selector in [
+        "MISSION_TAB second-id",
+        "MISSION_TAB extra",
+        "MISSION_CARD member",
+        "MISSION_CARD second-id",
+        "MISSION_CARD extra",
+    ] {
+        assert!(visual.debug_bounds(selector).is_some(), "{selector}");
+    }
+
+    pushed.missions[0].state = runner_core::companion::MissionState::Stopped;
+    for member in &mut pushed.missions[0].members {
+        pushed
+            .sessions
+            .get_mut(&member.session)
+            .unwrap()
+            .status
+            .status = runner_core::companion::Status::Stopped;
+    }
+    fake.set_overview(pushed.clone());
+    visual.run_until_parked();
+
+    pushed.missions[0].state = runner_core::companion::MissionState::Running;
+    for (member, next_id) in pushed.missions[0].members.iter_mut().zip([
+        "coder-resumed",
+        "second-resumed",
+        "extra-resumed",
+    ]) {
+        let mut session = pushed.sessions.remove(&member.session).unwrap();
+        session.status.status = runner_core::companion::Status::Working;
+        member.session = next_id.into();
+        pushed.sessions.insert(next_id.into(), session);
+    }
+    fake.set_overview(pushed);
+    visual.run_until_parked();
+
+    workspace.read_with(&visual, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["second-resumed", "extra-resumed"]);
+        assert_eq!(
+            workspace.active_tab,
+            MissionTab::Session("second-resumed".into())
+        );
+        assert_eq!(
+            workspace.presentation.selected_handle().map(String::as_str),
+            Some("second")
+        );
+        assert!(workspace.layout.drawer.open());
+        assert_eq!(workspace.layout.drawer.active_shell(), Some("shell-a"));
+        assert_eq!(workspace.layout.drawer.height(), 219.);
+    });
+}
+
+#[test]
+fn member_removed_while_away_loses_tab_and_active_tab_falls_back() {
+    let (_temp, mut cx, window, _, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let mut data = overview();
+    push_member(
+        &mut data,
+        0,
+        "second",
+        "second-id",
+        runner_core::companion::Status::Working,
+    );
+    push_member(
+        &mut data,
+        0,
+        "third",
+        "third-id",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data.clone());
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |_, window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.select_mission_session("second-id", window, cx);
+                workspace.close_mission_session_tab("third-id", window, cx);
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    data.missions[0]
+        .members
+        .retain(|member| member.handle != "second");
+    data.sessions.remove("second-id");
+    fake.set_overview(data.clone());
+    cx.run_until_parked();
+
+    push_member(
+        &mut data,
+        0,
+        "extra-writer",
+        "extra",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data);
+    cx.run_until_parked();
+
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    workspace.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.open_tabs, ["member", "extra"]);
+        assert_eq!(workspace.active_tab, MissionTab::Feed);
+        assert_eq!(workspace.presentation.selected_handle(), None);
+    });
+}
+
+#[test]
+fn saved_presentation_survives_same_host_reconnect_and_receives_added_members() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, store, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let mut pushed = overview();
+    push_member(
+        &mut pushed,
+        0,
+        "second",
+        "second-id",
+        runner_core::companion::Status::Working,
+    );
+    let mut shell = pushed.sessions["member"].clone();
+    shell.kind = runner_core::companion::SessionKind::Shell;
+    pushed.sessions.insert("shell-a".into(), shell);
+    pushed.missions[0].shells = vec!["shell-a".into()];
+    fake.set_overview(pushed.clone());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.select_mission_session("second-id", window, cx);
+            workspace.close_mission_session_tab("member", window, cx);
+            workspace.toggle_terminal_drawer(window, cx);
+            workspace.activate_terminal_drawer_shell("shell-a", window, cx);
+            workspace.layout.drawer.set_height(219.);
+            workspace
+                .rail_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
+        })
+    });
+    visual.run_until_parked();
+
+    let (target_before, generation_before, rail_before) = workspace.read_with(&visual, |w, _| {
+        (
+            w.client.target.clone(),
+            w.generation,
+            w.rail_surfaces.open.clone(),
+        )
+    });
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            let clients = store.read(cx).remote_clients.clone();
+            clients.update(cx, |clients, cx| {
+                clients.connections.insert(
+                    "host".into(),
+                    crate::surfaces::remote_client::model::Connection::Reconnecting,
+                );
+                clients.invalidate_capabilities("host");
+                cx.notify();
+            });
+            root.sync_remote_state(cx);
+        })
+        .unwrap();
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer":"host","state":"connected"}),
+    );
+    visual.run_until_parked();
+
+    push_member(
+        &mut pushed,
+        0,
+        "extra-writer",
+        "extra",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(pushed);
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    workspace.read_with(&visual, |workspace, _| {
+        assert_ne!(workspace.client.target, target_before);
+        assert!(workspace.generation > generation_before);
+        assert_eq!(workspace.open_tabs, ["second-id", "extra"]);
+        assert_eq!(
+            workspace.active_tab,
+            MissionTab::Session("second-id".into())
+        );
+        assert_eq!(
+            workspace.presentation.selected_handle().map(String::as_str),
+            Some("second")
+        );
+        assert!(workspace.layout.drawer.open());
+        assert_eq!(workspace.layout.drawer.active_shell(), Some("shell-a"));
+        assert_eq!(workspace.layout.drawer.height(), 219.);
+        assert_eq!(workspace.rail_surfaces.open, rail_before);
+    });
+}

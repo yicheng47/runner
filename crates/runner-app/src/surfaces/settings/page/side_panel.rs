@@ -119,7 +119,7 @@ fn section_heading(label: &'static str, selector: &'static str) -> Div {
 }
 
 /// Names `element` for tests, recording its fill for the theme snapshots.
-fn snapshot(id: &'static str, element: Div) -> Div {
+pub(super) fn snapshot(id: &'static str, element: Div) -> Div {
     #[cfg(test)]
     let element = crate::theme_snapshot::record_fill(id, element);
     element.debug_selector(move || id.into())

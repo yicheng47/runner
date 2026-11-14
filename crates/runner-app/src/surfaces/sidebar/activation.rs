@@ -122,7 +122,11 @@ impl NativeRoot {
     }
 
     pub(crate) fn mark_active_tab_viewed(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.window_active = window.is_window_active();
         if self.remote_client.is_active() {
+            if window.is_window_active() {
+                self.mark_remote_sessions_viewed_if_unobstructed(cx);
+            }
             return;
         }
         if self.route != AppRoute::Chat {

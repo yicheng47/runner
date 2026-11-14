@@ -1,7 +1,11 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use gpui::{rems, rgb, Hsla, Rems};
-use serde::{Deserialize, Serialize};
+use runner_terminal::palette::{self, TerminalPalette};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Bundled third-party theme licence notices, registered in [`crate::assets::Assets`] and platform packages.
+pub(crate) const SHIPPED_NOTICES: &str = include_str!("../LICENSE.themes");
 
 pub use crate::platform_fonts::{SYSTEM_MONOSPACE_FONT, UI_MONOSPACE_FONT};
 
@@ -66,22 +70,145 @@ pub enum ThemeIntent {
     Dark,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LightTheme {
-    CatppuccinLatte,
     #[default]
-    #[serde(other)]
     RunnerLight,
+    CatppuccinLatte,
+    RosePineDawn,
+    TokyoNightDay,
+    GruvboxLight,
+    SolarizedLight,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+impl LightTheme {
+    pub const ALL: [Self; 6] = [
+        Self::RunnerLight,
+        Self::CatppuccinLatte,
+        Self::RosePineDawn,
+        Self::TokyoNightDay,
+        Self::GruvboxLight,
+        Self::SolarizedLight,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RunnerLight => "Runner Light",
+            Self::CatppuccinLatte => "Catppuccin Latte",
+            Self::RosePineDawn => "Rosé Pine Dawn",
+            Self::TokyoNightDay => "Tokyo Night Day",
+            Self::GruvboxLight => "Gruvbox Light",
+            Self::SolarizedLight => "Solarized Light",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::RunnerLight => "runner-light",
+            Self::CatppuccinLatte => "catppuccin-latte",
+            Self::RosePineDawn => "rose-pine-dawn",
+            Self::TokyoNightDay => "tokyo-night-day",
+            Self::GruvboxLight => "gruvbox-light",
+            Self::SolarizedLight => "solarized-light",
+        }
+    }
+
+    pub const fn variant(self) -> ThemeVariant {
+        match self {
+            Self::RunnerLight => ThemeVariant::RunnerLight,
+            Self::CatppuccinLatte => ThemeVariant::CatppuccinLatte,
+            Self::RosePineDawn => ThemeVariant::RosePineDawn,
+            Self::TokyoNightDay => ThemeVariant::TokyoNightDay,
+            Self::GruvboxLight => ThemeVariant::GruvboxLight,
+            Self::SolarizedLight => ThemeVariant::SolarizedLight,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.key() == value)
+    }
+}
+
+impl<'de> Deserialize<'de> for LightTheme {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_or_default(deserializer, Self::parse)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DarkTheme {
     #[default]
     #[serde(rename = "carbon")]
     Runner,
     CatppuccinMocha,
+    RosePineMoon,
+    TokyoNight,
+    GruvboxDark,
+    SolarizedDark,
+}
+
+impl DarkTheme {
+    pub const ALL: [Self; 6] = [
+        Self::Runner,
+        Self::CatppuccinMocha,
+        Self::RosePineMoon,
+        Self::TokyoNight,
+        Self::GruvboxDark,
+        Self::SolarizedDark,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Runner => "Runner",
+            Self::CatppuccinMocha => "Catppuccin Mocha",
+            Self::RosePineMoon => "Rosé Pine Moon",
+            Self::TokyoNight => "Tokyo Night",
+            Self::GruvboxDark => "Gruvbox Dark",
+            Self::SolarizedDark => "Solarized Dark",
+        }
+    }
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Runner => "carbon",
+            Self::CatppuccinMocha => "catppuccin-mocha",
+            Self::RosePineMoon => "rose-pine-moon",
+            Self::TokyoNight => "tokyo-night",
+            Self::GruvboxDark => "gruvbox-dark",
+            Self::SolarizedDark => "solarized-dark",
+        }
+    }
+
+    pub const fn variant(self) -> ThemeVariant {
+        match self {
+            Self::Runner => ThemeVariant::Carbon,
+            Self::CatppuccinMocha => ThemeVariant::CatppuccinMocha,
+            Self::RosePineMoon => ThemeVariant::RosePineMoon,
+            Self::TokyoNight => ThemeVariant::TokyoNight,
+            Self::GruvboxDark => ThemeVariant::GruvboxDark,
+            Self::SolarizedDark => ThemeVariant::SolarizedDark,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|theme| theme.key() == value)
+    }
+}
+
+impl<'de> Deserialize<'de> for DarkTheme {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserialize_or_default(deserializer, Self::parse)
+    }
+}
+
+fn deserialize_or_default<'de, D: Deserializer<'de>, T: Default>(
+    deserializer: D,
+    parse: fn(&str) -> Option<T>,
+) -> Result<T, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    Ok(parse(value.as_str()).unwrap_or_default())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -89,13 +216,60 @@ pub enum ThemeVariant {
     #[default]
     Carbon,
     CatppuccinMocha,
+    RosePineMoon,
+    TokyoNight,
+    GruvboxDark,
+    SolarizedDark,
     RunnerLight,
     CatppuccinLatte,
+    RosePineDawn,
+    TokyoNightDay,
+    GruvboxLight,
+    SolarizedLight,
 }
 
 impl ThemeVariant {
-    pub fn is_light(self) -> bool {
-        matches!(self, Self::RunnerLight | Self::CatppuccinLatte)
+    pub const ALL: [Self; 12] = [
+        Self::Carbon,
+        Self::CatppuccinMocha,
+        Self::RosePineMoon,
+        Self::TokyoNight,
+        Self::GruvboxDark,
+        Self::SolarizedDark,
+        Self::RunnerLight,
+        Self::CatppuccinLatte,
+        Self::RosePineDawn,
+        Self::TokyoNightDay,
+        Self::GruvboxLight,
+        Self::SolarizedLight,
+    ];
+
+    pub const fn is_light(self) -> bool {
+        matches!(
+            self,
+            Self::RunnerLight
+                | Self::CatppuccinLatte
+                | Self::RosePineDawn
+                | Self::TokyoNightDay
+                | Self::GruvboxLight
+                | Self::SolarizedLight
+        )
+    }
+
+    pub const fn terminal_palette(self) -> TerminalPalette {
+        match self {
+            Self::Carbon => palette::RUNNER,
+            Self::CatppuccinMocha => palette::CATPPUCCIN_MOCHA,
+            Self::RosePineMoon => palette::ROSE_PINE_MOON,
+            Self::TokyoNight => palette::TOKYO_NIGHT,
+            Self::GruvboxDark => palette::GRUVBOX_DARK,
+            Self::SolarizedDark => palette::SOLARIZED_DARK,
+            Self::RunnerLight | Self::RosePineDawn => palette::ROSE_PINE_DAWN,
+            Self::CatppuccinLatte => palette::CATPPUCCIN_LATTE,
+            Self::TokyoNightDay => palette::TOKYO_NIGHT_DAY,
+            Self::GruvboxLight => palette::GRUVBOX_LIGHT,
+            Self::SolarizedLight => palette::SOLARIZED_LIGHT,
+        }
     }
 }
 
@@ -111,15 +285,9 @@ pub fn resolve_variant(
         ThemeIntent::Dark => false,
     };
     if use_light {
-        match light {
-            LightTheme::RunnerLight => ThemeVariant::RunnerLight,
-            LightTheme::CatppuccinLatte => ThemeVariant::CatppuccinLatte,
-        }
+        light.variant()
     } else {
-        match dark {
-            DarkTheme::Runner => ThemeVariant::Carbon,
-            DarkTheme::CatppuccinMocha => ThemeVariant::CatppuccinMocha,
-        }
+        dark.variant()
     }
 }
 
@@ -219,6 +387,158 @@ pub const CATPPUCCIN_LATTE: ThemeColors = ThemeColors {
     info: 0x209fb5,
 };
 
+pub const ROSE_PINE_MOON: ThemeColors = ThemeColors {
+    bg: 0x232136,
+    panel: 0x2a273f,
+    raised: 0x393552,
+    line: 0x393552,
+    line_strong: 0x56526e,
+    sidebar: 0x2a273f,
+    sidebar_selected: 0x393552,
+    sidebar_selected_border: 0x44415a,
+    fg: 0xe0def4,
+    fg_2: 0x908caa,
+    fg_3: 0x6e6a86,
+    accent: 0xea9a97,
+    accent_ink: 0x232136,
+    warn: 0xf6c177,
+    danger: 0xeb6f92,
+    info: 0x9ccfd8,
+};
+
+pub const TOKYO_NIGHT: ThemeColors = ThemeColors {
+    bg: 0x1a1b26,
+    panel: 0x24283b,
+    raised: 0x2f3549,
+    line: 0x292e42,
+    line_strong: 0x3b4261,
+    sidebar: 0x24283b,
+    sidebar_selected: 0x2f3549,
+    sidebar_selected_border: 0x414868,
+    fg: 0xc0caf5,
+    fg_2: 0xa9b1d6,
+    fg_3: 0x565f89,
+    accent: 0x7aa2f7,
+    accent_ink: 0x1a1b26,
+    warn: 0xe0af68,
+    danger: 0xf7768e,
+    info: 0x7dcfff,
+};
+
+pub const GRUVBOX_DARK: ThemeColors = ThemeColors {
+    bg: 0x282828,
+    panel: 0x32302f,
+    raised: 0x3c3836,
+    line: 0x3c3836,
+    line_strong: 0x504945,
+    sidebar: 0x3c3836,
+    sidebar_selected: 0x504945,
+    sidebar_selected_border: 0x665c54,
+    fg: 0xebdbb2,
+    fg_2: 0xbdae93,
+    fg_3: 0x928374,
+    accent: 0xfe8019,
+    accent_ink: 0x282828,
+    warn: 0xfabd2f,
+    danger: 0xfb4934,
+    info: 0x83a598,
+};
+
+pub const SOLARIZED_DARK: ThemeColors = ThemeColors {
+    bg: 0x002b36,
+    panel: 0x073642,
+    raised: 0x0e4552,
+    line: 0x0e4552,
+    line_strong: 0x165361,
+    sidebar: 0x073642,
+    sidebar_selected: 0x0e4552,
+    sidebar_selected_border: 0x1b5a69,
+    fg: 0x93a1a1,
+    fg_2: 0x839496,
+    fg_3: 0x586e75,
+    accent: 0x268bd2,
+    accent_ink: 0xffffff,
+    warn: 0xb58900,
+    danger: 0xdc322f,
+    info: 0x2aa198,
+};
+
+pub const ROSE_PINE_DAWN: ThemeColors = ThemeColors {
+    bg: 0xfaf4ed,
+    panel: 0xfffaf3,
+    raised: 0xf4ede8,
+    line: 0xe8ded7,
+    line_strong: 0xcecacd,
+    sidebar: 0xf2e9e1,
+    sidebar_selected: 0xdfdad9,
+    sidebar_selected_border: 0xcecacd,
+    fg: 0x575279,
+    fg_2: 0x797593,
+    fg_3: 0x9893a5,
+    accent: 0x286983,
+    accent_ink: 0xffffff,
+    warn: 0xc47c18,
+    danger: 0xb4637a,
+    info: 0x3a7a85,
+};
+
+pub const TOKYO_NIGHT_DAY: ThemeColors = ThemeColors {
+    bg: 0xe1e2e7,
+    panel: 0xeaebf0,
+    raised: 0xf4f5f8,
+    line: 0xc4c8da,
+    line_strong: 0xb4b8cc,
+    sidebar: 0xd0d5e3,
+    sidebar_selected: 0xc4c8da,
+    sidebar_selected_border: 0xb2b7cc,
+    fg: 0x3760bf,
+    fg_2: 0x52629e,
+    fg_3: 0x848cb5,
+    accent: 0x2e7de9,
+    accent_ink: 0xffffff,
+    warn: 0x8c6c3e,
+    danger: 0xf52a65,
+    info: 0x007197,
+};
+
+pub const GRUVBOX_LIGHT: ThemeColors = ThemeColors {
+    bg: 0xfbf1c7,
+    panel: 0xf2e5bc,
+    raised: 0xf9f5d7,
+    line: 0xd5c4a1,
+    line_strong: 0xbdae93,
+    sidebar: 0xebdbb2,
+    sidebar_selected: 0xd5c4a1,
+    sidebar_selected_border: 0xbdae93,
+    fg: 0x3c3836,
+    fg_2: 0x665c54,
+    fg_3: 0x928374,
+    accent: 0xaf3a03,
+    accent_ink: 0xffffff,
+    warn: 0xb57614,
+    danger: 0xcc241d,
+    info: 0x076678,
+};
+
+pub const SOLARIZED_LIGHT: ThemeColors = ThemeColors {
+    bg: 0xfdf6e3,
+    panel: 0xeee8d5,
+    raised: 0xfdf9ee,
+    line: 0xe0d8c0,
+    line_strong: 0xd3cab1,
+    sidebar: 0xeee8d5,
+    sidebar_selected: 0xe4dcc4,
+    sidebar_selected_border: 0xd3cab1,
+    fg: 0x586e75,
+    fg_2: 0x657b83,
+    fg_3: 0x93a1a1,
+    accent: 0x268bd2,
+    accent_ink: 0xffffff,
+    warn: 0xb58900,
+    danger: 0xdc322f,
+    info: 0x2aa198,
+};
+
 static ACTIVE_VARIANT: AtomicU8 = AtomicU8::new(ThemeVariant::Carbon as u8);
 
 pub fn set_active_variant(variant: ThemeVariant) {
@@ -234,20 +554,27 @@ pub fn active_variant() -> ThemeVariant {
     if let Some(variant) = testing::variant() {
         return variant;
     }
-    match ACTIVE_VARIANT.load(Ordering::Relaxed) {
-        value if value == ThemeVariant::CatppuccinMocha as u8 => ThemeVariant::CatppuccinMocha,
-        value if value == ThemeVariant::RunnerLight as u8 => ThemeVariant::RunnerLight,
-        value if value == ThemeVariant::CatppuccinLatte as u8 => ThemeVariant::CatppuccinLatte,
-        _ => ThemeVariant::Carbon,
-    }
+    let value = ACTIVE_VARIANT.load(Ordering::Relaxed);
+    ThemeVariant::ALL
+        .into_iter()
+        .find(|variant| *variant as u8 == value)
+        .unwrap_or_default()
 }
 
-pub fn colors_for(variant: ThemeVariant) -> ThemeColors {
+pub const fn colors_for(variant: ThemeVariant) -> ThemeColors {
     match variant {
         ThemeVariant::Carbon => CARBON,
         ThemeVariant::CatppuccinMocha => CATPPUCCIN_MOCHA,
+        ThemeVariant::RosePineMoon => ROSE_PINE_MOON,
+        ThemeVariant::TokyoNight => TOKYO_NIGHT,
+        ThemeVariant::GruvboxDark => GRUVBOX_DARK,
+        ThemeVariant::SolarizedDark => SOLARIZED_DARK,
         ThemeVariant::RunnerLight => RUNNER_LIGHT,
         ThemeVariant::CatppuccinLatte => CATPPUCCIN_LATTE,
+        ThemeVariant::RosePineDawn => ROSE_PINE_DAWN,
+        ThemeVariant::TokyoNightDay => TOKYO_NIGHT_DAY,
+        ThemeVariant::GruvboxLight => GRUVBOX_LIGHT,
+        ThemeVariant::SolarizedLight => SOLARIZED_LIGHT,
     }
 }
 
@@ -562,12 +889,7 @@ mod tests {
     #[test]
     fn glass_changes_only_chrome() {
         let _guard = crate::theme_snapshot::ThemeGuard::new();
-        for variant in [
-            ThemeVariant::Carbon,
-            ThemeVariant::RunnerLight,
-            ThemeVariant::CatppuccinMocha,
-            ThemeVariant::CatppuccinLatte,
-        ] {
+        for variant in ThemeVariant::ALL {
             set_active_variant(variant);
             set_glass(false);
             assert_eq!(chrome(), sidebar());
@@ -634,9 +956,14 @@ mod tests {
     #[test]
     fn runner_light_is_the_default_and_migrates_codex() {
         assert_eq!(LightTheme::default(), LightTheme::RunnerLight);
+        assert_eq!(DarkTheme::default(), DarkTheme::Runner);
         assert_eq!(
             serde_json::from_str::<LightTheme>(r#""codex""#).unwrap(),
             LightTheme::RunnerLight
+        );
+        assert_eq!(
+            serde_json::from_str::<DarkTheme>(r#""unknown-theme""#).unwrap(),
+            DarkTheme::Runner
         );
         for intent in [ThemeIntent::Auto, ThemeIntent::Light] {
             assert_eq!(
@@ -644,10 +971,37 @@ mod tests {
                 ThemeVariant::RunnerLight
             );
         }
-        assert!(ThemeVariant::RunnerLight.is_light());
-        assert!(ThemeVariant::CatppuccinLatte.is_light());
-        assert!(!ThemeVariant::Carbon.is_light());
-        assert!(!ThemeVariant::CatppuccinMocha.is_light());
+        for light in LightTheme::ALL {
+            assert!(light.variant().is_light(), "{light:?}");
+        }
+        for dark in DarkTheme::ALL {
+            assert!(!dark.variant().is_light(), "{dark:?}");
+        }
+    }
+
+    #[test]
+    fn every_variant_maps_to_matching_lightness_terminal_palette() {
+        for variant in ThemeVariant::ALL {
+            assert_eq!(
+                variant.terminal_palette().is_light(),
+                variant.is_light(),
+                "{variant:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_theme_notices_credit_non_runner_families() {
+        for credit in [
+            "Catppuccin",
+            "Rosé Pine",
+            "Tokyo Night",
+            "Apache License",
+            "Gruvbox",
+            "Solarized",
+        ] {
+            assert!(SHIPPED_NOTICES.contains(credit), "{credit}");
+        }
     }
 
     #[test]

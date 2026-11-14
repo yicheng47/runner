@@ -214,10 +214,16 @@ fn antigravity_uses_program_status_without_status_hooks() {
 }
 
 #[test]
-fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
+fn antigravity_cleanup_removes_legacy_hook_files_safely_and_keeps_the_folder() {
     let root = tempfile::tempdir().unwrap();
     let hooks_root = root.path().join("antigravity-hooks");
     let agents_dir = hooks_root.join(".agents");
+
+    // An earlier cleanup deleted the folder: it comes back, empty.
+    empty_legacy_hooks_dir(root.path());
+    assert!(hooks_root.is_dir());
+    assert_eq!(std::fs::read_dir(&hooks_root).unwrap().count(), 0);
+
     std::fs::create_dir_all(&agents_dir).unwrap();
     std::fs::write(agents_dir.join("hooks.json"), "{}").unwrap();
     std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
@@ -226,9 +232,12 @@ fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
     std::fs::create_dir_all(active_log.parent().unwrap()).unwrap();
     std::fs::write(&active_log, "keep\n").unwrap();
 
-    remove_legacy_hooks_dir(root.path());
+    empty_legacy_hooks_dir(root.path());
 
-    assert!(!hooks_root.exists());
+    // A conversation resumed from before #1295 still runs its commands in this folder.
+    assert!(hooks_root.is_dir());
+    assert!(!agents_dir.exists());
+    assert!(!hooks_root.join("report.sh").exists());
     assert!(active_log.is_file());
 
     // Unexpected user files inside antigravity-hooks are preserved while known Runner files go.
@@ -237,7 +246,7 @@ fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
     std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
     let extra = hooks_root.join("keep.txt");
     std::fs::write(&extra, "user note").unwrap();
-    remove_legacy_hooks_dir(root.path());
+    empty_legacy_hooks_dir(root.path());
     assert!(!agents_dir.exists());
     assert!(!hooks_root.join("report.sh").exists());
     assert!(extra.is_file());
@@ -252,7 +261,7 @@ fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
         let target_hooks = target_agents.join("hooks.json");
         std::fs::write(&target_hooks, "{}").unwrap();
         std::os::unix::fs::symlink(target.path(), &hooks_root).unwrap();
-        remove_legacy_hooks_dir(root.path());
+        empty_legacy_hooks_dir(root.path());
         assert!(target_hooks.is_file(), "must not follow symlinks");
         assert!(hooks_root
             .symlink_metadata()
@@ -265,7 +274,7 @@ fn antigravity_cleanup_removes_legacy_hooks_dir_safely() {
         std::fs::create_dir_all(&hooks_root).unwrap();
         std::os::unix::fs::symlink(&target_agents, &agents_dir).unwrap();
         std::fs::write(hooks_root.join("report.sh"), "#!/bin/sh\n").unwrap();
-        remove_legacy_hooks_dir(root.path());
+        empty_legacy_hooks_dir(root.path());
         assert!(
             target_hooks.is_file(),
             "must not follow intermediate .agents symlink"

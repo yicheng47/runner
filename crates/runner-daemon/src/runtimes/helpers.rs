@@ -167,9 +167,7 @@ pub(crate) fn is_broad_trust_root(cwd: &Path, home: Option<&Path>) -> bool {
     if cwd.parent().is_none() {
         return true;
     }
-    home.map(|home| std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()))
-        .as_deref()
-        == Some(cwd)
+    home.is_some_and(|home| cwd == home || std::fs::canonicalize(home).ok().as_deref() == Some(cwd))
 }
 
 pub(crate) fn resolve_project_trust_root(cwd: &Path) -> crate::error::Result<PathBuf> {

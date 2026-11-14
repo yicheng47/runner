@@ -542,6 +542,7 @@ fn trust_files_golden() {
         let data = tempfile::tempdir().unwrap();
         let project = data.path().join("project");
         std::fs::create_dir(&project).unwrap();
+        let project = std::fs::canonicalize(&project).unwrap();
         let mgr = mgr_with_fake(None, fake_runtime());
         let copilot_home = data.path().join("custom-copilot");
         with_conversation_home(data.path(), || {

@@ -29,8 +29,8 @@ use runner_core::protocol::discovery::DiscoveryOutcome;
 use runner_core::protocol::runtime::RuntimeCatalogEntry;
 
 use runner_core::protocol::runtime::{
-    OverrideValidationError, RuntimeCommandSource, RuntimeExecutableStatus, RuntimeRowState,
-    RuntimeStatusResponse, ShellDiscoveryStatus,
+    CustomFlagsValidationError, OverrideValidationError, RuntimeCommandSource,
+    RuntimeExecutableStatus, RuntimeRowState, RuntimeStatusResponse, ShellDiscoveryStatus,
 };
 
 use crate::app_settings::AppSettings;
@@ -112,9 +112,16 @@ pub(crate) struct AgentsPane {
     validation_drafts: HashMap<Runtime, String>,
     saving: HashSet<Runtime>,
     focused: HashSet<Runtime>,
+    custom_flags: HashMap<Runtime, Entity<TextField>>,
+    custom_flags_validation: HashMap<Runtime, FieldValidation>,
+    custom_flags_validation_draft: HashMap<Runtime, String>,
+    custom_flags_saving: HashSet<Runtime>,
+    custom_flags_focused: HashSet<Runtime>,
+    custom_flags_page_epoch: u64,
     live_sessions: HashMap<Runtime, usize>,
     launch_previews:
         HashMap<(Runtime, bool), runner_core::protocol::runtime::RuntimeCommandPreview>,
+    launch_preview_epoch: HashMap<Runtime, u64>,
     mission_preview: bool,
     launch_preview_errors: HashMap<Runtime, String>,
     launch_copy: Entity<CopyValueButton>,
@@ -129,6 +136,7 @@ impl AgentsPane {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut overrides = HashMap::new();
+        let mut custom_flags = HashMap::new();
         let mut subscriptions = Vec::new();
         for runtime in runner_core::protocol::runtime_metadata::runtime_list() {
             let runtime_name = runtime.name;
@@ -198,6 +206,10 @@ impl AgentsPane {
                 cx.notify();
             }));
             overrides.insert(runtime_name, field);
+            custom_flags.insert(
+                runtime_name,
+                Self::init_custom_flags_field(runtime_name, &shell, &mut subscriptions, window, cx),
+            );
         }
         subscriptions.push(cx.observe(&app_store, |this, _, cx| {
             this.reconcile_default_preference(cx);
@@ -265,8 +277,15 @@ impl AgentsPane {
             validation_drafts: HashMap::new(),
             saving: HashSet::new(),
             focused: HashSet::new(),
+            custom_flags,
+            custom_flags_validation: HashMap::new(),
+            custom_flags_validation_draft: HashMap::new(),
+            custom_flags_saving: HashSet::new(),
+            custom_flags_focused: HashSet::new(),
+            custom_flags_page_epoch: 0,
             live_sessions: HashMap::new(),
             launch_previews: HashMap::new(),
+            launch_preview_epoch: HashMap::new(),
             mission_preview: false,
             launch_preview_errors: HashMap::new(),
             launch_copy,
@@ -369,6 +388,9 @@ impl AgentsPane {
                     Ok((status, catalog)) => {
                         this.catalog = catalog;
                         this.apply_status(status, cx);
+                        if let Some(runtime) = this.selected_runtime {
+                            this.refresh_launch_previews(runtime, cx);
+                        }
                         this.error = None;
                     }
                     Err(error) => this.error = Some(error),
@@ -417,6 +439,32 @@ impl AgentsPane {
                 } else {
                     self.validation.remove(&runtime.name);
                     self.validation_drafts.remove(&runtime.name);
+                }
+            }
+            if let Some(flags_field) = self.custom_flags.get(&runtime.name).cloned() {
+                let has_error = matches!(
+                    self.custom_flags_validation.get(&runtime.name),
+                    Some(FieldValidation::Error(_))
+                );
+                let sync_flags = !self.custom_flags_focused.contains(&runtime.name)
+                    && !self.custom_flags_saving.contains(&runtime.name)
+                    && !has_error;
+                if sync_flags {
+                    let saved = runtime.launch_options.custom_flags.clone();
+                    let stale = saved.trim().is_empty()
+                        || self
+                            .custom_flags_validation_draft
+                            .get(&runtime.name)
+                            .is_some_and(|validated| validated != &saved);
+                    flags_field.update(cx, |field, field_cx| field.reset(saved, field_cx));
+                    if stale {
+                        self.set_custom_flags_validation(
+                            runtime.name,
+                            FieldValidation::Valid,
+                            None,
+                            cx,
+                        );
+                    }
                 }
             }
         }
@@ -670,6 +718,302 @@ impl AgentsPane {
         self.commit_override(runtime, cx);
     }
 
+    fn init_custom_flags_field(
+        runtime_name: Runtime,
+        shell: &WeakEntity<NativeRoot>,
+        subscriptions: &mut Vec<Subscription>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<TextField> {
+        let enter_shell = shell.clone();
+        let enter_pane = cx.weak_entity();
+        let escape_pane = cx.weak_entity();
+        let field = cx.new(|input_cx| {
+            TextField::new(
+                input_cx.focus_handle(),
+                "",
+                custom_flags_placeholder(runtime_name),
+                true,
+            )
+            .text_size(theme::text_meta())
+            .key_interceptor(Rc::new(move |event, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "enter" => {
+                        let shell = enter_shell.clone();
+                        let pane = enter_pane.clone();
+                        window.defer(cx, move |window, cx| {
+                            if shell
+                                .update(cx, |root, cx| root.focus_settings_page(window, cx))
+                                .is_err()
+                            {
+                                let _ = pane.update(cx, |this, pane_cx| {
+                                    this.custom_flags_focused.remove(&runtime_name);
+                                    this.commit_custom_flags(runtime_name, pane_cx);
+                                });
+                            }
+                        });
+                        true
+                    }
+                    "escape" => {
+                        let pane = escape_pane.clone();
+                        window.defer(cx, move |_, cx| {
+                            let _ = pane.update(cx, |this, pane_cx| {
+                                this.discard_custom_flags(runtime_name, pane_cx);
+                            });
+                        });
+                        true
+                    }
+                    _ => false,
+                }
+            }))
+        });
+        let focus = field.read(cx).focus_handle();
+        subscriptions.push(cx.on_focus_in(&focus, window, move |this, _, cx| {
+            this.custom_flags_focused.insert(runtime_name);
+            cx.notify();
+        }));
+        subscriptions.push(cx.on_focus_out(&focus, window, move |this, _, _, cx| {
+            this.custom_flags_focused.remove(&runtime_name);
+            this.commit_custom_flags(runtime_name, cx);
+        }));
+        subscriptions.push(cx.observe(&field, move |this, field, cx| {
+            let draft = field.read(cx).text().to_owned();
+            if this
+                .custom_flags_validation_draft
+                .get(&runtime_name)
+                .is_some_and(|validated_draft| validated_draft != &draft)
+            {
+                this.custom_flags_validation.remove(&runtime_name);
+                this.custom_flags_validation_draft.remove(&runtime_name);
+                field.update(cx, |field, field_cx| {
+                    field.set_validation(FieldValidation::Valid, field_cx);
+                });
+            }
+            cx.notify();
+        }));
+        field
+    }
+
+    fn saved_custom_flags(&self, runtime: Runtime) -> String {
+        self.status
+            .as_ref()
+            .and_then(|status| status.runtimes.iter().find(|row| row.name == runtime))
+            .map(|row| row.launch_options.custom_flags.clone())
+            .unwrap_or_default()
+    }
+
+    fn cached_custom_flags_warning(&self, runtime: Runtime) -> FieldValidation {
+        self.launch_previews
+            .get(&(runtime, false))
+            .and_then(|preview| preview.custom_flags_warning.clone())
+            .map(FieldValidation::warning)
+            .unwrap_or_default()
+    }
+
+    fn set_custom_flags_validation(
+        &mut self,
+        runtime: Runtime,
+        validation: FieldValidation,
+        draft: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if validation == FieldValidation::Valid {
+            self.custom_flags_validation.remove(&runtime);
+            self.custom_flags_validation_draft.remove(&runtime);
+        } else {
+            let draft = draft.unwrap_or_else(|| {
+                self.custom_flags
+                    .get(&runtime)
+                    .map(|field| field.read(cx).text().to_owned())
+                    .unwrap_or_default()
+            });
+            self.custom_flags_validation
+                .insert(runtime, validation.clone());
+            self.custom_flags_validation_draft.insert(runtime, draft);
+        }
+        if let Some(field) = self.custom_flags.get(&runtime).cloned() {
+            field.update(cx, |field, field_cx| {
+                field.set_validation(validation, field_cx)
+            });
+        }
+    }
+
+    pub(super) fn sync_custom_flags_warning(
+        &mut self,
+        runtime: Runtime,
+        warning: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.custom_flags_saving.contains(&runtime)
+            || self.custom_flags_focused.contains(&runtime)
+            || matches!(
+                self.custom_flags_validation.get(&runtime),
+                Some(FieldValidation::Error(_))
+            )
+        {
+            return;
+        }
+        let saved = self.saved_custom_flags(runtime);
+        if self
+            .custom_flags
+            .get(&runtime)
+            .is_some_and(|field| field.read(cx).text() != saved)
+        {
+            return;
+        }
+        let validation = warning.map(FieldValidation::warning).unwrap_or_default();
+        self.set_custom_flags_validation(runtime, validation, Some(saved), cx);
+    }
+
+    fn commit_custom_flags(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        if self.custom_flags_saving.contains(&runtime) {
+            return;
+        }
+        let Some(field) = self.custom_flags.get(&runtime).cloned() else {
+            return;
+        };
+        let draft = field.read(cx).text().to_owned();
+        let saved = self.saved_custom_flags(runtime);
+        if draft == saved {
+            let warning = self.cached_custom_flags_warning(runtime);
+            self.set_custom_flags_validation(runtime, warning, Some(saved), cx);
+            cx.notify();
+            return;
+        }
+        if matches!(
+            self.custom_flags_validation.get(&runtime),
+            Some(FieldValidation::Error(_))
+        ) && self.custom_flags_validation_draft.get(&runtime) == Some(&draft)
+        {
+            return;
+        }
+        self.custom_flags_saving.insert(runtime);
+        self.set_custom_flags_validation(runtime, FieldValidation::Valid, None, cx);
+        field.update(cx, |field, field_cx| field.set_disabled(true, field_cx));
+        let started_on_page = self.selected_runtime == Some(runtime);
+        let commit_epoch = self.custom_flags_page_epoch;
+        let core = self.app_store.read(cx).client.clone();
+        let task = cx.background_spawn(async move {
+            let response = core
+                .runtime_set_custom_flags(runtime, &draft)
+                .map_err(|error| error.to_string())
+                .and_then(|result| {
+                    result.map_err(|error| custom_flags_validation_error_message(&error))
+                })?;
+            let previews = core
+                .runtime_command_preview(runtime, false)
+                .and_then(|chat| Ok((chat, core.runtime_command_preview(runtime, true)?)))
+                .map_err(|error| error.to_string());
+            Ok::<_, String>((response, previews))
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update(cx, |this, cx| {
+                this.custom_flags_saving.remove(&runtime);
+                if let Some(field) = this.custom_flags.get(&runtime).cloned() {
+                    field.update(cx, |field, field_cx| field.set_disabled(false, field_cx));
+                }
+                match result {
+                    Ok((response, previews)) => {
+                        let warning = response.warning;
+                        let status = response.status;
+                        let saved_flags = status
+                            .runtimes
+                            .iter()
+                            .find(|row| row.name == runtime)
+                            .map(|row| row.launch_options.custom_flags.clone())
+                            .unwrap_or_default();
+                        if let Some(field) = this.custom_flags.get(&runtime).cloned() {
+                            if !this.custom_flags_focused.contains(&runtime) {
+                                field.update(cx, |field, field_cx| {
+                                    field.reset(saved_flags.clone(), field_cx);
+                                });
+                            }
+                        }
+                        let next_epoch = this.launch_preview_epoch.entry(runtime).or_default();
+                        *next_epoch = next_epoch.wrapping_add(1);
+                        match previews {
+                            Ok((chat, mission)) => {
+                                this.launch_preview_errors.remove(&runtime);
+                                this.launch_previews.insert((runtime, false), chat);
+                                this.launch_previews.insert((runtime, true), mission);
+                            }
+                            Err(error) => {
+                                this.launch_previews.remove(&(runtime, false));
+                                this.launch_previews.remove(&(runtime, true));
+                                this.launch_preview_errors.insert(runtime, error);
+                            }
+                        }
+                        this.apply_status(status, cx);
+                        let validation = warning.map(FieldValidation::warning).unwrap_or_default();
+                        this.set_custom_flags_validation(
+                            runtime,
+                            validation,
+                            Some(saved_flags),
+                            cx,
+                        );
+                        this.sync_launch_copy(false, cx);
+                        this.error = None;
+                    }
+                    Err(error) => {
+                        let still_on_same_page = started_on_page
+                            && this.selected_runtime == Some(runtime)
+                            && this.custom_flags_page_epoch == commit_epoch;
+                        if still_on_same_page {
+                            this.set_custom_flags_validation(
+                                runtime,
+                                FieldValidation::error(error),
+                                None,
+                                cx,
+                            );
+                        } else {
+                            this.discard_custom_flags(runtime, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn discard_custom_flags(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        if self.custom_flags_saving.contains(&runtime) {
+            return;
+        }
+        let saved = self.saved_custom_flags(runtime);
+        let warning = self.cached_custom_flags_warning(runtime);
+        if let Some(field) = self.custom_flags.get(&runtime).cloned() {
+            field.update(cx, |field, field_cx| field.reset(saved.clone(), field_cx));
+        }
+        self.set_custom_flags_validation(runtime, warning, Some(saved), cx);
+        cx.notify();
+    }
+
+    fn settle_custom_flags_on_leave(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        if self.custom_flags_saving.contains(&runtime) {
+            return;
+        }
+        self.custom_flags_focused.remove(&runtime);
+        let has_error = matches!(
+            self.custom_flags_validation.get(&runtime),
+            Some(FieldValidation::Error(_))
+        );
+        if has_error {
+            self.discard_custom_flags(runtime, cx);
+            return;
+        }
+        let saved = self.saved_custom_flags(runtime);
+        let dirty_text = self
+            .custom_flags
+            .get(&runtime)
+            .is_some_and(|field| field.read(cx).text() != saved);
+        if dirty_text {
+            self.commit_custom_flags(runtime, cx);
+        }
+    }
+
     pub(crate) fn accounts_overlay(&self, cx: &gpui::App) -> gpui::AnyElement {
         self.accounts.read(cx).confirm_overlay().into_any_element()
     }
@@ -680,6 +1024,10 @@ impl AgentsPane {
             || self.accounts.read(cx).is_composing(cx)
             || self
                 .overrides
+                .values()
+                .any(|field| field.read(cx).is_composing())
+            || self
+                .custom_flags
                 .values()
                 .any(|field| field.read(cx).is_composing())
     }
@@ -695,6 +1043,10 @@ impl AgentsPane {
 
     pub(crate) fn show_list(&mut self, cx: &mut Context<Self>) {
         self.selected_runtime = None;
+        self.custom_flags_page_epoch = self.custom_flags_page_epoch.wrapping_add(1);
+        for runtime in Runtime::ALL {
+            self.settle_custom_flags_on_leave(runtime, cx);
+        }
         self.sync_launch_copy(true, cx);
         self.reset_scroll(cx);
         cx.notify();
@@ -741,7 +1093,13 @@ impl AgentsPane {
                 .update(cx, |accounts, cx| accounts.refresh(cx));
         }
         let changed = self.selected_runtime != Some(runtime);
+        let previous = self.selected_runtime.filter(|prev| *prev != runtime);
         self.selected_runtime = Some(runtime);
+        self.custom_flags_page_epoch = self.custom_flags_page_epoch.wrapping_add(1);
+        if let Some(previous) = previous {
+            self.settle_custom_flags_on_leave(previous, cx);
+        }
+        self.settle_custom_flags_on_leave(runtime, cx);
         self.tab = AgentTab::General;
         self.skills.update(cx, |pane, cx| pane.scope(runtime, cx));
         self.mcp.update(cx, |pane, cx| pane.scope(runtime, cx));

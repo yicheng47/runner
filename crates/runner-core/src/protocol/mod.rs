@@ -1,4 +1,5 @@
 pub mod api;
+pub mod changes;
 pub mod claude_accounts;
 pub use claude_accounts::*;
 pub mod client;

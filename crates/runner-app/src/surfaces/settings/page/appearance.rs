@@ -43,15 +43,59 @@ impl NativeRoot {
         missions_settings_pane(self.settings_page.default_crew.clone())
     }
 
-    pub(super) fn render_appearance_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_appearance_settings(
+        &self,
+        gallery_columns: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (light_app_theme, dark_app_theme) = {
+            let settings = self.settings(cx);
+            (settings.light_app_theme, settings.dark_app_theme)
+        };
+        let active_is_light = theme::active_variant().is_light();
+        let root = cx.entity();
+        let light_cards: Vec<_> = theme::LightTheme::ALL
+            .into_iter()
+            .map(|choice| {
+                let root = root.clone();
+                ThemeGalleryCard {
+                    variant: choice.variant(),
+                    key: choice.key(),
+                    label: choice.label(),
+                    selected: choice == light_app_theme,
+                    mode_tag: "LIGHT",
+                    on_select: Rc::new(move |cx| {
+                        root.update(cx, |this, cx| this.set_light_theme(choice, cx));
+                    }),
+                }
+            })
+            .collect();
+        let dark_cards: Vec<_> = theme::DarkTheme::ALL
+            .into_iter()
+            .map(|choice| {
+                let root = root.clone();
+                ThemeGalleryCard {
+                    variant: choice.variant(),
+                    key: choice.key(),
+                    label: choice.label(),
+                    selected: choice == dark_app_theme,
+                    mode_tag: "DARK",
+                    on_select: Rc::new(move |cx| {
+                        root.update(cx, |this, cx| this.set_dark_theme(choice, cx));
+                    }),
+                }
+            })
+            .collect();
+
         div()
+            .debug_selector(|| "SETTINGS_APPEARANCE_PANE".into())
             .flex()
             .flex_col()
-            .gap_5()
+            .gap_6()
             .child(PaneHeader::new(
                 crate::i18n::text("ui.appearance"),
                 crate::i18n::text(
-                    "ui.theme_and_the_app_palette_for_each_mode_terminal_palettes_are_in_terminal",
+                    "ui.pick_a_theme_for_each_mode_a_theme_sets_the_app_and_terminal_colours_together",
                 ),
             ))
             .child(SettingsCard::new({
@@ -68,25 +112,23 @@ impl NativeRoot {
                 };
                 rows
             }))
-            .child(self.render_theme_preview(cx))
-            .child(settings_section(
-                crate::i18n::text("ui.app_palette"),
-                "SETTINGS_APP_PALETTE",
-                false,
-                vec![
-                    SettingsRow::new(
-                        crate::i18n::text("ui.light_mode"),
-                        self.settings_page.light_theme.clone(),
-                    )
-                    .subtitle(crate::i18n::text("ui.chrome_colours_when_the_app_is_light"))
-                    .into_any_element(),
-                    SettingsRow::new(
-                        crate::i18n::text("ui.dark_mode"),
-                        self.settings_page.dark_theme.clone(),
-                    )
-                    .subtitle(crate::i18n::text("ui.chrome_colours_when_the_app_is_dark"))
-                    .into_any_element(),
-                ],
+            .child(theme_gallery_section(
+                crate::i18n::text("ui.light_theme"),
+                "ui.used_when_the_app_is_light",
+                "SETTINGS_LIGHT_THEME_GALLERY",
+                "SETTINGS_LIGHT_THEME_META",
+                active_is_light,
+                gallery_columns,
+                light_cards,
+            ))
+            .child(theme_gallery_section(
+                crate::i18n::text("ui.dark_theme"),
+                "ui.used_when_the_app_is_dark",
+                "SETTINGS_DARK_THEME_GALLERY",
+                "SETTINGS_DARK_THEME_META",
+                !active_is_light,
+                gallery_columns,
+                dark_cards,
             ))
             .when(cfg!(target_os = "macos"), |page| page.child(
                 div().text_size(theme::text_ui()).text_color(theme::muted())
@@ -127,11 +169,13 @@ impl NativeRoot {
                         .when(material == selected, |item| item.bg(theme::raised()))
                         .cursor_pointer()
                         .child(label)
-                        .on_click(move |_, _, cx| {
-                            root.update(cx, |this, cx| this.set_window_material(material, cx));
+                        .on_click(move |event, _, cx| {
+                            if !event.is_keyboard() {
+                                root.update(cx, |this, cx| this.set_window_material(material, cx));
+                            }
                         })
                         .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            if is_plain_activation_key(event) {
                                 cx.stop_propagation();
                                 key_root
                                     .update(cx, |this, cx| this.set_window_material(material, cx));
@@ -157,75 +201,6 @@ impl NativeRoot {
         });
         runner_app::appearance::configure(material, cx);
         cx.refresh_windows();
-    }
-
-    /// Both panes are built from the picks, not from the active variant: the
-    /// left pane is always the light picks and the right the dark picks, and
-    /// only the outline and caption follow which mode is resolved now.
-    pub(super) fn render_theme_preview(&self, cx: &mut Context<Self>) -> AnyElement {
-        let settings = self.settings(cx);
-        let light_variant = theme::resolve_variant(
-            ThemeIntent::Light,
-            true,
-            settings.light_app_theme,
-            settings.dark_app_theme,
-        );
-        let dark_variant = theme::resolve_variant(
-            ThemeIntent::Dark,
-            false,
-            settings.light_app_theme,
-            settings.dark_app_theme,
-        );
-        let is_light = theme::active_variant().is_light();
-        let pick_root = cx.entity();
-        let on_pick: theme_preview::PickHandler = Rc::new(move |mode, _, cx| {
-            pick_root.update(cx, |this, cx| this.set_theme_intent(mode.intent(), cx));
-        });
-        theme_preview::theme_preview(
-            PreviewPane {
-                mode: PreviewMode::Light,
-                colors: theme::colors_for(light_variant),
-                palette: settings.light_terminal_theme.palette(),
-                font: settings.terminal_font_family.font(cx),
-                caption: crate::i18n::tf(
-                    "format.light",
-                    &[
-                        (
-                            "app_theme",
-                            (light_theme_label(settings.light_app_theme)).to_string(),
-                        ),
-                        (
-                            "terminal_theme",
-                            (settings.light_terminal_theme.label()).to_string(),
-                        ),
-                    ],
-                )
-                .into(),
-                active: is_light,
-            },
-            PreviewPane {
-                mode: PreviewMode::Dark,
-                colors: theme::colors_for(dark_variant),
-                palette: settings.dark_terminal_theme.palette(),
-                font: settings.terminal_font_family.font(cx),
-                caption: crate::i18n::tf(
-                    "format.dark",
-                    &[
-                        (
-                            "app_theme",
-                            (dark_theme_label(settings.dark_app_theme)).to_string(),
-                        ),
-                        (
-                            "terminal_theme",
-                            (settings.dark_terminal_theme.label()).to_string(),
-                        ),
-                    ],
-                )
-                .into(),
-                active: !is_light,
-            },
-            on_pick,
-        )
     }
 
     pub(super) fn render_theme_segmented(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -291,11 +266,15 @@ impl NativeRoot {
                                 .group_hover(hover_group, |icon| icon.text_color(theme::text())),
                         )
                         .child(label)
-                        .on_click(move |_, _, cx| {
-                            root.update(cx, |this, root_cx| this.set_theme_intent(intent, root_cx));
+                        .on_click(move |event, _, cx| {
+                            if !event.is_keyboard() {
+                                root.update(cx, |this, root_cx| {
+                                    this.set_theme_intent(intent, root_cx)
+                                });
+                            }
                         })
                         .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            if is_plain_activation_key(event) {
                                 cx.stop_propagation();
                                 key_root.update(cx, |this, root_cx| {
                                     this.set_theme_intent(intent, root_cx)
@@ -400,29 +379,6 @@ impl NativeRoot {
                 .into_any_element(),
             ],
         );
-        let colors = settings_section(
-            crate::i18n::text("terminal.section_colors"),
-            "SETTINGS_TERMINAL_COLORS",
-            false,
-            vec![
-                SettingsRow::new(
-                    crate::i18n::text("ui.light_mode_palette"),
-                    self.settings_page.light_terminal_theme.clone(),
-                )
-                .subtitle(crate::i18n::text(
-                    "ui.terminal_colours_when_the_app_is_light",
-                ))
-                .into_any_element(),
-                SettingsRow::new(
-                    crate::i18n::text("ui.dark_mode_palette"),
-                    self.settings_page.dark_terminal_theme.clone(),
-                )
-                .subtitle(crate::i18n::text(
-                    "ui.terminal_colours_when_the_app_is_dark",
-                ))
-                .into_any_element(),
-            ],
-        );
         let cursor = settings_section(
             crate::i18n::text("terminal.section_cursor"),
             "SETTINGS_TERMINAL_CURSOR",
@@ -496,16 +452,400 @@ impl NativeRoot {
             .child(PaneHeader::new(
                 crate::i18n::text("ui.terminal"),
                 crate::i18n::text(
-                    "ui.text_colours_cursor_keyboard_and_scrollback_for_the_embedded_terminal",
+                    "ui.text_cursor_keyboard_and_scrollback_for_the_embedded_terminal_terminal_colours_c",
                 ),
             ))
             .child(text)
-            .child(colors)
             .child(cursor)
             .children(keyboard)
             .child(scrollback)
             .into_any_element()
     }
+}
+
+struct ThemeGalleryCard {
+    variant: theme::ThemeVariant,
+    key: &'static str,
+    label: &'static str,
+    selected: bool,
+    mode_tag: &'static str,
+    on_select: Rc<dyn Fn(&mut gpui::App)>,
+}
+
+fn theme_gallery_section(
+    heading: &'static str,
+    meta_key: &'static str,
+    selector: &'static str,
+    meta_selector: &'static str,
+    in_use: bool,
+    columns: usize,
+    cards: impl IntoIterator<Item = ThemeGalleryCard>,
+) -> AnyElement {
+    let base_meta = crate::i18n::text(meta_key);
+    let meta: SharedString = if in_use {
+        crate::i18n::tf("format.theme_in_use", &[("meta", base_meta.to_string())]).into()
+    } else {
+        base_meta.into()
+    };
+    let mut rows = Vec::new();
+    let mut iter = cards.into_iter().map(theme_gallery_card);
+    loop {
+        let row: Vec<_> = iter.by_ref().take(columns.max(1)).collect();
+        if row.is_empty() {
+            break;
+        }
+        rows.push(
+            div()
+                .w_full()
+                .flex()
+                .items_start()
+                .gap(rems(8. / 16.))
+                .children(row),
+        );
+    }
+
+    div()
+        .debug_selector(move || selector.into())
+        .flex()
+        .flex_col()
+        .gap(rems(10. / 16.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .text_size(theme::text_body())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::muted())
+                        .child(heading),
+                )
+                .child(
+                    div()
+                        .debug_selector(move || meta_selector.into())
+                        .text_size(theme::text_ui())
+                        .text_color(theme::faint())
+                        .child(meta),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .rounded(rems(12. / 16.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .pt(rems(1.))
+                .px(rems(12. / 16.))
+                .pb(rems(14. / 16.))
+                .flex()
+                .flex_col()
+                .gap(rems(12. / 16.))
+                .children(rows),
+        )
+        .into_any_element()
+}
+
+fn is_plain_activation_key(event: &KeyDownEvent) -> bool {
+    let modifiers = event.keystroke.modifiers;
+    !event.is_held
+        && !(modifiers.control || modifiers.platform || modifiers.alt || modifiers.function)
+        && matches!(event.keystroke.key.as_str(), "enter" | "space")
+}
+
+// Paint opaque panel inside the focus ring so the drop shadow does not flood the footer text.
+pub(super) fn theme_card_focus_style(style: gpui::StyleRefinement) -> gpui::StyleRefinement {
+    style
+        .rounded(rems(8. / 16.))
+        .bg(theme::panel())
+        .shadow(focus_ring(theme::accent()))
+}
+
+fn theme_gallery_card(card: ThemeGalleryCard) -> AnyElement {
+    let preview_colors = theme::colors_for(card.variant);
+    let palette = card.variant.terminal_palette();
+    let tokens = preview_tokens(card.variant, palette);
+    let key = card.key;
+    let mode_tag = card.mode_tag;
+    let (preview_selector, terminal_selector) = theme_card_selectors(card.variant);
+    let on_click = card.on_select.clone();
+    let on_key = card.on_select;
+
+    div()
+        .id(SharedString::from(format!(
+            "appearance-{}-theme-{key}",
+            mode_tag.to_ascii_lowercase()
+        )))
+        .debug_selector(move || format!("APPEARANCE_{mode_tag}_THEME_{key}"))
+        .tab_index(0)
+        .flex_1()
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap(rems(7. / 16.))
+        .cursor_pointer()
+        .focus_visible(theme_card_focus_style)
+        .on_click(move |event, _, cx| {
+            if !event.is_keyboard() {
+                on_click(cx);
+            }
+        })
+        .on_key_down(move |event: &KeyDownEvent, _, cx| {
+            if is_plain_activation_key(event) {
+                cx.stop_propagation();
+                on_key(cx);
+            }
+        })
+        .child(super::side_panel::snapshot(
+            preview_selector,
+            div()
+                .w_full()
+                .h(rems(86. / 16.))
+                .rounded(rems(8. / 16.))
+                .overflow_hidden()
+                .bg(gpui::rgb(preview_colors.bg))
+                .when(card.selected, |preview| {
+                    preview.border_2().border_color(theme::accent())
+                })
+                .when(!card.selected, |preview| {
+                    preview.border_1().border_color(theme::border())
+                })
+                .flex()
+                .child(
+                    div()
+                        .w(rems(28. / 16.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .bg(gpui::rgb(preview_colors.sidebar))
+                        .py(rems(10. / 16.))
+                        .px(rems(5. / 16.))
+                        .flex()
+                        .flex_col()
+                        .gap(rems(5. / 16.))
+                        .child(preview_bar(14., 3., preview_colors.fg_3))
+                        .child(
+                            div()
+                                .w_full()
+                                .h(rems(8. / 16.))
+                                .rounded(rems(2. / 16.))
+                                .bg(gpui::rgb(preview_colors.sidebar_selected)),
+                        )
+                        .child(preview_bar(16., 3., preview_colors.fg_3))
+                        .child(preview_bar(11., 3., preview_colors.fg_3)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .min_w(px(0.))
+                        .p(rems(6. / 16.))
+                        .flex()
+                        .flex_col()
+                        .gap(rems(5. / 16.))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .child(preview_bar(24., 3., preview_colors.fg))
+                                .child(
+                                    div()
+                                        .w(rems(13. / 16.))
+                                        .h(rems(5. / 16.))
+                                        .rounded(rems(3. / 16.))
+                                        .bg(gpui::rgb(preview_colors.accent)),
+                                ),
+                        )
+                        .child(super::side_panel::snapshot(
+                            terminal_selector,
+                            div()
+                                .w_full()
+                                .flex_1()
+                                .min_h(px(0.))
+                                .p(rems(6. / 16.))
+                                .rounded(rems(4. / 16.))
+                                .bg(palette_rgb(palette.background))
+                                .flex()
+                                .flex_col()
+                                .justify_between()
+                                .child(preview_code_row([
+                                    (6., tokens.green),
+                                    (26., palette_rgb(palette.foreground)),
+                                ]))
+                                .child(preview_code_row([(36., tokens.comment)]))
+                                .child(preview_code_row([
+                                    (12., tokens.blue),
+                                    (10., tokens.yellow),
+                                    (14., palette_rgb(palette.foreground)),
+                                ]))
+                                .child(preview_code_row([
+                                    (10., tokens.red),
+                                    (18., tokens.magenta),
+                                ])),
+                        )),
+                ),
+        ))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(rems(4. / 16.))
+                .child(
+                    div()
+                        .debug_selector(move || format!("APPEARANCE_THEME_LABEL_{key}"))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
+                        .text_size(theme::text_ui())
+                        .font_weight(if card.selected {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if card.selected {
+                            theme::text()
+                        } else {
+                            theme::muted()
+                        })
+                        .child(card.label),
+                )
+                .when(card.selected, |row| {
+                    row.child(
+                        svg()
+                            .debug_selector(move || format!("APPEARANCE_THEME_CHECK_{key}"))
+                            .path("check.svg")
+                            .size(rems(13. / 16.))
+                            .flex_shrink_0()
+                            .text_color(theme::accent()),
+                    )
+                }),
+        )
+        .into_any_element()
+}
+
+struct PreviewTokens {
+    green: gpui::Rgba,
+    comment: gpui::Rgba,
+    blue: gpui::Rgba,
+    yellow: gpui::Rgba,
+    red: gpui::Rgba,
+    magenta: gpui::Rgba,
+}
+
+const fn theme_card_selectors(variant: theme::ThemeVariant) -> (&'static str, &'static str) {
+    match variant {
+        theme::ThemeVariant::RunnerLight => (
+            "APPEARANCE_THEME_PREVIEW_runner-light",
+            "APPEARANCE_THEME_TERMINAL_runner-light",
+        ),
+        theme::ThemeVariant::CatppuccinLatte => (
+            "APPEARANCE_THEME_PREVIEW_catppuccin-latte",
+            "APPEARANCE_THEME_TERMINAL_catppuccin-latte",
+        ),
+        theme::ThemeVariant::RosePineDawn => (
+            "APPEARANCE_THEME_PREVIEW_rose-pine-dawn",
+            "APPEARANCE_THEME_TERMINAL_rose-pine-dawn",
+        ),
+        theme::ThemeVariant::TokyoNightDay => (
+            "APPEARANCE_THEME_PREVIEW_tokyo-night-day",
+            "APPEARANCE_THEME_TERMINAL_tokyo-night-day",
+        ),
+        theme::ThemeVariant::GruvboxLight => (
+            "APPEARANCE_THEME_PREVIEW_gruvbox-light",
+            "APPEARANCE_THEME_TERMINAL_gruvbox-light",
+        ),
+        theme::ThemeVariant::SolarizedLight => (
+            "APPEARANCE_THEME_PREVIEW_solarized-light",
+            "APPEARANCE_THEME_TERMINAL_solarized-light",
+        ),
+        theme::ThemeVariant::Carbon => (
+            "APPEARANCE_THEME_PREVIEW_carbon",
+            "APPEARANCE_THEME_TERMINAL_carbon",
+        ),
+        theme::ThemeVariant::CatppuccinMocha => (
+            "APPEARANCE_THEME_PREVIEW_catppuccin-mocha",
+            "APPEARANCE_THEME_TERMINAL_catppuccin-mocha",
+        ),
+        theme::ThemeVariant::RosePineMoon => (
+            "APPEARANCE_THEME_PREVIEW_rose-pine-moon",
+            "APPEARANCE_THEME_TERMINAL_rose-pine-moon",
+        ),
+        theme::ThemeVariant::TokyoNight => (
+            "APPEARANCE_THEME_PREVIEW_tokyo-night",
+            "APPEARANCE_THEME_TERMINAL_tokyo-night",
+        ),
+        theme::ThemeVariant::GruvboxDark => (
+            "APPEARANCE_THEME_PREVIEW_gruvbox-dark",
+            "APPEARANCE_THEME_TERMINAL_gruvbox-dark",
+        ),
+        theme::ThemeVariant::SolarizedDark => (
+            "APPEARANCE_THEME_PREVIEW_solarized-dark",
+            "APPEARANCE_THEME_TERMINAL_solarized-dark",
+        ),
+    }
+}
+
+fn preview_tokens(
+    variant: theme::ThemeVariant,
+    palette: runner_terminal::palette::TerminalPalette,
+) -> PreviewTokens {
+    // Gruvbox keeps muted earth tones on ANSI 1..5 and its vivid accents on ANSI 9..13.
+    let [red, green, yellow, blue, magenta] = match variant {
+        theme::ThemeVariant::GruvboxLight | theme::ThemeVariant::GruvboxDark => [
+            palette.ansi[9],
+            palette.ansi[10],
+            palette.ansi[11],
+            palette.ansi[12],
+            palette.ansi[13],
+        ],
+        _ => [
+            palette.ansi[1],
+            palette.ansi[2],
+            palette.ansi[3],
+            palette.ansi[4],
+            palette.ansi[5],
+        ],
+    };
+    PreviewTokens {
+        green: palette_rgb(green),
+        comment: palette_rgb(palette.ansi[8]),
+        blue: palette_rgb(blue),
+        yellow: palette_rgb(yellow),
+        red: palette_rgb(red),
+        magenta: palette_rgb(magenta),
+    }
+}
+
+fn palette_rgb(rgb: alacritty_terminal::vte::ansi::Rgb) -> gpui::Rgba {
+    gpui::rgb(u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b))
+}
+
+fn preview_bar(width_px: f32, height_px: f32, color: u32) -> gpui::Div {
+    div()
+        .w(rems(width_px / 16.))
+        .h(rems(height_px / 16.))
+        .rounded(rems((height_px / 2.) / 16.))
+        .bg(gpui::rgb(color))
+}
+
+fn preview_code_row<const N: usize>(bars: [(f32, gpui::Rgba); N]) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(rems(3. / 16.))
+        .children(bars.into_iter().map(|(width_px, color)| {
+            div()
+                .w(rems(width_px / 16.))
+                .h(rems(3. / 16.))
+                .rounded(rems(1.5 / 16.))
+                .bg(color)
+        }))
 }
 
 fn stepper_value(value: String, unit: Option<&'static str>) -> AnyElement {
@@ -527,29 +867,6 @@ fn stepper_value(value: String, unit: Option<&'static str>) -> AnyElement {
                 .child(unit)
         }))
         .into_any_element()
-}
-
-pub(super) fn light_theme_options() -> Vec<SelectOption> {
-    vec![
-        SelectOption::new("runner-light", "Runner Light").swatch(0x00a66a),
-        SelectOption::new("catppuccin-latte", "Catppuccin Latte").swatch(0x8839ef),
-    ]
-}
-
-pub(super) fn light_terminal_theme_options() -> Vec<SelectOption> {
-    vec![
-        SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-        SelectOption::new("runner", "Runner").swatch(0x00ff9c),
-        SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-    ]
-}
-
-pub(super) fn dark_terminal_theme_options() -> Vec<SelectOption> {
-    vec![
-        SelectOption::new("runner", "Runner").swatch(0x00ff9c),
-        SelectOption::new("catppuccin-mocha", "Catppuccin Mocha").swatch(0xcba6f7),
-        SelectOption::new("rose-pine-dawn", "Rosé Pine Dawn").swatch(0xd7827e),
-    ]
 }
 
 /// A section label, with a platform tag when the section exists on one
@@ -640,50 +957,6 @@ fn grouped_thousands(value: usize) -> String {
         grouped.push(digit);
     }
     grouped
-}
-
-pub(super) fn light_theme_label(value: LightTheme) -> &'static str {
-    match value {
-        LightTheme::RunnerLight => "Runner Light",
-        LightTheme::CatppuccinLatte => "Catppuccin Latte",
-    }
-}
-
-pub(super) fn dark_theme_label(value: DarkTheme) -> &'static str {
-    match value {
-        DarkTheme::Runner => "Runner",
-        DarkTheme::CatppuccinMocha => "Catppuccin Mocha",
-    }
-}
-
-pub(super) fn light_theme_value(value: LightTheme) -> &'static str {
-    match value {
-        LightTheme::RunnerLight => "runner-light",
-        LightTheme::CatppuccinLatte => "catppuccin-latte",
-    }
-}
-
-pub(super) fn parse_light_theme(value: &str) -> Option<LightTheme> {
-    match value {
-        "runner-light" => Some(LightTheme::RunnerLight),
-        "catppuccin-latte" => Some(LightTheme::CatppuccinLatte),
-        _ => None,
-    }
-}
-
-pub(super) fn dark_theme_value(value: DarkTheme) -> &'static str {
-    match value {
-        DarkTheme::Runner => "carbon",
-        DarkTheme::CatppuccinMocha => "catppuccin-mocha",
-    }
-}
-
-pub(super) fn parse_dark_theme(value: &str) -> Option<DarkTheme> {
-    match value {
-        "carbon" => Some(DarkTheme::Runner),
-        "catppuccin-mocha" => Some(DarkTheme::CatppuccinMocha),
-        _ => None,
-    }
 }
 
 pub(super) fn terminal_cursor_value(value: TerminalCursorStyle) -> &'static str {

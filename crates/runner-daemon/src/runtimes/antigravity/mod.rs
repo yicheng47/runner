@@ -9,10 +9,19 @@ pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_MODELS;
 
 const LEGACY_HOOKS_DIR: &str = "antigravity-hooks";
 
-pub(crate) fn remove_legacy_hooks_dir(app_data_dir: &Path) {
+/// Removes the status hook files Runner wrote before #1295 but keeps the folder, recreating
+/// it if an earlier cleanup deleted it: a conversation started with `--add-dir
+/// antigravity-hooks` keeps it as its command directory when resumed, and agy cannot run
+/// any shell command once it is gone.
+pub(crate) fn empty_legacy_hooks_dir(app_data_dir: &Path) {
     let dir = app_data_dir.join(LEGACY_HOOKS_DIR);
-    let Ok(meta) = std::fs::symlink_metadata(&dir) else {
-        return;
+    let meta = match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::fs::create_dir(&dir);
+            return;
+        }
+        Err(_) => return,
     };
     if !meta.file_type().is_dir() {
         return;
@@ -29,7 +38,6 @@ pub(crate) fn remove_legacy_hooks_dir(app_data_dir: &Path) {
         }
         let _ = std::fs::remove_dir(&agents);
     }
-    let _ = std::fs::remove_dir(&dir);
 }
 
 pub(crate) fn inject_antigravity_settings(role_args: &[String]) -> bool {
@@ -137,7 +145,7 @@ impl RuntimeAdapter for Antigravity {
     }
     fn cleanup_capture(&self, app_data_dir: &Path, pool: &crate::db::DbPool) {
         agy_capture::clear_orphans(app_data_dir, pool);
-        remove_legacy_hooks_dir(app_data_dir);
+        empty_legacy_hooks_dir(app_data_dir);
     }
     fn remove_capture(&self, app_data_dir: &Path, session_id: &str) {
         agy_capture::remove_log(app_data_dir, session_id);

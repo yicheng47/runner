@@ -307,3 +307,27 @@ fn saved_slot_validation_translates_without_changing_handles_or_revalidating() {
         assert_eq!(removed.message().as_deref(), Some("@reviewer was removed from this mission, and a handle isn't reused. Try @reviewer-3."));
     });
 }
+
+#[test]
+fn warning_validation_exposes_message_without_error_border() {
+    let warning = FieldValidation::warning("codex --help doesn't list --serch.");
+    assert!(!warning.is_error());
+    assert!(warning.is_warning());
+    assert_eq!(
+        warning.message().as_deref(),
+        Some("codex --help doesn't list --serch.")
+    );
+    let (_visual, input) = open_field(300., move |focus| {
+        let mut field = TextField::new(focus, "--serch", "", true);
+        field.validation = warning.clone();
+        field
+    });
+    input.read_with(&_visual, |field, _| {
+        assert!(!field.validation.is_error());
+        assert!(field.validation.is_warning());
+        assert_eq!(
+            field.validation.message().as_deref(),
+            Some("codex --help doesn't list --serch.")
+        );
+    });
+}

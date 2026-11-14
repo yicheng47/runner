@@ -627,7 +627,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             temp.path().join("settings.json"),
             AppSettings {
                 app_theme: theme::ThemeIntent::Dark,
-                dark_terminal_theme: app_settings::DarkTerminalTheme::RosePineDawn,
+                dark_app_theme: theme::DarkTheme::CatppuccinMocha,
                 ..AppSettings::default()
             },
             None,
@@ -676,14 +676,17 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         });
         root
     });
-    assert_eq!(theme::active_variant(), theme::ThemeVariant::Carbon);
+    assert_eq!(
+        theme::active_variant(),
+        theme::ThemeVariant::CatppuccinMocha
+    );
     assert_eq!(
         bridge.session("direct").unwrap().palette(),
-        runner_terminal::palette::ROSE_PINE_DAWN
+        runner_terminal::palette::CATPPUCCIN_MOCHA
     );
     assert_eq!(
         bridge.session("slot").unwrap().palette(),
-        runner_terminal::palette::ROSE_PINE_DAWN
+        runner_terminal::palette::CATPPUCCIN_MOCHA
     );
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(1200.), px(900.)));
@@ -695,7 +698,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
             store.update_settings(
                 |settings| {
                     settings.app_theme = intent;
-                    settings.dark_terminal_theme = app_settings::DarkTerminalTheme::Runner;
+                    settings.dark_app_theme = theme::DarkTheme::Runner;
                     true
                 },
                 false,
@@ -1064,7 +1067,10 @@ fn selecting_feed_forgets_the_remembered_session_so_reopening_restores_feed() {
             cx,
         );
     });
-    let visual = cx.add_empty_window();
+    let host = cx.add_window(|_, _| gpui::Empty);
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+    let visual = &mut visual;
     let workspace = visual.update(|window, cx| {
         cx.new(|cx| {
             let mut workspace = MissionWorkspace::new(
@@ -4800,7 +4806,10 @@ fn osc52_visibility_follows_the_mission_terminals_a_window_draws() {
     let mission = store.read_with(&cx, |store, _| {
         runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
     });
-    let visual = cx.add_empty_window();
+    let host = cx.add_window(|_, _| gpui::Empty);
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+    let visual = &mut visual;
     let workspace = visual.update(|window, cx| {
         cx.new(|cx| {
             let mut workspace = MissionWorkspace::new(
