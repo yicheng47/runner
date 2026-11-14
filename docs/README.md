@@ -6,7 +6,7 @@ Project markdown lives here. Keep repo docs close to the code; the memory repo h
 
 - Using Runner: [user guide](guide/README.md).
 - Contributing: [CONTRIBUTING.md](../CONTRIBUTING.md), then the shared [agent guide](../AGENTS.md).
-- Understanding the product and code: [vision](product/vision.md), [architecture](arch/arch.md) and [process model](arch/process-model.md).
+- Understanding the product and code: [vision](product/vision.md), [architecture](arch/arch.md), [design system](arch/design-system.md) and [process model](arch/process-model.md).
 - Planning work: [roadmap](roadmap.md), [active specs](features/README.md) and [mission brief examples by size](impls/briefs/README.md).
 - Selecting checks or reading evidence: [validation docs](tests/README.md).
 
