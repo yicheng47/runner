@@ -12,7 +12,7 @@ The agent’s page has its enable switch and **Set as default** action, detectio
 
 ### Launch options
 
-Every agent page has a **Launch** card and a read-only **Command** preview. Choose **Chat** or **Mission** to see the command Runner composes, with placeholders for the model, effort and first message. **Copy** copies the displayed command, briefly shows a checkmark and **Copied** before returning to **Copy**, and stays disabled when no command preview is available. Claude Code also shows the active account’s `CLAUDE_CONFIG_DIR` when the launch sets it; native-account launches do not add it.
+Every agent page has a **Launch** card and a read-only **Command** preview, including a **Custom flags** field shared by chats and missions. Choose **Chat** or **Mission** to see the command Runner composes, with placeholders for the model, effort and first message. **Copy** copies the displayed command, briefly shows a checkmark and **Copied** before returning to **Copy**, and stays disabled when no command preview is available. Claude Code also shows the active account’s `CLAUDE_CONFIG_DIR` when the launch sets it; native-account launches do not add it.
 
 | Option | Agents | Default | Applies to |
 | --- | --- | --- | --- |
@@ -21,12 +21,17 @@ Every agent page has a **Launch** card and a read-only **Command** preview. Choo
 | Bypass permissions | Antigravity CLI | Off | Chats |
 | Remote plugin catalog | Codex | On | Chats, resumes, missions and forks |
 | Status hooks | Codex, Claude Code, pi, Copilot CLI, OpenCode; Grok on macOS/Linux | On | Chats |
+| Custom flags | All agents | Empty | Chats, roles, missions, resumes and forks |
 
 Bypass lets a chat run without asking for permission; Codex also runs outside its sandbox. Enable it only for trusted folders. The Bypass switch applies to every Codex, Claude Code and Antigravity CLI chat, including role-backed chats. Chat starts, resumes and forks strip stored role permission flags; with Bypass off, the agent’s own configuration governs approvals. Missions always use their broad-access permissions and status hooks, regardless of the chat switches.
 
 Turn **Remote plugin catalog** off to skip Codex’s catalog download on each launch. Catalog plugins then do not load. Runner adds `-c features.remote_plugin=false` for that process and leaves Codex’s config file untouched.
 
-With **Status hooks** off, Codex (0.163.0+), Claude Code (2.1.295+) and pi (1.1.0+) report status through the terminal; other agents use terminal activity. Approvals and questions can appear as generic **Needs you**, and activity-only agents lose detailed wait and outcome reports. Conversation identity hooks stay enabled so Resume still opens the same conversation. Antigravity CLI uses OSC 7501 terminal status natively without status hooks (its chat-title callback is separate), Cursor has only an identity hook, and TRAE has no hooks, so none of the three has this switch. Changes apply when a session next starts.
+With **Status hooks** off, Codex (0.163.0+), Claude Code (2.1.295+) and pi (1.1.0+) report status through the terminal; other agents use terminal activity. Approvals and questions can appear as generic **Needs you**, and activity-only agents lose detailed wait and outcome reports. Conversation identity hooks stay enabled so Resume still opens the same conversation. Antigravity CLI uses OSC 7501 terminal status natively without status hooks (its chat-title callback is separate), Cursor has only an identity hook, and TRAE has no hooks, so none of the three has this switch.
+
+**Custom flags** adds extra CLI arguments to every session launch of that agent, across plain chats, role chats, missions, resumes and forks, from the next session start. Runner’s own helper commands (such as version and help checks, model discovery, usage reads and headless fork steps) do not receive custom flags. Press Enter or leave the field to save, or press Escape to restore the saved value; clearing the field removes the flags.
+
+Runner splits **Custom flags** into shell words on every platform without expanding `~` or environment variables: spaces separate flags, pasted newlines count as spaces, and single quotes, double quotes or backslashes keep values with spaces together. On save, Runner checks three things in order and shows the first problem only: unclosed quotes or a trailing backslash are refused without saving; flags Runner already manages for that agent (including permission flags and Codex’s reserved `-c`/`--config` keys, while allowing `-c` with other keys and repeated `--add-dir`) are refused without saving; and flag names not listed by `<command> --help` are saved with an amber warning (re-checked when opening the Launch card, and skipped if help output cannot be read). Custom flags sit right after any prepended resume subcommand and before role arguments, so role arguments still win if a CLI takes the last value of a flag. Changes apply when a session next starts.
 
 ## Install and sign in
 

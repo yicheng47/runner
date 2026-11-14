@@ -103,6 +103,25 @@ pub(super) fn override_validation_error_message(error: &OverrideValidationError)
     error.message.clone()
 }
 
+pub(super) fn custom_flags_validation_error_message(error: &CustomFlagsValidationError) -> String {
+    error.message.clone()
+}
+
+pub(super) fn custom_flags_placeholder(runtime: Runtime) -> &'static str {
+    match runtime {
+        Runtime::Codex => "--search -c model_verbosity=high",
+        Runtime::ClaudeCode => "--verbose --max-budget-usd 5",
+        Runtime::Antigravity => "--verbose",
+        Runtime::Pi => "--no-tools --verbose",
+        Runtime::Copilot => "--no-color",
+        Runtime::Trae => "--verbose",
+        Runtime::Cursor => "--verbose",
+        Runtime::Grok => "--verbose",
+        Runtime::OpenCode => "--print-logs",
+        Runtime::Shell => "",
+    }
+}
+
 pub(super) fn runtime_defaults_visible(runtime: &RuntimeExecutableStatus) -> bool {
     !matches!(
         runtime.state,

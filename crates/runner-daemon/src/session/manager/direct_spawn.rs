@@ -178,9 +178,9 @@ impl SessionManager {
         if let Some(account) = &mut launch_definition.claude_account {
             let options = crate::db::runtime_launch_options(&pool)?
                 .get(&role.runtime)
-                .copied()
+                .cloned()
                 .unwrap_or_default();
-            let effective = crate::runtimes::apply_launch_options(&role, false, options);
+            let effective = crate::runtimes::apply_launch_options(&role, false, &options);
             account.permission_mode = crate::runtimes::for_key(&role.runtime)
                 .native_permission_mode(&effective.args)
                 .expect("account runtime has a native permission mode");

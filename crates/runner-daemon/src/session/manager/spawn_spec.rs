@@ -240,9 +240,9 @@ impl SessionManager {
     ) -> bool {
         let options = pool
             .and_then(|pool| crate::db::runtime_launch_options(pool).ok())
-            .and_then(|options| options.get(&role.runtime).copied())
+            .and_then(|options| options.get(&role.runtime).cloned())
             .unwrap_or_default();
-        let effective_role = crate::runtimes::apply_launch_options(role, spec.mission, options);
+        let effective_role = crate::runtimes::apply_launch_options(role, spec.mission, &options);
         let role = &effective_role;
         spec.args.clone_from(&role.args);
         if !spec.mission && !options.status_hooks {
@@ -322,8 +322,10 @@ impl SessionManager {
                 system_prompt: None,
                 first_turn,
             }));
-        let (args, delivered_via_argv) = compose_args(
+        let custom_flags = crate::runtimes::custom_flags::parse_lossy(&options.custom_flags);
+        let (args, _, delivered_via_argv) = compose_args(
             adapter,
+            &custom_flags,
             &spec.args,
             plan,
             mission_bus_dir,
@@ -497,22 +499,122 @@ pub(crate) fn runtime_direct_role(
 
 fn compose_args(
     adapter: &dyn crate::runtimes::RuntimeAdapter,
+    custom_flags: &[String],
     role_args: &[String],
     plan: &router::runtime::ResumePlan,
     mission_dir: Option<&Path>,
     ctx: &crate::runtimes::LaunchContext<'_>,
-) -> (Vec<String>, bool) {
+) -> (Vec<String>, std::ops::Range<usize>, bool) {
     let mut args = Vec::new();
     if plan.prepend {
         args.extend(plan.args.iter().cloned());
     }
+    let custom_start = args.len();
+    args.extend(custom_flags.iter().cloned());
+    let custom_end = args.len();
     args.extend(adapter.launch_role_args(role_args));
     if !plan.prepend {
         args.extend(plan.args.iter().cloned());
     }
     args.extend(adapter.mission_dir_args(mission_dir));
     args.extend(adapter.launch_args(ctx));
-    (args, !adapter.first_turn_argv(ctx.first_turn).is_empty())
+    (
+        args,
+        custom_start..custom_end,
+        !adapter.first_turn_argv(ctx.first_turn).is_empty(),
+    )
+}
+
+#[derive(Default)]
+pub(crate) struct PreviewArgsOverrides<'a> {
+    pub(crate) model: Option<&'a str>,
+    pub(crate) effort: Option<&'a str>,
+    pub(crate) prior_key: Option<&'a str>,
+    pub(crate) codex_speed: Option<crate::model::CodexSpeed>,
+    pub(crate) system_prompt: Option<&'a str>,
+}
+
+pub(crate) fn compose_preview_args(
+    runtime: Runtime,
+    mission: bool,
+    options: &runner_core::protocol::runtime::RuntimeLaunchOptions,
+    app_data_dir: &Path,
+    mut env: BTreeMap<String, String>,
+    overrides: PreviewArgsOverrides<'_>,
+) -> (Vec<String>, std::ops::Range<usize>) {
+    let PreviewArgsOverrides {
+        model,
+        effort,
+        prior_key,
+        codex_speed,
+        system_prompt,
+    } = overrides;
+    let adapter = crate::runtimes::adapter(runtime);
+    let role = Role {
+        id: String::new(),
+        handle: String::new(),
+        display_name: String::new(),
+        runtime: runtime.key().into(),
+        command: String::new(),
+        args: if mission {
+            adapter.permissions().mission_args()
+        } else {
+            Vec::new()
+        },
+        working_dir: None,
+        system_prompt: system_prompt.map(str::to_owned),
+        env: HashMap::new(),
+        model: Some(model.unwrap_or("<model>").into()),
+        effort: Some(effort.unwrap_or("<effort>").into()),
+        codex_speed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    };
+    let role = crate::runtimes::apply_launch_options(&role, mission, options);
+    if !mission && !options.status_hooks {
+        env.insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
+    }
+    if !options.remote_plugin_catalog {
+        env.insert(crate::runtimes::REMOTE_PLUGIN_ENV.into(), "false".into());
+    }
+    let mut plan = adapter.resume_plan(prior_key);
+    if let Some(key) = &plan.assigned_key {
+        for arg in &mut plan.args {
+            if arg == key {
+                *arg = "<session id>".into();
+            }
+        }
+    }
+    let first_turn = if mission {
+        "<role prompt, crew notes and mission goal>"
+    } else {
+        "<first message>"
+    };
+    let ctx = crate::runtimes::LaunchContext {
+        default_model: None,
+        env: &env,
+        cwd: None,
+        role_args: &role.args,
+        app_data_dir,
+        session_id: "<session id>",
+        resuming: prior_key.is_some(),
+        mission,
+        model: role.model.as_deref(),
+        effort: role.effort.as_deref(),
+        codex_speed,
+        system_prompt,
+        first_turn: Some(first_turn),
+    };
+    let custom_flags = crate::runtimes::custom_flags::parse_lossy(&options.custom_flags);
+    let (args, custom_range, _) = compose_args(
+        adapter,
+        &custom_flags,
+        &role.args,
+        &plan,
+        mission.then_some(Path::new("<mission folder>")),
+        &ctx,
+    );
+    (args, custom_range)
 }
 
 impl SessionManager {
@@ -521,74 +623,27 @@ impl SessionManager {
         runtime: Runtime,
         command: &str,
         mission: bool,
-        options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+        options: &runner_core::protocol::runtime::RuntimeLaunchOptions,
         app_data_dir: &Path,
-        mut env: BTreeMap<String, String>,
+        env: BTreeMap<String, String>,
     ) -> runner_core::protocol::runtime::RuntimeCommandPreview {
-        let adapter = crate::runtimes::adapter(runtime);
-        let role = Role {
-            id: String::new(),
-            handle: String::new(),
-            display_name: String::new(),
-            runtime: runtime.key().into(),
-            command: command.into(),
-            args: if mission {
-                adapter.permissions().mission_args()
-            } else {
-                Vec::new()
-            },
-            working_dir: None,
-            system_prompt: None,
-            env: HashMap::new(),
-            model: Some("<model>".into()),
-            effort: Some("<effort>".into()),
-            codex_speed: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-        let role = crate::runtimes::apply_launch_options(&role, mission, options);
-        if !mission && !options.status_hooks {
-            env.insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
-        }
-        if !options.remote_plugin_catalog {
-            env.insert(crate::runtimes::REMOTE_PLUGIN_ENV.into(), "false".into());
-        }
-        let mut plan = adapter.resume_plan(None);
-        if let Some(key) = &plan.assigned_key {
-            for arg in &mut plan.args {
-                if arg == key {
-                    *arg = "<session id>".into();
-                }
-            }
-        }
-        let first_turn = if mission {
-            "<role prompt, crew notes and mission goal>"
-        } else {
-            "<first message>"
-        };
-        let ctx = crate::runtimes::LaunchContext {
-            default_model: None,
-            env: &env,
-            cwd: None,
-            role_args: &role.args,
-            app_data_dir,
-            session_id: "<session id>",
-            resuming: false,
+        let (args, custom_range) = compose_preview_args(
+            runtime,
             mission,
-            model: role.model.as_deref(),
-            effort: role.effort.as_deref(),
-            codex_speed: None,
-            system_prompt: None,
-            first_turn: Some(first_turn),
-        };
-        let (args, _) = compose_args(
-            adapter,
-            &role.args,
-            &plan,
-            mission.then_some(Path::new("<mission folder>")),
-            &ctx,
+            options,
+            app_data_dir,
+            env,
+            PreviewArgsOverrides::default(),
         );
-        command_lines(runtime, command, &args, mission, options, app_data_dir)
+        command_lines(
+            runtime,
+            command,
+            &args,
+            custom_range,
+            mission,
+            options,
+            app_data_dir,
+        )
     }
 }
 
@@ -596,8 +651,9 @@ fn command_lines(
     runtime: Runtime,
     command: &str,
     args: &[String],
+    custom_range: std::ops::Range<usize>,
     mission: bool,
-    options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+    options: &runner_core::protocol::runtime::RuntimeLaunchOptions,
     app_data_dir: &Path,
 ) -> runner_core::protocol::runtime::RuntimeCommandPreview {
     use runner_core::protocol::runtime::{
@@ -612,6 +668,17 @@ fn command_lines(
     let mut i = 0;
     let mut hooks = Vec::new();
     while i < args.len() {
+        if i == custom_range.start && !custom_range.is_empty() {
+            let formatted =
+                crate::runtimes::custom_flags::format_preview_args(&args[custom_range.clone()]);
+            lines.push(RuntimeCommandLine {
+                command: format!("  {formatted}"),
+                note: Note::CustomFlags,
+                option: None,
+            });
+            i = custom_range.end;
+            continue;
+        }
         let arg = &args[i];
         let takes_value = [
             "-c",
@@ -745,8 +812,9 @@ fn command_lines(
         }
         code = code.replace(app_data_dir.to_string_lossy().as_ref(), "<Runner data>");
         let combine = lines.last().is_some_and(|line| {
-            (arg == "--sandbox" && line.command.contains("--ask-for-approval"))
-                || (code.contains("<effort>") && line.command.contains("<model>"))
+            line.note != Note::CustomFlags
+                && ((arg == "--sandbox" && line.command.contains("--ask-for-approval"))
+                    || (code.contains("<effort>") && line.command.contains("<model>")))
         });
         if combine {
             let line = lines.last_mut().unwrap();
@@ -796,7 +864,10 @@ fn command_lines(
             .unwrap_or(lines.len());
         lines.splice(index..index, hook_lines);
     }
-    RuntimeCommandPreview { lines }
+    RuntimeCommandPreview {
+        lines,
+        custom_flags_warning: None,
+    }
 }
 
 #[cfg(test)]
@@ -812,12 +883,13 @@ mod launch_preview_tests {
             bypass: true,
             remote_plugin_catalog: false,
             status_hooks: false,
+            custom_flags: String::new(),
         };
         let preview = core.sessions.command_preview(
             Runtime::Codex,
             "codex",
             false,
-            options,
+            &options,
             root.path(),
             BTreeMap::new(),
         );
@@ -842,7 +914,7 @@ mod launch_preview_tests {
             Runtime::Codex,
             "codex",
             true,
-            options,
+            &options,
             root.path(),
             BTreeMap::new(),
         );
@@ -850,7 +922,7 @@ mod launch_preview_tests {
             Runtime::Codex,
             "codex",
             true,
-            RuntimeLaunchOptions {
+            &RuntimeLaunchOptions {
                 remote_plugin_catalog: false,
                 ..Default::default()
             },
@@ -865,7 +937,7 @@ mod launch_preview_tests {
             Runtime::Trae,
             "traecli",
             false,
-            RuntimeLaunchOptions::default(),
+            &RuntimeLaunchOptions::default(),
             root.path(),
             BTreeMap::new(),
         );
@@ -886,7 +958,7 @@ mod launch_preview_tests {
             first_turn: Some("<first message>"),
         };
         let adapter = crate::runtimes::adapter(Runtime::Trae);
-        let (args, _) = compose_args(adapter, &[], &adapter.resume_plan(None), None, &ctx);
+        let (args, _, _) = compose_args(adapter, &[], &[], &adapter.resume_plan(None), None, &ctx);
         assert_eq!(
             preview.lines[1..]
                 .iter()
@@ -901,7 +973,7 @@ mod launch_preview_tests {
                 Runtime::Antigravity,
                 "agy",
                 mission,
-                RuntimeLaunchOptions::default(),
+                &RuntimeLaunchOptions::default(),
                 root.path(),
                 BTreeMap::new(),
             );
@@ -939,7 +1011,7 @@ mod launch_preview_tests {
                 Runtime::Antigravity,
                 "agy",
                 mission,
-                options,
+                &options,
                 root.path(),
                 BTreeMap::new(),
             );
@@ -981,7 +1053,7 @@ mod launch_preview_tests {
                 Runtime::Antigravity,
                 "agy",
                 mission,
-                RuntimeLaunchOptions::default(),
+                &RuntimeLaunchOptions::default(),
                 &app_data,
                 BTreeMap::new(),
             );
@@ -1015,10 +1087,11 @@ mod launch_preview_tests {
             Runtime::ClaudeCode,
             "claude",
             false,
-            RuntimeLaunchOptions {
+            &RuntimeLaunchOptions {
                 bypass: false,
                 remote_plugin_catalog: true,
                 status_hooks: true,
+                custom_flags: String::new(),
             },
             &app_data,
             BTreeMap::new(),
@@ -1034,5 +1107,190 @@ mod launch_preview_tests {
             claude_settings.option,
             Some(RuntimeLaunchOption::StatusHooks)
         );
+    }
+
+    #[test]
+    fn custom_flags_preview_matches_composed_argv_and_is_absent_when_empty() {
+        use runner_core::protocol::runtime::RuntimeCommandNote;
+
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        let raw = r#"--search -c model_verbosity=high --add-dir "/tmp/runner qa/extra dir""#;
+        let options = RuntimeLaunchOptions {
+            custom_flags: raw.into(),
+            ..Default::default()
+        };
+
+        for mission in [false, true] {
+            let preview = core.sessions.command_preview(
+                Runtime::Codex,
+                "codex",
+                mission,
+                &options,
+                root.path(),
+                BTreeMap::new(),
+            );
+            assert_eq!(preview.lines[0].command, "codex");
+            assert_eq!(preview.lines[1].note, RuntimeCommandNote::CustomFlags);
+            assert_eq!(preview.lines[1].option, None);
+            let parsed =
+                crate::runtimes::custom_flags::parse_custom_flags(preview.lines[1].command.trim())
+                    .unwrap();
+            assert_eq!(
+                parsed,
+                vec![
+                    "--search",
+                    "-c",
+                    "model_verbosity=high",
+                    "--add-dir",
+                    "/tmp/runner qa/extra dir",
+                ]
+            );
+            assert_eq!(
+                preview
+                    .lines
+                    .iter()
+                    .filter(|l| l.note == RuntimeCommandNote::CustomFlags)
+                    .count(),
+                1
+            );
+
+            let empty_preview = core.sessions.command_preview(
+                Runtime::Codex,
+                "codex",
+                mission,
+                &RuntimeLaunchOptions::default(),
+                root.path(),
+                BTreeMap::new(),
+            );
+            assert!(empty_preview
+                .lines
+                .iter()
+                .all(|l| l.note != RuntimeCommandNote::CustomFlags));
+        }
+    }
+
+    #[test]
+    fn apply_runtime_args_places_custom_flags_between_prepend_and_role_args_for_all_runtimes() {
+        use crate::router::runtime::ForkPlan;
+
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+
+        for runtime in Runtime::ALL {
+            if runtime == Runtime::Shell {
+                continue;
+            }
+            crate::db::set_runtime_custom_flags(
+                &core.db,
+                runtime,
+                r#"--custom-flag "with spaces""#,
+            )
+            .unwrap();
+            let adapter = crate::runtimes::adapter(runtime);
+            let prior = crate::runtimes::custom_flags::sample_prior_key(runtime);
+
+            for (mission, resuming, plan) in [
+                (false, false, adapter.resume_plan(None)),
+                (false, true, adapter.resume_plan(Some(prior))),
+                (true, false, adapter.resume_plan(None)),
+            ] {
+                let role = Role {
+                    id: "r1".into(),
+                    handle: "coder".into(),
+                    display_name: "Coder".into(),
+                    runtime: runtime.key().into(),
+                    command: crate::runtimes::custom_flags::command_name(runtime).into(),
+                    args: vec!["--role-marker".into()],
+                    working_dir: None,
+                    system_prompt: None,
+                    env: HashMap::new(),
+                    model: Some("test-model".into()),
+                    effort: None,
+                    codex_speed: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+                let mut spec = crate::session::runtime::SpawnSpec {
+                    session_id: "00000000-0000-0000-0000-000000000099".into(),
+                    mission,
+                    command: role.command.clone(),
+                    args: role.args.clone(),
+                    agent_runtime: Some(runtime),
+                    ..Default::default()
+                };
+                core.sessions.apply_runtime_args(
+                    &mut spec,
+                    &role,
+                    &plan,
+                    root.path(),
+                    None,
+                    Some("hello"),
+                    mission.then_some(root.path()),
+                    Some(&core.db),
+                );
+                let flag_pos = spec
+                    .args
+                    .iter()
+                    .position(|a| a == "--custom-flag")
+                    .unwrap_or_else(|| panic!("{runtime} missing --custom-flag (resuming={resuming}, mission={mission}): {:?}", spec.args));
+                assert_eq!(spec.args[flag_pos + 1], "with spaces");
+                let role_pos = spec.args.iter().position(|a| a == "--role-marker").unwrap();
+                assert!(
+                    flag_pos + 1 < role_pos,
+                    "{runtime}: custom flags must precede role args: {:?}",
+                    spec.args
+                );
+                if plan.prepend && !plan.args.is_empty() {
+                    assert_eq!(&spec.args[..plan.args.len()], plan.args.as_slice());
+                    assert_eq!(flag_pos, plan.args.len());
+                } else {
+                    assert_eq!(flag_pos, 0);
+                }
+            }
+
+            if let Some(ForkPlan::Direct(fork_plan)) = adapter.fork_plan(prior, "fork") {
+                let role = Role {
+                    id: "r1".into(),
+                    handle: "coder".into(),
+                    display_name: "Coder".into(),
+                    runtime: runtime.key().into(),
+                    command: crate::runtimes::custom_flags::command_name(runtime).into(),
+                    args: vec!["--role-marker".into()],
+                    working_dir: None,
+                    system_prompt: None,
+                    env: HashMap::new(),
+                    model: None,
+                    effort: None,
+                    codex_speed: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+                let mut spec = crate::session::runtime::SpawnSpec {
+                    session_id: "00000000-0000-0000-0000-000000000099".into(),
+                    mission: false,
+                    command: role.command.clone(),
+                    args: role.args.clone(),
+                    agent_runtime: Some(runtime),
+                    ..Default::default()
+                };
+                core.sessions.apply_runtime_args(
+                    &mut spec,
+                    &role,
+                    &fork_plan,
+                    root.path(),
+                    None,
+                    None,
+                    None,
+                    Some(&core.db),
+                );
+                let flag_pos = spec.args.iter().position(|a| a == "--custom-flag").unwrap();
+                let role_pos = spec.args.iter().position(|a| a == "--role-marker").unwrap();
+                assert!(flag_pos + 1 < role_pos);
+                if fork_plan.prepend && !fork_plan.args.is_empty() {
+                    assert_eq!(flag_pos, fork_plan.args.len());
+                }
+            }
+        }
     }
 }

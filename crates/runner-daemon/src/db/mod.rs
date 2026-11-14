@@ -24,8 +24,9 @@ use crate::error::Result;
 pub(crate) use self::app_state::{app_state_get, app_state_set};
 pub use self::app_state::{
     files_recent_folders, login_shell_env_lkg, push_files_recent_folder, runtime_launch_options,
-    runtime_overrides, set_login_shell_env_lkg, set_runtime_launch_option, set_runtime_override,
-    set_terminal_palette, set_usage_lkg, terminal_palette, usage_lkg, LoginShellEnvLkg, UsageLkg,
+    runtime_overrides, set_login_shell_env_lkg, set_runtime_custom_flags,
+    set_runtime_launch_option, set_runtime_override, set_terminal_palette, set_usage_lkg,
+    terminal_palette, usage_lkg, LoginShellEnvLkg, UsageLkg,
 };
 
 pub type DbPool = Pool<SqliteConnectionManager>;
